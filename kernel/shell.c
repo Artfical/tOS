@@ -1,6 +1,7 @@
 #include "shell.h"
 #include "terminal.h"
 #include "keyboard.h"
+#include "gui.h"
 #include "string.h"
 #include "memory.h"
 #include "ramfs.h"
@@ -394,6 +395,7 @@ void shell_run(void)
     char *args[MAX_ARGS];
 
     for (;;) {
+        gui_poll();
         terminal_writestring(ramfs_getcwd());
         terminal_writestring("> ");
 

@@ -4,6 +4,7 @@
 #include "irq.h"
 #include "io.h"
 #include "terminal.h"
+#include "gui.h"
 
 static volatile char key_buffer[256];
 static volatile int key_buffer_head = 0;
@@ -103,6 +104,7 @@ void keyboard_readline(char *buf, int max)
 {
     int i = 0;
     for (;;) {
+        gui_poll();
         char c = keyboard_getchar();
         if (c == '\n') {
             terminal_putchar('\n');
