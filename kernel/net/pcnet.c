@@ -57,28 +57,37 @@ int pcnet_init(void)
     uint32_t bar = pci_get_bar(bus, dev, func, 0);
     serial_write("pcnet: bar0=0x");
     for (int k = 28; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(bar >> k) & 0xF]);
-    serial_write("\n");
+    serial_write(" ");
     if (!(bar & 1)) {
-        serial_write("pcnet: bar0 not I/O, trying BAR1-5\n");
-        int found = 0;
+        serial_write("not I/O, trying BAR1-5\n");
+        int found_io = 0;
         for (int b = 1; b <= 5; b++) {
             bar = pci_get_bar(bus, dev, func, b);
             for (int k = 28; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(bar >> k) & 0xF]);
             serial_write(b < 5 ? " " : "\n");
-            if (bar & 1) { found = 1; break; }
+            if (bar & 1) { found_io = 1; break; }
         }
-        if (!found) return -1;
+        if (!found_io) return -1;
     }
     io = bar & 0xFFFC;
+    serial_write("io=0x");
+    for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(io >> k) & 0xF]);
+    serial_write("\n");
 
     pci_write_config(bus, dev, func, 4, 0x05);
     io_wait();
 
     inw(io + 0x0C);
     io_wait();
+    serial_write("pcnet: wait initrdy...\n");
+    int initrdy_ok = 0;
     for (int t = 0; t < TMO; t++) {
-        if (csr_rd(0) & 0x0004) break;
+        uint16_t csr = csr_rd(0);
+        if (csr & 0x0004) { initrdy_ok = 1; break; }
     }
+    serial_write("pcnet: initrdy=");
+    serial_putchar('0' + initrdy_ok);
+    serial_write("\n");
 
     uint8_t mac[6];
     for (int j = 0; j < 3; j++) {
@@ -87,6 +96,9 @@ int pcnet_init(void)
         mac[j*2+1] = (w >> 8) & 0xFF;
     }
     for (int j = 0; j < 6; j++) net_mac[j] = mac[j];
+    serial_write("pcnet: mac=");
+    for (int j = 0; j < 6; j++) { for (int k = 4; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(mac[j] >> k) & 0xF]); if (j<5) serial_write(":"); }
+    serial_write("\n");
 
     void *ib = malloc(32);
     if (!ib) return -1;
@@ -131,19 +143,35 @@ int pcnet_init(void)
     csr_wr(3, 0);
     csr_wr(4, 0);
 
+    serial_write("pcnet: issuing INIT...\n");
     csr_wr(0, 0x0041);
     for (int t = 0; t < TMO; t++) {
-        if (csr_rd(0) & 0x0100) break;
+        uint16_t cs = csr_rd(0);
+        if (cs & 0x0100) break;
     }
+    uint16_t csr0 = csr_rd(0);
+    serial_write("pcnet: post-INIT csr0=0x");
+    for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(csr0 >> k) & 0xF]);
+    serial_write(" idon=");
+    serial_putchar('0' + ((csr0 >> 8) & 1));
+    serial_write("\n");
     if (!(csr_rd(0) & 0x0100)) { free(ib); return -1; }
 
     bcr_wr(58, 2);
 
+    serial_write("pcnet: issuing STRT...\n");
     csr_wr(0, 0x0042);
     for (int t = 0; t < TMO; t++) {
         uint16_t s = csr_rd(0);
         if ((s & 0x0030) == 0x0030) break;
     }
+    csr0 = csr_rd(0);
+    serial_write("pcnet: post-STRT csr0=0x");
+    for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(csr0 >> k) & 0xF]);
+    serial_write(" rxontxon=");
+    serial_putchar('0' + ((csr0 >> 4) & 1));
+    serial_putchar('0' + ((csr0 >> 5) & 1));
+    serial_write("\n");
 
     ok = 1;
     free(ib);
