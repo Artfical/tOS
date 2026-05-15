@@ -3,6 +3,7 @@
 #include "pcnet.h"
 #include "e1000.h"
 #include "net.h"
+#include "serial.h"
 #include "terminal.h"
 #include "string.h"
 
@@ -14,23 +15,27 @@ int nic_init(void)
     nic_send = 0;
     nic_poll = 0;
 
+    serial_write("nic: probing RTL8139... ");
     if (rtl8139_init() == 0) {
         nic_send = rtl8139_send;
         nic_poll = rtl8139_poll;
-        terminal_writestring("[OK] Using RTL8139\n");
+        serial_write("OK\n");
         return 0;
     }
+    serial_write("no\nnic: probing PCnet... ");
     if (pcnet_init() == 0) {
         nic_send = pcnet_send;
         nic_poll = pcnet_poll;
-        terminal_writestring("[OK] Using AMD PCnet\n");
+        serial_write("OK\n");
         return 0;
     }
+    serial_write("no\nnic: probing E1000... ");
     if (e1000_init() == 0) {
         nic_send = e1000_send;
         nic_poll = e1000_poll;
-        terminal_writestring("[OK] Using Intel PRO/1000\n");
+        serial_write("OK\n");
         return 0;
     }
+    serial_write("no\n");
     return -1;
 }

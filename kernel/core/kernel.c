@@ -129,8 +129,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
 
-    net_init();
-
     int sel = 0;
     terminal_writestring("\nGUI? <[No] Yes>  (arrows/y/n, Enter)");
     for (;;) {
@@ -153,6 +151,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     syscall_init();
     terminal_writestring("[OK] Syscalls initialized\n");
+
+    net_init();
 
     shell_init();
     shell_run();
