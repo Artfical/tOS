@@ -128,10 +128,16 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
 
-    char mode_buf[4];
-    terminal_writestring("\nStart in GUI mode? (y/N): ");
-    keyboard_readline(mode_buf, 4);
-    if (mode_buf[0] == 'y' || mode_buf[0] == 'Y') {
+    int sel = 0;
+    terminal_writestring("Start in GUI mode? <[No] Yes>");
+    for (;;) {
+        int k = keyboard_choose(sel);
+        if (k == 1) { sel = 0; terminal_writestring("\rStart in GUI mode? <[No] Yes>"); }
+        else if (k == 2) { sel = 1; terminal_writestring("\rStart in GUI mode? < No [Yes]>"); }
+        else break;
+    }
+    terminal_putchar('\n');
+    if (sel) {
         gui_init();
         terminal_set_y_offset(GUI_TERM_ROW);
         terminal_clear();

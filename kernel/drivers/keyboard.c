@@ -9,6 +9,9 @@
 static volatile char key_buffer[256];
 static volatile int key_buffer_head = 0;
 static volatile int key_buffer_tail = 0;
+static volatile int special_buf[16];
+static volatile int special_head = 0;
+static volatile int special_tail = 0;
 static int caps_lock = 0;
 static int shift_pressed = 0;
 
@@ -58,6 +61,15 @@ static void keyboard_callback(registers_t *regs)
     }
 
     if (scancode & 0x80) return;
+
+    if (scancode == 0x4B || scancode == 0x4D) {
+        int next = (special_head + 1) % 16;
+        if (next != special_tail) {
+            special_buf[special_head] = (scancode == 0x4B) ? 1 : 2;
+            special_head = next;
+        }
+        return;
+    }
 
     char key = 0;
     if (scancode < sizeof(scancode_ascii_lower)) {
@@ -120,6 +132,32 @@ void keyboard_readline(char *buf, int max)
         } else if (c >= ' ' && i < max - 1) {
             buf[i++] = c;
             terminal_putchar(c);
+        }
+    }
+}
+
+int keyboard_choose(int default_idx)
+{
+    for (;;) {
+        gui_poll();
+        if (special_head != special_tail) {
+            int k = special_buf[special_tail];
+            special_tail = (special_tail + 1) % 16;
+            if (k == 1) return 1;
+            if (k == 2) return 2;
+        }
+        if (key_buffer_head != key_buffer_tail) {
+            char c = key_buffer[key_buffer_tail];
+            if (c == '\n') {
+                key_buffer_tail = (key_buffer_tail + 1) % 256;
+                return default_idx;
+            }
+        }
+        char usb_c;
+        if (usb_keyboard_read(&usb_c)) {
+            keyboard_push_char(usb_c);
+        } else {
+            asm volatile("hlt");
         }
     }
 }

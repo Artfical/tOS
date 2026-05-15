@@ -5,5 +5,6 @@ void keyboard_init(void);
 char keyboard_getchar(void);
 void keyboard_readline(char *buf, int max);
 int keyboard_data_available(void);
+int keyboard_choose(int default_idx);
 
 #endif
