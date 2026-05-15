@@ -1,4 +1,5 @@
 #include "keyboard.h"
+#include "usb_keyboard.h"
 #include "isr.h"
 #include "irq.h"
 #include "io.h"
@@ -9,6 +10,15 @@ static volatile int key_buffer_head = 0;
 static volatile int key_buffer_tail = 0;
 static int caps_lock = 0;
 static int shift_pressed = 0;
+
+void keyboard_push_char(char c)
+{
+    int next = (key_buffer_head + 1) % 256;
+    if (next != key_buffer_tail) {
+        key_buffer[key_buffer_head] = c;
+        key_buffer_head = next;
+    }
+}
 
 static const char scancode_ascii_lower[] = {
     0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
@@ -63,11 +73,7 @@ static void keyboard_callback(registers_t *regs)
     }
 
     if (key) {
-        int next = (key_buffer_head + 1) % 256;
-        if (next != key_buffer_tail) {
-            key_buffer[key_buffer_head] = key;
-            key_buffer_head = next;
-        }
+        keyboard_push_char(key);
     }
 }
 
@@ -78,12 +84,19 @@ int keyboard_data_available(void)
 
 char keyboard_getchar(void)
 {
-    while (key_buffer_head == key_buffer_tail) {
-        asm volatile("hlt");
+    for (;;) {
+        if (key_buffer_head != key_buffer_tail) {
+            char c = key_buffer[key_buffer_tail];
+            key_buffer_tail = (key_buffer_tail + 1) % 256;
+            return c;
+        }
+        char usb_c;
+        if (usb_keyboard_read(&usb_c)) {
+            keyboard_push_char(usb_c);
+        } else {
+            asm volatile("hlt");
+        }
     }
-    char c = key_buffer[key_buffer_tail];
-    key_buffer_tail = (key_buffer_tail + 1) % 256;
-    return c;
 }
 
 void keyboard_readline(char *buf, int max)
@@ -113,4 +126,5 @@ void keyboard_init(void)
 {
     isr_register_handler(33, keyboard_callback);
     irq_ack(1);
+    usb_keyboard_init();
 }

@@ -27,7 +27,10 @@ KERNEL_OBJS = \
     kernel/elf.o \
     kernel/syscall.o \
     kernel/serial.o \
-    kernel/shell.o
+    kernel/shell.o \
+    kernel/pci.o \
+    kernel/uhci.o \
+    kernel/usb_keyboard.o
 
 PROGRAMS = programs/hello.elf
 

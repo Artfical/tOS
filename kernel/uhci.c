@@ -85,27 +85,32 @@ int uhci_port_detect(uhci_controller_t *c, int port)
     return 1;
 }
 
+static inline uint32_t uhci_link_td(void *td)
+{
+    return (uint32_t)td & 0xFFFFFFF0;
+}
+
 int uhci_control(uhci_controller_t *c, int dev, int ep, usb_device_request_t *req, void *data, int dir)
 {
-    uhci_td_t td[3];
+    uhci_td_t td[3] __attribute__((aligned(16)));
     memset(td, 0, sizeof(td));
 
-    td[0].link = (uint32_t)&td[1];
+    td[0].link = uhci_link_td(&td[1]);
     td[0].status = 0x80 | 0x700000;
-    td[0].token = (0 << 29) | (dev << 8) | (ep << 15) | (0 << 19) | (1 << 21);
+    td[0].token = (0 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (0 << 19) | (1 << 21);
     td[0].buffer = (uint32_t)req;
 
-    td[1].link = (uint32_t)&td[2];
+    td[1].link = uhci_link_td(&td[2]);
     td[1].status = 0x80 | 0x700000;
 
     if (data && (dir & 0x80)) {
-        td[1].token = (1 << 29) | (dev << 8) | (ep << 15) | (1 << 19);
+        td[1].token = (1 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (1 << 19);
         td[1].buffer = (uint32_t)data;
     } else if (data) {
-        td[1].token = (2 << 29) | (dev << 8) | (ep << 15) | (0 << 19);
+        td[1].token = (2 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (0 << 19);
         td[1].buffer = (uint32_t)data;
     } else {
-        td[1].token = (1 << 29) | (dev << 8) | (ep << 15) | (1 << 19);
+        td[1].token = (1 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (1 << 19);
         td[1].buffer = 0;
     }
 
@@ -113,9 +118,9 @@ int uhci_control(uhci_controller_t *c, int dev, int ep, usb_device_request_t *re
     td[2].status = 0x80 | 0x700000;
     td[2].buffer = 0;
     if ((dir & 0x80) || !data)
-        td[2].token = (2 << 29) | (dev << 8) | (ep << 15) | (1 << 19);
+        td[2].token = (2 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (1 << 19);
     else
-        td[2].token = (1 << 29) | (dev << 8) | (ep << 15) | (1 << 19);
+        td[2].token = (1 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (1 << 19);
 
     c->async_qh->element = (uint32_t)&td[0];
 
@@ -127,4 +132,28 @@ int uhci_control(uhci_controller_t *c, int dev, int ep, usb_device_request_t *re
     c->async_qh->element = 1;
 
     return (td[2].status & 0x80) ? -1 : 0;
+}
+
+int uhci_interrupt_read(uhci_controller_t *c, int dev, int ep, int max_len, void *buf)
+{
+    uhci_td_t td __attribute__((aligned(16)));
+    memset(&td, 0, sizeof(td));
+
+    td.link = 1;
+    td.status = 0x80 | 0x700000;
+    td.token = (1 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (0 << 19) | (((max_len / 4) - 1) << 21);
+    td.buffer = (uint32_t)buf;
+
+    c->async_qh->element = (uint32_t)&td;
+
+    int t = 500000;
+    while (--t) {
+        if (!(td.status & 0x80)) break;
+    }
+
+    c->async_qh->element = 1;
+
+    if (td.status & 0x80) return -1;
+    if (td.status & 0x700000) return -1;
+    return 0;
 }

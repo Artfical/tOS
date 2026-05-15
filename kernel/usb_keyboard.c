@@ -73,7 +73,7 @@ static int usb_set_config(uhci_controller_t *c, int dev, int config)
     return uhci_control(c, dev, 0, &req, NULL, 0x00);
 }
 
-static int usb_set_protocol(uhci_controller_t *c, int dev, int ep, int proto)
+static int usb_set_protocol(uhci_controller_t *c, int dev, int proto)
 {
     usb_device_request_t req;
     req.bmRequestType = 0x21;
@@ -84,7 +84,7 @@ static int usb_set_protocol(uhci_controller_t *c, int dev, int ep, int proto)
     return uhci_control(c, dev, 0, &req, NULL, 0x00);
 }
 
-static int usb_set_idle(uhci_controller_t *c, int dev, int ep, int duration)
+static int usb_set_idle(uhci_controller_t *c, int dev, int duration)
 {
     usb_device_request_t req;
     req.bmRequestType = 0x21;
@@ -98,24 +98,30 @@ static int usb_set_idle(uhci_controller_t *c, int dev, int ep, int duration)
 static int enumerate_usb_keyboard(uhci_controller_t *c)
 {
     usb_device_descriptor_t dev_desc;
-    if (usb_get_descriptor(c, 0, USB_DEVICE_DESCRIPTOR_TYPE, 0, &dev_desc, 8) != 0)
+    if (usb_get_descriptor(c, 0, USB_DEVICE_DESCRIPTOR_TYPE, 0, &dev_desc, 8) != 0) {
+        terminal_writestring("USB: No device on port\n");
         return -1;
+    }
 
     terminal_writestring("USB: Device detected\n");
-
-    usb_get_descriptor(c, 0, USB_DEVICE_DESCRIPTOR_TYPE, 0, &dev_desc, sizeof(dev_desc));
 
     usb_set_address(c, 1);
 
     dev_desc.bMaxPacketSize0 = 8;
 
     usb_config_descriptor_t cfg_desc;
-    usb_get_descriptor(c, 1, USB_CONFIG_DESCRIPTOR_TYPE, 0, &cfg_desc, 9);
+    if (usb_get_descriptor(c, 1, USB_CONFIG_DESCRIPTOR_TYPE, 0, &cfg_desc, 9) != 0) {
+        terminal_writestring("USB: Get config failed\n");
+        return -1;
+    }
 
     unsigned char *cfg_buf = (unsigned char *)malloc(cfg_desc.wTotalLength);
     if (!cfg_buf) return -1;
 
-    usb_get_descriptor(c, 1, USB_CONFIG_DESCRIPTOR_TYPE, 0, cfg_buf, cfg_desc.wTotalLength);
+    if (usb_get_descriptor(c, 1, USB_CONFIG_DESCRIPTOR_TYPE, 0, cfg_buf, cfg_desc.wTotalLength) != 0) {
+        free(cfg_buf);
+        return -1;
+    }
 
     int found_keyboard = 0;
     unsigned int pos = 0;
@@ -129,7 +135,7 @@ static int enumerate_usb_keyboard(uhci_controller_t *c)
                 found_keyboard = 1;
                 keyboard_dev_addr = 1;
 
-                unsigned char *ep_pos = pos + desc[0];
+                unsigned char *ep_pos = cfg_buf + pos + desc[0];
                 while (ep_pos < cfg_buf + cfg_desc.wTotalLength) {
                     if (ep_pos[0] == 0) break;
                     if (ep_pos[1] == USB_ENDPOINT_DESCRIPTOR_TYPE && ep_pos[0] >= 7) {
@@ -161,8 +167,8 @@ static int enumerate_usb_keyboard(uhci_controller_t *c)
         return -1;
     }
 
-    usb_set_protocol(c, 1, 0, HID_BOOT_PROTOCOL);
-    usb_set_idle(c, 1, 0, 0);
+    usb_set_protocol(c, 1, HID_BOOT_PROTOCOL);
+    usb_set_idle(c, 1, 0);
 
     terminal_writestring("USB: Keyboard ready\n");
     usb_keyboard_found = 1;
@@ -176,25 +182,10 @@ int usb_keyboard_read(char *c)
 {
     if (!usb_keyboard_found) return 0;
 
-    uhci_td_t td;
-    memset(&td, 0, sizeof(td));
-
-    td.link = 1;
-    td.status = 0x80 | 0x700000;
-    td.token = (1 << 29) | (keyboard_dev_addr << 8) | (keyboard_in_endpoint << 15) |
-                (1 << 19) | ((keyboard_max_packet / 4 - 1) << 21);
-    td.buffer = (uint32_t)&current_report;
-
-    uhci_ctrl.async_qh->element = (uint32_t)&td;
-
-    int t = 500000;
-    while (--t) {
-        if (!(td.status & 0x80)) break;
-    }
-
-    uhci_ctrl.async_qh->element = 1;
-
-    if (td.status & 0x80) return 0;
+    if (uhci_interrupt_read(&uhci_ctrl, keyboard_dev_addr,
+                            keyboard_in_endpoint, keyboard_max_packet,
+                            &current_report) != 0)
+        return 0;
 
     for (int i = 0; i < 6; i++) {
         if (current_report.keys[i] && current_report.keys[i] != last_report.keys[i]) {
@@ -206,10 +197,6 @@ int usb_keyboard_read(char *c)
                 return 1;
             }
         }
-    }
-
-    if (last_report.modifiers != current_report.modifiers) {
-        last_report = current_report;
     }
 
     last_report = current_report;
