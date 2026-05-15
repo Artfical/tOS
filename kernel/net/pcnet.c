@@ -55,7 +55,20 @@ int pcnet_init(void)
     if (!f) return -1;
 
     uint32_t bar = pci_get_bar(bus, dev, func, 0);
-    if (!(bar & 1)) return -1;
+    serial_write("pcnet: bar0=0x");
+    for (int k = 28; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(bar >> k) & 0xF]);
+    serial_write("\n");
+    if (!(bar & 1)) {
+        serial_write("pcnet: bar0 not I/O, trying BAR1-5\n");
+        int found = 0;
+        for (int b = 1; b <= 5; b++) {
+            bar = pci_get_bar(bus, dev, func, b);
+            for (int k = 28; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(bar >> k) & 0xF]);
+            serial_write(b < 5 ? " " : "\n");
+            if (bar & 1) { found = 1; break; }
+        }
+        if (!found) return -1;
+    }
     io = bar & 0xFFFC;
 
     pci_write_config(bus, dev, func, 4, 0x05);
