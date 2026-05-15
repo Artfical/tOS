@@ -5,6 +5,7 @@
 #include "io.h"
 #include "terminal.h"
 #include "gui.h"
+#include <stdint.h>
 
 static volatile char key_buffer[256];
 static volatile int key_buffer_head = 0;
@@ -136,8 +137,9 @@ void keyboard_readline(char *buf, int max)
     }
 }
 
-int keyboard_yesno(void)
+int keyboard_yesno(int timeout_seconds)
 {
+    uint32_t start = irq_get_tick();
     for (;;) {
         gui_poll();
         if (special_head != special_tail) {
@@ -152,6 +154,13 @@ int keyboard_yesno(void)
             if (c == 'y' || c == 'Y') return 1;
             if (c == 'n' || c == 'N') return 0;
             if (c == '\n') return 2;
+        }
+        if (timeout_seconds > 0) {
+            uint32_t elapsed = irq_get_tick() - start;
+            if (elapsed >= (uint32_t)timeout_seconds * 18) {
+                terminal_writestring("\n[Timeout] Auto-selecting GUI mode");
+                return 1;
+            }
         }
         char usb_c;
         if (usb_keyboard_read(&usb_c)) {

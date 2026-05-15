@@ -6,5 +6,6 @@
 void irq_init(void);
 void irq_handler(registers_t *regs);
 void irq_ack(int irq);
+uint32_t irq_get_tick(void);
 
 #endif

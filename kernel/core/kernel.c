@@ -128,12 +128,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
 
-    int sel = 0;
-    terminal_writestring("\nGUI? <[No] Yes>  (arrows/y/n, Enter=confirm)");
+    int sel = 1;
+    terminal_writestring("\nGUI? <[No] Yes>  (arrows/y/n, Enter=confirm, 20s timeout)");
     for (;;) {
-        int k = keyboard_yesno();
-        if (k == 0) { sel = 0; terminal_writestring("\rGUI? <[No] Yes>  (arrows/y/n, Enter=confirm)"); }
-        else if (k == 1) { sel = 1; terminal_writestring("\rGUI? < No [Yes]> (arrows/y/n, Enter=confirm)"); }
+        int k = keyboard_yesno(20);
+        if (k == 0) { sel = 0; terminal_writestring("\rGUI? <[No] Yes>  (arrows/y/n, Enter=confirm, 20s timeout)"); }
+        else if (k == 1) { sel = 1; terminal_writestring("\rGUI? < No [Yes]> (arrows/y/n, Enter=confirm, 20s timeout)"); }
         else { terminal_putchar('\n'); break; }
     }
     if (sel) {

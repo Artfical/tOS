@@ -17,6 +17,8 @@ void isr_init(void);
 void isr_register_handler(uint8_t num, isr_handler_t handler);
 void isr_handler(registers_t *regs);
 
+extern isr_handler_t interrupt_handlers[256];
+
 extern uint32_t isr_stub_table[];
 
 #endif

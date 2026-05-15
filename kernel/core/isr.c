@@ -2,7 +2,7 @@
 #include "terminal.h"
 #include "io.h"
 
-static isr_handler_t interrupt_handlers[256];
+isr_handler_t interrupt_handlers[256];
 static const char *exception_messages[] = {
     "Division By Zero", "Debug", "Non Maskable Interrupt", "Breakpoint",
     "Into Detected Overflow", "Out of Bounds", "Invalid Opcode", "No Coprocessor",
