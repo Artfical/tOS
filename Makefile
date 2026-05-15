@@ -30,7 +30,8 @@ KERNEL_OBJS = \
     kernel/shell.o \
     kernel/pci.o \
     kernel/uhci.o \
-    kernel/usb_keyboard.o
+    kernel/usb_keyboard.o \
+    kernel/ramfs.o
 
 PROGRAMS = programs/hello.elf
 

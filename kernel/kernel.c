@@ -7,6 +7,7 @@
 #include "keyboard.h"
 #include "memory.h"
 #include "fs.h"
+#include "ramfs.h"
 #include "elf.h"
 #include "syscall.h"
 #include "shell.h"
@@ -117,6 +118,11 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     if (mem_upper == 0) mem_upper = 32768;
     memory_init(mem_upper);
+
+    ramfs_init();
+    if (initrd_start && initrd_end > initrd_start)
+        ramfs_import_initrd();
+    terminal_writestring("[OK] Ramfs initialized\n");
 
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
