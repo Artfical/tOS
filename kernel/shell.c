@@ -35,32 +35,32 @@ static int parse_args(char *cmd, char **args)
     return argc;
 }
 
-static void cmd_yardim(void)
+static void cmd_help(void)
 {
-    terminal_writestring("tOS Komutlar:\n");
-    terminal_writestring("  yardim     - yardim goster\n");
-    terminal_writestring("  ses        - yazi yaz\n");
-    terminal_writestring("  temiz      - ekrani temizle\n");
-    terminal_writestring("  konum      - bulundugun yeri goster\n");
-    terminal_writestring("  bak        - dosyalari listele\n");
-    terminal_writestring("  git        - dizin degistir\n");
-    terminal_writestring("  kur        - dizin olustur\n");
-    terminal_writestring("  sok        - dizin sil\n");
-    terminal_writestring("  vur        - dosya sil\n");
-    terminal_writestring("  dokun      - dosya olustur\n");
-    terminal_writestring("  oku        - dosya icerigini goster\n");
-    terminal_writestring("  tasi       - dosya tasi/yeniden adlandir\n");
-    terminal_writestring("  esle       - dosya kopyala\n");
-    terminal_writestring("  ciz        - basit dosya editoru\n");
-    terminal_writestring("  kos        - ELF programi calistir\n");
-    terminal_writestring("  yenile     - sistemi yeniden baslat\n");
-    terminal_writestring("  dur        - sistemi durdur\n");
-    terminal_writestring("  bilgi      - surum bilgisi\n");
-    terminal_writestring("  hakkinda   - tOS hakkinda\n");
-    terminal_writestring("  kim        - sistem bilgisi\n");
+    terminal_writestring("tOS Commands:\n");
+    terminal_writestring("  help       - show help\n");
+    terminal_writestring("  echo       - echo text\n");
+    terminal_writestring("  clear      - clear screen\n");
+    terminal_writestring("  pwd        - print working directory\n");
+    terminal_writestring("  ls         - list files\n");
+    terminal_writestring("  cd         - change directory\n");
+    terminal_writestring("  mkdir      - create directory\n");
+    terminal_writestring("  rmdir      - remove directory\n");
+    terminal_writestring("  rm         - remove file\n");
+    terminal_writestring("  touch      - create file\n");
+    terminal_writestring("  cat        - show file contents\n");
+    terminal_writestring("  mv         - move/rename file\n");
+    terminal_writestring("  cp         - copy file\n");
+    terminal_writestring("  edit       - simple line editor\n");
+    terminal_writestring("  exec       - run ELF program\n");
+    terminal_writestring("  reboot     - reboot system\n");
+    terminal_writestring("  shutdown   - halt system\n");
+    terminal_writestring("  version    - show version\n");
+    terminal_writestring("  about      - about tOS\n");
+    terminal_writestring("  uname      - system info\n");
 }
 
-static void cmd_ses(int argc, char **args)
+static void cmd_echo(int argc, char **args)
 {
     for (int i = 1; i < argc; i++) {
         if (i > 1) terminal_putchar(' ');
@@ -69,18 +69,18 @@ static void cmd_ses(int argc, char **args)
     terminal_putchar('\n');
 }
 
-static void cmd_temiz(void)
+static void cmd_clear(void)
 {
     terminal_clear();
 }
 
-static void cmd_konum(void)
+static void cmd_pwd(void)
 {
     terminal_writestring(ramfs_getcwd());
     terminal_putchar('\n');
 }
 
-static void cmd_bak(int argc, char **args)
+static void cmd_ls(int argc, char **args)
 {
     const char *path = ramfs_getcwd();
     if (argc > 1) path = args[1];
@@ -88,18 +88,15 @@ static void cmd_bak(int argc, char **args)
     ramfs_entry_t entries[256];
     int count = ramfs_list(path, entries, 256);
     if (count < 0) {
-        terminal_writestring("dizin bulunamadi: ");
+        terminal_writestring("ls: ");
         terminal_writestring(path);
-        terminal_putchar('\n');
+        terminal_writestring(": No such directory\n");
         return;
     }
-    if (count == 0) {
-        terminal_writestring("dosya yok.\n");
-        return;
-    }
+    if (count == 0) return;
     for (int i = 0; i < count; i++) {
-        if (entries[i].is_dir) terminal_writestring("[d] ");
-        else terminal_writestring("    ");
+        if (entries[i].is_dir) terminal_writestring("d  ");
+        else terminal_writestring("   ");
         terminal_writestring(entries[i].name);
         if (!entries[i].is_dir) {
             terminal_writestring(" (");
@@ -122,7 +119,7 @@ static void cmd_bak(int argc, char **args)
     }
 }
 
-static void cmd_git(int argc, char **args)
+static void cmd_cd(int argc, char **args)
 {
     if (argc < 2) {
         terminal_writestring(ramfs_getcwd());
@@ -130,86 +127,86 @@ static void cmd_git(int argc, char **args)
         return;
     }
     if (ramfs_chdir(args[1]) != 0) {
-        terminal_writestring("dizin bulunamadi: ");
+        terminal_writestring("cd: ");
         terminal_writestring(args[1]);
-        terminal_putchar('\n');
+        terminal_writestring(": No such directory\n");
     }
 }
 
-static void cmd_kur(int argc, char **args)
+static void cmd_mkdir(int argc, char **args)
 {
     if (argc < 2) {
-        terminal_writestring("kullanimi: kur <dizin_adi>\n");
+        terminal_writestring("usage: mkdir <dir>\n");
         return;
     }
     if (ramfs_mkdir(args[1]) != 0) {
-        terminal_writestring("dizin olusturulamadi: ");
+        terminal_writestring("mkdir: ");
         terminal_writestring(args[1]);
-        terminal_putchar('\n');
+        terminal_writestring(": Failed\n");
     }
 }
 
-static void cmd_sok(int argc, char **args)
+static void cmd_rmdir(int argc, char **args)
 {
     if (argc < 2) {
-        terminal_writestring("kullanimi: sok <dizin_adi>\n");
+        terminal_writestring("usage: rmdir <dir>\n");
         return;
     }
     if (ramfs_delete(args[1]) != 0) {
-        terminal_writestring("dizin silinemedi: ");
+        terminal_writestring("rmdir: ");
         terminal_writestring(args[1]);
-        terminal_putchar('\n');
+        terminal_writestring(": Failed\n");
     }
 }
 
-static void cmd_vur(int argc, char **args)
+static void cmd_rm(int argc, char **args)
 {
     if (argc < 2) {
-        terminal_writestring("kullanimi: vur <dosya_adi>\n");
+        terminal_writestring("usage: rm <file>\n");
         return;
     }
     if (ramfs_delete(args[1]) != 0) {
-        terminal_writestring("dosya silinemedi: ");
+        terminal_writestring("rm: ");
         terminal_writestring(args[1]);
-        terminal_putchar('\n');
+        terminal_writestring(": Failed\n");
     }
 }
 
-static void cmd_dokun(int argc, char **args)
+static void cmd_touch(int argc, char **args)
 {
     if (argc < 2) {
-        terminal_writestring("kullanimi: dokun <dosya_adi>\n");
+        terminal_writestring("usage: touch <file>\n");
         return;
     }
     if (ramfs_create(args[1]) != 0) {
-        terminal_writestring("dosya olusturulamadi: ");
+        terminal_writestring("touch: ");
         terminal_writestring(args[1]);
-        terminal_putchar('\n');
+        terminal_writestring(": Failed\n");
     }
 }
 
-static void cmd_oku(int argc, char **args)
+static void cmd_cat(int argc, char **args)
 {
     if (argc < 2) {
-        terminal_writestring("kullanimi: oku <dosya>\n");
+        terminal_writestring("usage: cat <file>\n");
         return;
     }
     if (!ramfs_exists(args[1])) {
-        terminal_writestring("dosya bulunamadi: ");
+        terminal_writestring("cat: ");
         terminal_writestring(args[1]);
-        terminal_putchar('\n');
+        terminal_writestring(": No such file\n");
         return;
     }
     if (ramfs_is_dir(args[1])) {
-        terminal_writestring("bu bir dizin: ");
+        terminal_writestring("cat: ");
         terminal_writestring(args[1]);
-        terminal_putchar('\n');
+        terminal_writestring(": Is a directory\n");
         return;
     }
     uint32_t sz = ramfs_size(args[1]);
     char *buf = (char *)malloc(sz + 1);
     if (!buf) {
-        terminal_writestring("bellek yetersiz\n");
+        terminal_writestring("cat: Out of memory\n");
         return;
     }
     ramfs_read(args[1], buf, sz, 0);
@@ -220,39 +217,38 @@ static void cmd_oku(int argc, char **args)
     free(buf);
 }
 
-static void cmd_tasi(int argc, char **args)
+static void cmd_mv(int argc, char **args)
 {
     if (argc < 3) {
-        terminal_writestring("kullanimi: tasi <kaynak> <hedef>\n");
+        terminal_writestring("usage: mv <src> <dst>\n");
         return;
     }
-    if (ramfs_rename(args[1], args[2]) != 0) {
-        terminal_writestring("tasinamadi\n");
-    }
+    if (ramfs_rename(args[1], args[2]) != 0)
+        terminal_writestring("mv: Failed\n");
 }
 
-static void cmd_esle(int argc, char **args)
+static void cmd_cp(int argc, char **args)
 {
     if (argc < 3) {
-        terminal_writestring("kullanimi: esle <kaynak> <hedef>\n");
+        terminal_writestring("usage: cp <src> <dst>\n");
         return;
     }
     if (!ramfs_exists(args[1]) || ramfs_is_dir(args[1])) {
-        terminal_writestring("kaynak bulunamadi veya bir dizin\n");
+        terminal_writestring("cp: Source not found or is a directory\n");
         return;
     }
     if (ramfs_exists(args[2])) {
-        terminal_writestring("hedef zaten var\n");
+        terminal_writestring("cp: Destination exists\n");
         return;
     }
     if (ramfs_create(args[2]) != 0) {
-        terminal_writestring("hedef olusturulamadi\n");
+        terminal_writestring("cp: Failed to create destination\n");
         return;
     }
     uint32_t sz = ramfs_size(args[1]);
     char *buf = (char *)malloc(sz);
     if (!buf) {
-        terminal_writestring("bellek yetersiz\n");
+        terminal_writestring("cp: Out of memory\n");
         ramfs_delete(args[2]);
         return;
     }
@@ -261,27 +257,27 @@ static void cmd_esle(int argc, char **args)
     free(buf);
 }
 
-static void cmd_ciz(int argc, char **args)
+static void cmd_edit(int argc, char **args)
 {
     if (argc < 2) {
-        terminal_writestring("kullanimi: ciz <dosya>\n");
-        terminal_writestring("yeni satir eklemek icin her satirdan sonra enter\n");
-        terminal_writestring("kaydetmek icin .s yazip enter\n");
-        terminal_writestring("cikmak icin .q yazip enter\n");
+        terminal_writestring("usage: edit <file>\n");
+        terminal_writestring("  Type each line then press Enter\n");
+        terminal_writestring("  Type .s on a line to save\n");
+        terminal_writestring("  Type .q on a line to quit\n");
         return;
     }
     const char *filename = args[1];
     int exists = ramfs_exists(filename);
     if (!exists) {
         if (ramfs_create(filename) != 0) {
-            terminal_writestring("dosya olusturulamadi\n");
+            terminal_writestring("edit: Failed to create file\n");
             return;
         }
     }
 
-    terminal_writestring("ciz: ");
+    terminal_writestring("edit: ");
     terminal_writestring(filename);
-    terminal_writestring(" - satir ekle (.s=kaydet, .q=cik)\n");
+    terminal_writestring(" - (.s=save, .q=quit)\n");
 
     char line[EDIT_LINE_LEN];
     uint32_t offset = 0;
@@ -292,12 +288,12 @@ static void cmd_ciz(int argc, char **args)
         keyboard_readline(line, EDIT_LINE_LEN);
 
         if (strcmp(line, ".q") == 0) {
-            terminal_writestring("kaydedilmedi.\n");
+            terminal_writestring("Not saved.\n");
             if (!exists) ramfs_delete(filename);
             return;
         }
         if (strcmp(line, ".s") == 0) {
-            terminal_writestring("kaydedildi.\n");
+            terminal_writestring("Saved.\n");
             return;
         }
 
@@ -307,34 +303,34 @@ static void cmd_ciz(int argc, char **args)
     }
 }
 
-static void cmd_kos(int argc, char **args)
+static void cmd_exec(int argc, char **args)
 {
     if (argc < 2) {
-        terminal_writestring("kullanimi: kos <program>\n");
+        terminal_writestring("usage: exec <program>\n");
         return;
     }
     if (!ramfs_exists(args[1]) || ramfs_is_dir(args[1])) {
-        terminal_writestring("program bulunamadi: ");
+        terminal_writestring("exec: ");
         terminal_writestring(args[1]);
-        terminal_putchar('\n');
+        terminal_writestring(": Not found\n");
         return;
     }
 
     uint32_t sz = ramfs_size(args[1]);
     void *prog = malloc(sz);
     if (!prog) {
-        terminal_writestring("bellek yetersiz\n");
+        terminal_writestring("exec: Out of memory\n");
         return;
     }
     ramfs_read(args[1], prog, sz, 0);
 
-    terminal_writestring("yukleniyor: ");
+    terminal_writestring("Loading: ");
     terminal_writestring(args[1]);
     terminal_putchar('\n');
 
     uint32_t entry = 0;
     if (elf_load(prog, &entry) != 0) {
-        terminal_writestring("ELF yuklenemedi\n");
+        terminal_writestring("exec: ELF load failed\n");
         free(prog);
         return;
     }
@@ -345,15 +341,15 @@ static void cmd_kos(int argc, char **args)
         entry >>= 4;
     }
     buf[8] = '\0';
-    terminal_writestring("giris: 0x");
+    terminal_writestring("Entry: 0x");
     terminal_writestring(buf);
     terminal_putchar('\n');
     free(prog);
 }
 
-static void cmd_yenile(void)
+static void cmd_reboot(void)
 {
-    terminal_writestring("yeniden baslatiliyor...\n");
+    terminal_writestring("Rebooting...\n");
     uint8_t good = 0x02;
     while (good & 0x02)
         good = inb(0x64);
@@ -361,25 +357,25 @@ static void cmd_yenile(void)
     asm volatile("hlt");
 }
 
-static void cmd_dur(void)
+static void cmd_shutdown(void)
 {
-    terminal_writestring("sistem durduruldu.\n");
+    terminal_writestring("System halted.\n");
     for (;;) { asm volatile("hlt"); }
 }
 
-static void cmd_bilgi(void)
+static void cmd_version(void)
 {
     terminal_writestring(TOS_VERSION_STRING "\n");
-    terminal_writestring("derleme: " __DATE__ " " __TIME__ "\n");
+    terminal_writestring("Build: " __DATE__ " " __TIME__ "\n");
 }
 
-static void cmd_hakkinda(void)
+static void cmd_about(void)
 {
     terminal_writestring("tOS - talOS\n");
-    terminal_writestring("Lisans: GNU AGPL v3\n");
+    terminal_writestring("License: GNU AGPL v3\n");
 }
 
-static void cmd_kim(void)
+static void cmd_uname(void)
 {
     terminal_writestring("tOS\n");
 }
@@ -387,7 +383,7 @@ static void cmd_kim(void)
 void shell_init(void)
 {
     terminal_writestring(TOS_WELCOME_STRING);
-    terminal_writestring("yardim yazarak komutlari gorebilirsin\n\n");
+    terminal_writestring("Type 'help' for commands\n\n");
 }
 
 void shell_run(void)
@@ -407,48 +403,48 @@ void shell_run(void)
 
         const char *c = args[0];
 
-        if (strcmp(c, "yardim") == 0) {
-            cmd_yardim();
-        } else if (strcmp(c, "ses") == 0) {
-            cmd_ses(argc, args);
-        } else if (strcmp(c, "temiz") == 0) {
-            cmd_temiz();
-        } else if (strcmp(c, "konum") == 0) {
-            cmd_konum();
-        } else if (strcmp(c, "bak") == 0) {
-            cmd_bak(argc, args);
-        } else if (strcmp(c, "git") == 0) {
-            cmd_git(argc, args);
-        } else if (strcmp(c, "kur") == 0) {
-            cmd_kur(argc, args);
-        } else if (strcmp(c, "sok") == 0) {
-            cmd_sok(argc, args);
-        } else if (strcmp(c, "vur") == 0) {
-            cmd_vur(argc, args);
-        } else if (strcmp(c, "dokun") == 0) {
-            cmd_dokun(argc, args);
-        } else if (strcmp(c, "oku") == 0) {
-            cmd_oku(argc, args);
-        } else if (strcmp(c, "tasi") == 0) {
-            cmd_tasi(argc, args);
-        } else if (strcmp(c, "esle") == 0) {
-            cmd_esle(argc, args);
-        } else if (strcmp(c, "ciz") == 0) {
-            cmd_ciz(argc, args);
-        } else if (strcmp(c, "kos") == 0) {
-            cmd_kos(argc, args);
-        } else if (strcmp(c, "yenile") == 0) {
-            cmd_yenile();
-        } else if (strcmp(c, "dur") == 0) {
-            cmd_dur();
-        } else if (strcmp(c, "bilgi") == 0) {
-            cmd_bilgi();
-        } else if (strcmp(c, "hakkinda") == 0) {
-            cmd_hakkinda();
-        } else if (strcmp(c, "kim") == 0) {
-            cmd_kim();
+        if (strcmp(c, "help") == 0) {
+            cmd_help();
+        } else if (strcmp(c, "echo") == 0) {
+            cmd_echo(argc, args);
+        } else if (strcmp(c, "clear") == 0) {
+            cmd_clear();
+        } else if (strcmp(c, "pwd") == 0) {
+            cmd_pwd();
+        } else if (strcmp(c, "ls") == 0) {
+            cmd_ls(argc, args);
+        } else if (strcmp(c, "cd") == 0) {
+            cmd_cd(argc, args);
+        } else if (strcmp(c, "mkdir") == 0) {
+            cmd_mkdir(argc, args);
+        } else if (strcmp(c, "rmdir") == 0) {
+            cmd_rmdir(argc, args);
+        } else if (strcmp(c, "rm") == 0) {
+            cmd_rm(argc, args);
+        } else if (strcmp(c, "touch") == 0) {
+            cmd_touch(argc, args);
+        } else if (strcmp(c, "cat") == 0) {
+            cmd_cat(argc, args);
+        } else if (strcmp(c, "mv") == 0) {
+            cmd_mv(argc, args);
+        } else if (strcmp(c, "cp") == 0) {
+            cmd_cp(argc, args);
+        } else if (strcmp(c, "edit") == 0) {
+            cmd_edit(argc, args);
+        } else if (strcmp(c, "exec") == 0) {
+            cmd_exec(argc, args);
+        } else if (strcmp(c, "reboot") == 0) {
+            cmd_reboot();
+        } else if (strcmp(c, "shutdown") == 0) {
+            cmd_shutdown();
+        } else if (strcmp(c, "version") == 0) {
+            cmd_version();
+        } else if (strcmp(c, "about") == 0) {
+            cmd_about();
+        } else if (strcmp(c, "uname") == 0) {
+            cmd_uname();
         } else {
-            terminal_writestring("bilinmeyen komut: ");
+            terminal_writestring("Unknown command: ");
             terminal_writestring(c);
             terminal_putchar('\n');
         }
