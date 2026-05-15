@@ -9,7 +9,7 @@ CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -O2 -Wall -Wextra -Werror \
          -I. \
          -Ikernel/core -Ikernel/display -Ikernel/drivers \
-         -Ikernel/fs -Ikernel/shell -Ikernel/lib
+         -Ikernel/fs -Ikernel/shell -Ikernel/lib -Ikernel/net
 LDFLAGS = -m elf_i386 -T kernel/boot/linker.ld
 ASFLAGS = --32
 
@@ -36,7 +36,16 @@ KERNEL_OBJS = \
     kernel/fs/ramfs.o \
     kernel/shell/tsharp.o \
     kernel/display/mouse.o \
-    kernel/display/gui.o
+    kernel/display/gui.o \
+    kernel/net/net.o \
+    kernel/net/rtl8139.o \
+    kernel/net/arp.o \
+    kernel/net/ip.o \
+    kernel/net/icmp.o \
+    kernel/net/udp.o \
+    kernel/net/dns.o \
+    kernel/net/tcp.o \
+    kernel/net/http.o
 
 PROGRAMS = programs/hello.elf
 

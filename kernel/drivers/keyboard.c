@@ -5,6 +5,7 @@
 #include "io.h"
 #include "terminal.h"
 #include "gui.h"
+#include "net.h"
 
 static volatile char key_buffer[256];
 static volatile int key_buffer_head = 0;
@@ -103,6 +104,7 @@ char keyboard_getchar(void)
         if (usb_keyboard_read(&usb_c)) {
             keyboard_push_char(usb_c);
         } else {
+            net_poll();
             asm volatile("hlt");
         }
     }
@@ -154,6 +156,7 @@ int keyboard_yesno(void)
         if (usb_keyboard_read(&usb_c)) {
             keyboard_push_char(usb_c);
         } else {
+            net_poll();
             asm volatile("hlt");
         }
     }

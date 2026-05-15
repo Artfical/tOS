@@ -14,6 +14,7 @@
 #include "gui.h"
 #include "multiboot2.h"
 #include "version.h"
+#include "net.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 
@@ -127,6 +128,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
+
+    net_init();
 
     int sel = 0;
     terminal_writestring("\nGUI? <[No] Yes>  (arrows/y/n, Enter)");
