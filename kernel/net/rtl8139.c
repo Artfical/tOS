@@ -4,6 +4,7 @@
 #include "net.h"
 #include "memory.h"
 #include "string.h"
+#include "serial.h"
 #include "terminal.h"
 
 #define RX_BUF_SIZE  8192
@@ -24,8 +25,52 @@ static int rx_ptr = 0;
 
 int rtl8139_init(void)
 {
-    pci_device_t devs[4];
-    int n = pci_find_devices(0x02, 0x00, devs, 4);
+    serial_write("rtl8139: probing...\n");
+    serial_write("rtl8139: pci cfg test b0d0f0=");
+    uint32_t t = pci_read_config(0, 0, 0, 0);
+    for (int k = 28; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(t >> k) & 0xF]);
+    serial_write("\n");
+
+    pci_device_t devs[16];
+    int n = pci_find_devices(0x02, 0x00, devs, 16);
+    serial_write("rtl8139: pci netdev count=");
+    serial_putchar('0' + n);
+    serial_write("\n");
+    for (int i = 0; i < n; i++) {
+        serial_write("  netdev: v=0x");
+        for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(devs[i].vendor_id >> k) & 0xF]);
+        serial_write(" d=0x");
+        for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(devs[i].device_id >> k) & 0xF]);
+        serial_write("\n");
+    }
+
+    serial_write("rtl8139: scanning bus 0 PCI devices...\n");
+    int all_count = 0;
+    for (int d = 0; d < 32 && all_count < 48; d++) {
+        for (int f = 0; f < 8 && all_count < 48; f++) {
+            uint32_t vd = pci_read_config(0, d, f, 0);
+            uint16_t vid = vd & 0xFFFF;
+            if (vid == 0xFFFF) { if (f == 0) break; continue; }
+            serial_write("  d");
+            serial_putchar('0' + d / 10);
+            serial_putchar('0' + d % 10);
+            serial_write("f");
+            serial_putchar('0' + f);
+            serial_write(": v=0x");
+            for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(vid >> k) & 0xF]);
+            serial_write(" d=0x");
+            uint16_t did = (vd >> 16) & 0xFFFF;
+            for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(did >> k) & 0xF]);
+            uint32_t cr = pci_read_config(0, d, f, 8);
+            serial_write(" c=0x");
+            for (int k = 20; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[((cr >> 8) & 0xFFFFFF) >> k & 0xF]);
+            serial_write("\n");
+            all_count++;
+            if (f == 0 && !(vd & 0x800000)) break;
+        }
+    }
+    serial_write("rtl8139: end of PCI dump\n");
+
     if (n == 0) return -1;
     int found = 0;
     for (int i = 0; i < n; i++) {
