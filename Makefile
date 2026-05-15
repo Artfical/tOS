@@ -66,9 +66,8 @@ tOS.iso: kernel/tOS.elf initrd.tar
 	cp kernel/tOS.elf iso/boot/
 	cp initrd.tar iso/boot/
 	cp boot/grub/grub.cfg iso/boot/grub/
-	grub-mkrescue -o $@ iso 2>&1 || \
-	LD_LIBRARY_PATH="/tmp/opencode/xorriso_deb/libs/usr/lib/x86_64-linux-gnu:/tmp/opencode/xorriso_deb/extracted/usr/lib" \
-	PATH="/tmp/opencode/xorriso_deb/extracted/usr/bin:$$PATH" \
+	LD_LIBRARY_PATH="/tmp/opencode/xorriso_libs/usr/lib/x86_64-linux-gnu:/tmp/opencode/xorriso_fulldir/usr/lib/x86_64-linux-gnu" \
+	PATH="/tmp/opencode/xorriso_extracted/usr/bin:$$PATH" \
 	grub-mkrescue -o $@ iso
 
 run: tOS.iso
