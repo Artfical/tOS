@@ -161,6 +161,13 @@ int pcnet_init(void)
     csr_wr(3, 0);
     csr_wr(4, 0);
 
+    serial_write("pcnet: clearing errors...\n");
+    csr_wr(0, 0x7F7F);
+    uint16_t csr_cleared = csr_rd(0);
+    serial_write("pcnet: after clear csr0=0x");
+    for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(csr_cleared >> k) & 0xF]);
+    serial_write("\n");
+
     serial_write("pcnet: issuing INIT...\n");
     csr_wr(0, 0x0001);
     for (int t = 0; t < TMO; t++) {
