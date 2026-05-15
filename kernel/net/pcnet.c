@@ -7,35 +7,33 @@
 #include "serial.h"
 #include "terminal.h"
 
-#define RX_RING_SIZE 4
-#define TX_RING_SIZE 4
-#define BUF_SIZE 1536
-#define TIMEOUT 10000
+#define RX_RING 4
+#define TX_RING 4
+#define BUF_SZ 1536
+#define TMO 5000
 
-static uint16_t io_base = 0;
-static uint8_t *tx_bufs[TX_RING_SIZE];
-static uint8_t *rx_bufs[RX_RING_SIZE];
-static void *rx_ring_mem = 0;
-static void *tx_ring_mem = 0;
-static volatile uint16_t *rx_ring = 0;
-static volatile uint16_t *tx_ring = 0;
-static int tx_cur = 0;
-static int rx_cur = 0;
-static int initialized = 0;
+static uint16_t io = 0;
+static uint8_t *rxb[RX_RING];
+static uint8_t *txb[TX_RING];
+static void *rxm = 0, *txm = 0;
+static volatile uint16_t *rxd = 0, *txd = 0;
+static int txi = 0, rxi = 0;
+static int ok = 0;
 
-static uint16_t pcnet_csr_read(int reg)
+static uint16_t csr_rd(int r)
 {
-    outw(io_base, reg);
-    io_wait();
-    return inw(io_base + 0x10);
+    outw(io + 2, r); io_wait();
+    return inw(io + 0); io_wait();
 }
-
-static void pcnet_csr_write(int reg, uint16_t val)
+static void csr_wr(int r, uint16_t v)
 {
-    outw(io_base, reg);
-    io_wait();
-    outw(io_base + 0x10, val);
-    io_wait();
+    outw(io + 2, r); io_wait();
+    outw(io + 0, v); io_wait();
+}
+static void bcr_wr(int r, uint16_t v)
+{
+    outw(io + 6, r); io_wait();
+    outw(io + 4, v); io_wait();
 }
 
 int pcnet_init(void)
@@ -44,38 +42,34 @@ int pcnet_init(void)
     int n = pci_find_devices(0x02, 0x00, devs, 4);
     if (n == 0) return -1;
 
-    int found = 0;
+    int f = 0;
     uint8_t bus = 0, dev = 0, func = 0;
     for (int i = 0; i < n; i++) {
-        if (devs[i].vendor_id == PCNET_VENDOR_AMD &&
-            (devs[i].device_id == PCNET_DEVICE_PCI_II ||
-             devs[i].device_id == PCNET_DEVICE_FAST_III ||
-             devs[i].device_id == PCNET_DEVICE_HOME)) {
-            bus = devs[i].bus;
-            dev = devs[i].device;
-            func = devs[i].func;
-            found = 1;
-            break;
+        if (devs[i].vendor_id == 0x1022 &&
+            (devs[i].device_id == 0x2000 ||
+             devs[i].device_id == 0x2001 ||
+             devs[i].device_id == 0x2002)) {
+            bus = devs[i].bus; dev = devs[i].device; func = devs[i].func; f = 1; break;
         }
     }
-    if (!found) return -1;
+    if (!f) return -1;
 
     uint32_t bar = pci_get_bar(bus, dev, func, 0);
     if (!(bar & 1)) return -1;
-    io_base = bar & 0xFFFC;
+    io = bar & 0xFFFC;
 
-    pci_write_config(bus, dev, func, 0x04, 0x05);
+    pci_write_config(bus, dev, func, 4, 0x05);
     io_wait();
 
-    outb(io_base + 0x14, 0x0F);
+    inw(io + 0x0C);
     io_wait();
-    for (int t = 0; t < TIMEOUT; t++) {
-        if (pcnet_csr_read(0) & 0x0004) break;
+    for (int t = 0; t < TMO; t++) {
+        if (csr_rd(0) & 0x0004) break;
     }
 
     uint8_t mac[6];
     for (int j = 0; j < 3; j++) {
-        uint16_t w = inw(io_base + 0x10 + j * 2);
+        uint16_t w = inw(io + 0x10 + j * 2);
         mac[j*2] = w & 0xFF;
         mac[j*2+1] = (w >> 8) & 0xFF;
     }
@@ -85,105 +79,93 @@ int pcnet_init(void)
     if (!ib) return -1;
     memset(ib, 0, 32);
     for (int j = 0; j < 6; j++) ((uint8_t *)ib)[2 + j] = mac[j];
+    memset((uint8_t *)ib + 8, 0, 8);
 
-    for (int i = 0; i < RX_RING_SIZE; i++) {
-        rx_bufs[i] = (uint8_t *)malloc(BUF_SIZE);
-        if (!rx_bufs[i]) { free(ib); return -1; }
+    for (int i = 0; i < RX_RING; i++) {
+        rxb[i] = malloc(BUF_SZ);
+        if (!rxb[i]) { free(ib); return -1; }
     }
-    for (int i = 0; i < TX_RING_SIZE; i++) {
-        tx_bufs[i] = (uint8_t *)malloc(BUF_SIZE);
-        if (!tx_bufs[i]) { free(ib); return -1; }
+    for (int i = 0; i < TX_RING; i++) {
+        txb[i] = malloc(BUF_SZ);
+        if (!txb[i]) { free(ib); return -1; }
     }
 
-    rx_ring_mem = malloc(RX_RING_SIZE * 16 + 16);
-    tx_ring_mem = malloc(TX_RING_SIZE * 16 + 16);
-    if (!rx_ring_mem || !tx_ring_mem) { free(ib); return -1; }
+    rxm = malloc(RX_RING * 16 + 16);
+    txm = malloc(TX_RING * 16 + 16);
+    if (!rxm || !txm) { free(ib); return -1; }
 
-    uintptr_t rra = ((uintptr_t)rx_ring_mem + 15) & ~15;
-    uintptr_t tra = ((uintptr_t)tx_ring_mem + 15) & ~15;
-    rx_ring = (volatile uint16_t *)rra;
-    tx_ring = (volatile uint16_t *)tra;
-    memset((void *)rra, 0, RX_RING_SIZE * 16);
-    memset((void *)tra, 0, TX_RING_SIZE * 16);
+    uintptr_t rra = ((uintptr_t)rxm + 15) & ~15;
+    uintptr_t tra = ((uintptr_t)txm + 15) & ~15;
+    rxd = (volatile uint16_t *)rra;
+    txd = (volatile uint16_t *)tra;
+    memset((void *)rra, 0, RX_RING * 16);
+    memset((void *)tra, 0, TX_RING * 16);
 
-    for (int i = 0; i < RX_RING_SIZE; i++) {
-        rx_ring[i * 8]     = 0x8000;
-        rx_ring[i * 8 + 1] = 0xF000;
-        *(volatile uint32_t *)(rx_ring + i * 8 + 2) = (uint32_t)(uintptr_t)rx_bufs[i];
+    for (int i = 0; i < RX_RING; i++) {
+        rxd[i * 8]     = 0x8000;
+        rxd[i * 8 + 1] = 0xF000;
+        *(volatile uint32_t *)(rxd + i * 8 + 2) = (uint32_t)(uintptr_t)rxb[i];
     }
-    for (int i = 0; i < TX_RING_SIZE; i++) {
-        *(volatile uint32_t *)(tx_ring + i * 8 + 2) = (uint32_t)(uintptr_t)tx_bufs[i];
+    for (int i = 0; i < TX_RING; i++) {
+        *(volatile uint32_t *)(txd + i * 8 + 2) = (uint32_t)(uintptr_t)txb[i];
     }
 
     *(uint32_t *)((uint8_t *)ib + 16) = (uint32_t)rra;
     *(uint32_t *)((uint8_t *)ib + 20) = (uint32_t)tra;
 
-    pcnet_csr_write(1, (uint32_t)(uintptr_t)ib & 0xFFFF);
-    pcnet_csr_write(2, ((uint32_t)(uintptr_t)ib >> 16) & 0xFFFF);
-    pcnet_csr_write(3, 0);
-    pcnet_csr_write(4, 0);
+    csr_wr(1, (uint32_t)(uintptr_t)ib & 0xFFFF);
+    csr_wr(2, ((uint32_t)(uintptr_t)ib >> 16) & 0xFFFF);
+    csr_wr(3, 0);
+    csr_wr(4, 0);
 
-    pcnet_csr_write(0, 0x0041);
-    for (int t = 0; t < TIMEOUT; t++) {
-        if (pcnet_csr_read(0) & 0x0100) break;
+    csr_wr(0, 0x0041);
+    for (int t = 0; t < TMO; t++) {
+        if (csr_rd(0) & 0x0100) break;
     }
-    if (!(pcnet_csr_read(0) & 0x0100)) { free(ib); return -1; }
+    if (!(csr_rd(0) & 0x0100)) { free(ib); return -1; }
 
-    pcnet_csr_write(58, 0x0002);
+    bcr_wr(58, 2);
 
-    pcnet_csr_write(0, 0x0042);
-    for (int t = 0; t < TIMEOUT; t++) {
-        uint16_t s = pcnet_csr_read(0);
+    csr_wr(0, 0x0042);
+    for (int t = 0; t < TMO; t++) {
+        uint16_t s = csr_rd(0);
         if ((s & 0x0030) == 0x0030) break;
     }
 
-    initialized = 1;
+    ok = 1;
     free(ib);
+    serial_write("pcnet: done\n");
     return 0;
 }
 
 void pcnet_send(void *data, int len)
 {
-    if (!initialized) return;
-    if (len > BUF_SIZE) len = BUF_SIZE;
-
-    int idx = tx_cur;
-    volatile uint16_t *desc = tx_ring + idx * 8;
-
-    for (int t = 0; t < TIMEOUT; t++) {
-        if (!(desc[0] & 0x8000)) break;
-    }
-    if (desc[0] & 0x8000) return;
-
-    memcpy(tx_bufs[idx], data, len);
-    desc[0] = 0xB000;
-    desc[1] = len | 0x3000;
-    tx_cur = (idx + 1) % TX_RING_SIZE;
-
-    pcnet_csr_write(0, 0x0048);
-    pcnet_csr_write(0, 0x0042);
-
-    for (int t = 0; t < TIMEOUT; t++) {
-        if (!(desc[0] & 0x8000)) break;
-    }
+    if (!ok) return;
+    if (len > BUF_SZ) len = BUF_SZ;
+    int i = txi;
+    volatile uint16_t *d = txd + i * 8;
+    for (int t = 0; t < TMO; t++) { if (!(d[0] & 0x8000)) break; }
+    if (d[0] & 0x8000) return;
+    memcpy(txb[i], data, len);
+    d[0] = 0xB000;
+    d[1] = len | 0x3000;
+    txi = (i + 1) % TX_RING;
+    csr_wr(0, 0x0048);
+    csr_wr(0, 0x0042);
+    for (int t = 0; t < TMO; t++) { if (!(d[0] & 0x8000)) break; }
 }
 
-int pcnet_poll(uint8_t *buf, int max_len)
+int pcnet_poll(uint8_t *buf, int max)
 {
-    if (!initialized) return 0;
-
-    int idx = rx_cur;
-    volatile uint16_t *desc = rx_ring + idx * 8;
-
-    if (desc[0] & 0x8000) return 0;
-
-    int len = desc[1] & 0x0FFF;
-    if (len > max_len) len = max_len;
-    if (len > 0) memcpy(buf, rx_bufs[idx], len);
-
-    desc[0] = 0x8000;
-    desc[1] = 0xF000;
-    rx_cur = (idx + 1) % RX_RING_SIZE;
-
-    return len;
+    if (!ok) return 0;
+    int i = rxi;
+    volatile uint16_t *d = rxd + i * 8;
+    if (d[0] & 0x8000) return 0;
+    int l = d[1] & 0x0FFF;
+    if (l > max) l = max;
+    if (l > 0) memcpy(buf, rxb[i], l);
+    d[0] = 0x8000;
+    d[1] = 0xF000;
+    rxi = (i + 1) % RX_RING;
+    return l;
 }
