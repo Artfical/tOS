@@ -22,18 +22,18 @@ static int ok = 0;
 
 static uint16_t csr_rd(int r)
 {
-    outw(io + 2, r); io_wait();
-    return inw(io + 0); io_wait();
+    outw(io + 0x0E, r); io_wait();
+    return inw(io + 0x0C); io_wait();
 }
 static void csr_wr(int r, uint16_t v)
 {
-    outw(io + 2, r); io_wait();
-    outw(io + 0, v); io_wait();
+    outw(io + 0x0E, r); io_wait();
+    outw(io + 0x0C, v); io_wait();
 }
 static void bcr_wr(int r, uint16_t v)
 {
-    outw(io + 6, r); io_wait();
-    outw(io + 4, v); io_wait();
+    outw(io + 0x0A, r); io_wait();
+    outw(io + 0x08, v); io_wait();
 }
 
 int pcnet_init(void)
@@ -90,6 +90,22 @@ int pcnet_init(void)
     uint16_t csr0_pre = csr_rd(0);
     for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(csr0_pre >> k) & 0xF]);
     serial_write("\n");
+
+    if (!initrdy_ok) {
+        serial_write("pcnet: trying RESET port...\n");
+        inb(io + 0x0F);
+        io_wait();
+        for (int t = 0; t < TMO; t++) {
+            uint16_t csr = csr_rd(0);
+            if (csr & 0x0004) { initrdy_ok = 1; break; }
+        }
+        serial_write("pcnet: after RESET initrdy=");
+        serial_putchar('0' + initrdy_ok);
+        serial_write(" csr0=0x");
+        csr0_pre = csr_rd(0);
+        for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(csr0_pre >> k) & 0xF]);
+        serial_write("\n");
+    }
 
     uint8_t mac[6];
     for (int j = 0; j < 3; j++) {
