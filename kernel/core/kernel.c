@@ -129,14 +129,13 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     terminal_writestring("[OK] Keyboard initialized\n");
 
     int sel = 0;
-    terminal_writestring("Start in GUI mode? <[No] Yes>");
+    terminal_writestring("\nGUI? <[No] Yes>  (arrows/y/n, Enter=confirm)");
     for (;;) {
-        int k = keyboard_choose(sel);
-        if (k == 1) { sel = 0; terminal_writestring("\rStart in GUI mode? <[No] Yes>"); }
-        else if (k == 2) { sel = 1; terminal_writestring("\rStart in GUI mode? < No [Yes]>"); }
-        else break;
+        int k = keyboard_yesno();
+        if (k == 0) { sel = 0; terminal_writestring("\rGUI? <[No] Yes>  (arrows/y/n, Enter=confirm)"); }
+        else if (k == 1) { sel = 1; terminal_writestring("\rGUI? < No [Yes]> (arrows/y/n, Enter=confirm)"); }
+        else { terminal_putchar('\n'); break; }
     }
-    terminal_putchar('\n');
     if (sel) {
         gui_init();
         terminal_set_y_offset(GUI_TERM_ROW);

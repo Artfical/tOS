@@ -136,22 +136,22 @@ void keyboard_readline(char *buf, int max)
     }
 }
 
-int keyboard_choose(int default_idx)
+int keyboard_yesno(void)
 {
     for (;;) {
         gui_poll();
         if (special_head != special_tail) {
             int k = special_buf[special_tail];
             special_tail = (special_tail + 1) % 16;
-            if (k == 1) return 1;
-            if (k == 2) return 2;
+            if (k == 1) return 0;
+            if (k == 2) return 1;
         }
         if (key_buffer_head != key_buffer_tail) {
             char c = key_buffer[key_buffer_tail];
-            if (c == '\n') {
-                key_buffer_tail = (key_buffer_tail + 1) % 256;
-                return default_idx;
-            }
+            key_buffer_tail = (key_buffer_tail + 1) % 256;
+            if (c == 'y' || c == 'Y') return 1;
+            if (c == 'n' || c == 'N') return 0;
+            if (c == '\n') return 2;
         }
         char usb_c;
         if (usb_keyboard_read(&usb_c)) {
