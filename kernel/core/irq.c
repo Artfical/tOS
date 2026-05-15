@@ -5,19 +5,6 @@
 
 extern void irq_common_stub(void);
 
-volatile uint32_t system_tick = 0;
-
-static void pit_tick(registers_t *regs)
-{
-    (void)regs;
-    system_tick++;
-}
-
-uint32_t irq_get_tick(void)
-{
-    return system_tick;
-}
-
 void irq_ack(int irq)
 {
     if (irq >= 8)
@@ -65,7 +52,6 @@ void irq_handler(registers_t *regs)
 
 void irq_init(void)
 {
-    isr_register_handler(32, pit_tick);
     outb(0x20, 0x11);
     outb(0xA0, 0x11);
     outb(0x21, 0x20);
