@@ -1,7 +1,7 @@
 #include "ip.h"
 #include "arp.h"
 #include "net.h"
-#include "rtl8139.h"
+#include "nic.h"
 #include "string.h"
 #include "memory.h"
 #include "icmp.h"
@@ -47,7 +47,7 @@ int ip_send(uint32_t dst_ip, uint8_t protocol, void *data, int len)
     ip->checksum = ip_checksum((uint16_t *)ip, sizeof(ip_hdr_t));
 
     memcpy(buf + 14 + sizeof(ip_hdr_t), data, len);
-    rtl8139_send(buf, total + 14);
+    nic_send(buf, total + 14);
     free(buf);
     return 0;
 }

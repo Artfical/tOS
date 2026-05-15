@@ -3,7 +3,7 @@
 #include "udp.h"
 #include "ip.h"
 #include "arp.h"
-#include "rtl8139.h"
+#include "nic.h"
 #include "string.h"
 #include "memory.h"
 
@@ -49,7 +49,7 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
 
     for (int tries = 0; tries < 200; tries++) {
         uint8_t buf[1536];
-        int len = rtl8139_poll(buf, sizeof(buf));
+        int len = nic_poll(buf, sizeof(buf));
         if (len > 0) {
             eth_hdr_t *eth = (eth_hdr_t *)buf;
             if (ntohs(eth->type) == ETHERTYPE_ARP)

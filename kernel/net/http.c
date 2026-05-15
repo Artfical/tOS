@@ -2,7 +2,7 @@
 #include "dns.h"
 #include "tcp.h"
 #include "net.h"
-#include "rtl8139.h"
+
 #include "arp.h"
 #include "ip.h"
 #include "string.h"

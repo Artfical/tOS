@@ -1,7 +1,7 @@
 #include "icmp.h"
 #include "ip.h"
 #include "net.h"
-#include "rtl8139.h"
+#include "nic.h"
 #include "arp.h"
 #include "string.h"
 #include "terminal.h"
@@ -54,7 +54,7 @@ int icmp_ping(uint32_t dst_ip)
 
     for (int i = 0; i < 50000; i++) {
         uint8_t buf[1536];
-        int len = rtl8139_poll(buf, sizeof(buf));
+        int len = nic_poll(buf, sizeof(buf));
         if (len > 0) {
             eth_hdr_t *eth = (eth_hdr_t *)buf;
             if (ntohs(eth->type) == ETHERTYPE_ARP)

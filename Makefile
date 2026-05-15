@@ -38,7 +38,10 @@ KERNEL_OBJS = \
     kernel/display/mouse.o \
     kernel/display/gui.o \
     kernel/net/net.o \
+    kernel/net/nic.o \
     kernel/net/rtl8139.o \
+    kernel/net/pcnet.o \
+    kernel/net/e1000.o \
     kernel/net/arp.o \
     kernel/net/ip.o \
     kernel/net/icmp.o \

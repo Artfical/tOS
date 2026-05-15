@@ -1,7 +1,7 @@
 #include "tcp.h"
 #include "arp.h"
 #include "net.h"
-#include "rtl8139.h"
+#include "nic.h"
 #include "string.h"
 #include "memory.h"
 
@@ -86,7 +86,7 @@ static int send_seg(uint8_t flags, void *payload, int payload_len)
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     ip->checksum = htons(~sum & 0xFFFF);
 
-    rtl8139_send(pkt, total);
+    nic_send(pkt, total);
     free(pkt);
 
     if (!(flags & TCP_FLAG_SYN)) conn.seq += payload_len;
@@ -114,7 +114,7 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port)
 
     for (int retry = 0; retry < 200; retry++) {
         uint8_t buf[1536];
-        int len = rtl8139_poll(buf, sizeof(buf));
+        int len = nic_poll(buf, sizeof(buf));
         if (len > 0) {
             eth_hdr_t *eth = (eth_hdr_t *)buf;
             if (ntohs(eth->type) == ETHERTYPE_ARP)
@@ -155,7 +155,7 @@ int tcp_recv(uint8_t *buf, int max_len)
         }
         if (conn.rx_closed) return 0;
         uint8_t pkt[1536];
-        int len = rtl8139_poll(pkt, sizeof(pkt));
+        int len = nic_poll(pkt, sizeof(pkt));
         if (len > 0) {
             eth_hdr_t *eth = (eth_hdr_t *)pkt;
             if (ntohs(eth->type) == ETHERTYPE_ARP)
@@ -174,7 +174,7 @@ void tcp_close(void)
         send_seg(TCP_FLAG_FIN | TCP_FLAG_ACK, 0, 0);
         for (int retry = 0; retry < 50000; retry++) {
             uint8_t pkt[1536];
-            int len = rtl8139_poll(pkt, sizeof(pkt));
+            int len = nic_poll(pkt, sizeof(pkt));
             if (len > 0) {
                 eth_hdr_t *eth = (eth_hdr_t *)pkt;
                 if (ntohs(eth->type) == ETHERTYPE_ARP) arp_handle(pkt, len);

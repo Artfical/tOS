@@ -1,5 +1,5 @@
 #include "net.h"
-#include "rtl8139.h"
+#include "nic.h"
 #include "arp.h"
 #include "ip.h"
 #include "string.h"
@@ -14,7 +14,7 @@ void net_init(void)
 {
     memset(net_mac, 0, 6);
     arp_init();
-    if (rtl8139_init() != 0) {
+    if (nic_init() != 0) {
         terminal_writestring("[WARN] No network card found\n");
         return;
     }
@@ -23,8 +23,9 @@ void net_init(void)
 
 void net_poll(void)
 {
+    if (!nic_poll) return;
     uint8_t buf[1536];
-    int len = rtl8139_poll(buf, sizeof(buf));
+    int len = nic_poll(buf, sizeof(buf));
     if (len <= 0) return;
     eth_hdr_t *eth = (eth_hdr_t *)buf;
     if (ntohs(eth->type) == ETHERTYPE_ARP)
