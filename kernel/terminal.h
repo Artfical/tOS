@@ -35,5 +35,7 @@ void terminal_writestring(const char *data);
 void terminal_setpos(size_t x, size_t y);
 void terminal_getpos(size_t *x, size_t *y);
 void terminal_scroll(void);
+void terminal_set_y_offset(int offset);
+int terminal_get_y_offset(void);
 
 #endif

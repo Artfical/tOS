@@ -11,6 +11,7 @@
 #include "elf.h"
 #include "syscall.h"
 #include "shell.h"
+#include "gui.h"
 #include "multiboot2.h"
 #include "version.h"
 
@@ -126,6 +127,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
+
+    gui_init();
+    terminal_set_y_offset(GUI_TERM_ROW);
+    terminal_clear();
+    gui_draw_titlebar();
+    terminal_writestring("[OK] GUI initialized\n");
 
     terminal_writestring("[OK] System ready\n");
 
