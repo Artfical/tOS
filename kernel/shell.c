@@ -4,6 +4,7 @@
 #include "string.h"
 #include "memory.h"
 #include "ramfs.h"
+#include "tsharp.h"
 #include "elf.h"
 #include "io.h"
 #include "version.h"
@@ -53,6 +54,7 @@ static void cmd_help(void)
     terminal_writestring("  cp         - copy file\n");
     terminal_writestring("  edit       - simple line editor\n");
     terminal_writestring("  exec       - run ELF program\n");
+    terminal_writestring("  tsharp     - run T# 4.1 Lite (interactive or file)\n");
     terminal_writestring("  reboot     - reboot system\n");
     terminal_writestring("  shutdown   - halt system\n");
     terminal_writestring("  version    - show version\n");
@@ -431,6 +433,9 @@ void shell_run(void)
             cmd_cp(argc, args);
         } else if (strcmp(c, "edit") == 0) {
             cmd_edit(argc, args);
+        } else if (strcmp(c, "tsharp") == 0) {
+            if (argc > 1) tsharp_run_file(args[1]);
+            else tsharp_run_interactive();
         } else if (strcmp(c, "exec") == 0) {
             cmd_exec(argc, args);
         } else if (strcmp(c, "reboot") == 0) {
