@@ -11,5 +11,6 @@ void gui_init(void);
 void gui_draw_titlebar(void);
 void gui_update_mouse(void);
 void gui_poll(void);
+int gui_is_active(void);
 
 #endif

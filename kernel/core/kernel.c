@@ -128,11 +128,18 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
 
-    gui_init();
-    terminal_set_y_offset(GUI_TERM_ROW);
-    terminal_clear();
-    gui_draw_titlebar();
-    terminal_writestring("[OK] GUI initialized\n");
+    char mode_buf[4];
+    terminal_writestring("\nStart in GUI mode? (y/N): ");
+    keyboard_readline(mode_buf, 4);
+    if (mode_buf[0] == 'y' || mode_buf[0] == 'Y') {
+        gui_init();
+        terminal_set_y_offset(GUI_TERM_ROW);
+        terminal_clear();
+        gui_draw_titlebar();
+        terminal_writestring("[OK] GUI initialized\n");
+    } else {
+        terminal_writestring("CLI mode\n");
+    }
 
     terminal_writestring("[OK] System ready\n");
 

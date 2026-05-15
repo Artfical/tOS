@@ -7,34 +7,36 @@ CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
          -mno-mmx -mno-sse -mno-sse2 \
          -O2 -Wall -Wextra -Werror \
-         -I.
-LDFLAGS = -m elf_i386 -T kernel/linker.ld
+         -I. \
+         -Ikernel/core -Ikernel/display -Ikernel/drivers \
+         -Ikernel/fs -Ikernel/shell -Ikernel/lib
+LDFLAGS = -m elf_i386 -T kernel/boot/linker.ld
 ASFLAGS = --32
 
 KERNEL_OBJS = \
-    kernel/boot.o \
-    kernel/isr_stubs.o \
-    kernel/kernel.o \
-    kernel/terminal.o \
-    kernel/string.o \
-    kernel/gdt.o \
-    kernel/idt.o \
-    kernel/isr.o \
-    kernel/irq.o \
-    kernel/keyboard.o \
-    kernel/memory.o \
-    kernel/fs.o \
-    kernel/elf.o \
-    kernel/syscall.o \
-    kernel/serial.o \
-    kernel/shell.o \
-    kernel/pci.o \
-    kernel/uhci.o \
-    kernel/usb_keyboard.o \
-    kernel/ramfs.o \
-    kernel/tsharp.o \
-    kernel/mouse.o \
-    kernel/gui.o
+    kernel/boot/boot.o \
+    kernel/boot/isr_stubs.o \
+    kernel/core/kernel.o \
+    kernel/display/terminal.o \
+    kernel/lib/string.o \
+    kernel/core/gdt.o \
+    kernel/core/idt.o \
+    kernel/core/isr.o \
+    kernel/core/irq.o \
+    kernel/drivers/keyboard.o \
+    kernel/lib/memory.o \
+    kernel/fs/fs.o \
+    kernel/fs/elf.o \
+    kernel/fs/syscall.o \
+    kernel/core/serial.o \
+    kernel/shell/shell.o \
+    kernel/drivers/pci.o \
+    kernel/drivers/uhci.o \
+    kernel/drivers/usb_keyboard.o \
+    kernel/fs/ramfs.o \
+    kernel/shell/tsharp.o \
+    kernel/display/mouse.o \
+    kernel/display/gui.o
 
 PROGRAMS = programs/hello.elf
 
@@ -48,7 +50,7 @@ all: tOS.iso
 %.o: %.s
 	$(AS) $(ASFLAGS) $< -o $@
 
-kernel/boot.o: kernel/boot.s
+kernel/boot/boot.o: kernel/boot/boot.s
 	$(CC) $(CFLAGS) -x assembler-with-cpp -c $< -o $@
 
 kernel/tOS.elf: $(KERNEL_OBJS)

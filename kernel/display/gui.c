@@ -13,6 +13,13 @@ static uint16_t make_vga(char c, uint8_t fg, uint8_t bg)
     return (uint16_t)c | (uint16_t)(fg | (bg << 4)) << 8;
 }
 
+static int gui_active = 0;
+
+int gui_is_active(void)
+{
+    return gui_active;
+}
+
 static int mouse_visible = 1;
 static int prev_mx = -1, prev_my = -1;
 static uint16_t prev_cell = 0;
@@ -61,6 +68,7 @@ void gui_update_mouse(void)
 
 void gui_poll(void)
 {
+    if (!gui_active) return;
     gui_update_mouse();
 
     int cx, cy;
@@ -75,4 +83,5 @@ void gui_init(void)
 {
     mouse_init();
     gui_draw_titlebar();
+    gui_active = 1;
 }
