@@ -162,11 +162,21 @@ int pcnet_init(void)
     csr_wr(4, 0);
 
     serial_write("pcnet: clearing errors...\n");
-    csr_wr(0, 0x7F7F);
-    uint16_t csr_cleared = csr_rd(0);
-    serial_write("pcnet: after clear csr0=0x");
-    for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(csr_cleared >> k) & 0xF]);
+    uint32_t cmd_reg = pci_read_config(bus, dev, func, 4);
+    serial_write("pcnet: cmd reg=0x");
+    for (int k = 28; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(cmd_reg >> k) & 0xF]);
     serial_write("\n");
+    for (int attempt = 0; attempt < 3; attempt++) {
+        csr_wr(0, 0x7F7F);
+        io_wait();
+        uint16_t csr_cleared = csr_rd(0);
+        serial_write("pcnet: attempt");
+        serial_putchar('0' + attempt);
+        serial_write(" csr0=0x");
+        for (int k = 12; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(csr_cleared >> k) & 0xF]);
+        serial_write("\n");
+        if (csr_cleared != 0x027D) { serial_write("pcnet: clear worked!\n"); break; }
+    }
 
     serial_write("pcnet: issuing INIT...\n");
     csr_wr(0, 0x0001);
