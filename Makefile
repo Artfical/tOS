@@ -32,7 +32,8 @@ KERNEL_OBJS = \
     kernel/uhci.o \
     kernel/usb_keyboard.o \
     kernel/ramfs.o \
-    kernel/tsharp.o
+    kernel/tsharp.o \
+    kernel/mouse.o
 
 PROGRAMS = programs/hello.elf
 
