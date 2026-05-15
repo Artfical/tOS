@@ -42,24 +42,11 @@ static const char scancode_ascii_upper[] = {
     '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.'
 };
 
-static void keyboard_callback(registers_t *regs)
+static void process_scancode(uint8_t scancode)
 {
-    (void)regs;
-    uint8_t scancode = inb(0x60);
-
-    if (scancode == 0x2A || scancode == 0x36) {
-        shift_pressed = 1;
-        return;
-    }
-    if (scancode == 0xAA || scancode == 0xB6) {
-        shift_pressed = 0;
-        return;
-    }
-    if (scancode == 0x3A) {
-        caps_lock = !caps_lock;
-        return;
-    }
-
+    if (scancode == 0x2A || scancode == 0x36) { shift_pressed = 1; return; }
+    if (scancode == 0xAA || scancode == 0xB6) { shift_pressed = 0; return; }
+    if (scancode == 0x3A) { caps_lock = !caps_lock; return; }
     if (scancode & 0x80) return;
 
     if (scancode == 0x4B || scancode == 0x4D) {
@@ -77,17 +64,25 @@ static void keyboard_callback(registers_t *regs)
             key = scancode_ascii_upper[scancode];
         else
             key = scancode_ascii_lower[scancode];
-
-        if (key >= 'a' && key <= 'z' && caps_lock) {
-            key -= 32;
-        } else if (key >= 'A' && key <= 'Z' && caps_lock) {
-            key += 32;
-        }
+        if (key >= 'a' && key <= 'z' && caps_lock) key -= 32;
+        else if (key >= 'A' && key <= 'Z' && caps_lock) key += 32;
     }
+    if (key) keyboard_push_char(key);
+}
 
-    if (key) {
-        keyboard_push_char(key);
-    }
+static void keyboard_callback(registers_t *regs)
+{
+    (void)regs;
+    asm volatile("cli");
+    while (inb(0x64) & 1) process_scancode(inb(0x60));
+    asm volatile("sti");
+}
+
+static void keyboard_poll(void)
+{
+    asm volatile("cli");
+    if (inb(0x64) & 1) process_scancode(inb(0x60));
+    asm volatile("sti");
 }
 
 int keyboard_data_available(void)
@@ -103,6 +98,7 @@ char keyboard_getchar(void)
             key_buffer_tail = (key_buffer_tail + 1) % 256;
             return c;
         }
+        keyboard_poll();
         char usb_c;
         if (usb_keyboard_read(&usb_c)) {
             keyboard_push_char(usb_c);
@@ -140,6 +136,7 @@ int keyboard_yesno(void)
 {
     for (;;) {
         gui_poll();
+        keyboard_poll();
         if (special_head != special_tail) {
             int k = special_buf[special_tail];
             special_tail = (special_tail + 1) % 16;
