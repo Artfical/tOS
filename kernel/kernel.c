@@ -11,6 +11,7 @@
 #include "syscall.h"
 #include "shell.h"
 #include "multiboot2.h"
+#include "version.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 
@@ -71,8 +72,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 {
     serial_init();
     terminal_init();
-    serial_write("tOS v0.1.0 booting...\n");
-    terminal_writestring("tOS v0.1.0 booting...\n");
+    serial_write(TOS_BOOT_STRING "\n");
+    terminal_writestring(TOS_BOOT_STRING "\n");
 
     gdt_init();
     terminal_writestring("[OK] GDT initialized\n");

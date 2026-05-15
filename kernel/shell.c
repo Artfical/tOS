@@ -6,6 +6,7 @@
 #include "fs.h"
 #include "elf.h"
 #include "io.h"
+#include "version.h"
 
 #define MAX_ARGS 16
 #define MAX_CMD_LEN 256
@@ -170,7 +171,7 @@ static void cmd_shutdown(void)
 
 static void cmd_version(void)
 {
-    terminal_writestring("tOS version 0.1.0\n");
+    terminal_writestring(TOS_VERSION_STRING "\n");
     terminal_writestring("Build: " __DATE__ " " __TIME__ "\n");
 }
 
@@ -189,7 +190,7 @@ static void cmd_uname(void)
 
 void shell_init(void)
 {
-    terminal_writestring("\ntOS v0.1.0 - Terminal Operating System\n");
+    terminal_writestring(TOS_WELCOME_STRING);
     terminal_writestring("Type 'help' for commands\n\n");
 }
 
