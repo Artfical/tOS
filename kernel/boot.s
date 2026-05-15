@@ -1,35 +1,22 @@
 .intel_syntax noprefix
 
-#include "multiboot2.h"
-
 .section .multiboot, "a"
-.align 8
+.align 4
 
-.long MULTIBOOT2_HEADER_MAGIC
-.long MULTIBOOT2_HEADER_ARCHITECTURE_I386
-.long multiboot_header_end - multiboot_header_start
-.long -(MULTIBOOT2_HEADER_MAGIC + MULTIBOOT2_HEADER_ARCHITECTURE_I386 + (multiboot_header_end - multiboot_header_start))
+.long 0x1BADB002
+.long 0x00010003
+.long -(0x1BADB002 + 0x00010003)
 
-multiboot_header_start:
-.short MULTIBOOT2_HEADER_TAG_INFORMATION_REQUEST
-.short 0
-.long information_request_end - information_request_start
-information_request_start:
-.long MULTIBOOT2_TAG_TYPE_MODULE
-information_request_end:
+.long 0
+.long 0
+.long 0
+.long 0
+.long 0
 
-.short MULTIBOOT2_HEADER_TAG_MODULE_ALIGN
-.short 0
-.long 8
-
-.short MULTIBOOT2_HEADER_TAG_TERMINAL
-.short 0
-.long 8
-
-.short MULTIBOOT2_HEADER_TAG_END
-.short 0
-.long 8
-multiboot_header_end:
+.long 0
+.long 1024
+.long 768
+.long 32
 
 .section .text, "ax"
 .global start

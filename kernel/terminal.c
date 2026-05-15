@@ -1,6 +1,7 @@
 #include "terminal.h"
 #include "io.h"
 #include "string.h"
+#include "serial.h"
 
 static uint16_t *const VGA_MEMORY = (uint16_t *)0xB8000;
 static uint8_t terminal_color;
@@ -62,6 +63,7 @@ void terminal_scroll(void)
 
 void terminal_putchar(char c)
 {
+    serial_putchar(c);
     if (c == '\n') {
         terminal_column = 0;
         terminal_row++;

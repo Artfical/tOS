@@ -1,4 +1,5 @@
 #include "terminal.h"
+#include "serial.h"
 #include "gdt.h"
 #include "idt.h"
 #include "isr.h"
@@ -11,11 +12,66 @@
 #include "shell.h"
 #include "multiboot2.h"
 
+#define MULTIBOOT_MAGIC 0x2BADB002
+
 extern uint32_t isr_stub_table[];
+
+static void parse_multiboot2(uint32_t mb_info_addr, uint32_t *mem_upper, uint32_t *initrd_start, uint32_t *initrd_end)
+{
+    struct multiboot2_tag *tag = (struct multiboot2_tag *)(mb_info_addr + 8);
+    for (;;) {
+        if (tag->type == 0) break;
+
+        if (tag->type == MULTIBOOT2_TAG_TYPE_MMAP) {
+            struct multiboot2_tag_mmap *mmap = (struct multiboot2_tag_mmap *)tag;
+            struct multiboot2_mmap_entry *entry = mmap->entries;
+            while ((uint32_t)entry < (uint32_t)tag + tag->size) {
+                if (entry->type == 1 && entry->len > *mem_upper * 1024ULL) {
+                    uint64_t end = entry->addr + entry->len;
+                    if (end > *mem_upper * 1024ULL) {
+                        *mem_upper = (uint32_t)(end / 1024);
+                    }
+                }
+                entry = (struct multiboot2_mmap_entry *)((uint32_t)entry + mmap->entry_size);
+            }
+        }
+
+        if (tag->type == MULTIBOOT2_TAG_TYPE_MODULE) {
+            struct multiboot2_tag_module *mod = (struct multiboot2_tag_module *)tag;
+            *initrd_start = mod->mod_start;
+            *initrd_end = mod->mod_end;
+        }
+
+        uint32_t padding = tag->size % 8 ? 8 - (tag->size % 8) : 0;
+        tag = (struct multiboot2_tag *)((uint32_t)tag + tag->size + padding);
+    }
+}
+
+static void parse_multiboot1(uint32_t mb_info_addr, uint32_t *mem_upper, uint32_t *initrd_start, uint32_t *initrd_end)
+{
+    uint32_t *info = (uint32_t *)mb_info_addr;
+    uint32_t flags = info[0];
+
+    if (flags & (1 << 0)) {
+        *mem_upper = info[3];
+    }
+
+    if ((flags & (1 << 3)) && (flags & (1 << 6))) {
+        uint32_t mods_count = info[8];
+        uint32_t mods_addr = info[9];
+        if (mods_count > 0) {
+            uint32_t *mod = (uint32_t *)mods_addr;
+            *initrd_start = mod[0];
+            *initrd_end = mod[1];
+        }
+    }
+}
 
 void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 {
+    serial_init();
     terminal_init();
+    serial_write("tOS v0.1.0 booting...\n");
     terminal_writestring("tOS v0.1.0 booting...\n");
 
     gdt_init();
@@ -25,64 +81,37 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     terminal_writestring("[OK] IDT initialized\n");
 
     isr_init();
-
-    for (int i = 0; i < 48; i++) {
+    for (int i = 0; i < 48; i++)
         idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E);
-    }
-
     terminal_writestring("[OK] ISR handlers set\n");
 
     irq_init();
-
     idt_set_gate(32, isr_stub_table[32], 0x08, 0x8E);
     idt_set_gate(33, isr_stub_table[33], 0x08, 0x8E);
     idt_set_gate(0x80, isr_stub_table[48], 0x08, 0x8E);
-
     terminal_writestring("[OK] IRQ handlers set\n");
 
     asm volatile("sti");
 
     uint32_t mem_upper = 0;
+    uint32_t initrd_start = 0;
+    uint32_t initrd_end = 0;
+
     if (magic == MULTIBOOT2_BOOTLOADER_MAGIC) {
         terminal_writestring("[OK] Booted with Multiboot2\n");
+        parse_multiboot2(mb_info_addr, &mem_upper, &initrd_start, &initrd_end);
+    } else if (magic == MULTIBOOT_MAGIC) {
+        terminal_writestring("[OK] Booted with Multiboot1\n");
+        parse_multiboot1(mb_info_addr, &mem_upper, &initrd_start, &initrd_end);
+    } else {
+        terminal_writestring("[WARN] Unknown bootloader\n");
+    }
 
-        struct multiboot2_tag *tag = (struct multiboot2_tag *)(mb_info_addr + 8);
-        for (;;) {
-            if (tag->type == 0) break;
-
-            if (tag->type == MULTIBOOT2_TAG_TYPE_MMAP) {
-                struct multiboot2_tag_mmap *mmap = (struct multiboot2_tag_mmap *)tag;
-                struct multiboot2_mmap_entry *entry = mmap->entries;
-                while ((uint32_t)entry < (uint32_t)tag + tag->size) {
-                    if (entry->type == 1 && entry->len > mem_upper * 1024ULL) {
-                        uint64_t end = entry->addr + entry->len;
-                        if (end > mem_upper * 1024ULL) {
-                            mem_upper = (uint32_t)(end / 1024);
-                        }
-                    }
-                    entry = (struct multiboot2_mmap_entry *)((uint32_t)entry + mmap->entry_size);
-                }
-            }
-
-            if (tag->type == MULTIBOOT2_TAG_TYPE_MODULE) {
-                struct multiboot2_tag_module *mod = (struct multiboot2_tag_module *)tag;
-                terminal_writestring("[OK] Initrd module found at ");
-                char buf[16];
-                uint32_t addr = mod->mod_start;
-                for (int i = 0; i < 8; i++) {
-                    buf[7-i] = "0123456789ABCDEF"[addr & 0xF];
-                    addr >>= 4;
-                }
-                buf[8] = '\0';
-                terminal_writestring(buf);
-                terminal_putchar('\n');
-
-                fs_init(mod->mod_start, mod->mod_end - mod->mod_start);
-            }
-
-            uint32_t padding = tag->size % 8 ? 8 - (tag->size % 8) : 0;
-            tag = (struct multiboot2_tag *)((uint32_t)tag + tag->size + padding);
-        }
+    if (initrd_start && initrd_end > initrd_start) {
+        terminal_writestring("[OK] Initrd module found\n");
+        fs_init(initrd_start, initrd_end - initrd_start);
+    } else {
+        terminal_writestring("[WARN] No initrd module found\n");
     }
 
     if (mem_upper == 0) mem_upper = 32768;

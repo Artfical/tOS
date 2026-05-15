@@ -26,6 +26,7 @@ KERNEL_OBJS = \
     kernel/fs.o \
     kernel/elf.o \
     kernel/syscall.o \
+    kernel/serial.o \
     kernel/shell.o
 
 PROGRAMS = programs/hello.elf
