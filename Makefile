@@ -11,8 +11,11 @@ CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -mno-mmx -mno-sse -mno-sse2 \
          -O2 -Wall -Wextra -Werror \
          -I. \
-         -Ikernel/core -Ikernel/display -Ikernel/drivers \
-         -Ikernel/fs           -Ikernel/shell -Ikernel/shell/commands -Ikernel/lib -Ikernel/net \
+         -Ikernel/core -Ikernel/display \
+         -Ikernel/fs -Ikernel/shell -Ikernel/shell/commands -Ikernel/lib -Ikernel/net \
+         -Ikernel/drivers/include -Ikernel/drivers/bus -Ikernel/drivers/storage \
+         -Ikernel/drivers/usb -Ikernel/drivers/audio -Ikernel/drivers/video \
+         -Ikernel/drivers/input -Ikernel/drivers/system -Ikernel/drivers/misc \
          -Ikernel/micropython \
          -Ikernel/micropython/ports/tos
 
@@ -31,10 +34,19 @@ MPY_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
 
 # Port files need kernel headers too
 MPY_PORT_CFLAGS = $(MPY_CFLAGS) \
-             -Ikernel/core -Ikernel/display -Ikernel/drivers \
-             -Ikernel/fs -Ikernel/shell -Ikernel/lib -Ikernel/net
+             -Ikernel/core -Ikernel/display \
+             -Ikernel/fs -Ikernel/shell -Ikernel/lib -Ikernel/net \
+             -Ikernel/drivers/include -Ikernel/drivers/bus -Ikernel/drivers/storage \
+             -Ikernel/drivers/usb -Ikernel/drivers/audio -Ikernel/drivers/video \
+             -Ikernel/drivers/input -Ikernel/drivers/system -Ikernel/drivers/misc
 LDFLAGS = -m elf_i386 -T kernel/boot/linker.ld
 ASFLAGS = --32
+
+# Auto-discover driver sources
+DRIVER_SRCS := $(wildcard kernel/drivers/bus/*.c kernel/drivers/storage/*.c \
+    kernel/drivers/usb/*.c kernel/drivers/audio/*.c kernel/drivers/video/*.c \
+    kernel/drivers/input/*.c kernel/drivers/system/*.c kernel/drivers/misc/*.c)
+DRIVER_OBJS := $(DRIVER_SRCS:.c=.o)
 
 KERNEL_OBJS = \
     kernel/boot/boot.o \
@@ -46,12 +58,12 @@ KERNEL_OBJS = \
     kernel/core/idt.o \
     kernel/core/isr.o \
     kernel/core/irq.o \
-    kernel/drivers/keyboard.o \
     kernel/lib/memory.o \
     kernel/lib/errno.o \
     kernel/lib/stdio.o \
     kernel/lib/stdlib.o \
     kernel/lib/ctype.o \
+    kernel/lib/udivdi3.o \
     kernel/fs/fs.o \
     kernel/fs/vfs.o \
     kernel/fs/elf.o \
@@ -65,13 +77,8 @@ KERNEL_OBJS = \
     kernel/shell/commands/cmd_util.o \
     kernel/shell/commands/cmd_net.o \
     kernel/core/klog.o \
-    kernel/drivers/pci.o \
-    kernel/drivers/uhci.o \
-    kernel/drivers/usb_keyboard.o \
-    kernel/drivers/vga_font.o \
     kernel/fs/ramfs.o \
     kernel/shell/tsharp.o \
-    kernel/display/mouse.o \
     kernel/display/gui.o \
     kernel/net/net.o \
     kernel/net/nic.o \
@@ -91,6 +98,8 @@ KERNEL_OBJS = \
     kernel/micropython/ports/tos/tos_stubs.o \
     kernel/micropython/shared/runtime/pyexec.o \
     kernel/micropython/shared/readline/readline.o
+
+KERNEL_OBJS += $(DRIVER_OBJS)
 
 # MicroPython py/ core sources (exclude native/asm/persistent)
 MPY_PY_SRCS := $(filter-out %/asmarm.c %/asmthumb.c %/asmxtensa.c %/asmrv32.c \
