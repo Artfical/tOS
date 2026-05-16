@@ -23,6 +23,7 @@ static uint32_t alloc_ino(void)
     while (next_ino < RAMFS_MAX_INODES && inodes[next_ino].ino) next_ino++;
     if (next_ino >= RAMFS_MAX_INODES) return 0;
     uint32_t ino = next_ino++;
+    inodes[ino].ino = ino;
     return ino;
 }
 
