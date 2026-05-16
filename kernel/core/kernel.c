@@ -26,6 +26,23 @@
 
 extern uint32_t isr_stub_table[];
 
+static void busy_delay_ms(uint32_t ms)
+{
+    uint32_t needed = (uint32_t)((uint64_t)1193182 * ms / 1000);
+    outb(0x43, 0x00);
+    uint16_t start = inb(0x40);
+    start |= inb(0x40) << 8;
+    uint32_t elapsed = 0;
+    uint16_t prev = start;
+    while (elapsed < needed) {
+        outb(0x43, 0x00);
+        uint16_t curr = inb(0x40);
+        curr |= inb(0x40) << 8;
+        elapsed += (prev - curr) & 0xFFFF;
+        prev = curr;
+    }
+}
+
 static void show_boot_intro(void)
 {
     static const char *logo[] = {
@@ -52,7 +69,7 @@ static void show_boot_intro(void)
     terminal_setcolor(0x07);
     terminal_writestring("tOS");
 
-    task_sleep(2000);
+    busy_delay_ms(2000);
     terminal_clear();
 }
 
@@ -133,6 +150,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     asm volatile("sti");
 
+    show_boot_intro();
+
     uint32_t mem_upper = 0;
     uint32_t initrd_start = 0;
     uint32_t initrd_end = 0;
@@ -158,8 +177,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     memory_init(mem_upper);
 
     scheduler_init();
-
-    show_boot_intro();
 
     ramfs_init();
     terminal_writestring("[OK] Ramfs initialized\n");
