@@ -81,6 +81,7 @@ syscall_stub:
 
 .global timer_irq_stub
 timer_irq_stub:
+    cli
     pusha
     push ds
     push es
