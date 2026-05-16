@@ -15,6 +15,7 @@
 #include "multiboot2.h"
 #include "version.h"
 #include "net.h"
+#include "micropython.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 
@@ -153,6 +154,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     terminal_writestring("[OK] Syscalls initialized\n");
 
     net_init();
+
+    micropython_init();
 
     shell_init();
     shell_run();

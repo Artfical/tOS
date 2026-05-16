@@ -1,0 +1,7 @@
+#ifndef MICROPY_CONFIG_BOARD_H
+#define MICROPY_CONFIG_BOARD_H
+
+#define MICROPY_HW_BOARD_NAME  "tOS"
+#define MICROPY_HW_MCU_NAME    "i386"
+
+#endif

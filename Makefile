@@ -9,7 +9,8 @@ CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -O2 -Wall -Wextra -Werror \
          -I. \
          -Ikernel/core -Ikernel/display -Ikernel/drivers \
-         -Ikernel/fs -Ikernel/shell -Ikernel/lib -Ikernel/net
+         -Ikernel/fs -Ikernel/shell -Ikernel/lib -Ikernel/net \
+         -Ikernel/micropython/ports/tos
 LDFLAGS = -m elf_i386 -T kernel/boot/linker.ld
 ASFLAGS = --32
 
@@ -48,7 +49,9 @@ KERNEL_OBJS = \
     kernel/net/udp.o \
     kernel/net/dns.o \
     kernel/net/tcp.o \
-    kernel/net/http.o
+    kernel/net/http.o \
+    kernel/micropython/ports/tos/tos_main.o \
+    kernel/micropython/ports/tos/tos_hal.o
 
 PROGRAMS = programs/hello.elf
 
