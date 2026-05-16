@@ -68,7 +68,7 @@ static void cmd_help(void)
     terminal_writestring("  uname      - system info\n");
     terminal_writestring("  ping       - ping a host\n");
     terminal_writestring("  wget       - download a file (HTTP)\n");
-    terminal_writestring("  python     - MicroPython REPL (coming soon)\n");
+    terminal_writestring("  python     - MicroPython REPL\n");
 }
 
 static void cmd_echo(int argc, char **args)
@@ -558,9 +558,7 @@ void shell_run(void)
         } else if (strcmp(c, "wget") == 0) {
             cmd_wget(argc, args);
         } else if (strcmp(c, "python") == 0) {
-            terminal_writestring("MicroPython: not yet available\n");
-            terminal_writestring("  Build MicroPython from https://github.com/micropython/micropython\n");
-            terminal_writestring("  and place in kernel/micropython/\n");
+            micropython_run_repl();
         } else {
             terminal_writestring("Unknown command: ");
             terminal_writestring(c);
