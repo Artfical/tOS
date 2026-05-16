@@ -1,6 +1,6 @@
-# tOS — Terminal Operating System
+# tOS — Linux Like Operating System
 
-tOS is a from-scratch x86 hobby operating system built for educational purposes. It features a monolithic kernel with preemptive multitasking, a virtual filesystem layer, TCP/IP networking, a graphical UI, and an embedded MicroPython interpreter.
+tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with preemptive multitasking, a virtual filesystem layer, TCP/IP networking, a graphical UI, and an embedded MicroPython interpreter.
 
 ## System Requirements
 
