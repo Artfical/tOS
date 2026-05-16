@@ -240,7 +240,7 @@ MicroPython was chosen as the primary scripting language for tOS for the followi
 
 ## Credits
 
-tOS is developed by Codertalha. The system is built from scratch with the exception of:
+tOS is developed by Talha Berk. The system is built from scratch with the exception of:
 - MicroPython (MIT License) — embedded scripting runtime
 - GRUB (GPLv3) — bootloader (not distributed in source, only used to generate the ISO)
 
