@@ -192,7 +192,7 @@ int readline_process_char(int c) {
         } else if (c == CHAR_CTRL_W) {
             goto backward_kill_word;
         #endif
-        } else if (c == '\r') {
+        } else if (c == '\n') {
             // newline
             mp_hal_stdout_tx_str("\r\n");
             readline_push_history(vstr_null_terminated_str(rl.line) + rl.orig_line_len);

@@ -75,14 +75,17 @@ static void keyboard_callback(registers_t *regs)
 {
     (void)regs;
     asm volatile("cli");
-    while (inb(0x64) & 1) process_scancode(inb(0x60));
+    uint8_t status;
+    while (((status = inb(0x64)) & 1) && !(status & 0x20))
+        process_scancode(inb(0x60));
     asm volatile("sti");
 }
 
 static void keyboard_poll(void)
 {
     asm volatile("cli");
-    if (inb(0x64) & 1) process_scancode(inb(0x60));
+    uint8_t status = inb(0x64);
+    if ((status & 1) && !(status & 0x20)) process_scancode(inb(0x60));
     asm volatile("sti");
 }
 
