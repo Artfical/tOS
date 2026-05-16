@@ -3,6 +3,9 @@ AS = as
 LD = ld
 AR = ar
 
+GCC_INC := $(shell $(CC) -m32 -print-file-name=include)
+
+# Regular kernel flags (no nostdinc to avoid breaking existing code)
 CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
          -mno-mmx -mno-sse -mno-sse2 \
@@ -10,7 +13,26 @@ CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -I. \
          -Ikernel/core -Ikernel/display -Ikernel/drivers \
          -Ikernel/fs -Ikernel/shell -Ikernel/lib -Ikernel/net \
+         -Ikernel/micropython \
          -Ikernel/micropython/ports/tos
+
+# Relaxed flags for MicroPython core (uses -isystem for 32-bit glibc compat)
+MPY_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+             -fno-stack-protector -fno-pic -fno-pie \
+             -mno-mmx -mno-sse -mno-sse2 \
+             -O2 -Wall -Wno-unused-variable -Wno-unused-function \
+             -Wno-unused-parameter -Wno-sign-compare \
+             -Wno-missing-field-initializers -Wno-implicit-fallthrough \
+             -isystem /tmp/i386-linux-gnu \
+             -I. \
+             -Ikernel/micropython \
+             -Ikernel/micropython/ports/tos \
+             -Ikernel/micropython/genhdr
+
+# Port files need kernel headers too
+MPY_PORT_CFLAGS = $(MPY_CFLAGS) \
+             -Ikernel/core -Ikernel/display -Ikernel/drivers \
+             -Ikernel/fs -Ikernel/shell -Ikernel/lib -Ikernel/net
 LDFLAGS = -m elf_i386 -T kernel/boot/linker.ld
 ASFLAGS = --32
 
@@ -57,13 +79,34 @@ KERNEL_OBJS = \
     kernel/net/tcp.o \
     kernel/net/http.o \
     kernel/micropython/ports/tos/tos_main.o \
-    kernel/micropython/ports/tos/tos_hal.o
+    kernel/micropython/ports/tos/tos_hal.o \
+    kernel/micropython/ports/tos/math_stubs.o \
+    kernel/micropython/ports/tos/tos_stubs.o \
+    kernel/micropython/shared/runtime/pyexec.o \
+    kernel/micropython/shared/readline/readline.o
+
+# MicroPython py/ core sources (exclude native/asm/persistent)
+MPY_PY_SRCS := $(filter-out %/asmarm.c %/asmthumb.c %/asmxtensa.c %/asmrv32.c \
+    %/emitnative.c %/emitinlinethumb.c %/emitinlinextensa.c %/emitinlinerrv32.c \
+    %/persistentcode.c, $(wildcard kernel/micropython/py/*.c))
+MPY_PY_OBJS := $(MPY_PY_SRCS:.c=.o)
+KERNEL_OBJS += $(MPY_PY_OBJS)
 
 PROGRAMS = programs/hello.elf
 
 .PHONY: all clean run iso
 
 all: tOS.iso
+
+# MicroPython py/ core files use relaxed flags
+kernel/micropython/py/%.o: kernel/micropython/py/%.c
+	$(CC) $(MPY_CFLAGS) -c $< -o $@
+
+kernel/micropython/shared/%.o: kernel/micropython/shared/%.c
+	$(CC) $(MPY_CFLAGS) -c $< -o $@
+
+kernel/micropython/ports/tos/%.o: kernel/micropython/ports/tos/%.c
+	$(CC) $(MPY_PORT_CFLAGS) -c $< -o $@
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
