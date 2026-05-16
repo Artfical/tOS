@@ -10,6 +10,7 @@
 #include "lib/utils/pyexec.h"
 #include "terminal.h"
 #include "serial.h"
+#include "keyboard.h"
 
 static char heap[16 * 1024];
 
@@ -17,6 +18,7 @@ int micropython_init(void) {
     serial_write("micropython: init\n");
     gc_init(heap, heap + sizeof(heap));
     mp_init();
+    interrupt_callback = mp_sched_keyboard_interrupt;
     serial_write("micropython: ready\n");
     return 0;
 }

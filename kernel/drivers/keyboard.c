@@ -15,7 +15,10 @@ static volatile int special_head = 0;
 static volatile int special_tail = 0;
 static int caps_lock = 0;
 static int shift_pressed = 0;
+static int ctrl_pressed = 0;
 static int extended = 0;
+volatile int interrupt_char = -1;
+void (*interrupt_callback)(void) = NULL;
 static int keyboard_layout = KBD_LAYOUT_US;
 
 static const char scancode_lower_us[] = {
@@ -95,6 +98,8 @@ static void process_scancode(uint8_t scancode)
 
     if (scancode == 0x2A || scancode == 0x36) { shift_pressed = 1; return; }
     if (scancode == 0xAA || scancode == 0xB6) { shift_pressed = 0; return; }
+    if (scancode == 0x1D) { ctrl_pressed = 1; return; }
+    if (scancode == 0x9D) { ctrl_pressed = 0; return; }
     if (scancode == 0x3A) { caps_lock = !caps_lock; return; }
     if (scancode & 0x80) return;
 
@@ -114,10 +119,16 @@ static void process_scancode(uint8_t scancode)
         else
             key = scancode_lower[scancode];
 
-        if (key >= 'a' && key <= 'z' && caps_lock) key -= 32;
-        else if (key >= 'A' && key <= 'Z' && caps_lock) key += 32;
+        if (key >= 'a' && key <= 'z' && caps_lock && !ctrl_pressed) key -= 32;
+        else if (key >= 'A' && key <= 'Z' && caps_lock && !ctrl_pressed) key += 32;
+        if (ctrl_pressed && key >= 'a' && key <= 'z') key -= 0x60;
+        else if (ctrl_pressed && key >= 'A' && key <= 'Z') key -= 0x40;
     }
-    if (key) keyboard_push_char(key);
+    if (key) {
+        keyboard_push_char(key);
+        if (interrupt_char >= 0 && key == (char)interrupt_char && interrupt_callback)
+            interrupt_callback();
+    }
 }
 
 static void keyboard_callback(registers_t *regs)
@@ -186,6 +197,12 @@ void keyboard_readline(char *buf, int max)
                 terminal_putchar(' ');
                 terminal_putchar('\b');
             }
+        } else if (c == 3) {
+            terminal_putchar('^');
+            terminal_putchar('C');
+            terminal_putchar('\n');
+            buf[0] = '\0';
+            return;
         } else if ((unsigned char)c >= ' ' && i < max - 1) {
             buf[i++] = c;
             terminal_putchar(c);

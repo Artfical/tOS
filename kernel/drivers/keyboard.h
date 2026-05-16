@@ -12,4 +12,7 @@ int keyboard_yesno(void);
 void keyboard_set_layout(int layout);
 int keyboard_get_layout(void);
 
+extern volatile int interrupt_char;
+extern void (*interrupt_callback)(void);
+
 #endif
