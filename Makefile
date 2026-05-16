@@ -26,6 +26,10 @@ KERNEL_OBJS = \
     kernel/core/irq.o \
     kernel/drivers/keyboard.o \
     kernel/lib/memory.o \
+    kernel/lib/errno.o \
+    kernel/lib/stdio.o \
+    kernel/lib/stdlib.o \
+    kernel/lib/ctype.o \
     kernel/fs/fs.o \
     kernel/fs/vfs.o \
     kernel/fs/elf.o \

@@ -7,6 +7,17 @@
 #define VFS_MAX_MOUNTS   8
 #define VFS_NAME_LEN     128
 
+#define VFS_SEEK_SET 0
+#define VFS_SEEK_CUR 1
+#define VFS_SEEK_END 2
+
+#define VFS_RDONLY  0
+#define VFS_WRONLY  1
+#define VFS_RDWR    2
+#define VFS_CREAT   0x100
+#define VFS_TRUNC   0x200
+#define VFS_APPEND  0x400
+
 typedef struct vfs_entry {
     char name[VFS_NAME_LEN];
     uint32_t size;
