@@ -27,6 +27,7 @@ KERNEL_OBJS = \
     kernel/drivers/keyboard.o \
     kernel/lib/memory.o \
     kernel/fs/fs.o \
+    kernel/fs/vfs.o \
     kernel/fs/elf.o \
     kernel/fs/syscall.o \
     kernel/core/serial.o \

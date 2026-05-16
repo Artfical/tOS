@@ -17,6 +17,8 @@
 #include "net.h"
 #include "micropython.h"
 #include "scheduler.h"
+#include "vfs.h"
+#include "ramfs.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 
@@ -115,7 +117,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     if (initrd_start && initrd_end > initrd_start) {
         terminal_writestring("[OK] Initrd module found\n");
-        fs_init(initrd_start, initrd_end - initrd_start);
+        ramfs_import_initrd(initrd_start, initrd_end - initrd_start);
     } else {
         terminal_writestring("[WARN] No initrd module found\n");
     }
@@ -124,9 +126,11 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     memory_init(mem_upper);
 
     ramfs_init();
-    if (initrd_start && initrd_end > initrd_start)
-        ramfs_import_initrd();
     terminal_writestring("[OK] Ramfs initialized\n");
+
+    vfs_init();
+    ramfs_mount_vfs();
+    terminal_writestring("[OK] VFS initialized\n");
 
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
