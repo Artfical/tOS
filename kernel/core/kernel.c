@@ -20,10 +20,41 @@
 #include "vga_font.h"
 #include "vfs.h"
 #include "ramfs.h"
+#include "io.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 
 extern uint32_t isr_stub_table[];
+
+static void show_boot_intro(void)
+{
+    static const char *logo[] = {
+        "TTTTTTTTT  OOOOOOOOO  SSSSSSSSS",
+        "    T     O         O S        ",
+        "    T     O         O S        ",
+        "    T     O         O SSSSSSSSS",
+        "    T     O         O         S",
+        "    T     O         O         S",
+        "    T      OOOOOOOOO  SSSSSSSSS",
+        0
+    };
+
+    terminal_setcolor(0x0B);
+    terminal_clear();
+
+    int row = 9;
+    for (int i = 0; logo[i]; i++) {
+        terminal_setpos(26, row++);
+        terminal_writestring(logo[i]);
+    }
+
+    terminal_setpos(37, row + 1);
+    terminal_setcolor(0x07);
+    terminal_writestring("tOS");
+
+    task_sleep(2000);
+    terminal_clear();
+}
 
 static void parse_multiboot2(uint32_t mb_info_addr, uint32_t *mem_upper, uint32_t *initrd_start, uint32_t *initrd_end)
 {
@@ -125,6 +156,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     if (mem_upper == 0) mem_upper = 32768;
     memory_init(mem_upper);
+
+    scheduler_init();
+
+    show_boot_intro();
 
     ramfs_init();
     terminal_writestring("[OK] Ramfs initialized\n");
