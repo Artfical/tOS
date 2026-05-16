@@ -176,8 +176,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     if (mem_upper == 0) mem_upper = 32768;
     memory_init(mem_upper);
 
-    scheduler_init();
-
     ramfs_init();
     terminal_writestring("[OK] Ramfs initialized\n");
 
