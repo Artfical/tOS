@@ -15,6 +15,64 @@ static volatile int special_head = 0;
 static volatile int special_tail = 0;
 static int caps_lock = 0;
 static int shift_pressed = 0;
+static int extended = 0;
+static int keyboard_layout = KBD_LAYOUT_US;
+
+static const char scancode_lower_us[] = {
+    0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
+    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
+    0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
+    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.'
+};
+
+static const char scancode_upper_us[] = {
+    0, 0, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
+    '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
+    0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
+    0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,
+    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.'
+};
+
+static const char scancode_lower_trq[] = {
+    0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '*', '-', '\b',
+    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 0xFD, 'o', 'p', 0xF0, 0xFC, '\n',
+    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 0xFE, 'i', ',',
+    0, ';', 'z', 'x', 'c', 'v', 'b', 'n', 'm', 0xF6, 0xE7, '.', 0,
+    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.'
+};
+
+static const char scancode_upper_trq[] = {
+    0, 0, '!', '\'', '^', '+', '%', '&', '/', '(', ')', '=', '?', '_', '\b',
+    '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 0xD0, 0xDC, '\n',
+    0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 0xDE, 0xDD, ';',
+    0, ':', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', 0xD6, 0xC7, '.', 0,
+    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.'
+};
+
+static const char *scancode_lower;
+static const char *scancode_upper;
+
+void keyboard_set_layout(int layout)
+{
+    keyboard_layout = layout;
+    if (layout == KBD_LAYOUT_TRQ) {
+        scancode_lower = scancode_lower_trq;
+        scancode_upper = scancode_upper_trq;
+    } else {
+        scancode_lower = scancode_lower_us;
+        scancode_upper = scancode_upper_us;
+    }
+}
+
+int keyboard_get_layout(void)
+{
+    return keyboard_layout;
+}
 
 void keyboard_push_char(char c)
 {
@@ -25,26 +83,16 @@ void keyboard_push_char(char c)
     }
 }
 
-static const char scancode_ascii_lower[] = {
-    0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
-    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
-    0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
-    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.'
-};
-
-static const char scancode_ascii_upper[] = {
-    0, 0, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
-    '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
-    0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
-    0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,
-    '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0', '.'
-};
-
 static void process_scancode(uint8_t scancode)
 {
+    if (scancode == 0xE0) { extended = 1; return; }
+
+    if (extended) {
+        extended = 0;
+        if (scancode == 0x53) { keyboard_push_char(127); }
+        return;
+    }
+
     if (scancode == 0x2A || scancode == 0x36) { shift_pressed = 1; return; }
     if (scancode == 0xAA || scancode == 0xB6) { shift_pressed = 0; return; }
     if (scancode == 0x3A) { caps_lock = !caps_lock; return; }
@@ -60,11 +108,12 @@ static void process_scancode(uint8_t scancode)
     }
 
     char key = 0;
-    if (scancode < sizeof(scancode_ascii_lower)) {
+    if (scancode < 0x53) {
         if (shift_pressed)
-            key = scancode_ascii_upper[scancode];
+            key = scancode_upper[scancode];
         else
-            key = scancode_ascii_lower[scancode];
+            key = scancode_lower[scancode];
+
         if (key >= 'a' && key <= 'z' && caps_lock) key -= 32;
         else if (key >= 'A' && key <= 'Z' && caps_lock) key += 32;
     }
@@ -130,7 +179,14 @@ void keyboard_readline(char *buf, int max)
                 terminal_putchar(' ');
                 terminal_putchar('\b');
             }
-        } else if (c >= ' ' && i < max - 1) {
+        } else if (c == 127) {
+            if (i > 0) {
+                i--;
+                terminal_putchar('\b');
+                terminal_putchar(' ');
+                terminal_putchar('\b');
+            }
+        } else if (c >= ' ' && c != 127 && i < max - 1) {
             buf[i++] = c;
             terminal_putchar(c);
         }
@@ -167,6 +223,7 @@ int keyboard_yesno(void)
 
 void keyboard_init(void)
 {
+    keyboard_set_layout(KBD_LAYOUT_US);
     isr_register_handler(33, keyboard_callback);
     irq_ack(1);
     usb_keyboard_init();
