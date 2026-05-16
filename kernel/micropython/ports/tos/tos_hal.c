@@ -24,7 +24,7 @@ void mp_hal_stdout_tx_str(const char *str) {
 }
 
 int mp_hal_stdin_rx_chr(void) {
-    return keyboard_getchar();
+    return (unsigned char)keyboard_getchar();
 }
 
 void mp_hal_delay_ms(mp_uint_t ms) {
