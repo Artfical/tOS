@@ -16,5 +16,6 @@ void *memmove(void *dest, const void *src, size_t num);
 int memcmp(const void *a, const void *b, size_t num);
 char *strtok(char *str, const char *delim);
 unsigned long atoul(const char *str);
+char *strstr(const char *haystack, const char *needle);
 
 #endif

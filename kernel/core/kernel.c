@@ -14,6 +14,7 @@
 #include "gui.h"
 #include "multiboot2.h"
 #include "version.h"
+#include "klog.h"
 #include "net.h"
 #include "micropython.h"
 #include "scheduler.h"
@@ -128,25 +129,31 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 {
     serial_init();
     terminal_init();
+    klog_init();
     serial_write(TOS_BOOT_STRING "\n");
     terminal_writestring(TOS_BOOT_STRING "\n");
+    klog_write(TOS_BOOT_STRING "\n");
 
     gdt_init();
     terminal_writestring("[OK] GDT initialized\n");
+    klog_write("[OK] GDT initialized\n");
 
     idt_init();
     terminal_writestring("[OK] IDT initialized\n");
+    klog_write("[OK] IDT initialized\n");
 
     isr_init();
     for (int i = 0; i < 48; i++)
         idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E);
     terminal_writestring("[OK] ISR handlers set\n");
+    klog_write("[OK] ISR handlers set\n");
 
     irq_init();
     idt_set_gate(32, isr_stub_table[32], 0x08, 0x8E);
     idt_set_gate(33, isr_stub_table[33], 0x08, 0x8E);
     idt_set_gate(0x80, isr_stub_table[48], 0x08, 0x8E);
     terminal_writestring("[OK] IRQ handlers set\n");
+    klog_write("[OK] IRQ handlers set\n");
 
     asm volatile("sti");
 
@@ -158,19 +165,24 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     if (magic == MULTIBOOT2_BOOTLOADER_MAGIC) {
         terminal_writestring("[OK] Booted with Multiboot2\n");
+        klog_write("[OK] Booted with Multiboot2\n");
         parse_multiboot2(mb_info_addr, &mem_upper, &initrd_start, &initrd_end);
     } else if (magic == MULTIBOOT_MAGIC) {
         terminal_writestring("[OK] Booted with Multiboot1\n");
+        klog_write("[OK] Booted with Multiboot1\n");
         parse_multiboot1(mb_info_addr, &mem_upper, &initrd_start, &initrd_end);
     } else {
         terminal_writestring("[WARN] Unknown bootloader\n");
+        klog_write("[WARN] Unknown bootloader\n");
     }
 
     if (initrd_start && initrd_end > initrd_start) {
         terminal_writestring("[OK] Initrd module found\n");
+        klog_write("[OK] Initrd module found\n");
         ramfs_import_initrd(initrd_start, initrd_end - initrd_start);
     } else {
         terminal_writestring("[WARN] No initrd module found\n");
+        klog_write("[WARN] No initrd module found\n");
     }
 
     if (mem_upper == 0) mem_upper = 32768;
@@ -178,13 +190,16 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     ramfs_init();
     terminal_writestring("[OK] Ramfs initialized\n");
+    klog_write("[OK] Ramfs initialized\n");
 
     vfs_init();
     ramfs_mount_vfs();
     terminal_writestring("[OK] VFS initialized\n");
+    klog_write("[OK] VFS initialized\n");
 
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
+    klog_write("[OK] Keyboard initialized\n");
 
     terminal_writestring("\nKlavye duzeni: [US] (1) veya [TR-Q] (2) ? ");
     for (;;) {
@@ -220,9 +235,11 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     }
 
     terminal_writestring("[OK] System ready\n");
+    klog_write("[OK] System ready\n");
 
     syscall_init();
     terminal_writestring("[OK] Syscalls initialized\n");
+    klog_write("[OK] Syscalls initialized\n");
 
     net_init();
 

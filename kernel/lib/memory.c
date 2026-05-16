@@ -154,3 +154,13 @@ void *kcalloc(size_t num, size_t size)
     if (ptr) memset(ptr, 0, num * size);
     return ptr;
 }
+
+void memory_get_usage(uint32_t *total_kb, uint32_t *used_kb)
+{
+    *total_kb = total_pages * 4;
+    uint32_t kernel_end = 0;
+    extern uint32_t end;
+    kernel_end = (uint32_t)&end;
+    *used_kb = (kernel_end / 1024) + (heap_current - heap_start) / 1024;
+    if (*used_kb > *total_kb) *used_kb = *total_kb;
+}
