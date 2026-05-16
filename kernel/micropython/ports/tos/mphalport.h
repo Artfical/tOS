@@ -14,7 +14,13 @@ void mp_hal_stdout_tx_str(const char *str);
 int mp_hal_stdin_rx_chr(void);
 void mp_hal_delay_ms(mp_uint_t ms);
 
-static inline void mp_hal_set_interrupt_char(int c) { (void)c; }
+extern volatile int interrupt_char;
+extern void (*interrupt_callback)(void);
+
+static inline void mp_hal_set_interrupt_char(int c) {
+    interrupt_char = c;
+    if (c == -1) interrupt_callback = NULL;
+}
 
 // Custom cursor movement without VT100 escapes
 #define MICROPY_HAL_HAS_VT100 (0)
