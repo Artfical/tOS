@@ -1,9 +1,9 @@
 #include "py/mpconfig.h"
 #include "py/mphal.h"
 #include "py/misc.h"
-#include "../core/serial.h"
-#include "../display/terminal.h"
-#include "../drivers/keyboard.h"
+#include "serial.h"
+#include "terminal.h"
+#include "keyboard.h"
 #include <string.h>
 
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
