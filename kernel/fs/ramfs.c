@@ -595,3 +595,17 @@ int ramfs_mkdir(const char *path)
 {
     return ramfs_mkdir_mode(path, 0755);
 }
+
+void ramfs_get_usage(uint32_t *used_inodes, uint32_t *total_inodes, uint32_t *used_size, uint32_t *total_size)
+{
+    *total_inodes = RAMFS_MAX_INODES;
+    *total_size = RAMFS_MAX_INODES * RAMFS_BLOCK_SZ;
+    *used_inodes = 0;
+    *used_size = 0;
+    for (uint32_t i = 1; i < RAMFS_MAX_INODES; i++) {
+        if (inodes[i].ino) {
+            (*used_inodes)++;
+            *used_size += inodes[i].size;
+        }
+    }
+}

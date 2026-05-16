@@ -12,7 +12,7 @@ CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -O2 -Wall -Wextra -Werror \
          -I. \
          -Ikernel/core -Ikernel/display -Ikernel/drivers \
-         -Ikernel/fs -Ikernel/shell -Ikernel/lib -Ikernel/net \
+         -Ikernel/fs           -Ikernel/shell -Ikernel/shell/commands -Ikernel/lib -Ikernel/net \
          -Ikernel/micropython \
          -Ikernel/micropython/ports/tos
 
@@ -59,6 +59,12 @@ KERNEL_OBJS = \
     kernel/core/serial.o \
     kernel/core/scheduler.o \
     kernel/shell/shell.o \
+    kernel/shell/commands/cmd_file.o \
+    kernel/shell/commands/cmd_fs.o \
+    kernel/shell/commands/cmd_sys.o \
+    kernel/shell/commands/cmd_util.o \
+    kernel/shell/commands/cmd_net.o \
+    kernel/core/klog.o \
     kernel/drivers/pci.o \
     kernel/drivers/uhci.o \
     kernel/drivers/usb_keyboard.o \
