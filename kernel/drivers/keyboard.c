@@ -46,7 +46,7 @@ static const char scancode_lower_trq[] = {
 };
 
 static const char scancode_upper_trq[] = {
-    0, 0, '!', '\'', '^', '+', '%', '&', '/', '(', ')', '=', '?', '_', '\b',
+    0, 0, '!', '"', '^', '+', '%', '&', '/', '(', ')', '=', '?', '_', '\b',
     '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', 0xD0, 0xDC, '\n',
     0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 0xDE, 0xDD, ';',
     0, ':', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', 0xD6, 0xC7, '.', 0,
@@ -186,7 +186,7 @@ void keyboard_readline(char *buf, int max)
                 terminal_putchar(' ');
                 terminal_putchar('\b');
             }
-        } else if (c >= ' ' && c != 127 && i < max - 1) {
+        } else if ((unsigned char)c >= ' ' && i < max - 1) {
             buf[i++] = c;
             terminal_putchar(c);
         }
