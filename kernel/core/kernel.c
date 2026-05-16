@@ -16,6 +16,7 @@
 #include "version.h"
 #include "net.h"
 #include "micropython.h"
+#include "scheduler.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 

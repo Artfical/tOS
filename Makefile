@@ -30,6 +30,7 @@ KERNEL_OBJS = \
     kernel/fs/elf.o \
     kernel/fs/syscall.o \
     kernel/core/serial.o \
+    kernel/core/scheduler.o \
     kernel/shell/shell.o \
     kernel/drivers/pci.o \
     kernel/drivers/uhci.o \

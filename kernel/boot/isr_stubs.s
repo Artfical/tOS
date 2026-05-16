@@ -79,6 +79,23 @@ syscall_stub:
     push 0x80
     jmp isr_common_stub
 
+.global timer_irq_stub
+timer_irq_stub:
+    pusha
+    push ds
+    push es
+    push fs
+    push gs
+    push esp
+    call timer_handler
+    mov esp, eax
+    pop gs
+    pop fs
+    pop es
+    pop ds
+    popa
+    iret
+
 .global isr_stub_table
 isr_stub_table:
 .long isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7
