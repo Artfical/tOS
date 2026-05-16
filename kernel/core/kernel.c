@@ -17,6 +17,7 @@
 #include "net.h"
 #include "micropython.h"
 #include "scheduler.h"
+#include "vga_font.h"
 #include "vfs.h"
 #include "ramfs.h"
 
@@ -134,6 +135,21 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
+
+    terminal_writestring("\nKlavye duzeni: [US] (1) veya [TR-Q] (2) ? ");
+    for (;;) {
+        char c = keyboard_getchar();
+        if (c == '1') {
+            keyboard_set_layout(KBD_LAYOUT_US);
+            terminal_writestring("US\n");
+            break;
+        } else if (c == '2') {
+            keyboard_set_layout(KBD_LAYOUT_TRQ);
+            terminal_writestring("TR-Q\n");
+            vga_font_load_turkish();
+            break;
+        }
+    }
 
     int sel = 0;
     terminal_writestring("\nGUI? <[No] Yes>  (arrows/y/n, Enter)");

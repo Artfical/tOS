@@ -62,6 +62,7 @@ KERNEL_OBJS = \
     kernel/drivers/pci.o \
     kernel/drivers/uhci.o \
     kernel/drivers/usb_keyboard.o \
+    kernel/drivers/vga_font.o \
     kernel/fs/ramfs.o \
     kernel/shell/tsharp.o \
     kernel/display/mouse.o \
