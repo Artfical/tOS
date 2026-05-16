@@ -89,6 +89,21 @@ static void mouse_callback(registers_t *regs)
     }
 }
 
+static void mouse_enable_irq12(void)
+{
+    mouse_wait(0);
+    outb(STATUS_PORT, 0x20);
+    mouse_wait(1);
+    uint8_t config = inb(MOUSE_PORT);
+
+    config |= 0x02;
+
+    mouse_wait(0);
+    outb(STATUS_PORT, 0x60);
+    mouse_wait(0);
+    outb(MOUSE_PORT, config);
+}
+
 void mouse_init(void)
 {
     mouse_wait(0);
@@ -98,16 +113,12 @@ void mouse_init(void)
     mouse_write(0xF6);
     mouse_read();
 
+    mouse_enable_irq12();
+
     mouse_write(0xF4);
     mouse_read();
 
     isr_register_handler(32 + MOUSE_IRQ, mouse_callback);
-
-    uint8_t a2 = inb(STATUS_PORT + 1);
-    a2 |= 0x02;
-    mouse_wait(0);
-    outb(STATUS_PORT + 1, a2);
-
     irq_ack(MOUSE_IRQ);
 }
 

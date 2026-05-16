@@ -3,6 +3,7 @@
 #include "mouse.h"
 #include "string.h"
 #include "version.h"
+#include "io.h"
 
 #define VGA_MEM ((uint16_t *)0xB8000)
 #define VGA_W 80
@@ -47,23 +48,36 @@ void gui_draw_titlebar(void)
     VGA_MEM[GUI_TITLE_ROW * VGA_W + VGA_W - 1] = make_vga(' ', VGA_WHITE, VGA_BLUE);
 }
 
+static void restore_prev_cell(void)
+{
+    if (prev_mx >= 0 && prev_my >= 0 && prev_mx < VGA_W && prev_my < VGA_H)
+        VGA_MEM[prev_my * VGA_W + prev_mx] = prev_cell;
+}
+
+static void draw_cursor_at(int mx, int my)
+{
+    if (mx >= 0 && mx < VGA_W && my >= 0 && my < VGA_H) {
+        prev_cell = VGA_MEM[my * VGA_W + mx];
+        uint16_t cell = VGA_MEM[my * VGA_W + mx];
+        uint8_t fg = (cell >> 8) & 0x0F;
+        uint8_t bg = ((cell >> 8) >> 4) & 0x0F;
+        VGA_MEM[my * VGA_W + mx] = make_vga(219, bg, fg);
+        prev_mx = mx;
+        prev_my = my;
+    }
+}
+
 void gui_update_mouse(void)
 {
     if (!mouse_visible) return;
 
-    if (prev_mx >= 0 && prev_my >= 0 && prev_mx < VGA_W && prev_my < VGA_H)
-        VGA_MEM[prev_my * VGA_W + prev_mx] = prev_cell;
+    restore_prev_cell();
 
     int mx, my;
     uint8_t btns;
     mouse_get_state(&mx, &my, &btns);
 
-    if (mx >= 0 && mx < VGA_W && my >= 0 && my < VGA_H) {
-        prev_cell = VGA_MEM[my * VGA_W + mx];
-        VGA_MEM[my * VGA_W + mx] = make_vga(219, VGA_BLACK, VGA_WHITE);
-        prev_mx = mx;
-        prev_my = my;
-    }
+    draw_cursor_at(mx, my);
 }
 
 void gui_poll(void)
@@ -73,8 +87,15 @@ void gui_poll(void)
 
     int cx, cy;
     if (mouse_get_click(&cx, &cy)) {
-        if (cy == GUI_TITLE_ROW && cx >= 0 && cx <= 2) {
-            terminal_writestring("Close button clicked\n");
+        if (cy == GUI_TITLE_ROW) {
+            if (cx >= 0 && cx <= 2) {
+                terminal_writestring("Shutting down...\n");
+                uint8_t good = 0x02;
+                while (good & 0x02)
+                    good = inb(0x64);
+                outb(0x64, 0xFE);
+                asm volatile("hlt");
+            }
         }
     }
 }
