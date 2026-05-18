@@ -21,6 +21,9 @@
 #include "vga_font.h"
 #include "vfs.h"
 #include "ramfs.h"
+#include "tfsk.h"
+#include "installer.h"
+#include "ata.h"
 #include "io.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
@@ -197,6 +200,29 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     terminal_writestring("[OK] VFS initialized\n");
     klog_write("[OK] VFS initialized\n");
 
+    int ata_count = ata_init();
+    terminal_writestring("[OK] ATA initialized (");
+    terminal_putchar('0' + ata_count);
+    terminal_writestring(" devices)\n");
+    klog_write("[OK] ATA initialized\n");
+
+    static tfsk_t tfs_instance;
+    if (installer_check_installed()) {
+        terminal_writestring("[OK] tFS disk detected, mounting...\n");
+        klog_write("[OK] tFS disk detected, mounting...\n");
+        if (tfsk_probe_and_mount(&tfs_instance) == 0) {
+            tfsk_mount_vfs(&tfs_instance, "/mnt");
+            terminal_writestring("[OK] tFS mounted at /mnt\n");
+            klog_write("[OK] tFS mounted at /mnt\n");
+        } else {
+            terminal_writestring("[WARN] tFS mount failed\n");
+            klog_write("[WARN] tFS mount failed\n");
+        }
+    } else {
+        terminal_writestring("[INFO] No tFS disk found. Run installer to set up.\n");
+        klog_write("[INFO] No tFS disk found.\n");
+    }
+
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
     klog_write("[OK] Keyboard initialized\n");
@@ -213,6 +239,22 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             terminal_writestring("TR-Q\n");
             vga_font_load_turkish();
             break;
+        }
+    }
+
+    if (!tfs_instance.mounted && ata_device_count > 0) {
+        if (!installer_check_installed()) {
+            terminal_writestring("\n");
+            installer_run();
+            terminal_setcolor(0x07);
+            terminal_clear();
+        }
+        if (!tfs_instance.mounted && installer_check_installed()) {
+            if (tfsk_probe_and_mount(&tfs_instance) == 0) {
+                tfsk_mount_vfs(&tfs_instance, "/mnt");
+                terminal_writestring("[OK] tFS mounted at /mnt\n");
+                klog_write("[OK] tFS mounted at /mnt\n");
+            }
         }
     }
 

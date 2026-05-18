@@ -10,7 +10,8 @@ tOS is a from-scratch x86 hobby operating system with a Linux-like command envir
 - **Display:** VGA text mode (80x25), optional GUI mode with PS/2 mouse
 - **Input:** PS/2 keyboard (mandatory), PS/2 mouse (optional)
 - **Network:** RTL8139, PCnet (AMD Am79C970A/PCnet32), or E1000 NIC
-- **Storage:** No disk required — filesystem resides in memory (initrd)
+- **Storage:** No disk required for boot — optional IDE disk for persistent storage via tFS
+- **tFS:** [github.com/Artfical/tfs](https://github.com/Artfical/tfs) — custom persistent filesystem
 
 ## Building from Source
 
@@ -95,13 +96,20 @@ qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev
 
 ## Filesystem
 
-tOS uses a memory-resident filesystem (ramfs) mounted at `/`. Files can be created, edited, and deleted during a session. The filesystem is volatile — all data is lost on reboot unless saved via networking (e.g., wget to upload or download).
+tOS uses two filesystems:
+
+- **ramfs** — Memory-resident filesystem mounted at `/`. Volatile — all data is lost on reboot.
+- **tFS** — Persistent on-disk filesystem mounted at `/mnt` when an IDE disk is detected. Built on a custom on-disk format with 4 KB blocks, bitmap-based allocation, inline data for small files, and indirect/double-indirect block pointers.
+
+At first boot with a blank IDE disk, an interactive installer (Turkish UI) formats the disk and copies system files. On subsequent boots, tFS is auto-detected and mounted.
 
 The VFS layer supports:
 - Hierarchical directories
 - Symbolic links
 - Unix-style permissions (uid/gid/mode)
 - Standard POSIX-like operations (open, read, write, close, readdir, stat, mkdir, unlink, rename)
+
+> **tFS source:** [github.com/Artfical/tfs](https://github.com/Artfical/tfs)
 
 ## Networking
 
