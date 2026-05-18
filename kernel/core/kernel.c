@@ -201,7 +201,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     terminal_writestring("[OK] Keyboard initialized\n");
     klog_write("[OK] Keyboard initialized\n");
 
-    terminal_writestring("\nKlavye duzeni: [US] (1) veya [TR-Q] (2) ? ");
+    terminal_writestring("\nKeyboard layout: [US] (1) or [TR-Q] (2) ? ");
     for (;;) {
         char c = keyboard_getchar();
         if (c == '1') {
