@@ -596,6 +596,16 @@ int ramfs_mkdir(const char *path)
     return ramfs_mkdir_mode(path, 0755);
 }
 
+int ramfs_chmod(const char *path, uint32_t mode)
+{
+    uint32_t ino = resolve_path(path, 1);
+    if (!ino) return -1;
+    ramfs_inode_t *n = iget(ino);
+    if (!n) return -1;
+    n->mode = (n->mode & ~0xFFFF) | (mode & 0xFFFF);
+    return 0;
+}
+
 void ramfs_get_usage(uint32_t *used_inodes, uint32_t *total_inodes, uint32_t *used_size, uint32_t *total_size)
 {
     *total_inodes = RAMFS_MAX_INODES;

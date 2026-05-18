@@ -53,5 +53,6 @@ int  ramfs_open(const char *path, int flags);
 int  ramfs_close(int fd);
 
 void ramfs_get_usage(uint32_t *used_inodes, uint32_t *total_inodes, uint32_t *used_size, uint32_t *total_size);
+int ramfs_chmod(const char *path, uint32_t mode);
 
 #endif

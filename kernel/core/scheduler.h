@@ -30,5 +30,11 @@ void task_sleep(uint32_t ms);
 uint32_t timer_handler(uint32_t esp);
 task_t *task_current(void);
 uint32_t task_count(void);
+uint32_t task_get_ticks(void);
+int      task_kill(uint32_t pid);
+uint32_t task_get_pid(void);
+const char *task_get_name(uint32_t pid);
+uint32_t task_get_state(uint32_t pid);
+void     task_foreach(void (*callback)(uint32_t pid, const char *name, uint32_t state));
 
 #endif

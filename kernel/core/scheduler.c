@@ -11,6 +11,7 @@ static task_t *current = 0;
 static task_t *idle_task = 0;
 static int task_count_val = 0;
 static uint32_t next_pid = 1;
+static volatile uint32_t system_ticks = 0;
 
 extern void timer_irq_stub(void);
 
@@ -113,6 +114,7 @@ int task_spawn(void (*entry)(void), const char *name)
 uint32_t timer_handler(uint32_t esp)
 {
     outb(0x20, 0x20);
+    system_ticks++;
     current->esp = esp;
     if (current->state == TASK_STATE_RUNNING)
         current->state = TASK_STATE_READY;
@@ -145,3 +147,41 @@ void task_sleep(uint32_t ms)
 
 task_t *task_current(void) { return current; }
 uint32_t task_count(void)  { return task_count_val; }
+uint32_t task_get_ticks(void) { return system_ticks; }
+
+int task_kill(uint32_t pid)
+{
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (tasks[i].pid == pid && tasks[i].state != TASK_STATE_ZOMBIE) {
+            tasks[i].state = TASK_STATE_ZOMBIE;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+uint32_t task_get_pid(void)
+{
+    return current ? current->pid : 0;
+}
+
+const char *task_get_name(uint32_t pid)
+{
+    for (int i = 0; i < MAX_TASKS; i++)
+        if (tasks[i].pid == pid) return tasks[i].name;
+    return "unknown";
+}
+
+uint32_t task_get_state(uint32_t pid)
+{
+    for (int i = 0; i < MAX_TASKS; i++)
+        if (tasks[i].pid == pid) return tasks[i].state;
+    return 0xFFFFFFFF;
+}
+
+void task_foreach(void (*callback)(uint32_t pid, const char *name, uint32_t state))
+{
+    for (int i = 0; i < MAX_TASKS; i++)
+        if (tasks[i].pid || i == 0)
+            callback(tasks[i].pid, tasks[i].name, tasks[i].state);
+}
