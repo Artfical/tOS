@@ -14,16 +14,6 @@ static uint64_t sectors_to_mb(uint64_t sectors)
     return (sectors * 512) / (1024 * 1024);
 }
 
-static uint32_t kbhit(void)
-{
-    return keyboard_data_available();
-}
-
-static char getch(void)
-{
-    return keyboard_getchar();
-}
-
 typedef struct {
     int index;
     ata_device_t *dev;
@@ -54,29 +44,28 @@ int installer_run(void)
     terminal_setpos(0, y++);
     terminal_writestring("============================================");
     terminal_setpos(0, y++);
-    terminal_writestring("         tOS Kurulum Sihirbazi");
+    terminal_writestring("         tOS Installation Wizard");
     terminal_setpos(0, y++);
     terminal_writestring("============================================");
     y++;
 
     if (ata_device_count == 0) {
         terminal_setpos(0, y++);
-        terminal_writestring("HATA: Herhangi bir disk bulunamadi!");
+        terminal_writestring("ERROR: No disk found!");
         terminal_setpos(0, y++);
-        terminal_writestring("tOS kurulumu icin en az bir IDE disk gereklidir.");
+        terminal_writestring("At least one IDE disk is required for installation.");
         y++;
         terminal_setpos(0, y++);
-        terminal_writestring("Kurulum iptal edildi. Ramfs ile devam ediliyor...");
+        terminal_writestring("Installation cancelled. Booting with ramfs only.");
         y++;
         terminal_setpos(0, y++);
-        terminal_writestring("Devam etmek icin bir tusa basin...");
-        while (!kbhit()) {}
-        getch();
+        terminal_writestring("Press any key to continue...");
+        keyboard_getchar();
         return -1;
     }
 
     terminal_setpos(0, y++);
-    terminal_writestring("Mevcut diskler:");
+    terminal_writestring("Available disks:");
     y++;
 
     disk_entry_t disks[4];
@@ -97,7 +86,7 @@ int installer_run(void)
             line[pos++] = dev->model[j];
         pos += sprintf(line + pos, "  -  %d MB", (int)total_mb);
         if (tfs_blocks > 0) {
-            pos += sprintf(line + pos, "  (%d tFS bloku)", (int)tfs_blocks);
+            pos += sprintf(line + pos, "  (%d tFS blocks)", (int)tfs_blocks);
         }
         line[pos] = 0;
 
@@ -114,71 +103,64 @@ int installer_run(void)
 
     y++;
     terminal_setpos(0, y++);
-    terminal_writestring("tOS'u kurmak istiyor musunuz? [E/H]: ");
+    terminal_writestring("Install tOS? [y/N]: ");
 
-    char ans;
-    do {
-        while (!kbhit()) {}
-        ans = getch();
-        if (ans == 'E' || ans == 'e') break;
-        if (ans == 'H' || ans == 'h') {
-            terminal_setpos(0, y++);
-            terminal_writestring("Kurulum iptal edildi. Ramfs ile devam ediliyor...");
-            y++;
-            terminal_setpos(0, y++);
-            terminal_writestring("Devam etmek icin bir tusa basin...");
-            while (!kbhit()) {}
-            getch();
-            return -1;
-        }
-    } while (1);
+    char ans = keyboard_getchar();
+    terminal_putchar(ans);
+    if (ans != 'Y' && ans != 'y') {
+        terminal_setpos(0, y++);
+        terminal_writestring("Installation cancelled. Booting with ramfs only.");
+        y++;
+        terminal_setpos(0, y++);
+        terminal_writestring("Press any key to continue...");
+        keyboard_getchar();
+        return -1;
+    }
 
-    terminal_writestring("E");
     y++;
 
     int selected = 0;
     if (disk_count > 1) {
         terminal_setpos(0, y++);
-        terminal_writestring("Kurulacak diski secin (0-");
+        terminal_writestring("Select disk to install (0-");
         terminal_putchar('0' + disk_count - 1);
         terminal_writestring("): ");
 
-        do {
-            while (!kbhit()) {}
-            char c = getch();
+        for (;;) {
+            char c = keyboard_getchar();
             if (c >= '0' && c < '0' + disk_count) {
                 selected = c - '0';
                 terminal_putchar(c);
                 break;
             }
-        } while (1);
+        }
         y++;
     }
 
     terminal_setpos(0, y++);
-    terminal_writestring("Disk formatlaniyor...");
+    terminal_writestring("Formatting disk...");
 
     ata_device_t *disk = disks[selected].dev;
     uint64_t blocks = disks[selected].total_blocks;
 
     if (tfsk_format(disk, blocks, "tOS Root") < 0) {
         terminal_setpos(0, y++);
-        terminal_writestring("HATA: Disk formatlanamadi!");
+        terminal_writestring("ERROR: Failed to format disk!");
         return -1;
     }
 
     terminal_setpos(0, y++);
-    terminal_writestring("Disk basariyla formatlandi.");
+    terminal_writestring("Disk formatted successfully.");
 
     tfsk_t fs;
     if (tfsk_mount(&fs, disk) < 0) {
         terminal_setpos(0, y++);
-        terminal_writestring("HATA: Formatlanan disk mount edilemedi!");
+        terminal_writestring("ERROR: Failed to mount formatted disk!");
         return -1;
     }
 
     terminal_setpos(0, y++);
-    terminal_writestring("Dizin yapisi olusturuluyor...");
+    terminal_writestring("Creating directory structure...");
 
     tfsk_mkdir(&fs, TFSK_ROOT_INODE, "bin");
     tfsk_mkdir(&fs, TFSK_ROOT_INODE, "etc");
@@ -188,7 +170,7 @@ int installer_run(void)
     tfsk_mkdir(&fs, TFSK_ROOT_INODE, "tmp");
 
     terminal_setpos(0, y++);
-    terminal_writestring("Dosyalar kopyalaniyor...");
+    terminal_writestring("Copying files...");
 
     vfs_entry_t entries[64];
     int copied = 0;
@@ -233,7 +215,7 @@ int installer_run(void)
     }
 
     char done_msg[80];
-    int dlen = sprintf(done_msg, "%d dosya kopyalandi.", copied);
+    int dlen = sprintf(done_msg, "%d files copied.", copied);
     done_msg[dlen] = 0;
     terminal_setpos(0, y++);
     terminal_writestring(done_msg);
@@ -243,16 +225,15 @@ int installer_run(void)
     terminal_setpos(0, y++);
     terminal_writestring("============================================");
     terminal_setpos(0, y++);
-    terminal_writestring("  tOS kurulumu tamamlandi!");
+    terminal_writestring("  tOS installation complete!");
     terminal_setpos(0, y++);
-    terminal_writestring("  Bilgisayari yeniden baslatin.");
+    terminal_writestring("  Reboot to start using tOS.");
     terminal_setpos(0, y++);
     terminal_writestring("============================================");
     y++;
     terminal_setpos(0, y++);
-    terminal_writestring("Devam etmek icin bir tusa basin...");
-    while (!kbhit()) {}
-    getch();
+    terminal_writestring("Press any key to continue...");
+    keyboard_getchar();
 
     return 0;
 }
