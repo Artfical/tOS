@@ -78,6 +78,8 @@ KERNEL_OBJS = \
     kernel/shell/commands/cmd_net.o \
     kernel/core/klog.o \
     kernel/fs/ramfs.o \
+    kernel/fs/tfsk.o \
+    kernel/fs/installer.o \
     kernel/shell/tsharp.o \
     kernel/display/gui.o \
     kernel/net/net.o \
@@ -148,13 +150,23 @@ tOS.iso: kernel/tOS.elf initrd.tar
 	cp kernel/tOS.elf iso/boot/
 	cp initrd.tar iso/boot/
 	cp boot/grub/grub.cfg iso/boot/grub/
-	LD_LIBRARY_PATH="/tmp/opencode/xorriso_libs/usr/lib/x86_64-linux-gnu:/tmp/opencode/xorriso_fulldir/usr/lib/x86_64-linux-gnu" \
-	PATH="/tmp/opencode/xorriso_extracted/usr/bin:$$PATH" \
+	PATH="/tmp/xorriso_ubuntu/usr/bin:$$PATH" \
+	LD_LIBRARY_PATH="/tmp/xorriso_ubuntu/usr/lib/x86_64-linux-gnu:$$LD_LIBRARY_PATH" \
 	grub-mkrescue -o $@ iso
 
 run: tOS.iso
-	qemu-system-x86_64 -cdrom tOS.iso -m 256M -serial stdio 2>/dev/null || \
-	qemu-system-x86_64 -cdrom tOS.iso -m 256M
+	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
+		-drive file=/tmp/tfs_test.img,if=ide,format=raw \
+		-serial stdio 2>/dev/null || \
+	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
+		-drive file=/tmp/tfs_test.img,if=ide,format=raw
+
+run-noinstall: tOS.iso
+	rm -f /tmp/tfs_test.img
+	dd if=/dev/zero of=/tmp/tfs_test.img bs=1M count=64 >/dev/null 2>&1
+	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
+		-drive file=/tmp/tfs_test.img,if=ide,format=raw \
+		-serial stdio 2>/dev/null || true
 
 clean:
 	rm -f $(KERNEL_OBJS) kernel/tOS.elf initrd.tar tOS.iso programs/hello.elf

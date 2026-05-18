@@ -2,6 +2,9 @@
 #include "io.h"
 #include "string.h"
 #include "terminal.h"
+ata_device_t ata_devices[ATA_MAX_DEVICES];
+int ata_device_count = 0;
+
 static int ata_wait(ata_device_t *dev, int timeout)
 {
     (void)timeout;
@@ -39,7 +42,29 @@ int ata_identify(ata_device_t *dev, int is_slave)
 }
 int ata_init(void)
 {
-    return 0;
+    int bases[2] = { ATA_PRIMARY_IO, ATA_SECONDARY_IO };
+    int ctrls[2] = { ATA_PRIMARY_CTRL, ATA_SECONDARY_CTRL };
+    ata_device_count = 0;
+
+    for (int bus = 0; bus < 2 && ata_device_count < ATA_MAX_DEVICES; bus++) {
+        for (int slave = 0; slave < 2 && ata_device_count < ATA_MAX_DEVICES; slave++) {
+            uint16_t io = bases[bus];
+            outb(io + ATA_REG_DRIVE, slave ? 0xB0 : 0xA0);
+            io_wait();
+            uint8_t st = inb(io + ATA_REG_STATUS);
+            if (st == 0 || st == 0xFF) continue;
+
+            ata_device_t *dev = &ata_devices[ata_device_count];
+            dev->io_base = io;
+            dev->ctrl_base = ctrls[bus];
+            dev->present = 0;
+
+            if (ata_identify(dev, slave) == 0) {
+                ata_device_count++;
+            }
+        }
+    }
+    return ata_device_count;
 }
 int ata_read_sectors(ata_device_t *dev, uint64_t lba, uint8_t count, void *buf)
 {

@@ -30,6 +30,11 @@ typedef struct {
     uint64_t sectors_48;
     char model[41];
 } ata_device_t;
+#define ATA_MAX_DEVICES 4
+
+extern ata_device_t ata_devices[ATA_MAX_DEVICES];
+extern int ata_device_count;
+
 int ata_init(void);
 int ata_read_sectors(ata_device_t *dev, uint64_t lba, uint8_t count, void *buf);
 int ata_write_sectors(ata_device_t *dev, uint64_t lba, uint8_t count, const void *buf);
