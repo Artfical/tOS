@@ -47,4 +47,14 @@ void cmd_dirname(int argc, char **args);
 void cmd_which(int argc, char **args);
 void cmd_env(int argc, char **args);
 
+void cmd_uptime(int argc, char **args);
+void cmd_ps(int argc, char **args);
+void cmd_kill(int argc, char **args);
+void cmd_chmod(int argc, char **args);
+void cmd_hexdump(int argc, char **args);
+void cmd_tee(int argc, char **args);
+void cmd_alias(int argc, char **args);
+void cmd_history(int argc, char **args);
+void cmd_unalias(int argc, char **args);
+
 #endif

@@ -6,6 +6,7 @@
 #include "stdlib.h"
 #include "elf.h"
 #include "keyboard.h"
+#include "shell.h"
 
 static void print_num(uint32_t n)
 {
@@ -193,7 +194,8 @@ void cmd_which(int argc, char **args)
         "version", "about", "uname", "ping", "wget", "python", "tsharp",
         "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
         "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
-        "basename", "dirname", "which", "env", "uptime",
+        "basename", "dirname", "which", "env", "uptime", "ps", "kill",
+        "chmod", "hexdump", "tee", "alias", "unalias", "history",
         NULL
     };
     for (int i = 0; i < argc; i++) {
@@ -228,4 +230,55 @@ void cmd_env(int argc, char **args)
     terminal_writestring("USER=root\n");
     terminal_writestring("HOME=/\n");
     terminal_writestring("PATH=/:/bin:/usr/bin\n");
+}
+
+void cmd_history(int argc, char **args)
+{
+    (void)argc; (void)args;
+    shell_history_show();
+}
+
+void cmd_alias(int argc, char **args)
+{
+    if (argc == 1) {
+        shell_alias_list();
+        return;
+    }
+    const char *eq = args[1];
+    const char *equals = NULL;
+    for (const char *p = eq; *p; p++) {
+        if (*p == '=') { equals = p; break; }
+    }
+    if (!equals) {
+        terminal_writestring("usage: alias <name>=<value>\n");
+        return;
+    }
+    char name[32];
+    int nlen = equals - eq;
+    for (int i = 0; i < nlen && i < 31; i++) name[i] = eq[i];
+    name[nlen] = 0;
+
+    const char *val = equals + 1;
+    if (shell_alias_set(name, val) == 0) {
+        terminal_writestring("Alias set\n");
+    } else {
+        terminal_writestring("alias: Failed (max ");
+        print_num(16);
+        terminal_writestring(" aliases)\n");
+    }
+}
+
+void cmd_unalias(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: unalias <name>\n");
+        return;
+    }
+    if (shell_alias_unset(args[1]) == 0) {
+        terminal_writestring("Unaliased\n");
+    } else {
+        terminal_writestring("unalias: ");
+        terminal_writestring(args[1]);
+        terminal_writestring(": not found\n");
+    }
 }

@@ -7,6 +7,7 @@
 #include "stdlib.h"
 #include "memory.h"
 #include "ramfs.h"
+#include "scheduler.h"
 
 static void print_num(uint32_t n)
 {
@@ -71,6 +72,15 @@ void cmd_help(int argc, char **args)
     terminal_writestring("  dirname    - strip filename from path\n");
     terminal_writestring("  which      - locate a command\n");
     terminal_writestring("  env        - print environment\n");
+    terminal_writestring("  uptime     - system uptime\n");
+    terminal_writestring("  ps         - list processes\n");
+    terminal_writestring("  kill       - kill a process\n");
+    terminal_writestring("  chmod      - change file mode\n");
+    terminal_writestring("  hexdump    - hex dump of a file\n");
+    terminal_writestring("  tee        - write stdin to file\n");
+    terminal_writestring("  alias      - set/view aliases\n");
+    terminal_writestring("  unalias    - remove alias\n");
+    terminal_writestring("  history    - show command history\n");
     terminal_writestring("  python     - MicroPython REPL\n");
 }
 
@@ -312,6 +322,96 @@ void cmd_sleep(int argc, char **args)
             elapsed += (prev - curr) & 0xFFFF;
             prev = curr;
         }
+    }
+}
+
+void cmd_uptime(int argc, char **args)
+{
+    (void)argc; (void)args;
+    uint32_t ticks = task_get_ticks();
+    uint32_t sec = ticks / 100;
+    uint32_t min = sec / 60;
+    uint32_t hr = min / 60;
+    sec %= 60; min %= 60;
+
+    terminal_writestring("Uptime: ");
+    if (hr > 0) { print_num(hr); terminal_writestring("h "); }
+    if (min > 0) { print_num(min); terminal_writestring("m "); }
+    print_num(sec); terminal_writestring("s (");
+    print_num(ticks); terminal_writestring(" ticks)\n");
+}
+
+static void ps_callback(uint32_t pid, const char *name, uint32_t state)
+{
+    (void)name;
+    terminal_putchar(' ');
+    if (pid < 10) terminal_putchar(' ');
+    if (pid < 100) terminal_putchar(' ');
+    print_num(pid);
+    terminal_writestring("  ");
+    int nlen = 0;
+    while (name[nlen]) nlen++;
+    terminal_writestring(name);
+    for (int i = nlen; i < 12; i++) terminal_putchar(' ');
+    const char *s = "???";
+    if (state == 0) s = "READY";
+    else if (state == 1) s = "RUN";
+    else if (state == 2) s = "SLP";
+    else if (state == 3) s = "ZOMB";
+    terminal_writestring(s);
+    terminal_putchar('\n');
+}
+
+void cmd_ps(int argc, char **args)
+{
+    (void)argc; (void)args;
+    terminal_writestring(" PID  NAME         STATE\n");
+    task_foreach(ps_callback);
+}
+
+void cmd_kill(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: kill <pid>\n");
+        return;
+    }
+    uint32_t pid = (uint32_t)atoi(args[1]);
+    if (pid == 0 || pid == 1) {
+        terminal_writestring("kill: Cannot kill that process\n");
+        return;
+    }
+    if (task_kill(pid) == 0) {
+        terminal_writestring("Process ");
+        print_num(pid);
+        terminal_writestring(" killed\n");
+    } else {
+        terminal_writestring("kill: No such process\n");
+    }
+}
+
+void cmd_chmod(int argc, char **args)
+{
+    if (argc < 3) {
+        terminal_writestring("usage: chmod <mode> <file>\n");
+        terminal_writestring("  mode: 3-digit octal (e.g. 644, 755)\n");
+        return;
+    }
+    uint32_t mode = 0;
+    const char *m = args[1];
+    while (*m >= '0' && *m <= '9') {
+        mode = (mode << 3) | (unsigned long)(*m - '0');
+        m++;
+    }
+    if (ramfs_exists(args[2])) {
+        if (ramfs_is_dir(args[2]))
+            mode |= S_IFDIR;
+        else
+            mode |= S_IFREG;
+    }
+    if (ramfs_chmod(args[2], mode) == 0) {
+        terminal_writestring("Mode changed\n");
+    } else {
+        terminal_writestring("chmod: Failed\n");
     }
 }
 

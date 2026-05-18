@@ -4,6 +4,7 @@
 #include "ramfs.h"
 #include "memory.h"
 #include "stdlib.h"
+#include "keyboard.h"
 
 static void print_num(uint32_t n)
 {
@@ -238,5 +239,100 @@ void cmd_grep(int argc, char **args)
     }
     if (!any) {
         terminal_writestring("grep: No matches\n");
+    }
+}
+
+static void print_hex_byte(uint8_t b)
+{
+    char hex[3];
+    hex[0] = "0123456789ABCDEF"[(b >> 4) & 0xF];
+    hex[1] = "0123456789ABCDEF"[b & 0xF];
+    hex[2] = 0;
+    terminal_writestring(hex);
+}
+
+void cmd_hexdump(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: hexdump <file> [length]\n");
+        return;
+    }
+    if (!ramfs_exists(args[1]) || ramfs_is_dir(args[1])) {
+        terminal_writestring("hexdump: ");
+        terminal_writestring(args[1]);
+        terminal_writestring(": No such file\n");
+        return;
+    }
+    uint32_t sz = ramfs_size(args[1]);
+    uint32_t len = sz;
+    if (argc > 2) {
+        len = (uint32_t)atoi(args[2]);
+        if (len > sz) len = sz;
+    }
+    char *buf = (char *)malloc(len);
+    if (!buf) { terminal_writestring("hexdump: Out of memory\n"); return; }
+    ramfs_read(args[1], buf, len, 0);
+
+    uint32_t offset = 0;
+    while (offset < len) {
+        print_hex_byte((offset >> 24) & 0xFF);
+        print_hex_byte((offset >> 16) & 0xFF);
+        print_hex_byte((offset >> 8) & 0xFF);
+        print_hex_byte(offset & 0xFF);
+        terminal_writestring("  ");
+
+        for (int i = 0; i < 16; i++) {
+            if (offset + i < len)
+                print_hex_byte((uint8_t)buf[offset + i]);
+            else
+                terminal_writestring("  ");
+            if (i == 7) terminal_putchar(' ');
+        }
+
+        terminal_writestring("  |");
+        for (int i = 0; i < 16 && offset + i < len; i++) {
+            char c = buf[offset + i];
+            if (c >= 32 && c < 127) terminal_putchar(c);
+            else terminal_putchar('.');
+        }
+        terminal_writestring("|\n");
+        offset += 16;
+    }
+
+    free(buf);
+}
+
+void cmd_tee(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: tee <file>\n");
+        terminal_writestring("  Reads stdin, writes to both terminal and file.\n");
+        terminal_writestring("  Press Ctrl+D on empty line to stop.\n");
+        return;
+    }
+    if (ramfs_exists(args[1]) && !ramfs_is_dir(args[1])) {
+        terminal_writestring("tee: File exists, overwrite? (y/n) ");
+        char c = keyboard_getchar();
+        terminal_putchar(c);
+        terminal_putchar('\n');
+        if (c != 'y' && c != 'Y') return;
+        ramfs_delete(args[1]);
+    }
+    if (ramfs_create(args[1]) != 0) {
+        terminal_writestring("tee: Failed to create file\n");
+        return;
+    }
+    terminal_writestring("tee: Enter lines (Ctrl+D or .q to stop)\n");
+    char line[512];
+    uint32_t offset = 0;
+    for (;;) {
+        terminal_writestring("> ");
+        keyboard_readline(line, 512);
+        if (line[0] == '\0' || strcmp(line, ".q") == 0) break;
+        terminal_writestring(line);
+        terminal_putchar('\n');
+        ramfs_write(args[1], line, strlen(line), offset);
+        ramfs_write(args[1], "\n", 1, offset + strlen(line));
+        offset += strlen(line) + 1;
     }
 }

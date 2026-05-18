@@ -11,6 +11,7 @@ int keyboard_data_available(void);
 int keyboard_yesno(void);
 void keyboard_set_layout(int layout);
 int keyboard_get_layout(void);
+int keyboard_get_special(void);
 
 extern volatile int interrupt_char;
 extern void (*interrupt_callback)(void);
