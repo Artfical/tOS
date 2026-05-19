@@ -82,9 +82,10 @@ void gui_update_mouse(void)
 
 void gui_poll(void)
 {
-    if (!gui_active) return;
     mouse_poll();
     gui_update_mouse();
+
+    if (!gui_active) return;
 
     int cx, cy;
     if (mouse_get_click(&cx, &cy)) {
@@ -103,7 +104,6 @@ void gui_poll(void)
 
 void gui_init(void)
 {
-    mouse_init();
     gui_draw_titlebar();
     gui_active = 1;
 }
