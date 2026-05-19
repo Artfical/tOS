@@ -83,6 +83,7 @@ void gui_update_mouse(void)
 void gui_poll(void)
 {
     if (!gui_active) return;
+    mouse_poll();
     gui_update_mouse();
 
     int cx, cy;

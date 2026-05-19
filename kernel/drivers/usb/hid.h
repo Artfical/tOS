@@ -97,6 +97,17 @@ typedef struct {
     uint8_t keys[6];
 } __attribute__((packed)) hid_keyboard_report_t;
 
+typedef struct {
+    uint8_t buttons;
+    int8_t x;
+    int8_t y;
+    int8_t wheel;
+} __attribute__((packed)) hid_mouse_report_t;
+
+#define HID_MOUSE_LEFT   1
+#define HID_MOUSE_RIGHT  2
+#define HID_MOUSE_MIDDLE 4
+
 char usb_keycode_to_ascii(uint8_t keycode, uint8_t modifiers);
 
 #endif
