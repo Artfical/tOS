@@ -10,6 +10,9 @@
 unsigned char _uhci_dma[65536] __attribute__((aligned(4096)));
 static uint32_t _dma_pos;
 
+static uhci_controller_t _saved_ctrl;
+static int _uhci_ready = 0;
+
 static void *dma_zalloc(uint32_t sz, uint32_t *phys)
 {
     _dma_pos = (_dma_pos + 15) & ~15;
@@ -27,6 +30,10 @@ static void *dma_zalloc(uint32_t sz, uint32_t *phys)
 
 int uhci_init(uhci_controller_t *c)
 {
+    if (_uhci_ready) {
+        *c = _saved_ctrl;
+        return 0;
+    }
     memset(c, 0, sizeof(*c));
     _dma_pos = 0;
 
@@ -64,6 +71,8 @@ int uhci_init(uhci_controller_t *c)
     t = 50000;
     while (r16(c, 2) & 0x20 && --t);
 
+    _saved_ctrl = *c;
+    _uhci_ready = 1;
     return t ? 0 : -1;
 }
 
