@@ -10,7 +10,10 @@ void paging_init(void)
     kernel_dir = (uint32_t *)alloc_physical_page();
     memset(kernel_dir, 0, PAGE_SIZE);
 
-    for (uint32_t virt = 0; virt < 0x1000000; virt += 0x400000) {
+    uint32_t total_mem = get_total_pages() * PAGE_SIZE;
+    if (total_mem < 0x2000000) total_mem = 0x2000000;
+
+    for (uint32_t virt = 0; virt < total_mem; virt += 0x400000) {
         uint32_t pd_idx = virt >> 22;
         uint32_t *pt = (uint32_t *)alloc_physical_page();
         memset(pt, 0, PAGE_SIZE);
