@@ -25,7 +25,6 @@
 #include "installer.h"
 #include "ata.h"
 #include "io.h"
-#include "mouse.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 
@@ -227,10 +226,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
     klog_write("[OK] Keyboard initialized\n");
-
-    mouse_init();
-    terminal_writestring("[OK] Mouse initialized\n");
-    klog_write("[OK] Mouse initialized\n");
 
     terminal_writestring("\nKeyboard layout: [US] (1) or [TR-Q] (2) ? ");
     for (;;) {

@@ -69,7 +69,7 @@ static void draw_cursor_at(int mx, int my)
 
 void gui_update_mouse(void)
 {
-    if (!mouse_visible) return;
+    if (!mouse_visible || !mouse_initialized) return;
 
     restore_prev_cell();
 
@@ -104,6 +104,7 @@ void gui_poll(void)
 
 void gui_init(void)
 {
+    mouse_init();
     gui_draw_titlebar();
     gui_active = 1;
 }

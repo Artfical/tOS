@@ -15,6 +15,7 @@ static volatile uint8_t mouse_buttons = 0;
 static volatile int mouse_click_pending = 0;
 static volatile int click_x = 0;
 static volatile int click_y = 0;
+int mouse_initialized = 0;
 
 static void mouse_wait(int type)
 {
@@ -107,6 +108,7 @@ static void mouse_enable_irq12(void)
 
 void mouse_init(void)
 {
+    asm volatile("cli");
     mouse_wait(0);
     outb(STATUS_PORT, 0xA8);
     mouse_wait(0);
@@ -118,10 +120,12 @@ void mouse_init(void)
 
     mouse_write(0xF4);
     mouse_read();
+    asm volatile("sti");
 
     isr_register_handler(32 + MOUSE_IRQ, mouse_callback);
     irq_ack(MOUSE_IRQ);
 
+    mouse_initialized = 1;
     usb_mouse_init();
 }
 
