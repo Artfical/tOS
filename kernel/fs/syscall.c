@@ -3,6 +3,7 @@
 #include "terminal.h"
 #include "fs.h"
 #include "memory.h"
+#include "usermode.h"
 
 static int running_process = 1;
 
@@ -19,7 +20,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
     switch (syscall) {
         case SYS_EXIT:
             running_process = 0;
-            return 0;
+            sys_exit_longjmp();
 
         case SYS_WRITE: {
             int fd = (int)a;

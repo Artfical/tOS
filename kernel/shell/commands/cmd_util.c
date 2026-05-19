@@ -7,6 +7,7 @@
 #include "elf.h"
 #include "keyboard.h"
 #include "shell.h"
+#include "usermode.h"
 
 static void print_num(uint32_t n)
 {
@@ -95,17 +96,17 @@ void cmd_exec(int argc, char **args)
         free(prog);
         return;
     }
-
-    char buf[16];
-    for (int i = 0; i < 8; i++) {
-        buf[7 - i] = "0123456789ABCDEF"[entry & 0xF];
-        entry >>= 4;
-    }
-    buf[8] = '\0';
-    terminal_writestring("Entry: 0x");
-    terminal_writestring(buf);
-    terminal_putchar('\n');
     free(prog);
+
+    uint32_t save_esp;
+    asm volatile("mov %%esp, %0" : "=r"(save_esp));
+    sys_exit_set_jmp(save_esp, (uint32_t)&&after_umode);
+
+    terminal_writestring("Running in user mode...\n");
+    enter_user_mode(entry, 0xBFFFF000);
+
+after_umode:
+    terminal_writestring("\nexec: program returned\n");
 }
 
 void cmd_yes(int argc, char **args)

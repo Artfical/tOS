@@ -72,6 +72,9 @@ KERNEL_OBJS = \
     kernel/fs/syscall.o \
     kernel/core/serial.o \
     kernel/core/scheduler.o \
+    kernel/core/paging.o \
+    kernel/core/tss.o \
+    kernel/core/usermode.o \
     kernel/shell/shell.o \
     kernel/shell/commands/cmd_file.o \
     kernel/shell/commands/cmd_fs.o \
@@ -142,6 +145,7 @@ kernel/tOS.elf: $(KERNEL_OBJS)
 
 programs/hello.elf: programs/hello.c
 	$(CC) -m32 -ffreestanding -nostdlib -nostartfiles -fno-builtin -fno-stack-protector \
+	      -fno-pic -fno-pie \
 	      -O2 -Wall -static -T programs/program.ld -I. -o $@ $<
 
 initrd.tar: $(PROGRAMS)

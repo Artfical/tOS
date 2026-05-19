@@ -6,6 +6,9 @@
 #include "irq.h"
 #include "keyboard.h"
 #include "memory.h"
+#include "paging.h"
+#include "tss.h"
+#include "usermode.h"
 #include "fs.h"
 #include "ramfs.h"
 #include "elf.h"
@@ -154,7 +157,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     irq_init();
     idt_set_gate(32, isr_stub_table[32], 0x08, 0x8E);
     idt_set_gate(33, isr_stub_table[33], 0x08, 0x8E);
-    idt_set_gate(0x80, isr_stub_table[48], 0x08, 0x8E);
+    idt_set_gate(0x80, isr_stub_table[48], 0x08, 0xEE);
     terminal_writestring("[OK] IRQ handlers set\n");
     klog_write("[OK] IRQ handlers set\n");
 
@@ -190,6 +193,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     if (mem_upper == 0) mem_upper = 32768;
     memory_init(mem_upper);
+
+    paging_init();
+    tss_init();
+    usermode_init();
 
     ramfs_init();
     terminal_writestring("[OK] Ramfs initialized\n");
