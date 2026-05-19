@@ -15,4 +15,9 @@ void *krealloc(void *ptr, size_t size);
 void *kcalloc(size_t num, size_t size);
 void memory_get_usage(uint32_t *total_kb, uint32_t *used_kb);
 
+uint32_t alloc_physical_page(void);
+void free_physical_page(uint32_t addr);
+uint32_t get_total_pages(void);
+uint32_t get_used_pages(void);
+
 #endif

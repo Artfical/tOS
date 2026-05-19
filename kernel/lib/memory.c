@@ -51,6 +51,18 @@ void memory_init(uint32_t mem_upper)
     heap_list->used = 0;
     heap_list->next = NULL;
 
+    uint32_t bitmap_end = ((uint32_t)page_bitmap + bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    for (uint32_t i = kernel_end / PAGE_SIZE + 1; i < bitmap_end / PAGE_SIZE; i++) {
+        page_bitmap[i / 32] |= (1 << (i % 32));
+        used_pages++;
+    }
+
+    uint32_t heap_end_page = (KERNEL_HEAP_START + KERNEL_HEAP_INITIAL_SIZE + PAGE_SIZE - 1) / PAGE_SIZE;
+    for (uint32_t i = bitmap_end / PAGE_SIZE; i < heap_end_page; i++) {
+        page_bitmap[i / 32] |= (1 << (i % 32));
+        used_pages++;
+    }
+
     terminal_writestring("Memory init: ");
     char buf[32];
     int i = 0;
@@ -64,6 +76,31 @@ void memory_init(uint32_t mem_upper)
         terminal_writestring(" MB\n");
     }
 }
+
+uint32_t alloc_physical_page(void)
+{
+    for (uint32_t i = 0; i < total_pages; i++) {
+        if (!(page_bitmap[i / 32] & (1 << (i % 32)))) {
+            page_bitmap[i / 32] |= (1 << (i % 32));
+            used_pages++;
+            uint32_t addr = i * PAGE_SIZE;
+            memset((void *)addr, 0, PAGE_SIZE);
+            return addr;
+        }
+    }
+    return 0;
+}
+
+void free_physical_page(uint32_t addr)
+{
+    uint32_t page = addr / PAGE_SIZE;
+    if (page >= total_pages) return;
+    page_bitmap[page / 32] &= ~(1 << (page % 32));
+    used_pages--;
+}
+
+uint32_t get_total_pages(void) { return total_pages; }
+uint32_t get_used_pages(void)  { return used_pages; }
 
 static void *heap_alloc(uint32_t size)
 {

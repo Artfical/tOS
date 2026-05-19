@@ -4,5 +4,6 @@
 #include <stdint.h>
 
 void gdt_init(void);
+void gdt_set_tss(uint32_t tss_addr);
 
 #endif

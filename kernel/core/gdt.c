@@ -14,7 +14,7 @@ struct gdt_ptr {
     uint32_t base;
 } __attribute__((packed));
 
-static struct gdt_entry gdt_entries[5];
+static struct gdt_entry gdt_entries[6];
 static struct gdt_ptr gdt_ptr;
 
 static void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran)
@@ -28,6 +28,14 @@ static void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access,
     gdt_entries[num].access = access;
 }
 
+void gdt_set_tss(uint32_t tss_addr)
+{
+    uint32_t base = tss_addr;
+    uint32_t limit = sizeof(struct gdt_entry) + 104 - 1;
+    gdt_set_gate(5, base, limit, 0x89, 0x40);
+    asm volatile("ltr %%ax" : : "a"(5 << 3));
+}
+
 void gdt_init(void)
 {
     gdt_ptr.limit = sizeof(gdt_entries) - 1;
@@ -38,6 +46,7 @@ void gdt_init(void)
     gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF);
     gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);
     gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);
+    gdt_set_gate(5, 0, 0, 0x89, 0);
 
     asm volatile("lgdt %0" : : "m"(gdt_ptr));
     asm volatile(
