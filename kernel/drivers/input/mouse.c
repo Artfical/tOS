@@ -1,4 +1,5 @@
 #include "mouse.h"
+#include "usb_mouse.h"
 #include "isr.h"
 #include "irq.h"
 #include "io.h"
@@ -120,6 +121,33 @@ void mouse_init(void)
 
     isr_register_handler(32 + MOUSE_IRQ, mouse_callback);
     irq_ack(MOUSE_IRQ);
+
+    usb_mouse_init();
+}
+
+void mouse_poll(void)
+{
+    int dx, dy;
+    uint8_t btns;
+    if (usb_mouse_read(&dx, &dy, &btns)) {
+        int nx = mouse_x + dx;
+        if (nx < 0) nx = 0;
+        if (nx >= 80) nx = 79;
+        mouse_x = nx;
+
+        int ny = mouse_y - dy;
+        if (ny < 0) ny = 0;
+        if (ny >= 25) ny = 24;
+        mouse_y = ny;
+
+        mouse_buttons = btns & 0x07;
+
+        if ((btns & 1) && !mouse_click_pending) {
+            mouse_click_pending = 1;
+            click_x = mouse_x;
+            click_y = mouse_y;
+        }
+    }
 }
 
 void mouse_get_state(int *x, int *y, uint8_t *buttons)
