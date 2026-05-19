@@ -13,10 +13,10 @@ CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -I. \
          -Ikernel/core -Ikernel/display \
          -Ikernel/fs -Ikernel/shell -Ikernel/shell/commands -Ikernel/lib -Ikernel/net \
-         -Ikernel/drivers/include -Ikernel/drivers/bus -Ikernel/drivers/storage \
-         -Ikernel/drivers/usb -Ikernel/drivers/audio -Ikernel/drivers/video \
-         -Ikernel/drivers/input -Ikernel/drivers/system -Ikernel/drivers/misc \
-         -Ikernel/micropython \
+          -Ikernel/drivers/include -Ikernel/drivers/bus -Ikernel/drivers/storage \
+          -Ikernel/drivers/net -Ikernel/drivers/usb -Ikernel/drivers/audio \
+          -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
+          -Ikernel/drivers/misc -Ikernel/micropython \
          -Ikernel/micropython/ports/tos
 
 # Relaxed flags for MicroPython core (uses -isystem for 32-bit glibc compat)
@@ -36,16 +36,18 @@ MPY_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
 MPY_PORT_CFLAGS = $(MPY_CFLAGS) \
              -Ikernel/core -Ikernel/display \
              -Ikernel/fs -Ikernel/shell -Ikernel/lib -Ikernel/net \
-             -Ikernel/drivers/include -Ikernel/drivers/bus -Ikernel/drivers/storage \
-             -Ikernel/drivers/usb -Ikernel/drivers/audio -Ikernel/drivers/video \
-             -Ikernel/drivers/input -Ikernel/drivers/system -Ikernel/drivers/misc
+              -Ikernel/drivers/include -Ikernel/drivers/bus -Ikernel/drivers/storage \
+              -Ikernel/drivers/net -Ikernel/drivers/usb -Ikernel/drivers/audio \
+              -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
+              -Ikernel/drivers/misc
 LDFLAGS = -m elf_i386 -T kernel/boot/linker.ld
 ASFLAGS = --32
 
 # Auto-discover driver sources
 DRIVER_SRCS := $(wildcard kernel/drivers/bus/*.c kernel/drivers/storage/*.c \
-    kernel/drivers/usb/*.c kernel/drivers/audio/*.c kernel/drivers/video/*.c \
-    kernel/drivers/input/*.c kernel/drivers/system/*.c kernel/drivers/misc/*.c)
+    kernel/drivers/net/*.c kernel/drivers/usb/*.c kernel/drivers/audio/*.c \
+    kernel/drivers/video/*.c kernel/drivers/input/*.c kernel/drivers/system/*.c \
+    kernel/drivers/misc/*.c)
 DRIVER_OBJS := $(DRIVER_SRCS:.c=.o)
 
 KERNEL_OBJS = \
