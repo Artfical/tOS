@@ -19,7 +19,7 @@ void klog_write(const char *s)
         buf[pos++] = *p++;
     buf[pos] = '\0';
 
-    debugmon_send_log(s);
+    debugmon_log_line(s);
 }
 
 const char *klog_get(int *len)

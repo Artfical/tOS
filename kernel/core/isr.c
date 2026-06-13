@@ -50,8 +50,7 @@ void isr_handler(registers_t *regs)
     }
 
     if (regs->int_no < 32) {
-        debugmon_send_regdump(regs);
-        debugmon_send_panic(regs->int_no, regs->eip, exception_messages[regs->int_no]);
+        debugmon_log_line(exception_messages[regs->int_no]);
 
         terminal_setcolor(0x4F);
         terminal_writestring("\nKERNEL PANIC: ");

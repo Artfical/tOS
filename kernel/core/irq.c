@@ -42,12 +42,8 @@ __attribute__((naked)) void irq_common_stub(void)
 
 void irq_handler(registers_t *regs)
 {
-    uint8_t irq_num = (uint8_t)(regs->int_no - 32);
-    uint32_t handler_addr = (uint32_t)(uintptr_t)interrupt_handlers[regs->int_no];
-    debugmon_send_irq(irq_num, handler_addr);
-
-    if (irq_num == 0 && debugmon_poll_regdump_request())
-        debugmon_send_regdump(regs);
+    if (regs->int_no == 32)
+        debugmon_tick();
 
     if (interrupt_handlers[regs->int_no])
         interrupt_handlers[regs->int_no](regs);
