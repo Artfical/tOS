@@ -67,8 +67,8 @@ void memory_init(uint32_t mem_upper)
     char buf[32];
     int i = 0;
     uint32_t n = total_pages * 4;
-    if (n >= 1024 * 1024) {
-        n /= (1024 * 1024);
+    if (n >= 1024) {
+        n /= 1024;
         while (n) { buf[i++] = '0' + n % 10; n /= 10; }
         for (int j = 0; j < i/2; j++) { char t = buf[j]; buf[j] = buf[i-1-j]; buf[i-1-j] = t; }
         buf[i] = '\0';

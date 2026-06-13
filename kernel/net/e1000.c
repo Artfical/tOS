@@ -3,6 +3,7 @@
 #include "io.h"
 #include "net.h"
 #include "memory.h"
+#include "paging.h"
 #include "string.h"
 #include "terminal.h"
 
@@ -140,6 +141,7 @@ int e1000_init(void)
     cmd |= 0x06;
     pci_write_config(bus, dev, func, 0x04, cmd);
 
+    paging_map_range(mmio_addr, mmio_addr, 0x20000, PTE_WRITABLE);
     mmio = (volatile uint8_t *)(uintptr_t)mmio_addr;
 
     e1000_write(E1000_CTRL, e1000_read(E1000_CTRL) | E1000_CTRL_RST);
