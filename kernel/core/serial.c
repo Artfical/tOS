@@ -39,3 +39,14 @@ void serial_write(const char *data)
         data++;
     }
 }
+
+int serial_received(void)
+{
+    if (!serial_initialized) return 0;
+    return inb(COM1 + 5) & 0x01;
+}
+
+char serial_getchar(void)
+{
+    return (char)inb(COM1);
+}

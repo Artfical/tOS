@@ -28,6 +28,7 @@
 #include "installer.h"
 #include "ata.h"
 #include "io.h"
+#include "debugmon.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 
@@ -136,6 +137,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     serial_init();
     terminal_init();
     klog_init();
+    debugmon_init();
     serial_write(TOS_BOOT_STRING "\n");
     terminal_writestring(TOS_BOOT_STRING "\n");
     klog_write(TOS_BOOT_STRING "\n");
