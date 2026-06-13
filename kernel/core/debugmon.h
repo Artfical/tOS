@@ -2,19 +2,15 @@
 #define DEBUGMON_H
 
 #include <stdint.h>
-#include "isr.h"
 
-#define DEBUGMON_REGDUMP_REQUEST 0x52  /* 'R' */
+/* Called once per timer IRQ (IRQ0) to advance the uptime counter. */
+void debugmon_tick(void);
 
-void debugmon_init(void);
-void debugmon_send_log(const char *msg);
-void debugmon_send_irq(uint8_t irq_number, uint32_t handler_addr);
-void debugmon_send_regdump(registers_t *regs);
-void debugmon_send_panic(uint32_t error_code, uint32_t eip, const char *msg);
-void debugmon_send_memdump(uint32_t address, const uint8_t *data, uint16_t len);
+/* Approximate uptime in milliseconds since boot. */
+uint32_t debugmon_uptime_ms(void);
 
-/* Drains pending serial RX bytes; returns 1 if a regdump request (0x52)
- * was seen since the last call, 0 otherwise. */
-int debugmon_poll_regdump_request(void);
+/* Formats msg as "[uptime_ms] [LEVEL] [KERNEL] msg" and writes it to the
+ * serial port as a plain text line, matching tOS_monitor's .log format. */
+void debugmon_log_line(const char *msg);
 
 #endif
