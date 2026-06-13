@@ -117,12 +117,12 @@ static void parse_multiboot1(uint32_t mb_info_addr, uint32_t *mem_upper, uint32_
     uint32_t flags = info[0];
 
     if (flags & (1 << 0)) {
-        *mem_upper = info[3];
+        *mem_upper = info[2];
     }
 
-    if ((flags & (1 << 3)) && (flags & (1 << 6))) {
-        uint32_t mods_count = info[8];
-        uint32_t mods_addr = info[9];
+    if (flags & (1 << 3)) {
+        uint32_t mods_count = info[5];
+        uint32_t mods_addr = info[6];
         if (mods_count > 0) {
             uint32_t *mod = (uint32_t *)mods_addr;
             *initrd_start = mod[0];

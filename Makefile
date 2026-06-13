@@ -21,7 +21,8 @@ CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
 
 # Relaxed flags for MicroPython core (uses -isystem for 32-bit glibc compat)
 MPY_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
-             -fno-stack-protector -fno-pic -fno-pie \
+             -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
+             -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 \
              -mno-mmx -mno-sse -mno-sse2 \
              -O2 -Wall -Wno-unused-variable -Wno-unused-function \
              -Wno-unused-parameter -Wno-sign-compare \
