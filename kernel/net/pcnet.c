@@ -12,28 +12,47 @@
 #define BUF_SZ 1536
 #define TMO 5000
 
+typedef struct {
+    uint16_t mode;
+    uint16_t tlen_rlen;
+    uint8_t  phys_addr[6];
+    uint16_t reserved;
+    uint32_t filter[2];
+    uint32_t rx_ring;
+    uint32_t tx_ring;
+} __attribute__((packed)) pcnet_init_block_t;
+
+typedef struct {
+    uint32_t base;
+    int16_t  length;  /* two's complement of buffer/frame length */
+    uint16_t status;
+    uint32_t misc;    /* msg_length (RX) / misc error flags (TX), written by chip */
+    uint32_t reserved;
+} __attribute__((packed)) pcnet_desc_t;
+
 static uint16_t io = 0;
 static uint8_t *rxb[RX_RING];
 static uint8_t *txb[TX_RING];
 static void *rxm = 0, *txm = 0;
-static volatile uint16_t *rxd = 0, *txd = 0;
+static volatile pcnet_desc_t *rxd = 0, *txd = 0;
 static int txi = 0, rxi = 0;
 static int ok = 0;
 
+/* WIO (16-bit) port map: RDP=+0x10, RAP=+0x12, RESET=+0x14, BDP=+0x16 */
 static uint16_t csr_rd(int r)
 {
-    outw(io + 0x0E, r); io_wait();
-    return inw(io + 0x0C); io_wait();
+    outw(io + 0x12, r); io_wait();
+    return inw(io + 0x10); io_wait();
 }
 static void csr_wr(int r, uint16_t v)
 {
-    outw(io + 0x0E, r); io_wait();
-    outw(io + 0x0C, v); io_wait();
+    outw(io + 0x12, r); io_wait();
+    outw(io + 0x10, v); io_wait();
 }
 static void bcr_wr(int r, uint16_t v)
 {
-    outw(io + 0x0A, r); io_wait();
-    outw(io + 0x08, v); io_wait();
+    outw(io + 0x12, r); io_wait();
+    outw(io + 0x16, v); io_wait();
 }
 
 int pcnet_init(void)
@@ -93,7 +112,7 @@ int pcnet_init(void)
 
     if (!initrdy_ok) {
         serial_write("pcnet: trying RESET port...\n");
-        inb(io + 0x0F);
+        inw(io + 0x14);
         io_wait();
         for (int t = 0; t < TMO; t++) {
             uint16_t csr = csr_rd(0);
@@ -109,7 +128,7 @@ int pcnet_init(void)
 
     uint8_t mac[6];
     for (int j = 0; j < 3; j++) {
-        uint16_t w = inw(io + 0x10 + j * 2);
+        uint16_t w = inw(io + j * 2);
         mac[j*2] = w & 0xFF;
         mac[j*2+1] = (w >> 8) & 0xFF;
     }
@@ -118,11 +137,17 @@ int pcnet_init(void)
     for (int j = 0; j < 6; j++) { for (int k = 4; k >= 0; k -= 4) serial_putchar("0123456789ABCDEF"[(mac[j] >> k) & 0xF]); if (j<5) serial_write(":"); }
     serial_write("\n");
 
-    void *ib = malloc(32);
+    bcr_wr(20, 2); /* SWSTYLE=2: 32-bit PCnet-PCI init block/descriptor format */
+
+    pcnet_init_block_t *ib = malloc(sizeof(pcnet_init_block_t));
     if (!ib) return -1;
-    memset(ib, 0, 32);
-    for (int j = 0; j < 6; j++) ((uint8_t *)ib)[2 + j] = mac[j];
-    memset((uint8_t *)ib + 8, 0, 8);
+    memset(ib, 0, sizeof(*ib));
+    ib->mode = 0;
+    ib->tlen_rlen = (2 << 12) | (2 << 4); /* log2(TX_RING)=log2(RX_RING)=2 */
+    memcpy(ib->phys_addr, mac, 6);
+    ib->reserved = 0;
+    ib->filter[0] = 0;
+    ib->filter[1] = 0;
 
     for (int i = 0; i < RX_RING; i++) {
         rxb[i] = malloc(BUF_SZ);
@@ -133,28 +158,34 @@ int pcnet_init(void)
         if (!txb[i]) { free(ib); return -1; }
     }
 
-    rxm = malloc(RX_RING * 16 + 16);
-    txm = malloc(TX_RING * 16 + 16);
+    rxm = malloc(RX_RING * sizeof(pcnet_desc_t) + 16);
+    txm = malloc(TX_RING * sizeof(pcnet_desc_t) + 16);
     if (!rxm || !txm) { free(ib); return -1; }
 
     uintptr_t rra = ((uintptr_t)rxm + 15) & ~15;
     uintptr_t tra = ((uintptr_t)txm + 15) & ~15;
-    rxd = (volatile uint16_t *)rra;
-    txd = (volatile uint16_t *)tra;
-    memset((void *)rra, 0, RX_RING * 16);
-    memset((void *)tra, 0, TX_RING * 16);
+    rxd = (volatile pcnet_desc_t *)rra;
+    txd = (volatile pcnet_desc_t *)tra;
+    memset((void *)rra, 0, RX_RING * sizeof(pcnet_desc_t));
+    memset((void *)tra, 0, TX_RING * sizeof(pcnet_desc_t));
 
     for (int i = 0; i < RX_RING; i++) {
-        rxd[i * 8]     = 0x8000;
-        rxd[i * 8 + 1] = 0xF000;
-        *(volatile uint32_t *)(rxd + i * 8 + 2) = (uint32_t)(uintptr_t)rxb[i];
+        rxd[i].base = (uint32_t)(uintptr_t)rxb[i];
+        rxd[i].length = (int16_t)(-BUF_SZ);
+        rxd[i].status = 0x8000;
+        rxd[i].misc = 0;
+        rxd[i].reserved = 0;
     }
     for (int i = 0; i < TX_RING; i++) {
-        *(volatile uint32_t *)(txd + i * 8 + 2) = (uint32_t)(uintptr_t)txb[i];
+        txd[i].base = (uint32_t)(uintptr_t)txb[i];
+        txd[i].length = 0;
+        txd[i].status = 0;
+        txd[i].misc = 0;
+        txd[i].reserved = 0;
     }
 
-    *(uint32_t *)((uint8_t *)ib + 16) = (uint32_t)rra;
-    *(uint32_t *)((uint8_t *)ib + 20) = (uint32_t)tra;
+    ib->rx_ring = (uint32_t)rra;
+    ib->tx_ring = (uint32_t)tra;
 
     csr_wr(1, (uint32_t)(uintptr_t)ib & 0xFFFF);
     csr_wr(2, ((uint32_t)(uintptr_t)ib >> 16) & 0xFFFF);
@@ -219,29 +250,28 @@ void pcnet_send(void *data, int len)
     if (!ok) return;
     if (len > BUF_SZ) len = BUF_SZ;
     int i = txi;
-    volatile uint16_t *d = txd + i * 8;
-    for (int t = 0; t < TMO; t++) { if (!(d[0] & 0x8000)) break; }
-    if (d[0] & 0x8000) return;
+    volatile pcnet_desc_t *d = &txd[i];
+    for (int t = 0; t < TMO; t++) { if (!(d->status & 0x8000)) break; }
+    if (d->status & 0x8000) return;
     memcpy(txb[i], data, len);
-    d[0] = 0xB000;
-    d[1] = len | 0x3000;
+    d->length = (int16_t)(-len);
+    d->status = 0x8300; /* OWN | STP | ENP */
     txi = (i + 1) % TX_RING;
-    csr_wr(0, 0x0048);
-    csr_wr(0, 0x0042);
-    for (int t = 0; t < TMO; t++) { if (!(d[0] & 0x8000)) break; }
+    csr_wr(0, 0x0008); /* TDMD: poke chip to fetch ready descriptor now (polling mode, no IENA) */
+    for (int t = 0; t < TMO; t++) { if (!(d->status & 0x8000)) break; }
 }
 
 int pcnet_poll(uint8_t *buf, int max)
 {
     if (!ok) return 0;
     int i = rxi;
-    volatile uint16_t *d = rxd + i * 8;
-    if (d[0] & 0x8000) return 0;
-    int l = d[1] & 0x0FFF;
+    volatile pcnet_desc_t *d = &rxd[i];
+    if (d->status & 0x8000) return 0;
+    int l = d->misc & 0x0FFF;
     if (l > max) l = max;
     if (l > 0) memcpy(buf, rxb[i], l);
-    d[0] = 0x8000;
-    d[1] = 0xF000;
+    d->length = (int16_t)(-BUF_SZ);
+    d->status = 0x8000;
     rxi = (i + 1) % RX_RING;
     return l;
 }

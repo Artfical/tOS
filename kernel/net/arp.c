@@ -70,6 +70,8 @@ static void arp_send_request(uint32_t ip)
 
 int arp_resolve(uint32_t ip, uint8_t *mac_out)
 {
+    if (!nic_send || !nic_poll) return -1;
+
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (arp_cache[i].valid && arp_cache[i].ip == ip) {
             memcpy(mac_out, arp_cache[i].mac, 6);
