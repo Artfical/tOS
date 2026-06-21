@@ -2,6 +2,8 @@
 #include "rtl8139.h"
 #include "pcnet.h"
 #include "e1000.h"
+#include "virtio_net.h"
+#include "ne2000.h"
 #include "net.h"
 #include "serial.h"
 #include "terminal.h"
@@ -33,6 +35,20 @@ int nic_init(void)
     if (e1000_init() == 0) {
         nic_send = e1000_send;
         nic_poll = e1000_poll;
+        serial_write("OK\n");
+        return 0;
+    }
+    serial_write("no\nnic: probing virtio-net... ");
+    if (virtio_net_init() == 0) {
+        nic_send = virtio_net_send;
+        nic_poll = virtio_net_poll;
+        serial_write("OK\n");
+        return 0;
+    }
+    serial_write("no\nnic: probing NE2000... ");
+    if (ne2000_init() == 0) {
+        nic_send = ne2000_send;
+        nic_poll = ne2000_poll;
         serial_write("OK\n");
         return 0;
     }
