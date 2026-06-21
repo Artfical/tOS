@@ -9,7 +9,7 @@ tOS is a from-scratch x86 hobby operating system with a Linux-like command envir
 - **Boot:** GRUB (Multiboot1) — bootable via ISO or PXE
 - **Display:** VGA text mode (80x25), optional GUI mode with PS/2 mouse
 - **Input:** PS/2 keyboard (mandatory), PS/2 mouse (optional)
-- **Network:** RTL8139, PCnet (AMD Am79C970A/PCnet32), or E1000 NIC
+- **Network:** RTL8139, PCnet (AMD Am79C970A/PCnet32), E1000, virtio-net, or NE2000 (RTL8029) NIC
 - **Storage:** No disk required for boot — optional IDE disk for persistent storage via tFS
 - **tFS:** [github.com/Artfical/tfs](https://github.com/Artfical/tfs) — custom persistent filesystem
 
@@ -123,10 +123,12 @@ The TCP/IP stack is implemented from scratch and includes:
 - **TCP** — Transmission Control Protocol (basic window-based implementation)
 - **HTTP/1.0** — Hypertext Transfer Protocol (client only, via wget)
 
-Three NIC drivers are available:
+Five NIC drivers are available:
 - **RTL8139** — Realtek Fast Ethernet
 - **PCnet** — AMD PCnet32 / Am79C970A (QEMU default)
 - **E1000** — Intel PRO/1000 (qemu e1000 device)
+- **virtio-net** — VirtIO paravirtualized NIC (legacy/transitional PCI transport)
+- **NE2000** — Realtek RTL8029 / NE2000 PCI clone (QEMU `ne2k_pci` device)
 
 NIC detection is automatic via PCI bus scanning.
 

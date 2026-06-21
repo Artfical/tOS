@@ -94,6 +94,8 @@ KERNEL_OBJS = \
     kernel/net/rtl8139.o \
     kernel/net/pcnet.o \
     kernel/net/e1000.o \
+    kernel/net/virtio_net.o \
+    kernel/net/ne2000.o \
     kernel/net/arp.o \
     kernel/net/ip.o \
     kernel/net/icmp.o \
