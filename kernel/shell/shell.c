@@ -323,36 +323,33 @@ void shell_history_show(void)
     }
 }
 
+const char **shell_builtin_names(void)
+{
+    return builtin_names;
+}
+
 void shell_init(void)
 {
     terminal_writestring(TOS_WELCOME_STRING);
     terminal_writestring("Type 'help' for commands\n\n");
 }
 
-void shell_run(void)
+static void shell_exec_line(char *cmd_line)
 {
-    char cmd_line[MAX_CMD_LEN];
     char *args[MAX_ARGS];
 
-    for (;;) {
-        gui_poll();
-        terminal_writestring(ramfs_getcwd());
-        terminal_writestring("> ");
+    char *expanded = expand_alias(cmd_line);
+    if (expanded != cmd_line) {
+        int ei = 0;
+        while (expanded[ei]) { cmd_line[ei] = expanded[ei]; ei++; }
+        cmd_line[ei] = 0;
+    }
 
-        shell_readline(cmd_line, MAX_CMD_LEN);
+    int argc = parse_args(cmd_line, args);
 
-        char *expanded = expand_alias(cmd_line);
-        if (expanded != cmd_line) {
-            int ei = 0;
-            while (expanded[ei]) { cmd_line[ei] = expanded[ei]; ei++; }
-            cmd_line[ei] = 0;
-        }
+    if (argc == 0) return;
 
-        int argc = parse_args(cmd_line, args);
-
-        if (argc == 0) continue;
-
-        const char *c = args[0];
+    const char *c = args[0];
 
         if (strcmp(c, "help") == 0) {
             cmd_help(argc, args);
@@ -467,5 +464,42 @@ void shell_run(void)
             terminal_writestring(c);
             terminal_putchar('\n');
         }
+}
+
+void shell_run(void)
+{
+    char cmd_line[MAX_CMD_LEN];
+
+    for (;;) {
+        gui_poll();
+        terminal_writestring(ramfs_getcwd());
+        terminal_writestring("> ");
+
+        shell_readline(cmd_line, MAX_CMD_LEN);
+        shell_exec_line(cmd_line);
+    }
+}
+
+void shell_run_windowed(const char *initial_cmd)
+{
+    char cmd_line[MAX_CMD_LEN];
+
+    if (initial_cmd && initial_cmd[0]) {
+        terminal_writestring(ramfs_getcwd());
+        terminal_writestring("> ");
+        terminal_writestring(initial_cmd);
+        terminal_putchar('\n');
+        int i = 0;
+        while (initial_cmd[i] && i < MAX_CMD_LEN - 1) { cmd_line[i] = initial_cmd[i]; i++; }
+        cmd_line[i] = 0;
+        shell_exec_line(cmd_line);
+    }
+
+    for (;;) {
+        terminal_writestring(ramfs_getcwd());
+        terminal_writestring("> ");
+
+        shell_readline(cmd_line, MAX_CMD_LEN);
+        shell_exec_line(cmd_line);
     }
 }

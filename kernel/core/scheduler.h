@@ -20,6 +20,7 @@ typedef struct task {
     struct task *next;
     uint8_t *kernel_stack;
     char name[TASK_NAME_MAX];
+    void *user_data;
 } task_t;
 
 void scheduler_init(void);
@@ -29,6 +30,8 @@ void task_exit(void);
 void task_sleep(uint32_t ms);
 uint32_t timer_handler(uint32_t esp);
 task_t *task_current(void);
+void     task_set_userdata(void *p);
+void    *task_get_userdata(void);
 uint32_t task_count(void);
 uint32_t task_get_ticks(void);
 int      task_kill(uint32_t pid);
