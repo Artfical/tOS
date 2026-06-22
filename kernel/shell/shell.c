@@ -77,7 +77,7 @@ static const char *builtin_names[] = {
     "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
     "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
     "basename", "dirname", "which", "env", "uptime", "ps", "kill",
-    "chmod", "hexdump", "tee", "alias", "history", "font",
+    "chmod", "hexdump", "tee", "alias", "history", "font", "htop",
     NULL
 };
 
@@ -459,6 +459,8 @@ static void shell_exec_line(char *cmd_line)
             cmd_unalias(argc, args);
         } else if (strcmp(c, "font") == 0) {
             cmd_font(argc, args);
+        } else if (strcmp(c, "htop") == 0) {
+            cmd_htop(argc, args);
         } else {
             terminal_writestring("Unknown command: ");
             terminal_writestring(c);

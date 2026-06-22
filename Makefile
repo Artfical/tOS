@@ -83,6 +83,7 @@ KERNEL_OBJS = \
     kernel/shell/commands/cmd_sys.o \
     kernel/shell/commands/cmd_util.o \
     kernel/shell/commands/cmd_net.o \
+    kernel/shell/commands/cmd_htop.o \
     kernel/core/klog.o \
     kernel/fs/ramfs.o \
     kernel/fs/tfsk.o \
