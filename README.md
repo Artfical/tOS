@@ -253,6 +253,7 @@ MicroPython was chosen as the primary scripting language for tOS for the followi
 tOS is developed by Talha Berk. The system is built from scratch with the exception of:
 - MicroPython (MIT License) — embedded scripting runtime
 - GRUB (GPLv3) — bootloader (not distributed in source, only used to generate the ISO)
+- htop (GPL-2.0-only) — inspiration for the `htop` process monitor command (original implementation, see `third_party/htop/`)
 
 ## Disclaimer
 
