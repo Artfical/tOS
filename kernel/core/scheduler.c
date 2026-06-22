@@ -146,6 +146,8 @@ void task_sleep(uint32_t ms)
 }
 
 task_t *task_current(void) { return current; }
+void     task_set_userdata(void *p) { current->user_data = p; }
+void    *task_get_userdata(void)    { return current ? current->user_data : 0; }
 uint32_t task_count(void)  { return task_count_val; }
 uint32_t task_get_ticks(void) { return system_ticks; }
 

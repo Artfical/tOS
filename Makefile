@@ -89,6 +89,7 @@ KERNEL_OBJS = \
     kernel/fs/installer.o \
     kernel/shell/tsharp.o \
     kernel/display/gui.o \
+    kernel/display/wm.o \
     kernel/net/net.o \
     kernel/net/nic.o \
     kernel/net/rtl8139.o \

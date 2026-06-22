@@ -1,8 +1,8 @@
 #include "terminal.h"
-#include "gui.h"
 #include "io.h"
 #include "string.h"
 #include "serial.h"
+#include "scheduler.h"
 
 static uint16_t *const VGA_MEMORY = (uint16_t *)0xB8000;
 static uint8_t terminal_color;
@@ -18,6 +18,21 @@ static uint8_t make_color(enum vga_color fg, enum vga_color bg)
 static uint16_t make_vgaentry(char c, uint8_t color)
 {
     return (uint16_t)c | (uint16_t)color << 8;
+}
+
+static term_surface_t *current_surface(void)
+{
+    return (term_surface_t *)task_get_userdata();
+}
+
+void terminal_surface_init(term_surface_t *s)
+{
+    uint8_t color = make_color(VGA_LIGHT_GREY, VGA_BLACK);
+    s->cur_row = 0;
+    s->cur_col = 0;
+    s->color = color;
+    for (int i = 0; i < TERM_SURFACE_W * TERM_SURFACE_H; i++)
+        s->cells[i] = make_vgaentry(' ', color);
 }
 
 void terminal_set_y_offset(int offset)
@@ -46,6 +61,11 @@ void terminal_init(void)
 
 void terminal_clear(void)
 {
+    term_surface_t *s = current_surface();
+    if (s) {
+        terminal_surface_init(s);
+        return;
+    }
     terminal_row = 0;
     terminal_column = 0;
     for (int y = terminal_y_offset; y < VGA_HEIGHT; y++) {
@@ -58,11 +78,26 @@ void terminal_clear(void)
 
 void terminal_setcolor(uint8_t color)
 {
+    term_surface_t *s = current_surface();
+    if (s) { s->color = color; return; }
     terminal_color = color;
+}
+
+static void surface_scroll(term_surface_t *s)
+{
+    for (int y = 1; y < TERM_SURFACE_H; y++) {
+        for (int x = 0; x < TERM_SURFACE_W; x++)
+            s->cells[(y - 1) * TERM_SURFACE_W + x] = s->cells[y * TERM_SURFACE_W + x];
+    }
+    for (int x = 0; x < TERM_SURFACE_W; x++)
+        s->cells[(TERM_SURFACE_H - 1) * TERM_SURFACE_W + x] = make_vgaentry(' ', s->color);
+    s->cur_row = TERM_SURFACE_H - 1;
 }
 
 void terminal_scroll(void)
 {
+    term_surface_t *s = current_surface();
+    if (s) { surface_scroll(s); return; }
     for (int y = terminal_y_offset + 1; y < VGA_HEIGHT; y++) {
         for (int x = 0; x < VGA_WIDTH; x++) {
             VGA_MEMORY[(y-1) * VGA_WIDTH + x] = VGA_MEMORY[y * VGA_WIDTH + x];
@@ -74,9 +109,37 @@ void terminal_scroll(void)
     terminal_row = VGA_HEIGHT - 1 - terminal_y_offset;
 }
 
+static void surface_putchar(term_surface_t *s, char c)
+{
+    if (c == '\n') {
+        s->cur_col = 0;
+        s->cur_row++;
+    } else if (c == '\t') {
+        s->cur_col = (s->cur_col + 8) & ~7;
+    } else if (c == '\r') {
+        s->cur_col = 0;
+    } else if (c == '\b') {
+        if (s->cur_col > 0) s->cur_col--;
+    } else {
+        s->cells[s->cur_row * TERM_SURFACE_W + s->cur_col] = make_vgaentry(c, s->color);
+        s->cur_col++;
+    }
+    if (s->cur_col >= TERM_SURFACE_W) {
+        s->cur_col = 0;
+        s->cur_row++;
+    }
+    if (s->cur_row >= TERM_SURFACE_H) {
+        surface_scroll(s);
+    }
+}
+
 void terminal_putchar(char c)
 {
     serial_putchar(c);
+
+    term_surface_t *s = current_surface();
+    if (s) { surface_putchar(s, c); return; }
+
     if (c == '\n') {
         terminal_column = 0;
         terminal_row++;
@@ -113,12 +176,24 @@ void terminal_writestring(const char *data)
 
 void terminal_setpos(size_t x, size_t y)
 {
+    term_surface_t *s = current_surface();
+    if (s) {
+        if ((int)x < TERM_SURFACE_W) s->cur_col = (int)x;
+        if ((int)y < TERM_SURFACE_H) s->cur_row = (int)y;
+        return;
+    }
     if (x < VGA_WIDTH) terminal_column = x;
     if (y < VGA_HEIGHT) terminal_row = y;
 }
 
 void terminal_getpos(size_t *x, size_t *y)
 {
+    term_surface_t *s = current_surface();
+    if (s) {
+        if (x) *x = (size_t)s->cur_col;
+        if (y) *y = (size_t)s->cur_row;
+        return;
+    }
     if (x) *x = terminal_column;
     if (y) *y = terminal_row;
 }
