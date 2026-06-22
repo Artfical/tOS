@@ -23,7 +23,6 @@ static void setup_task_stack(task_t *t, void (*entry)(void))
     *(--sp) = (uint32_t)entry;
     *(--sp) = 0; *(--sp) = 0; *(--sp) = 0; *(--sp) = 0;
     *(--sp) = 0; *(--sp) = 0; *(--sp) = 0; *(--sp) = 0;
-    *(--sp) = 0; *(--sp) = 0; *(--sp) = 0;
     *(--sp) = 0x10; *(--sp) = 0x10; *(--sp) = 0x10; *(--sp) = 0x10;
     t->esp = (uint32_t)sp;
 }
@@ -36,7 +35,7 @@ static void idle_entry(void)
 static int find_free_slot(void)
 {
     for (int i = 0; i < MAX_TASKS; i++)
-        if (tasks[i].state == TASK_STATE_ZOMBIE || tasks[i].pid == 0)
+        if (tasks[i].state == TASK_STATE_ZOMBIE || !tasks[i].in_use)
             return i;
     return -1;
 }
@@ -48,6 +47,7 @@ void scheduler_init(void)
 
     idle_task = &tasks[0];
     idle_task->pid = 0;
+    idle_task->in_use = 1;
     idle_task->state = TASK_STATE_READY;
     idle_task->kernel_stack = malloc(KERNEL_STACK_SZ);
     memset(idle_task->kernel_stack, 0, KERNEL_STACK_SZ);
@@ -56,6 +56,7 @@ void scheduler_init(void)
 
     task_t *main_task = &tasks[1];
     main_task->pid = 1;
+    main_task->in_use = 1;
     main_task->state = TASK_STATE_RUNNING;
     asm volatile("mov %%esp, %0" : "=r"(main_task->esp));
     strcpy(main_task->name, "main");
@@ -88,6 +89,7 @@ int task_spawn(void (*entry)(void), const char *name)
     task_t *t = &tasks[slot];
     memset(t, 0, sizeof(task_t));
     t->pid = next_pid++;
+    t->in_use = 1;
     t->state = TASK_STATE_READY;
     t->kernel_stack = malloc(KERNEL_STACK_SZ);
     if (!t->kernel_stack) return -1;

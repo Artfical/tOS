@@ -291,6 +291,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     micropython_init();
 
+    scheduler_init();
+    terminal_writestring("[OK] Scheduler initialized\n");
+    klog_write("[OK] Scheduler initialized\n");
+
     shell_init();
 
     if (sel) {

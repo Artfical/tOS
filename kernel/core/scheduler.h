@@ -17,6 +17,7 @@ typedef struct task {
     uint32_t pid;
     uint32_t state;
     uint32_t sleep_ticks;
+    uint32_t in_use;
     struct task *next;
     uint8_t *kernel_stack;
     char name[TASK_NAME_MAX];
