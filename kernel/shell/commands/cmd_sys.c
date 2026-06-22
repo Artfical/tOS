@@ -8,6 +8,7 @@
 #include "memory.h"
 #include "ramfs.h"
 #include "scheduler.h"
+#include "vga_font.h"
 
 static void print_num(uint32_t n)
 {
@@ -82,6 +83,40 @@ void cmd_help(int argc, char **args)
     terminal_writestring("  unalias    - remove alias\n");
     terminal_writestring("  history    - show command history\n");
     terminal_writestring("  python     - MicroPython REPL\n");
+    terminal_writestring("  font       - list/change terminal font style\n");
+}
+
+void cmd_font(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("Available fonts:\n");
+        for (int i = 0; i < VGA_FONT_STYLE_COUNT; i++) {
+            terminal_writestring(i == vga_font_get_style() ? "* " : "  ");
+            print_num(i);
+            terminal_writestring(" - ");
+            terminal_writestring(vga_font_style_name(i));
+            terminal_putchar('\n');
+        }
+        terminal_writestring("usage: font <name|number>\n");
+        return;
+    }
+
+    int idx = -1;
+    if (args[1][0] >= '0' && args[1][0] <= '9') {
+        idx = atoi(args[1]);
+    } else {
+        for (int i = 0; i < VGA_FONT_STYLE_COUNT; i++) {
+            if (strcmp(args[1], vga_font_style_name(i)) == 0) { idx = i; break; }
+        }
+    }
+    if (idx < 0 || idx >= VGA_FONT_STYLE_COUNT) {
+        terminal_writestring("font: unknown font (run 'font' with no args to list)\n");
+        return;
+    }
+    vga_font_set_style(idx);
+    terminal_writestring("Font set to: ");
+    terminal_writestring(vga_font_style_name(idx));
+    terminal_putchar('\n');
 }
 
 void cmd_echo(int argc, char **args)
