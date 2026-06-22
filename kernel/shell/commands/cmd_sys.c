@@ -75,6 +75,7 @@ void cmd_help(int argc, char **args)
     terminal_writestring("  env        - print environment\n");
     terminal_writestring("  uptime     - system uptime\n");
     terminal_writestring("  ps         - list processes\n");
+    terminal_writestring("  htop       - live process monitor\n");
     terminal_writestring("  kill       - kill a process\n");
     terminal_writestring("  chmod      - change file mode\n");
     terminal_writestring("  hexdump    - hex dump of a file\n");
