@@ -310,6 +310,9 @@ static void draw_cursor(void)
     VGA_MEM[my * VGA_W + mx] = mk_cell(ch, mk_color(bg, fg));
 }
 
+#define FRAME_INTERVAL_LOOPS 20000
+static uint32_t draw_skip_counter = 0;
+
 static void wm_desktop_tick(void)
 {
     mouse_poll();
@@ -365,24 +368,29 @@ static void wm_desktop_tick(void)
         }
     }
 
-    vga_fill_rect(0, 0, VGA_W, VGA_H - 1, ' ', mk_color(VGA_LIGHT_GREY, VGA_CYAN));
+    draw_skip_counter++;
+    if (draw_skip_counter >= FRAME_INTERVAL_LOOPS) {
+        draw_skip_counter = 0;
 
-    int order[MAX_WINDOWS];
-    int n = 0;
-    for (int i = 0; i < MAX_WINDOWS; i++)
-        if (windows[i].open && !windows[i].minimized) order[n++] = i;
-    for (int i = 1; i < n; i++) {
-        int key = order[i];
-        int keyz = windows[key].z;
-        int j = i - 1;
-        while (j >= 0 && windows[order[j]].z > keyz) { order[j + 1] = order[j]; j--; }
-        order[j + 1] = key;
+        vga_fill_rect(0, 0, VGA_W, VGA_H - 1, ' ', mk_color(VGA_LIGHT_GREY, VGA_CYAN));
+
+        int order[MAX_WINDOWS];
+        int n = 0;
+        for (int i = 0; i < MAX_WINDOWS; i++)
+            if (windows[i].open && !windows[i].minimized) order[n++] = i;
+        for (int i = 1; i < n; i++) {
+            int key = order[i];
+            int keyz = windows[key].z;
+            int j = i - 1;
+            while (j >= 0 && windows[order[j]].z > keyz) { order[j + 1] = order[j]; j--; }
+            order[j + 1] = key;
+        }
+        for (int i = 0; i < n; i++) draw_window(&windows[order[i]]);
+
+        if (start_menu_open) draw_start_menu();
+        draw_taskbar();
+        draw_cursor();
     }
-    for (int i = 0; i < n; i++) draw_window(&windows[order[i]]);
-
-    if (start_menu_open) draw_start_menu();
-    draw_taskbar();
-    draw_cursor();
 
     task_yield();
 }
