@@ -9,19 +9,24 @@
 
 #define RX_BUF_SIZE  8192
 #define TX_BUF_SIZE  1536
+#define NUM_TX_DESC  4
 
 static uint16_t io_base = 0;
 static uint8_t *rx_buf = 0;
 static int rx_ptr = 0;
+static uint8_t *tx_bufs[NUM_TX_DESC];
+static int tx_cur = 0;
 
+/* NS8390-unrelated RTL8139 register map (see OSDev wiki) */
+#define RTL_REG_TSD0     0x10  /* TSD0-3 @ 0x10,0x14,0x18,0x1C */
+#define RTL_REG_TSAD0    0x20  /* TSAD0-3 @ 0x20,0x24,0x28,0x2C */
 #define RTL_REG_RBSTART  0x30
-#define RTL_REG_CR       0x34
+#define RTL_REG_CR       0x37
 #define RTL_REG_CAPR     0x38
+#define RTL_REG_IMR      0x3C
 #define RTL_REG_ISR      0x3E
-#define RTL_REG_RCR      0x3C
 #define RTL_REG_TCR      0x40
-#define RTL_REG_TSAD0    0x48
-#define RTL_REG_TSAD1    0x4C
+#define RTL_REG_RCR      0x44
 
 int rtl8139_init(void)
 {
@@ -75,6 +80,10 @@ int rtl8139_init(void)
     int found = 0;
     for (int i = 0; i < n; i++) {
         if (devs[i].vendor_id == RTL8139_VENDOR_ID && devs[i].device_id == RTL8139_DEVICE_ID) {
+            uint32_t cmd = pci_read_config(devs[i].bus, devs[i].device, devs[i].func, 0x04);
+            cmd |= 0x06; /* I/O space enable + bus master enable, needed for DMA tx/rx */
+            pci_write_config(devs[i].bus, devs[i].device, devs[i].func, 0x04, cmd);
+
             uint32_t bar = pci_get_bar(devs[i].bus, devs[i].device, devs[i].func, 0);
             if (bar & 1) io_base = bar & 0xFFFC;
             else io_base = (bar & 0xFFFE) + 0xC000; // fallback
@@ -86,7 +95,7 @@ int rtl8139_init(void)
     if (!found) return -1;
 
     outb(io_base + 0x52, 0x00);
-    outl(io_base + RTL_REG_CR, 0x10);
+    outb(io_base + RTL_REG_CR, 0x10);
     int timeout = 0;
     while ((inb(io_base + RTL_REG_CR) & 0x10) && timeout < 1000) { io_wait(); timeout++; }
 
@@ -94,12 +103,18 @@ int rtl8139_init(void)
     if (!rx_buf) return -1;
     memset(rx_buf, 0, RX_BUF_SIZE + 16);
 
-    outl(io_base + RTL_REG_RBSTART, (uint32_t)(uintptr_t)rx_buf);
-    outl(io_base + RTL_REG_RCR, 0x00000F0E);
-    outl(io_base + RTL_REG_TCR, 0x00000A00);
-    outb(io_base + RTL_REG_CR, 0x0C);
+    for (int i = 0; i < NUM_TX_DESC; i++) {
+        tx_bufs[i] = (uint8_t *)malloc(TX_BUF_SIZE);
+        if (!tx_bufs[i]) return -1;
+    }
+    tx_cur = 0;
 
-    outb(io_base + 0x37, 0x00);
+    outl(io_base + RTL_REG_RBSTART, (uint32_t)(uintptr_t)rx_buf);
+    outl(io_base + RTL_REG_RCR, 0x0000E70E); /* AB+AM+APM, 8K rx buf, unlimited MXDMA, no RX-FIFO threshold */
+    outl(io_base + RTL_REG_TCR, 0x00000A00);
+    outb(io_base + RTL_REG_CR, 0x0C); /* RE + TE */
+
+    outw(io_base + RTL_REG_IMR, 0x0000); /* polling, no IRQ delivery */
     outw(io_base + RTL_REG_ISR, 0xFFFF);
 
     terminal_writestring("[OK] RTL8139 initialized (I/O: 0x");
@@ -114,11 +129,22 @@ int rtl8139_init(void)
 void rtl8139_send(void *data, int len)
 {
     if (len > TX_BUF_SIZE) len = TX_BUF_SIZE;
-    while (!(inb(io_base + 0x36) & 0x04)) io_wait();
-    for (int i = 0; i < len; i++) outb(io_base + 0x20 + i, ((uint8_t *)data)[i]);
-    outl(io_base + RTL_REG_TSAD0, len);
+
+    int slot = tx_cur;
+    uint16_t tsd_off = RTL_REG_TSD0 + slot * 4;
+    uint16_t tsad_off = RTL_REG_TSAD0 + slot * 4;
+
     int timeout = 0;
-    while (!(inl(io_base + RTL_REG_TSAD0) & 0x80000000) && timeout < 100000) timeout++;
+    while (!(inl(io_base + tsd_off) & 0x2000) && timeout < 100000) { io_wait(); timeout++; }
+
+    memcpy(tx_bufs[slot], data, len);
+    outl(io_base + tsad_off, (uint32_t)(uintptr_t)tx_bufs[slot]);
+    outl(io_base + tsd_off, (uint32_t)len & 0x1FFF);
+
+    tx_cur = (slot + 1) % NUM_TX_DESC;
+
+    timeout = 0;
+    while (!(inl(io_base + tsd_off) & 0x8000) && timeout < 100000) timeout++;
 }
 
 int rtl8139_poll(uint8_t *buf, int max_len)
@@ -127,17 +153,17 @@ int rtl8139_poll(uint8_t *buf, int max_len)
     if (!(status & 0x0001)) return 0;
     outw(io_base + RTL_REG_ISR, status);
 
-    int avail = inb(io_base + RTL_REG_CR) & 0x01;
-    if (!avail) { rx_ptr = 0; return 0; }
+    int empty = inb(io_base + RTL_REG_CR) & 0x01; /* BUFE: 1 = rx buffer empty */
+    if (empty) { rx_ptr = 0; return 0; }
 
-    uint16_t rx_size   = *(volatile uint16_t *)(rx_buf + rx_ptr + 2) & 0x3FFF;
+    uint16_t rx_size = *(volatile uint16_t *)(rx_buf + rx_ptr + 2) & 0x3FFF;
     if (rx_size < 4) { rx_ptr = 0; return 0; }
     int data_len = rx_size - 4;
     if (data_len > max_len) data_len = max_len;
     for (int i = 0; i < data_len; i++)
         buf[i] = rx_buf[rx_ptr + 4 + i];
 
-    rx_ptr = (rx_ptr + rx_size + 3) & ~3;
+    rx_ptr = (rx_ptr + rx_size + 4 + 3) & ~3;
     if (rx_ptr >= RX_BUF_SIZE) rx_ptr = 0;
     outw(io_base + RTL_REG_CAPR, rx_ptr - 0x10);
 

@@ -9,7 +9,7 @@
 
 #define E1000_NUM_RX_DESC 8
 #define E1000_NUM_TX_DESC 8
-#define E1000_BUF_SIZE    1536
+#define E1000_BUF_SIZE    2048
 
 static const uint16_t e1000_ids[][2] = {
     {0x8086, 0x1000}, {0x8086, 0x1001}, {0x8086, 0x1004},
@@ -166,11 +166,13 @@ int e1000_init(void)
         if (!rx_bufs[i]) return -1;
     }
 
-    tx_ring = (e1000_tx_desc_t *)malloc(sizeof(e1000_tx_desc_t) * E1000_NUM_TX_DESC + 16);
-    rx_ring = (e1000_rx_desc_t *)malloc(sizeof(e1000_rx_desc_t) * E1000_NUM_RX_DESC + 16);
-    if (!tx_ring || !rx_ring) return -1;
-    memset(tx_ring, 0, sizeof(e1000_tx_desc_t) * E1000_NUM_TX_DESC + 16);
-    memset(rx_ring, 0, sizeof(e1000_rx_desc_t) * E1000_NUM_RX_DESC + 16);
+    void *tx_mem = malloc(sizeof(e1000_tx_desc_t) * E1000_NUM_TX_DESC + 16);
+    void *rx_mem = malloc(sizeof(e1000_rx_desc_t) * E1000_NUM_RX_DESC + 16);
+    if (!tx_mem || !rx_mem) return -1;
+    tx_ring = (e1000_tx_desc_t *)(((uintptr_t)tx_mem + 15) & ~15);
+    rx_ring = (e1000_rx_desc_t *)(((uintptr_t)rx_mem + 15) & ~15);
+    memset(tx_ring, 0, sizeof(e1000_tx_desc_t) * E1000_NUM_TX_DESC);
+    memset(rx_ring, 0, sizeof(e1000_rx_desc_t) * E1000_NUM_RX_DESC);
 
     e1000_write(E1000_TDBAL, (uint32_t)(uintptr_t)tx_ring);
     e1000_write(E1000_TDBAH, 0);
@@ -196,7 +198,7 @@ int e1000_init(void)
 
     e1000_write(E1000_RCTL, E1000_RCTL_EN | E1000_RCTL_SBP |
                 E1000_RCTL_UPE | E1000_RCTL_MPE | E1000_RCTL_BAM |
-                E1000_RCTL_BSIZE | E1000_RCTL_SECRC);
+                E1000_RCTL_SECRC); /* BSIZE=00 -> 2048-byte buffers, matches E1000_BUF_SIZE */
 
     e1000_write(E1000_CTRL, e1000_read(E1000_CTRL) | E1000_CTRL_SLU | E1000_CTRL_FD);
 
@@ -216,7 +218,7 @@ void e1000_send(void *data, int len)
     memcpy(tx_bufs[idx], data, len);
     tx_ring[idx].addr = (uint64_t)(uintptr_t)tx_bufs[idx];
     tx_ring[idx].length = len;
-    tx_ring[idx].cmd = 0x1B;
+    tx_ring[idx].cmd = 0x0B; /* EOP | IFCS | RS */
     tx_ring[idx].status = 0;
 
     tx_cur = (idx + 1) % E1000_NUM_TX_DESC;
@@ -239,7 +241,7 @@ int e1000_poll(uint8_t *buf, int max_len)
 
     rx_ring[idx].status = 0;
     rx_cur = (idx + 1) % E1000_NUM_RX_DESC;
-    e1000_write(E1000_RDT, rx_cur);
+    e1000_write(E1000_RDT, idx);
 
     return len;
 }
