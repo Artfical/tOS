@@ -67,7 +67,8 @@ int pcnet_init(void)
         if (devs[i].vendor_id == 0x1022 &&
             (devs[i].device_id == 0x2000 ||
              devs[i].device_id == 0x2001 ||
-             devs[i].device_id == 0x2002)) {
+             devs[i].device_id == 0x2002 ||
+             devs[i].device_id == 0x2625)) { /* 0x2625 = Am79C973 PCnet-FAST III */
             bus = devs[i].bus; dev = devs[i].device; func = devs[i].func; f = 1; break;
         }
     }
