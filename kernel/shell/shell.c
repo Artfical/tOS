@@ -77,7 +77,7 @@ static const char *builtin_names[] = {
     "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
     "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
     "basename", "dirname", "which", "env", "uptime", "ps", "kill",
-    "chmod", "hexdump", "tee", "alias", "history",
+    "chmod", "hexdump", "tee", "alias", "history", "font",
     NULL
 };
 
@@ -460,6 +460,8 @@ void shell_run(void)
             cmd_history(argc, args);
         } else if (strcmp(c, "unalias") == 0) {
             cmd_unalias(argc, args);
+        } else if (strcmp(c, "font") == 0) {
+            cmd_font(argc, args);
         } else {
             terminal_writestring("Unknown command: ");
             terminal_writestring(c);

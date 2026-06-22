@@ -10,10 +10,12 @@
 
 static uint16_t ip_id = 0;
 
-static uint16_t ip_checksum(uint16_t *buf, int len)
+static uint16_t ip_checksum(const uint8_t *buf, int len)
 {
     uint32_t sum = 0;
-    for (int i = 0; i < len / 2; i++) sum += ntohs(buf[i]);
+    for (int i = 0; i < len - 1; i += 2)
+        sum += ((uint16_t)buf[i] << 8) | buf[i + 1];
+    if (len & 1) sum += (uint16_t)buf[len - 1] << 8;
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return htons(~sum & 0xFFFF);
 }
@@ -44,7 +46,7 @@ int ip_send(uint32_t dst_ip, uint8_t protocol, void *data, int len)
     ip->src_ip = net_ip;
     ip->dst_ip = dst_ip;
     ip->checksum = 0;
-    ip->checksum = ip_checksum((uint16_t *)ip, sizeof(ip_hdr_t));
+    ip->checksum = ip_checksum((uint8_t *)ip, sizeof(ip_hdr_t));
 
     memcpy(buf + 14 + sizeof(ip_hdr_t), data, len);
     nic_send(buf, total + 14);
@@ -62,7 +64,7 @@ void ip_handle(uint8_t *data, int len)
 
     uint16_t sum = ip->checksum;
     ip->checksum = 0;
-    if (ip_checksum((uint16_t *)ip, sizeof(ip_hdr_t)) != sum) return;
+    if (ip_checksum((uint8_t *)ip, sizeof(ip_hdr_t)) != sum) return;
     ip->checksum = sum;
 
     int payload_len = len - ihl;
