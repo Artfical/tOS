@@ -310,8 +310,8 @@ static void draw_cursor(void)
     VGA_MEM[my * VGA_W + mx] = mk_cell(ch, mk_color(bg, fg));
 }
 
-#define FRAME_INTERVAL_LOOPS 20000
-static uint32_t draw_skip_counter = 0;
+#define FRAME_INTERVAL_TICKS 1
+static uint32_t last_draw_tick = 0;
 
 static void wm_desktop_tick(void)
 {
@@ -368,9 +368,9 @@ static void wm_desktop_tick(void)
         }
     }
 
-    draw_skip_counter++;
-    if (draw_skip_counter >= FRAME_INTERVAL_LOOPS) {
-        draw_skip_counter = 0;
+    uint32_t now = task_get_ticks();
+    if (now - last_draw_tick >= FRAME_INTERVAL_TICKS) {
+        last_draw_tick = now;
 
         vga_fill_rect(0, 0, VGA_W, VGA_H - 1, ' ', mk_color(VGA_LIGHT_GREY, VGA_CYAN));
 
