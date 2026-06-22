@@ -7,6 +7,22 @@
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 
+#define TERM_SURFACE_W 80
+#define TERM_SURFACE_H 23
+
+/* When bound (via task_set_userdata) on the current task, all terminal_*
+ * calls made by that task read/write this surface instead of the real
+ * VGA buffer. Must remain the first member of any struct passed as
+ * userdata so window_t (wm.c) and term_surface_t are interchangeable. */
+typedef struct {
+    uint16_t cells[TERM_SURFACE_W * TERM_SURFACE_H];
+    int cur_row;
+    int cur_col;
+    uint8_t color;
+} term_surface_t;
+
+void terminal_surface_init(term_surface_t *s);
+
 enum vga_color {
     VGA_BLACK = 0,
     VGA_BLUE = 1,

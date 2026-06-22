@@ -15,6 +15,7 @@
 #include "syscall.h"
 #include "shell.h"
 #include "gui.h"
+#include "wm.h"
 #include "multiboot2.h"
 #include "version.h"
 #include "klog.h"
@@ -274,10 +275,6 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         else { terminal_putchar('\n'); break; }
     }
     if (sel) {
-        gui_init();
-        terminal_set_y_offset(GUI_TERM_ROW);
-        terminal_clear();
-        gui_draw_titlebar();
         terminal_writestring("[OK] GUI initialized\n");
     } else {
         terminal_writestring("CLI mode\n");
@@ -295,5 +292,11 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     micropython_init();
 
     shell_init();
-    shell_run();
+
+    if (sel) {
+        gui_init();
+        wm_run();
+    } else {
+        shell_run();
+    }
 }

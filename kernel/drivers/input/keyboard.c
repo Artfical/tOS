@@ -5,6 +5,7 @@
 #include "io.h"
 #include "terminal.h"
 #include "gui.h"
+#include "wm.h"
 #include "net.h"
 
 static volatile char key_buffer[256];
@@ -160,7 +161,7 @@ int keyboard_data_available(void)
 char keyboard_getchar(void)
 {
     for (;;) {
-        if (key_buffer_head != key_buffer_tail) {
+        if (wm_current_task_has_focus() && key_buffer_head != key_buffer_tail) {
             char c = key_buffer[key_buffer_tail];
             key_buffer_tail = (key_buffer_tail + 1) % 256;
             return c;
@@ -215,7 +216,7 @@ void keyboard_readline(char *buf, int max)
 
 int keyboard_get_special(void)
 {
-    if (special_head != special_tail) {
+    if (wm_current_task_has_focus() && special_head != special_tail) {
         int k = special_buf[special_tail];
         special_tail = (special_tail + 1) % 16;
         return k;
