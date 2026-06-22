@@ -16,6 +16,7 @@
 #define NORMAL_H 16
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
+static uint16_t backbuffer[VGA_W * VGA_H];
 
 typedef struct {
     term_surface_t surface;
@@ -49,7 +50,7 @@ static uint16_t mk_cell(char c, uint8_t color) { return (uint16_t)(unsigned char
 static void vga_put(int x, int y, char c, uint8_t color)
 {
     if (x < 0 || x >= VGA_W || y < 0 || y >= VGA_H) return;
-    VGA_MEM[y * VGA_W + x] = mk_cell(c, color);
+    backbuffer[y * VGA_W + x] = mk_cell(c, color);
 }
 
 static void vga_fill_rect(int x0, int y0, int w, int h, char c, uint8_t color)
@@ -191,7 +192,7 @@ static void draw_window(window_t *w)
                 cell = mk_cell(' ', mk_color(VGA_LIGHT_GREY, VGA_BLACK));
             int vx = x0 + col, vy = y0 + 1 + row;
             if (vx >= 0 && vx < VGA_W && vy >= 0 && vy < VGA_H - 1)
-                VGA_MEM[vy * VGA_W + vx] = cell;
+                backbuffer[vy * VGA_W + vx] = cell;
         }
     }
 
@@ -303,11 +304,11 @@ static void draw_cursor(void)
     mouse_get_state(&mx, &my, &btns);
     (void)btns;
     if (mx < 0 || mx >= VGA_W || my < 0 || my >= VGA_H) return;
-    uint16_t cell = VGA_MEM[my * VGA_W + mx];
+    uint16_t cell = backbuffer[my * VGA_W + mx];
     char ch = (char)(cell & 0xFF);
     uint8_t fg = (cell >> 8) & 0x0F;
     uint8_t bg = (cell >> 12) & 0x0F;
-    VGA_MEM[my * VGA_W + mx] = mk_cell(ch, mk_color(bg, fg));
+    backbuffer[my * VGA_W + mx] = mk_cell(ch, mk_color(bg, fg));
 }
 
 #define FRAME_INTERVAL_TICKS 1
@@ -390,6 +391,8 @@ static void wm_desktop_tick(void)
         if (start_menu_open) draw_start_menu();
         draw_taskbar();
         draw_cursor();
+
+        for (int i = 0; i < VGA_W * VGA_H; i++) VGA_MEM[i] = backbuffer[i];
     }
 
     task_yield();
