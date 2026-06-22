@@ -56,5 +56,6 @@ void cmd_tee(int argc, char **args);
 void cmd_alias(int argc, char **args);
 void cmd_history(int argc, char **args);
 void cmd_unalias(int argc, char **args);
+void cmd_font(int argc, char **args);
 
 #endif
