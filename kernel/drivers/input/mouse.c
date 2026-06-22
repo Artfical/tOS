@@ -44,6 +44,31 @@ static uint8_t mouse_read(void)
 static int mouse_packet_phase = 0;
 static uint8_t mouse_packet[3];
 
+#define MOUSE_SENS_DIV 4
+static int accum_dx = 0;
+static int accum_dy = 0;
+
+static void mouse_apply_delta(int dx, int dy)
+{
+    accum_dx += dx;
+    accum_dy += dy;
+
+    int cell_dx = accum_dx / MOUSE_SENS_DIV;
+    int cell_dy = accum_dy / MOUSE_SENS_DIV;
+    accum_dx -= cell_dx * MOUSE_SENS_DIV;
+    accum_dy -= cell_dy * MOUSE_SENS_DIV;
+
+    int nx = mouse_x + cell_dx;
+    if (nx < 0) nx = 0;
+    if (nx >= 80) nx = 79;
+    mouse_x = nx;
+
+    int ny = mouse_y + cell_dy;
+    if (ny < 0) ny = 0;
+    if (ny >= 25) ny = 24;
+    mouse_y = ny;
+}
+
 static void mouse_callback(registers_t *regs)
 {
     (void)regs;
@@ -69,16 +94,7 @@ static void mouse_callback(registers_t *regs)
 
             int dx = (int)(int8_t)mouse_packet[1];
             int dy = -(int)(int8_t)mouse_packet[2];
-
-            int nx = mouse_x + dx;
-            if (nx < 0) nx = 0;
-            if (nx >= 80) nx = 79;
-            mouse_x = nx;
-
-            int ny = mouse_y + dy;
-            if (ny < 0) ny = 0;
-            if (ny >= 25) ny = 24;
-            mouse_y = ny;
+            mouse_apply_delta(dx, dy);
 
             mouse_buttons = mouse_packet[0] & 0x07;
 
@@ -134,15 +150,7 @@ void mouse_poll(void)
     int dx, dy;
     uint8_t btns;
     if (usb_mouse_read(&dx, &dy, &btns)) {
-        int nx = mouse_x + dx;
-        if (nx < 0) nx = 0;
-        if (nx >= 80) nx = 79;
-        mouse_x = nx;
-
-        int ny = mouse_y - dy;
-        if (ny < 0) ny = 0;
-        if (ny >= 25) ny = 24;
-        mouse_y = ny;
+        mouse_apply_delta(dx, -dy);
 
         mouse_buttons = btns & 0x07;
 
