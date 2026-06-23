@@ -5,6 +5,7 @@
 #include "serial.h"
 
 typedef struct {
+    int used;
     char path[VFS_NAME_LEN];
     int path_len;
     vfs_ops_t *ops;
@@ -27,6 +28,8 @@ static int next_fd = 3;
 
 static char cwd[VFS_NAME_LEN] = "/";
 
+static void abspath_into(const char *path, char *out);
+
 int vfs_init(void)
 {
     memset(mounts, 0, sizeof(mounts));
@@ -39,16 +42,42 @@ int vfs_init(void)
 
 int vfs_mount(const char *path, vfs_ops_t *ops, void *private_data)
 {
-    if (mount_count >= VFS_MAX_MOUNTS) return -1;
-    mount_t *m = &mounts[mount_count];
+    int slot = -1;
+    for (int i = 0; i < VFS_MAX_MOUNTS; i++) {
+        if (!mounts[i].used) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+
+    mount_t *m = &mounts[slot];
     int i = 0;
     while (path[i] && i < VFS_NAME_LEN - 1) { m->path[i] = path[i]; i++; }
     m->path[i] = 0;
     m->path_len = i;
     m->ops = ops;
     m->private_data = private_data;
-    mount_count++;
+    m->used = 1;
+    if (slot >= mount_count) mount_count = slot + 1;
     return 0;
+}
+
+int vfs_unmount(const char *path)
+{
+    char abs[VFS_NAME_LEN];
+    abspath_into(path, abs);
+    for (int i = 0; i < mount_count; i++) {
+        if (!mounts[i].used) continue;
+        if (mounts[i].path_len == 0) continue;
+        if (strcmp(mounts[i].path, abs) == 0) {
+            for (int f = 0; f < VFS_MAX_FDS; f++) {
+                if (fd_table[f].used && fd_table[f].mount_idx == i) return -1;
+            }
+            mounts[i].used = 0;
+            mounts[i].ops = 0;
+            mounts[i].private_data = 0;
+            return 0;
+        }
+    }
+    return -1;
 }
 
 static mount_t *find_mount(const char *path)
@@ -56,6 +85,7 @@ static mount_t *find_mount(const char *path)
     mount_t *best = 0;
     int best_len = -1;
     for (int i = 0; i < mount_count; i++) {
+        if (!mounts[i].used) continue;
         int match = 1;
         for (int j = 0; j < mounts[i].path_len; j++) {
             if (mounts[i].path[j] != path[j]) { match = 0; break; }
@@ -97,7 +127,7 @@ int vfs_open(const char *path, int flags)
     if (!m || !m->ops || !m->ops->open) return -1;
 
     const char *sub = strip_mount(abs, m);
-    int fd = m->ops->open(sub, flags);
+    int fd = m->ops->open(m->private_data, sub, flags);
     if (fd < 0) return -1;
 
     for (int i = 0; i < VFS_MAX_FDS; i++) {
@@ -122,7 +152,7 @@ int vfs_close(int fd)
     mount_t *m = &mounts[fd_table[fd].mount_idx];
     int ret = 0;
     if (m->ops && m->ops->close)
-        ret = m->ops->close(fd_table[fd].fd);
+        ret = m->ops->close(m->private_data, fd_table[fd].fd);
     fd_table[fd].used = 0;
     return ret;
 }
@@ -132,7 +162,7 @@ int vfs_read(int fd, void *buf, uint32_t size)
     if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].used) return -1;
     mount_t *m = &mounts[fd_table[fd].mount_idx];
     if (!m->ops || !m->ops->read) return -1;
-    return m->ops->read(fd_table[fd].fd, buf, size);
+    return m->ops->read(m->private_data, fd_table[fd].fd, buf, size);
 }
 
 int vfs_write(int fd, const void *buf, uint32_t size)
@@ -140,7 +170,7 @@ int vfs_write(int fd, const void *buf, uint32_t size)
     if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].used) return -1;
     mount_t *m = &mounts[fd_table[fd].mount_idx];
     if (!m->ops || !m->ops->write) return -1;
-    return m->ops->write(fd_table[fd].fd, buf, size);
+    return m->ops->write(m->private_data, fd_table[fd].fd, buf, size);
 }
 
 int vfs_lseek(int fd, uint32_t offset, int whence)
@@ -148,7 +178,7 @@ int vfs_lseek(int fd, uint32_t offset, int whence)
     if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].used) return -1;
     mount_t *m = &mounts[fd_table[fd].mount_idx];
     if (!m->ops || !m->ops->lseek) return -1;
-    return m->ops->lseek(fd_table[fd].fd, offset, whence);
+    return m->ops->lseek(m->private_data, fd_table[fd].fd, offset, whence);
 }
 
 int vfs_readdir(const char *path, vfs_entry_t *entries, int max)
@@ -157,7 +187,7 @@ int vfs_readdir(const char *path, vfs_entry_t *entries, int max)
     abspath_into(path, abs);
     mount_t *m = find_mount(abs);
     if (!m || !m->ops || !m->ops->readdir) return -1;
-    return m->ops->readdir(strip_mount(abs, m), entries, max);
+    return m->ops->readdir(m->private_data, strip_mount(abs, m), entries, max);
 }
 
 int vfs_mkdir(const char *path, uint32_t mode)
@@ -166,7 +196,7 @@ int vfs_mkdir(const char *path, uint32_t mode)
     abspath_into(path, abs);
     mount_t *m = find_mount(abs);
     if (!m || !m->ops || !m->ops->mkdir) return -1;
-    return m->ops->mkdir(strip_mount(abs, m), mode);
+    return m->ops->mkdir(m->private_data, strip_mount(abs, m), mode);
 }
 
 int vfs_unlink(const char *path)
@@ -175,7 +205,7 @@ int vfs_unlink(const char *path)
     abspath_into(path, abs);
     mount_t *m = find_mount(abs);
     if (!m || !m->ops || !m->ops->unlink) return -1;
-    return m->ops->unlink(strip_mount(abs, m));
+    return m->ops->unlink(m->private_data, strip_mount(abs, m));
 }
 
 int vfs_stat(const char *path, vfs_entry_t *entry)
@@ -184,7 +214,7 @@ int vfs_stat(const char *path, vfs_entry_t *entry)
     abspath_into(path, abs);
     mount_t *m = find_mount(abs);
     if (!m || !m->ops || !m->ops->stat) return -1;
-    return m->ops->stat(strip_mount(abs, m), entry);
+    return m->ops->stat(m->private_data, strip_mount(abs, m), entry);
 }
 
 int vfs_rename(const char *old, const char *new_path)
@@ -196,7 +226,7 @@ int vfs_rename(const char *old, const char *new_path)
     if (!m || !m->ops || !m->ops->rename) return -1;
     mount_t *m2 = find_mount(abs_new);
     if (m != m2) return -1;
-    return m->ops->rename(strip_mount(abs_old, m), strip_mount(abs_new, m2));
+    return m->ops->rename(m->private_data, strip_mount(abs_old, m), strip_mount(abs_new, m2));
 }
 
 int vfs_symlink(const char *target, const char *path)
@@ -205,7 +235,7 @@ int vfs_symlink(const char *target, const char *path)
     abspath_into(path, abs);
     mount_t *m = find_mount(abs);
     if (!m || !m->ops || !m->ops->symlink) return -1;
-    return m->ops->symlink(target, strip_mount(abs, m));
+    return m->ops->symlink(m->private_data, target, strip_mount(abs, m));
 }
 
 int vfs_exists(const char *path)

@@ -33,6 +33,7 @@
 #include "ahci.h"
 #include "nvme.h"
 #include "usb_msd.h"
+#include "blockdev.h"
 #include "string.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
@@ -213,11 +214,17 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     terminal_writestring("[OK] VFS initialized\n");
     klog_write("[OK] VFS initialized\n");
 
+    blockdev_init();
+
     int ata_count = ata_init();
     terminal_writestring("[OK] ATA initialized (");
     terminal_putchar('0' + ata_count);
     terminal_writestring(" devices)\n");
     klog_write("[OK] ATA initialized\n");
+    for (int ai = 0; ai < ata_device_count; ai++) {
+        if (ata_devices[ai].present)
+            blockdev_register_ata(&ata_devices[ai]);
+    }
 
     static ahci_hba_t ahci_hba_instance;
     if (ahci_init(&ahci_hba_instance) == 0) {
@@ -225,6 +232,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         terminal_putchar('0' + ahci_hba_instance.port_count);
         terminal_writestring(" ports)\n");
         klog_write("[OK] AHCI initialized\n");
+        for (int pi = 0; pi < AHCI_MAX_PORTS; pi++) {
+            if (ahci_hba_instance.ports[pi])
+                blockdev_register_ahci(&ahci_hba_instance, pi, ahci_hba_instance.sectors[pi]);
+        }
 #ifdef TOS_DISKTEST
         {
             static char diskbuf[512];
@@ -255,6 +266,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     if (nvme_init(&nvme_dev_instance) == 0) {
         terminal_writestring("[OK] NVMe initialized\n");
         klog_write("[OK] NVMe initialized\n");
+        blockdev_register_nvme(&nvme_dev_instance);
 #ifdef TOS_DISKTEST
         {
             static char diskbuf[512];
@@ -282,6 +294,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     if (usb_msd_init(&usb_msd_instance) == 0) {
         terminal_writestring("[OK] USB mass storage initialized\n");
         klog_write("[OK] USB mass storage initialized\n");
+        blockdev_register_usb(&usb_msd_instance);
 #ifdef TOS_DISKTEST
         {
             static char diskbuf[512];

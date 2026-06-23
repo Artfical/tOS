@@ -49,7 +49,7 @@ int tfsk_mount(tfsk_t *fs, ata_device_t *dev)
     memset(fs, 0, sizeof(tfsk_t));
     fs->dev = dev;
 
-    if (tfsk_block_read(fs, TFSK_SB_BLK, &fs->sb) < 0)
+    if (ata_read_sectors(fs->dev, (uint64_t)TFSK_SB_BLK * 8, 8, &fs->sb) < 0)
         return -1;
 
     if (fs->sb.magic != TFSK_MAGIC)
@@ -876,57 +876,54 @@ int tfsk_probe_and_mount(tfsk_t *fs)
     return -1;
 }
 
-static vfs_ops_t tfsk_vfs_ops;
-static tfsk_t *tfsk_global_fs;
-
-static int tfsk_open_stub(const char *path, int flags)
+static int tfsk_open_stub(void *ctx, const char *path, int flags)
 {
-    return tfsk_vfs_open(tfsk_global_fs, path, flags);
+    return tfsk_vfs_open((tfsk_t *)ctx, path, flags);
 }
 
-static int tfsk_close_stub(int fd)
+static int tfsk_close_stub(void *ctx, int fd)
 {
-    return tfsk_vfs_close(tfsk_global_fs, fd);
+    return tfsk_vfs_close((tfsk_t *)ctx, fd);
 }
 
-static int tfsk_read_stub(int fd, void *buf, uint32_t size)
+static int tfsk_read_stub(void *ctx, int fd, void *buf, uint32_t size)
 {
-    return tfsk_vfs_read(tfsk_global_fs, fd, buf, size);
+    return tfsk_vfs_read((tfsk_t *)ctx, fd, buf, size);
 }
 
-static int tfsk_write_stub(int fd, const void *buf, uint32_t size)
+static int tfsk_write_stub(void *ctx, int fd, const void *buf, uint32_t size)
 {
-    return tfsk_vfs_write(tfsk_global_fs, fd, buf, size);
+    return tfsk_vfs_write((tfsk_t *)ctx, fd, buf, size);
 }
 
-static int tfsk_lseek_stub(int fd, uint32_t offset, int whence)
+static int tfsk_lseek_stub(void *ctx, int fd, uint32_t offset, int whence)
 {
-    return tfsk_vfs_lseek(tfsk_global_fs, fd, offset, whence);
+    return tfsk_vfs_lseek((tfsk_t *)ctx, fd, offset, whence);
 }
 
-static int tfsk_readdir_stub(const char *path, vfs_entry_t *entries, int max)
+static int tfsk_readdir_stub(void *ctx, const char *path, vfs_entry_t *entries, int max)
 {
-    return tfsk_vfs_readdir(tfsk_global_fs, path, entries, max);
+    return tfsk_vfs_readdir((tfsk_t *)ctx, path, entries, max);
 }
 
-static int tfsk_mkdir_stub(const char *path, uint32_t mode)
+static int tfsk_mkdir_stub(void *ctx, const char *path, uint32_t mode)
 {
-    return tfsk_vfs_mkdir(tfsk_global_fs, path, mode);
+    return tfsk_vfs_mkdir((tfsk_t *)ctx, path, mode);
 }
 
-static int tfsk_unlink_stub(const char *path)
+static int tfsk_unlink_stub(void *ctx, const char *path)
 {
-    return tfsk_vfs_unlink(tfsk_global_fs, path);
+    return tfsk_vfs_unlink((tfsk_t *)ctx, path);
 }
 
-static int tfsk_stat_stub(const char *path, vfs_entry_t *entry)
+static int tfsk_stat_stub(void *ctx, const char *path, vfs_entry_t *entry)
 {
-    return tfsk_vfs_stat(tfsk_global_fs, path, entry);
+    return tfsk_vfs_stat((tfsk_t *)ctx, path, entry);
 }
 
 void tfsk_mount_vfs(tfsk_t *fs, const char *mount_point)
 {
-    tfsk_global_fs = fs;
+    static vfs_ops_t tfsk_vfs_ops;
     tfsk_vfs_ops.open    = tfsk_open_stub;
     tfsk_vfs_ops.close   = tfsk_close_stub;
     tfsk_vfs_ops.read    = tfsk_read_stub;
@@ -938,5 +935,5 @@ void tfsk_mount_vfs(tfsk_t *fs, const char *mount_point)
     tfsk_vfs_ops.stat    = tfsk_stat_stub;
     tfsk_vfs_ops.rename  = 0;
     tfsk_vfs_ops.symlink = 0;
-    vfs_mount(mount_point, &tfsk_vfs_ops, 0);
+    vfs_mount(mount_point, &tfsk_vfs_ops, fs);
 }
