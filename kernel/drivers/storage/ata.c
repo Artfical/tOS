@@ -8,7 +8,7 @@ int ata_device_count = 0;
 static int ata_wait(ata_device_t *dev, int timeout)
 {
     (void)timeout;
-    for (int i = 0; i < 100000; i++) {
+    for (int i = 0; i < 4000000; i++) {
         uint8_t s = inb(dev->io_base + ATA_REG_STATUS);
         if (!(s & ATA_STATUS_BSY)) return 0;
     }

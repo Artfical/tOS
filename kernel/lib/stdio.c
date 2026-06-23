@@ -38,7 +38,7 @@ static void print_pad(char **out, size_t *n, char pad, int count)
         print_char(out, n, pad);
 }
 
-static void print_num(char **out, size_t *n, uint32_t val, int base, int sign, int width, int zero)
+static void print_num(char **out, size_t *n, uint32_t val, int base, int sign, int width, int zero, int left)
 {
     char buf[36];
     char *p = buf + sizeof(buf);
@@ -55,6 +55,12 @@ static void print_num(char **out, size_t *n, uint32_t val, int base, int sign, i
         val /= base;
     }
     int len = (buf + sizeof(buf) - 1) - p + neg;
+    if (left) {
+        if (neg) print_char(out, n, '-');
+        while (*p) print_char(out, n, *p++);
+        print_pad(out, n, ' ', width - len);
+        return;
+    }
     if (!zero) {
         if (neg) print_char(out, n, '-');
         print_pad(out, n, ' ', width - len);
@@ -63,6 +69,15 @@ static void print_num(char **out, size_t *n, uint32_t val, int base, int sign, i
         if (neg) print_char(out, n, '-');
     }
     while (*p) print_char(out, n, *p++);
+}
+
+static void print_str_padded(char **out, size_t *n, const char *s, int width, int left)
+{
+    if (!s) s = "(null)";
+    int len = (int)strlen(s);
+    if (!left) print_pad(out, n, ' ', width - len);
+    print_str(out, n, s);
+    if (left) print_pad(out, n, ' ', width - len);
 }
 
 int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap)
@@ -76,8 +91,12 @@ int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap)
             continue;
         }
         fmt++;
-        int width = 0, zero = 0;
-        if (*fmt == '0') { zero = 1; fmt++; }
+        int width = 0, zero = 0, left = 0;
+        while (*fmt == '-' || *fmt == '0') {
+            if (*fmt == '-') left = 1;
+            else zero = 1;
+            fmt++;
+        }
         while (*fmt >= '0' && *fmt <= '9') {
             width = width * 10 + (*fmt - '0');
             fmt++;
@@ -87,18 +106,18 @@ int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap)
             case 'i':
             case 'u': {
                 int s = (*fmt == 'd' || *fmt == 'i') ? 1 : 0;
-                print_num(&buf, &n, va_arg(ap, uint32_t), 10, s, width, zero);
+                print_num(&buf, &n, va_arg(ap, uint32_t), 10, s, width, zero, left);
                 break;
             }
             case 'x':
-            case 'p': print_num(&buf, &n, va_arg(ap, uint32_t), 16, 0, width, zero); break;
+            case 'p': print_num(&buf, &n, va_arg(ap, uint32_t), 16, 0, width, zero, left); break;
             case 'X': {
                 char *p = buf;
-                print_num(&buf, &n, va_arg(ap, uint32_t), 16, 0, width, zero);
+                print_num(&buf, &n, va_arg(ap, uint32_t), 16, 0, width, zero, left);
                 while (p < buf) { if (*p >= 'a' && *p <= 'f') *p -= 32; p++; }
                 break;
             }
-            case 's': print_str(&buf, &n, va_arg(ap, const char *)); break;
+            case 's': print_str_padded(&buf, &n, va_arg(ap, const char *), width, left); break;
             case 'c': print_char(&buf, &n, va_arg(ap, int)); break;
             case '%': print_char(&buf, &n, '%'); break;
             default: print_char(&buf, &n, '%'); print_char(&buf, &n, *fmt); break;

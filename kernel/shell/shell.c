@@ -461,6 +461,8 @@ static void shell_exec_line(char *cmd_line)
             cmd_font(argc, args);
         } else if (strcmp(c, "htop") == 0) {
             cmd_htop(argc, args);
+        } else if (strcmp(c, "disk") == 0) {
+            cmd_disk(argc, args);
         } else {
             terminal_writestring("Unknown command: ");
             terminal_writestring(c);
