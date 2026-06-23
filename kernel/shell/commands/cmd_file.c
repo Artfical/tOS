@@ -2,6 +2,7 @@
 #include "terminal.h"
 #include "string.h"
 #include "ramfs.h"
+#include "fsbridge.h"
 #include "memory.h"
 #include "stdlib.h"
 #include "keyboard.h"
@@ -22,25 +23,25 @@ void cmd_cat(int argc, char **args)
         terminal_writestring("usage: cat <file>\n");
         return;
     }
-    if (!ramfs_exists(args[1])) {
+    if (!fsbridge_exists(args[1])) {
         terminal_writestring("cat: ");
         terminal_writestring(args[1]);
         terminal_writestring(": No such file\n");
         return;
     }
-    if (ramfs_is_dir(args[1])) {
+    if (fsbridge_is_dir(args[1])) {
         terminal_writestring("cat: ");
         terminal_writestring(args[1]);
         terminal_writestring(": Is a directory\n");
         return;
     }
-    uint32_t sz = ramfs_size(args[1]);
+    uint32_t sz = fsbridge_size(args[1]);
     char *buf = (char *)malloc(sz + 1);
     if (!buf) {
         terminal_writestring("cat: Out of memory\n");
         return;
     }
-    ramfs_read(args[1], buf, sz, 0);
+    fsbridge_read(args[1], buf, sz, 0);
     buf[sz] = '\0';
     terminal_writestring(buf);
     if (sz > 0 && buf[sz - 1] != '\n')
@@ -62,16 +63,16 @@ void cmd_head(int argc, char **args)
         terminal_writestring("usage: head [-n <lines>] <file>\n");
         return;
     }
-    if (!ramfs_exists(file) || ramfs_is_dir(file)) {
+    if (!fsbridge_exists(file) || fsbridge_is_dir(file)) {
         terminal_writestring("head: ");
         terminal_writestring(file);
         terminal_writestring(": No such file\n");
         return;
     }
-    uint32_t sz = ramfs_size(file);
+    uint32_t sz = fsbridge_size(file);
     char *buf = (char *)malloc(sz + 1);
     if (!buf) return;
-    ramfs_read(file, buf, sz, 0);
+    fsbridge_read(file, buf, sz, 0);
     buf[sz] = '\0';
     int lines = 0;
     for (char *p = buf; *p && lines < n; p++) {
@@ -97,16 +98,16 @@ void cmd_tail(int argc, char **args)
         terminal_writestring("usage: tail [-n <lines>] <file>\n");
         return;
     }
-    if (!ramfs_exists(file) || ramfs_is_dir(file)) {
+    if (!fsbridge_exists(file) || fsbridge_is_dir(file)) {
         terminal_writestring("tail: ");
         terminal_writestring(file);
         terminal_writestring(": No such file\n");
         return;
     }
-    uint32_t sz = ramfs_size(file);
+    uint32_t sz = fsbridge_size(file);
     char *buf = (char *)malloc(sz + 1);
     if (!buf) return;
-    ramfs_read(file, buf, sz, 0);
+    fsbridge_read(file, buf, sz, 0);
     buf[sz] = '\0';
     int total = 0;
     for (char *p = buf; *p; p++)
@@ -132,16 +133,16 @@ void cmd_wc(int argc, char **args)
         terminal_writestring("usage: wc <file>\n");
         return;
     }
-    if (!ramfs_exists(args[1]) || ramfs_is_dir(args[1])) {
+    if (!fsbridge_exists(args[1]) || fsbridge_is_dir(args[1])) {
         terminal_writestring("wc: ");
         terminal_writestring(args[1]);
         terminal_writestring(": No such file\n");
         return;
     }
-    uint32_t sz = ramfs_size(args[1]);
+    uint32_t sz = fsbridge_size(args[1]);
     char *buf = (char *)malloc(sz + 1);
     if (!buf) return;
-    ramfs_read(args[1], buf, sz, 0);
+    fsbridge_read(args[1], buf, sz, 0);
     buf[sz] = '\0';
     int lines = 0, words = 0, chars = sz;
     int in_word = 0;
@@ -167,14 +168,14 @@ void cmd_sort(int argc, char **args)
         terminal_writestring("usage: sort <file>\n");
         return;
     }
-    if (!ramfs_exists(args[1]) || ramfs_is_dir(args[1])) {
+    if (!fsbridge_exists(args[1]) || fsbridge_is_dir(args[1])) {
         terminal_writestring("sort: No such file\n");
         return;
     }
-    uint32_t sz = ramfs_size(args[1]);
+    uint32_t sz = fsbridge_size(args[1]);
     char *buf = (char *)malloc(sz + 1);
     if (!buf) return;
-    ramfs_read(args[1], buf, sz, 0);
+    fsbridge_read(args[1], buf, sz, 0);
     buf[sz] = '\0';
     int lines = 0;
     for (char *p = buf; *p; p++) if (*p == '\n') lines++;
@@ -213,11 +214,11 @@ void cmd_grep(int argc, char **args)
     const char *pattern = args[1];
     int any = 0;
     for (int fi = 2; fi < argc; fi++) {
-        if (!ramfs_exists(args[fi]) || ramfs_is_dir(args[fi])) continue;
-        uint32_t sz = ramfs_size(args[fi]);
+        if (!fsbridge_exists(args[fi]) || fsbridge_is_dir(args[fi])) continue;
+        uint32_t sz = fsbridge_size(args[fi]);
         char *buf = (char *)malloc(sz + 1);
         if (!buf) continue;
-        ramfs_read(args[fi], buf, sz, 0);
+        fsbridge_read(args[fi], buf, sz, 0);
         buf[sz] = '\0';
         char *line = buf;
         while (*line) {
@@ -257,13 +258,13 @@ void cmd_hexdump(int argc, char **args)
         terminal_writestring("usage: hexdump <file> [length]\n");
         return;
     }
-    if (!ramfs_exists(args[1]) || ramfs_is_dir(args[1])) {
+    if (!fsbridge_exists(args[1]) || fsbridge_is_dir(args[1])) {
         terminal_writestring("hexdump: ");
         terminal_writestring(args[1]);
         terminal_writestring(": No such file\n");
         return;
     }
-    uint32_t sz = ramfs_size(args[1]);
+    uint32_t sz = fsbridge_size(args[1]);
     uint32_t len = sz;
     if (argc > 2) {
         len = (uint32_t)atoi(args[2]);
@@ -271,7 +272,7 @@ void cmd_hexdump(int argc, char **args)
     }
     char *buf = (char *)malloc(len);
     if (!buf) { terminal_writestring("hexdump: Out of memory\n"); return; }
-    ramfs_read(args[1], buf, len, 0);
+    fsbridge_read(args[1], buf, len, 0);
 
     uint32_t offset = 0;
     while (offset < len) {
@@ -310,15 +311,15 @@ void cmd_tee(int argc, char **args)
         terminal_writestring("  Press Ctrl+D on empty line to stop.\n");
         return;
     }
-    if (ramfs_exists(args[1]) && !ramfs_is_dir(args[1])) {
+    if (fsbridge_exists(args[1]) && !fsbridge_is_dir(args[1])) {
         terminal_writestring("tee: File exists, overwrite? (y/n) ");
         char c = keyboard_getchar();
         terminal_putchar(c);
         terminal_putchar('\n');
         if (c != 'y' && c != 'Y') return;
-        ramfs_delete(args[1]);
+        fsbridge_delete(args[1]);
     }
-    if (ramfs_create(args[1]) != 0) {
+    if (fsbridge_create(args[1]) != 0) {
         terminal_writestring("tee: Failed to create file\n");
         return;
     }
@@ -331,8 +332,8 @@ void cmd_tee(int argc, char **args)
         if (line[0] == '\0' || strcmp(line, ".q") == 0) break;
         terminal_writestring(line);
         terminal_putchar('\n');
-        ramfs_write(args[1], line, strlen(line), offset);
-        ramfs_write(args[1], "\n", 1, offset + strlen(line));
+        fsbridge_write(args[1], line, strlen(line), offset);
+        fsbridge_write(args[1], "\n", 1, offset + strlen(line));
         offset += strlen(line) + 1;
     }
 }

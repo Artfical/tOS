@@ -5,8 +5,17 @@
 #include "blockdev.h"
 #include "vfs.h"
 
-#define FAT16_MAX_FILENAME 12
-#define FAT16_MAX_FILES 256
+#define FAT16_MAX_FILENAME 13
+
+typedef struct {
+    int used;
+    uint32_t dirent_sector;
+    uint32_t dirent_offset;
+    uint32_t start_cluster;
+    uint32_t size;
+    uint32_t pos;
+    int dirty;
+} fat16_fd_t;
 
 typedef struct {
     blockdev_t *bd;
@@ -21,17 +30,8 @@ typedef struct {
     uint32_t root_dir_sector;
     uint32_t root_dir_sectors;
     uint32_t cluster_size;
+    fat16_fd_t fds[VFS_MAX_FDS];
 } fat16_t;
-
-typedef struct {
-    char name[FAT16_MAX_FILENAME];
-    uint32_t size;
-    uint32_t start_cluster;
-    uint32_t offset;
-    int is_dir;
-    uint32_t current_pos;
-    int dirty;
-} fat16_file_t;
 
 int fat16_probe_and_mount(fat16_t *fs, blockdev_t *bd);
 int fat16_umount(fat16_t *fs);

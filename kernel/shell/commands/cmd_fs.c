@@ -4,6 +4,7 @@
 #include "ramfs.h"
 #include "memory.h"
 #include "vfs.h"
+#include "fsbridge.h"
 
 void cmd_pwd(int argc, char **args)
 {
@@ -18,7 +19,7 @@ void cmd_ls(int argc, char **args)
     if (argc > 1) path = args[1];
 
     vfs_entry_t entries[256];
-    int count = ramfs_list(path, entries, 256);
+    int count = fsbridge_list(path, entries, 256);
     if (count < 0) {
         terminal_writestring("ls: ");
         terminal_writestring(path);
@@ -71,7 +72,7 @@ void cmd_mkdir(int argc, char **args)
         terminal_writestring("usage: mkdir <dir>\n");
         return;
     }
-    if (ramfs_mkdir(args[1]) != 0) {
+    if (fsbridge_mkdir(args[1]) != 0) {
         terminal_writestring("mkdir: ");
         terminal_writestring(args[1]);
         terminal_writestring(": Failed\n");
@@ -84,7 +85,7 @@ void cmd_rmdir(int argc, char **args)
         terminal_writestring("usage: rmdir <dir>\n");
         return;
     }
-    if (ramfs_delete(args[1]) != 0) {
+    if (fsbridge_delete(args[1]) != 0) {
         terminal_writestring("rmdir: ");
         terminal_writestring(args[1]);
         terminal_writestring(": Failed\n");
@@ -97,7 +98,7 @@ void cmd_rm(int argc, char **args)
         terminal_writestring("usage: rm <file>\n");
         return;
     }
-    if (ramfs_delete(args[1]) != 0) {
+    if (fsbridge_delete(args[1]) != 0) {
         terminal_writestring("rm: ");
         terminal_writestring(args[1]);
         terminal_writestring(": Failed\n");
@@ -110,7 +111,7 @@ void cmd_touch(int argc, char **args)
         terminal_writestring("usage: touch <file>\n");
         return;
     }
-    if (ramfs_create(args[1]) != 0) {
+    if (fsbridge_create(args[1]) != 0) {
         terminal_writestring("touch: ");
         terminal_writestring(args[1]);
         terminal_writestring(": Failed\n");
@@ -123,7 +124,7 @@ void cmd_mv(int argc, char **args)
         terminal_writestring("usage: mv <src> <dst>\n");
         return;
     }
-    if (ramfs_rename(args[1], args[2]) != 0)
+    if (fsbridge_rename(args[1], args[2]) != 0)
         terminal_writestring("mv: Failed\n");
 }
 
@@ -133,34 +134,34 @@ void cmd_cp(int argc, char **args)
         terminal_writestring("usage: cp <src> <dst>\n");
         return;
     }
-    if (!ramfs_exists(args[1]) || ramfs_is_dir(args[1])) {
+    if (!fsbridge_exists(args[1]) || fsbridge_is_dir(args[1])) {
         terminal_writestring("cp: Source not found or is a directory\n");
         return;
     }
-    if (ramfs_exists(args[2])) {
+    if (fsbridge_exists(args[2])) {
         terminal_writestring("cp: Destination exists\n");
         return;
     }
-    if (ramfs_create(args[2]) != 0) {
+    if (fsbridge_create(args[2]) != 0) {
         terminal_writestring("cp: Failed to create destination\n");
         return;
     }
-    uint32_t sz = ramfs_size(args[1]);
+    uint32_t sz = fsbridge_size(args[1]);
     char *buf = (char *)malloc(sz);
     if (!buf) {
         terminal_writestring("cp: Out of memory\n");
-        ramfs_delete(args[2]);
+        fsbridge_delete(args[2]);
         return;
     }
-    ramfs_read(args[1], buf, sz, 0);
-    ramfs_write(args[2], buf, sz, 0);
+    fsbridge_read(args[1], buf, sz, 0);
+    fsbridge_write(args[2], buf, sz, 0);
     free(buf);
 }
 
 static void find_recursive(const char *path, const char *pattern)
 {
     vfs_entry_t entries[256];
-    int count = ramfs_list(path, entries, 256);
+    int count = fsbridge_list(path, entries, 256);
     if (count <= 0) return;
     for (int i = 0; i < count; i++) {
         char full[512];
