@@ -8,6 +8,7 @@
 #define RAMFS_MAX_INODES  512
 #define RAMFS_BLOCK_SZ    512
 
+#define S_IFMT    0170000
 #define S_IFREG   0100000
 #define S_IFDIR   0040000
 #define S_IFLNK   0120000

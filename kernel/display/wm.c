@@ -6,6 +6,7 @@
 #include "string.h"
 #include "cmos.h"
 #include "net.h"
+#include "notepad.h"
 
 #define VGA_W 80
 #define VGA_H 25
@@ -14,6 +15,9 @@
 #define MAX_WINDOWS 6
 #define NORMAL_W 60
 #define NORMAL_H 16
+
+#define WIN_KIND_TERMINAL 0
+#define WIN_KIND_NOTEPAD 1
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -25,6 +29,7 @@ typedef struct {
     int maximized;
     int pid;
     int z;
+    int kind;
     char title[40];
     char initial_cmd[64];
     int x0, y0, w0, h0;
@@ -43,6 +48,8 @@ static int menu_x0[MENU_MAX_ITEMS];
 static int menu_y0[MENU_MAX_ITEMS];
 static int menu_x1[MENU_MAX_ITEMS];
 static int menu_count = 0;
+static const char *menu_names[MENU_MAX_ITEMS];
+static int menu_is_app[MENU_MAX_ITEMS];
 
 static uint8_t mk_color(uint8_t fg, uint8_t bg) { return fg | (bg << 4); }
 static uint16_t mk_cell(char c, uint8_t color) { return (uint16_t)(unsigned char)c | ((uint16_t)color << 8); }
@@ -114,7 +121,10 @@ static void window_task_entry(void)
 {
     window_t *w = pending_window;
     task_set_userdata(w);
-    shell_run_windowed(w->initial_cmd);
+    if (w->kind == WIN_KIND_NOTEPAD)
+        notepad_run();
+    else
+        shell_run_windowed(w->initial_cmd);
 }
 
 static void wm_focus_window(window_t *w)
@@ -143,6 +153,7 @@ static void wm_open_window(const char *cmd)
     w->minimized = 0;
     w->maximized = 0;
     w->z = next_z++;
+    w->kind = WIN_KIND_TERMINAL;
 
     strncpy(w->initial_cmd, cmd, sizeof(w->initial_cmd) - 1);
     w->initial_cmd[sizeof(w->initial_cmd) - 1] = 0;
@@ -157,6 +168,29 @@ static void wm_open_window(const char *cmd)
     } else {
         strcpy(w->title, "Terminal");
     }
+
+    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
+static void wm_open_notepad(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 1;
+    w->z = next_z++;
+    w->kind = WIN_KIND_NOTEPAD;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "Notepad");
 
     window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
 
@@ -209,9 +243,16 @@ static int start_menu_hit(int cx, int cy, int *out_index)
 
 static void draw_start_menu(void)
 {
-    const char **names = shell_builtin_names();
+    const char **builtin = shell_builtin_names();
     int count = 0;
-    while (names[count] && count < MENU_MAX_ITEMS) count++;
+    while (builtin[count] && count < MENU_MAX_ITEMS - 1) {
+        menu_names[count] = builtin[count];
+        menu_is_app[count] = 0;
+        count++;
+    }
+    menu_names[count] = "Notepad";
+    menu_is_app[count] = 1;
+    count++;
     menu_count = count;
 
     int cols = 3;
@@ -232,7 +273,7 @@ static void draw_start_menu(void)
         int ix = mx0 + 1 + col * item_w;
         int iy = my0 + 1 + row;
         if (iy >= my0 + menu_h - 1) continue;
-        vga_text(ix, iy, names[i], mk_color(VGA_BLACK, VGA_LIGHT_GREY));
+        vga_text(ix, iy, menu_names[i], mk_color(VGA_BLACK, VGA_LIGHT_GREY));
         menu_x0[i] = ix; menu_y0[i] = iy; menu_x1[i] = ix + item_w - 1;
     }
 }
@@ -323,9 +364,11 @@ static void wm_desktop_tick(void)
         if (start_menu_open) {
             int idx;
             if (start_menu_hit(cx, cy, &idx)) {
-                const char **names = shell_builtin_names();
                 start_menu_open = 0;
-                wm_open_window(names[idx]);
+                if (menu_is_app[idx])
+                    wm_open_notepad();
+                else
+                    wm_open_window(menu_names[idx]);
             } else {
                 start_menu_open = 0;
             }

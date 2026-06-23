@@ -96,7 +96,7 @@ static void del_child(uint32_t dir_ino, const char *name)
 static int follow_link(uint32_t ino, char *out, int out_sz)
 {
     ramfs_inode_t *n = iget(ino);
-    if (!n || !(n->mode & S_IFLNK) || !n->data) return -1;
+    if (!n || (n->mode & S_IFMT) != S_IFLNK || !n->data) return -1;
     int i = 0;
     while ((uint32_t)i < n->size - 1 && i < out_sz - 1) { out[i] = n->data[i]; i++; }
     out[i] = 0;
@@ -132,7 +132,7 @@ static int resolve_path(const char *path, int follow_final)
         if (!next) return 0;
 
         ramfs_inode_t *n = iget(next);
-        if (n && (n->mode & S_IFLNK) && (follow_final || path[i] != 0)) {
+        if (n && (n->mode & S_IFMT) == S_IFLNK && (follow_final || path[i] != 0)) {
             char target[512];
             if (follow_link(next, target, sizeof(target)) == 0) {
                 char full[VFS_NAME_LEN];
@@ -240,11 +240,16 @@ int ramfs_vfs_open(const char *path, int flags)
         while (path[i]) i++;
         int last_sep = -1;
         for (int j = i - 1; j >= 0; j--) { if (path[j] == '/') { last_sep = j; break; } }
-        if (last_sep < 0) { return -1; }
-        for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
-        parent_path[last_sep < 1 ? 1 : last_sep] = 0;
         int k = 0;
-        for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        if (last_sep < 0) {
+            parent_path[0] = '/';
+            parent_path[1] = 0;
+            for (int j = 0; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        } else {
+            for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
+            parent_path[last_sep < 1 ? 1 : last_sep] = 0;
+            for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        }
         name_buf[k] = 0;
         uint32_t p_ino = resolve_path(parent_path, 1);
         if (!p_ino) return -1;
