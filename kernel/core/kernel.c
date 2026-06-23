@@ -1,3 +1,4 @@
+#define TOS_DISKTEST 1
 #include "terminal.h"
 #include "serial.h"
 #include "gdt.h"
@@ -29,6 +30,10 @@
 #include "installer.h"
 #include "ata.h"
 #include "io.h"
+#include "ahci.h"
+#include "nvme.h"
+#include "usb_msd.h"
+#include "string.h"
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 
@@ -213,6 +218,92 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     terminal_putchar('0' + ata_count);
     terminal_writestring(" devices)\n");
     klog_write("[OK] ATA initialized\n");
+
+    static ahci_hba_t ahci_hba_instance;
+    if (ahci_init(&ahci_hba_instance) == 0) {
+        terminal_writestring("[OK] AHCI initialized (");
+        terminal_putchar('0' + ahci_hba_instance.port_count);
+        terminal_writestring(" ports)\n");
+        klog_write("[OK] AHCI initialized\n");
+#ifdef TOS_DISKTEST
+        {
+            static char diskbuf[512];
+            for (int dp = 0; dp < AHCI_MAX_PORTS; dp++) {
+                if (!ahci_hba_instance.ports[dp]) continue;
+                memset(diskbuf, 0, sizeof(diskbuf));
+                if (ahci_read(&ahci_hba_instance, dp, 0, 1, diskbuf) == 0) {
+                    diskbuf[40] = '\0';
+                    terminal_writestring("[DISKTEST] AHCI LBA0: ");
+                    terminal_writestring(diskbuf);
+                    terminal_writestring("\n");
+                    klog_write("[DISKTEST] AHCI LBA0: ");
+                    klog_write(diskbuf);
+                    klog_write("\n");
+                } else {
+                    terminal_writestring("[DISKTEST] AHCI read FAILED\n");
+                    klog_write("[DISKTEST] AHCI read FAILED\n");
+                }
+            }
+        }
+#endif
+    } else {
+        terminal_writestring("[INFO] No AHCI controller found\n");
+        klog_write("[INFO] No AHCI controller found\n");
+    }
+
+    static nvme_device_t nvme_dev_instance;
+    if (nvme_init(&nvme_dev_instance) == 0) {
+        terminal_writestring("[OK] NVMe initialized\n");
+        klog_write("[OK] NVMe initialized\n");
+#ifdef TOS_DISKTEST
+        {
+            static char diskbuf[512];
+            memset(diskbuf, 0, sizeof(diskbuf));
+            if (nvme_read(&nvme_dev_instance, 0, 1, diskbuf) == 0) {
+                diskbuf[40] = '\0';
+                terminal_writestring("[DISKTEST] NVMe LBA0: ");
+                terminal_writestring(diskbuf);
+                terminal_writestring("\n");
+                klog_write("[DISKTEST] NVMe LBA0: ");
+                klog_write(diskbuf);
+                klog_write("\n");
+            } else {
+                terminal_writestring("[DISKTEST] NVMe read FAILED\n");
+                klog_write("[DISKTEST] NVMe read FAILED\n");
+            }
+        }
+#endif
+    } else {
+        terminal_writestring("[INFO] No NVMe controller found\n");
+        klog_write("[INFO] No NVMe controller found\n");
+    }
+
+    static usb_msd_device_t usb_msd_instance;
+    if (usb_msd_init(&usb_msd_instance) == 0) {
+        terminal_writestring("[OK] USB mass storage initialized\n");
+        klog_write("[OK] USB mass storage initialized\n");
+#ifdef TOS_DISKTEST
+        {
+            static char diskbuf[512];
+            memset(diskbuf, 0, sizeof(diskbuf));
+            if (usb_msd_read(&usb_msd_instance, 0, 1, diskbuf) == 0) {
+                diskbuf[40] = '\0';
+                terminal_writestring("[DISKTEST] USB-MSD LBA0: ");
+                terminal_writestring(diskbuf);
+                terminal_writestring("\n");
+                klog_write("[DISKTEST] USB-MSD LBA0: ");
+                klog_write(diskbuf);
+                klog_write("\n");
+            } else {
+                terminal_writestring("[DISKTEST] USB-MSD read FAILED\n");
+                klog_write("[DISKTEST] USB-MSD read FAILED\n");
+            }
+        }
+#endif
+    } else {
+        terminal_writestring("[INFO] No USB mass storage device found\n");
+        klog_write("[INFO] No USB mass storage device found\n");
+    }
 
     static tfsk_t tfs_instance;
     if (installer_check_installed()) {
