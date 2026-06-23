@@ -88,6 +88,7 @@ KERNEL_OBJS = \
     kernel/core/klog.o \
     kernel/fs/ramfs.o \
     kernel/fs/tfsk.o \
+    kernel/fs/fat16.o \
     kernel/fs/installer.o \
     kernel/shell/tsharp.o \
     kernel/display/gui.o \
