@@ -56,5 +56,6 @@ int  vfs_rename(const char *old, const char *new);
 int  vfs_symlink(const char *target, const char *path);
 int  vfs_exists(const char *path);
 char *vfs_abspath(const char *path);
+int  vfs_path_has_mount(const char *path);
 
 #endif

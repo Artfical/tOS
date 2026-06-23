@@ -244,6 +244,13 @@ int vfs_exists(const char *path)
     return vfs_stat(path, &e) == 0;
 }
 
+int vfs_path_has_mount(const char *path)
+{
+    if (!path || path[0] != '/') return 0;
+    mount_t *m = find_mount(path);
+    return (m != 0 && m->path_len > 0);
+}
+
 char *vfs_abspath(const char *path)
 {
     static char buf[VFS_NAME_LEN];

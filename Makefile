@@ -69,6 +69,7 @@ KERNEL_OBJS = \
     kernel/lib/udivdi3.o \
     kernel/fs/fs.o \
     kernel/fs/vfs.o \
+    kernel/fs/fsbridge.o \
     kernel/fs/elf.o \
     kernel/fs/syscall.o \
     kernel/core/serial.o \
