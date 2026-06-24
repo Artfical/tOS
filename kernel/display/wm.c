@@ -502,6 +502,8 @@ static void draw_trash(void)
     vga_text(x - 1, y + 2, "Trash", mk_color(VGA_BLACK, VGA_CYAN));
 }
 
+#define MOUSE_CURSOR_GLYPH 0x10 /* CP437 solid right-pointing arrow */
+
 static void draw_cursor(void)
 {
     int mx, my; uint8_t btns;
@@ -509,10 +511,9 @@ static void draw_cursor(void)
     (void)btns;
     if (mx < 0 || mx >= VGA_W || my < 0 || my >= VGA_H) return;
     uint16_t cell = backbuffer[my * VGA_W + mx];
-    char ch = (char)(cell & 0xFF);
-    uint8_t fg = (cell >> 8) & 0x0F;
     uint8_t bg = (cell >> 12) & 0x0F;
-    backbuffer[my * VGA_W + mx] = mk_cell(ch, mk_color(bg, fg));
+    uint8_t cursor_fg = (bg == VGA_BLACK) ? VGA_WHITE : VGA_BLACK;
+    backbuffer[my * VGA_W + mx] = mk_cell((char)MOUSE_CURSOR_GLYPH, mk_color(bg, cursor_fg));
 }
 
 #define FRAME_INTERVAL_TICKS 1
