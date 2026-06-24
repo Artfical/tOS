@@ -11,6 +11,7 @@
 #include "ext2.h"
 #include "ext3.h"
 #include "ext4.h"
+#include "ntfs.h"
 
 static const char *bd_type_name(blockdev_type_t t)
 {
@@ -227,11 +228,27 @@ static int do_mount(const char *name, const char *mount_point, const char *fstyp
         ext4_next++;
         ext4_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
+    } else if (strcmp(fstype, "ntfs") == 0) {
+        static ntfs_t ntfs_instances[VFS_MAX_MOUNTS];
+        static int ntfs_next = 0;
+        if (ntfs_next >= VFS_MAX_MOUNTS) {
+            terminal_writestring("disk: too many mounted filesystems\n");
+            return -1;
+        }
+        ntfs_t *fs = &ntfs_instances[ntfs_next];
+        memset(fs, 0, sizeof(*fs));
+        if (ntfs_probe_and_mount(fs, bd) != 0) {
+            terminal_writestring("disk: ntfs probe failed (not formatted?)\n");
+            return -1;
+        }
+        ntfs_next++;
+        ntfs_mount_vfs(fs, mount_point);
+        bd->fs_ctx = fs;
     } else {
         terminal_writestring("disk: unsupported filesystem type: ");
         terminal_writestring(fstype);
         terminal_putchar('\n');
-        terminal_writestring("disk: supported types: tfsk, fat16, fat32, exfat, ext2, ext3, ext4 (NTFS coming soon)\n");
+        terminal_writestring("disk: supported types: tfsk, fat16, fat32, exfat, ext2, ext3, ext4, ntfs\n");
         return -1;
     }
 
@@ -325,11 +342,16 @@ static int do_format(const char *name, const char *fstype)
             terminal_writestring("disk: format failed\n");
             return -1;
         }
+    } else if (strcmp(fstype, "ntfs") == 0) {
+        if (ntfs_format(bd, "tOS") != 0) {
+            terminal_writestring("disk: format failed\n");
+            return -1;
+        }
     } else {
         terminal_writestring("disk: unsupported filesystem type: ");
         terminal_writestring(fstype);
         terminal_putchar('\n');
-        terminal_writestring("disk: supported types: tfsk, fat16, fat32, exfat, ext2, ext3, ext4 (NTFS coming soon)\n");
+        terminal_writestring("disk: supported types: tfsk, fat16, fat32, exfat, ext2, ext3, ext4, ntfs\n");
         return -1;
     }
 

@@ -95,6 +95,7 @@ KERNEL_OBJS = \
     kernel/fs/ext2.o \
     kernel/fs/ext3.o \
     kernel/fs/ext4.o \
+    kernel/fs/ntfs.o \
     kernel/fs/installer.o \
     kernel/shell/tsharp.o \
     kernel/display/gui.o \
