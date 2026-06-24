@@ -93,6 +93,7 @@ KERNEL_OBJS = \
     kernel/fs/fat32.o \
     kernel/fs/exfat.o \
     kernel/fs/ext2.o \
+    kernel/fs/ext3.o \
     kernel/fs/installer.o \
     kernel/shell/tsharp.o \
     kernel/display/gui.o \
