@@ -69,6 +69,7 @@ KERNEL_OBJS = \
     kernel/lib/udivdi3.o \
     kernel/fs/fs.o \
     kernel/fs/vfs.o \
+    kernel/fs/fsbridge.o \
     kernel/fs/elf.o \
     kernel/fs/syscall.o \
     kernel/core/serial.o \
@@ -84,13 +85,22 @@ KERNEL_OBJS = \
     kernel/shell/commands/cmd_util.o \
     kernel/shell/commands/cmd_net.o \
     kernel/shell/commands/cmd_htop.o \
+    kernel/shell/commands/cmd_disk.o \
     kernel/core/klog.o \
     kernel/fs/ramfs.o \
     kernel/fs/tfsk.o \
+    kernel/fs/fat16.o \
+    kernel/fs/fat32.o \
+    kernel/fs/exfat.o \
+    kernel/fs/ext2.o \
+    kernel/fs/ext3.o \
+    kernel/fs/ext4.o \
+    kernel/fs/ntfs.o \
     kernel/fs/installer.o \
     kernel/shell/tsharp.o \
     kernel/display/gui.o \
     kernel/display/wm.o \
+    kernel/display/notepad.o \
     kernel/net/net.o \
     kernel/net/nic.o \
     kernel/net/rtl8139.o \

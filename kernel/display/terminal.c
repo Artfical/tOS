@@ -25,6 +25,23 @@ static term_surface_t *current_surface(void)
     return (term_surface_t *)task_get_userdata();
 }
 
+/* The VGA Attribute Controller defaults to "blink enable" mode, where bit 7
+ * of the attribute byte (i.e. background color values 8-15) makes the
+ * character blink instead of selecting a bright background. Clear that bit
+ * so colors like VGA_WHITE work as a plain background, not a blinking one. */
+static void vga_disable_blink(void)
+{
+    /* Index byte bit 5 (0x20) is the Palette Address Source bit; it must
+     * stay set while poking other AC registers or the screen blanks. */
+    inb(0x3DA);
+    outb(0x3C0, 0x10 | 0x20);
+    uint8_t mode = inb(0x3C1);
+    mode &= ~0x08;
+    inb(0x3DA);
+    outb(0x3C0, 0x10 | 0x20);
+    outb(0x3C0, mode);
+}
+
 void terminal_surface_init(term_surface_t *s)
 {
     uint8_t color = make_color(VGA_LIGHT_GREY, VGA_BLACK);
@@ -47,6 +64,7 @@ int terminal_get_y_offset(void)
 
 void terminal_init(void)
 {
+    vga_disable_blink();
     terminal_color = make_color(VGA_LIGHT_GREY, VGA_BLACK);
     terminal_row = 0;
     terminal_column = 0;

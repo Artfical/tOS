@@ -87,13 +87,28 @@ void keyboard_push_char(char c)
     }
 }
 
+static void push_special(uint8_t scancode)
+{
+    int next = (special_head + 1) % 16;
+    if (next != special_tail) {
+        if (scancode == 0x4B) special_buf[special_head] = 1;
+        else if (scancode == 0x4D) special_buf[special_head] = 2;
+        else if (scancode == 0x48) special_buf[special_head] = 3;
+        else if (scancode == 0x50) special_buf[special_head] = 4;
+        special_head = next;
+    }
+}
+
 static void process_scancode(uint8_t scancode)
 {
     if (scancode == 0xE0) { extended = 1; return; }
 
     if (extended) {
         extended = 0;
-        if (scancode == 0x53) { keyboard_push_char(127); }
+        if (scancode == 0x53) { keyboard_push_char(127); return; }
+        if (scancode == 0x48 || scancode == 0x50 || scancode == 0x4B || scancode == 0x4D) {
+            push_special(scancode);
+        }
         return;
     }
 
@@ -105,14 +120,7 @@ static void process_scancode(uint8_t scancode)
     if (scancode & 0x80) return;
 
     if (scancode == 0x48 || scancode == 0x50 || scancode == 0x4B || scancode == 0x4D) {
-        int next = (special_head + 1) % 16;
-        if (next != special_tail) {
-            if (scancode == 0x4B) special_buf[special_head] = 1;
-            else if (scancode == 0x4D) special_buf[special_head] = 2;
-            else if (scancode == 0x48) special_buf[special_head] = 3;
-            else if (scancode == 0x50) special_buf[special_head] = 4;
-            special_head = next;
-        }
+        push_special(scancode);
         return;
     }
 

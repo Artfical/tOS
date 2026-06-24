@@ -135,8 +135,16 @@ uint32_t timer_handler(uint32_t esp)
 
 void task_yield(void)   { asm volatile("int $32"); }
 
+static void unlink_task(task_t *t)
+{
+    task_t *p = t;
+    while (p->next != t) p = p->next;
+    if (p != t) p->next = t->next;
+}
+
 void task_exit(void)
 {
+    unlink_task(current);
     current->state = TASK_STATE_ZOMBIE;
     for (;;) asm volatile("int $32");
 }
@@ -157,6 +165,7 @@ int task_kill(uint32_t pid)
 {
     for (int i = 0; i < MAX_TASKS; i++) {
         if (tasks[i].pid == pid && tasks[i].state != TASK_STATE_ZOMBIE) {
+            unlink_task(&tasks[i]);
             tasks[i].state = TASK_STATE_ZOMBIE;
             return 0;
         }

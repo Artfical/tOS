@@ -96,7 +96,7 @@ static void del_child(uint32_t dir_ino, const char *name)
 static int follow_link(uint32_t ino, char *out, int out_sz)
 {
     ramfs_inode_t *n = iget(ino);
-    if (!n || !(n->mode & S_IFLNK) || !n->data) return -1;
+    if (!n || (n->mode & S_IFMT) != S_IFLNK || !n->data) return -1;
     int i = 0;
     while ((uint32_t)i < n->size - 1 && i < out_sz - 1) { out[i] = n->data[i]; i++; }
     out[i] = 0;
@@ -132,7 +132,7 @@ static int resolve_path(const char *path, int follow_final)
         if (!next) return 0;
 
         ramfs_inode_t *n = iget(next);
-        if (n && (n->mode & S_IFLNK) && (follow_final || path[i] != 0)) {
+        if (n && (n->mode & S_IFMT) == S_IFLNK && (follow_final || path[i] != 0)) {
             char target[512];
             if (follow_link(next, target, sizeof(target)) == 0) {
                 char full[VFS_NAME_LEN];
@@ -178,31 +178,43 @@ void ramfs_init(void)
     serial_write("ramfs: init\n");
 }
 
+int ramfs_vfs_open(const char *path, int flags);
+int ramfs_vfs_close(int fd);
+int ramfs_vfs_read(int fd, void *buf, uint32_t size);
+int ramfs_vfs_write(int fd, const void *buf, uint32_t size);
+int ramfs_vfs_lseek(int fd, uint32_t offset, int whence);
+int ramfs_vfs_readdir(const char *path, vfs_entry_t *entries, int max);
+int ramfs_mkdir_mode(const char *path, uint32_t mode);
+int ramfs_vfs_unlink(const char *path);
+int ramfs_vfs_stat(const char *path, vfs_entry_t *entry);
+int ramfs_vfs_symlink(const char *target, const char *path);
+
+static int ramfs_open_stub(void *ctx, const char *path, int flags) { (void)ctx; return ramfs_vfs_open(path, flags); }
+static int ramfs_close_stub(void *ctx, int fd) { (void)ctx; return ramfs_vfs_close(fd); }
+static int ramfs_read_stub(void *ctx, int fd, void *buf, uint32_t size) { (void)ctx; return ramfs_vfs_read(fd, buf, size); }
+static int ramfs_write_stub(void *ctx, int fd, const void *buf, uint32_t size) { (void)ctx; return ramfs_vfs_write(fd, buf, size); }
+static int ramfs_lseek_stub(void *ctx, int fd, uint32_t offset, int whence) { (void)ctx; return ramfs_vfs_lseek(fd, offset, whence); }
+static int ramfs_readdir_stub(void *ctx, const char *path, vfs_entry_t *entries, int max) { (void)ctx; return ramfs_vfs_readdir(path, entries, max); }
+static int ramfs_mkdir_stub(void *ctx, const char *path, uint32_t mode) { (void)ctx; return ramfs_mkdir_mode(path, mode); }
+static int ramfs_unlink_stub(void *ctx, const char *path) { (void)ctx; return ramfs_vfs_unlink(path); }
+static int ramfs_stat_stub(void *ctx, const char *path, vfs_entry_t *entry) { (void)ctx; return ramfs_vfs_stat(path, entry); }
+static int ramfs_rename_stub(void *ctx, const char *old, const char *new_path) { (void)ctx; return ramfs_rename(old, new_path); }
+static int ramfs_symlink_stub(void *ctx, const char *target, const char *path) { (void)ctx; return ramfs_vfs_symlink(target, path); }
+
 void ramfs_mount_vfs(void)
 {
     static vfs_ops_t ops;
-    extern int ramfs_vfs_open(const char *, int);
-    extern int ramfs_vfs_close(int);
-    extern int ramfs_vfs_read(int, void *, uint32_t);
-    extern int ramfs_vfs_write(int, const void *, uint32_t);
-    extern int ramfs_vfs_lseek(int, uint32_t, int);
-    extern int ramfs_vfs_readdir(const char *, vfs_entry_t *, int);
-    extern int ramfs_vfs_unlink(const char *);
-    extern int ramfs_vfs_stat(const char *, vfs_entry_t *);
-    extern int ramfs_vfs_symlink(const char *, const char *);
-    extern int ramfs_mkdir_mode(const char *, uint32_t);
-    extern int ramfs_rename(const char *, const char *);
-    ops.open    = ramfs_vfs_open;
-    ops.close   = ramfs_vfs_close;
-    ops.read    = ramfs_vfs_read;
-    ops.write   = ramfs_vfs_write;
-    ops.lseek   = ramfs_vfs_lseek;
-    ops.readdir = ramfs_vfs_readdir;
-    ops.mkdir   = ramfs_mkdir_mode;
-    ops.unlink  = ramfs_vfs_unlink;
-    ops.stat    = ramfs_vfs_stat;
-    ops.rename  = ramfs_rename;
-    ops.symlink = ramfs_vfs_symlink;
+    ops.open    = ramfs_open_stub;
+    ops.close   = ramfs_close_stub;
+    ops.read    = ramfs_read_stub;
+    ops.write   = ramfs_write_stub;
+    ops.lseek   = ramfs_lseek_stub;
+    ops.readdir = ramfs_readdir_stub;
+    ops.mkdir   = ramfs_mkdir_stub;
+    ops.unlink  = ramfs_unlink_stub;
+    ops.stat    = ramfs_stat_stub;
+    ops.rename  = ramfs_rename_stub;
+    ops.symlink = ramfs_symlink_stub;
     vfs_mount("/", &ops, 0);
 }
 
@@ -240,11 +252,16 @@ int ramfs_vfs_open(const char *path, int flags)
         while (path[i]) i++;
         int last_sep = -1;
         for (int j = i - 1; j >= 0; j--) { if (path[j] == '/') { last_sep = j; break; } }
-        if (last_sep < 0) { return -1; }
-        for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
-        parent_path[last_sep < 1 ? 1 : last_sep] = 0;
         int k = 0;
-        for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        if (last_sep < 0) {
+            parent_path[0] = '/';
+            parent_path[1] = 0;
+            for (int j = 0; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        } else {
+            for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
+            parent_path[last_sep < 1 ? 1 : last_sep] = 0;
+            for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        }
         name_buf[k] = 0;
         uint32_t p_ino = resolve_path(parent_path, 1);
         if (!p_ino) return -1;

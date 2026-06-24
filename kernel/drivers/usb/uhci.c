@@ -2,7 +2,6 @@
 #include "pci.h"
 #include "io.h"
 #include "memory.h"
-#include "terminal.h"
 #include "string.h"
 
 #define FRAME_NUM 1024
@@ -38,14 +37,14 @@ int uhci_init(uhci_controller_t *c)
     _dma_pos = 0;
 
     pci_device_t devs[4];
-    int n = pci_find_devices(0x0C, 0x00, devs, 4);
+    int n = pci_find_devices(0x0C, 0x03, devs, 4);
     if (!n) return -1;
 
     c->pci = devs[0];
     uint32_t bar4 = pci_get_bar(c->pci.bus, c->pci.device, c->pci.func, 4);
     c->io_base = bar4 & 0xFFF0;
 
-    pci_write_config(c->pci.bus, c->pci.device, c->pci.func, 4, 5);
+    pci_write_config(c->pci.bus, c->pci.device, c->pci.func, 4, 5 | (1u << 10));
 
     w16(c, 0, 2);
     volatile int t = 50000;
@@ -66,6 +65,7 @@ int uhci_init(uhci_controller_t *c)
 
     w32(c, 8, flp);
     w16(c, 12, 0x40);
+    w16(c, 4, 0);
     w16(c, 0, 1);
 
     t = 50000;
@@ -82,14 +82,14 @@ int uhci_port_detect(uhci_controller_t *c, int port)
     uint16_t s = r16(c, re);
     if (!(s & 1)) return 0;
 
-    w16(c, re, s | 0x100);
+    w16(c, re, 0x200);
     for (volatile int d = 0; d < 80000; d++);
-    w16(c, re, (s | 0x100) & ~0x100);
+    w16(c, re, 0);
     for (volatile int d = 0; d < 80000; d++);
 
     s = r16(c, re);
-    if (!(s & 4)) w16(c, re, s | 4);
     if (s & 2) w16(c, re, s | 2);
+    if (!(s & 4)) w16(c, re, s | 4);
 
     return 1;
 }
@@ -99,70 +99,121 @@ static inline uint32_t uhci_link_td(void *td)
     return (uint32_t)td & 0xFFFFFFF0;
 }
 
+#define UHCI_PID_SETUP 0x2D
+#define UHCI_PID_IN    0x69
+#define UHCI_PID_OUT   0xE1
+
+#define UHCI_TD_ACTIVE      0x00800000
+#define UHCI_TD_ERROR_MASK  0x007E0000
+#define UHCI_TD_CERR3       0x18000000
+#define UHCI_TD_INIT_STATUS (UHCI_TD_ACTIVE | UHCI_TD_CERR3)
+
+static inline uint32_t uhci_token(uint32_t pid, int dev, int ep, int toggle, int len)
+{
+    uint32_t maxlen = ((uint32_t)(len - 1)) & 0x7FF;
+    return pid | ((uint32_t)(dev & 0x7F) << 8) | ((uint32_t)(ep & 0x0F) << 15) |
+           ((uint32_t)(toggle & 1) << 19) | (maxlen << 21);
+}
+
 int uhci_control(uhci_controller_t *c, int dev, int ep, usb_device_request_t *req, void *data, int dir)
 {
-    uhci_td_t td[3] __attribute__((aligned(16)));
-    memset(td, 0, sizeof(td));
+    uint32_t tdp;
+    uhci_td_t *td = (uhci_td_t *)dma_zalloc(3 * sizeof(uhci_td_t), &tdp);
+
+    int has_data = data && req->wLength != 0;
+    int status_idx = has_data ? 2 : 1;
 
     td[0].link = uhci_link_td(&td[1]);
-    td[0].status = 0x80 | 0x700000;
-    td[0].token = (0 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (0 << 19) | (1 << 21);
+    td[0].status = UHCI_TD_INIT_STATUS;
+    td[0].token = uhci_token(UHCI_PID_SETUP, dev, ep, 0, 8);
     td[0].buffer = (uint32_t)req;
 
-    td[1].link = uhci_link_td(&td[2]);
-    td[1].status = 0x80 | 0x700000;
-
-    if (data && (dir & 0x80)) {
-        td[1].token = (1 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (1 << 19);
+    if (has_data) {
+        td[1].link = uhci_link_td(&td[2]);
+        td[1].status = UHCI_TD_INIT_STATUS;
+        td[1].token = uhci_token((dir & 0x80) ? UHCI_PID_IN : UHCI_PID_OUT, dev, ep, 1, req->wLength);
         td[1].buffer = (uint32_t)data;
-    } else if (data) {
-        td[1].token = (2 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (0 << 19);
-        td[1].buffer = (uint32_t)data;
-    } else {
-        td[1].token = (1 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (1 << 19);
-        td[1].buffer = 0;
     }
 
-    td[2].link = 1;
-    td[2].status = 0x80 | 0x700000;
-    td[2].buffer = 0;
-    if ((dir & 0x80) || !data)
-        td[2].token = (2 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (1 << 19);
-    else
-        td[2].token = (1 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (1 << 19);
+    td[status_idx].link = 1;
+    td[status_idx].status = UHCI_TD_INIT_STATUS;
+    td[status_idx].buffer = 0;
+    td[status_idx].token = uhci_token((dir & 0x80) ? UHCI_PID_OUT : UHCI_PID_IN, dev, ep, 1, 0);
 
     c->async_qh->element = (uint32_t)&td[0];
 
     int t = 2000000;
     while (--t) {
-        if (!(td[2].status & 0x80)) break;
+        inb(0x80);
+        if (!(td[status_idx].status & UHCI_TD_ACTIVE)) break;
     }
 
     c->async_qh->element = 1;
 
-    return (td[2].status & 0x80) ? -1 : 0;
+    return (!t || (td[status_idx].status & UHCI_TD_ACTIVE)) ? -1 : 0;
 }
 
 int uhci_interrupt_read(uhci_controller_t *c, int dev, int ep, int max_len, void *buf)
 {
-    uhci_td_t td __attribute__((aligned(16)));
-    memset(&td, 0, sizeof(td));
+    uint32_t tdp;
+    uhci_td_t *td = (uhci_td_t *)dma_zalloc(sizeof(uhci_td_t), &tdp);
 
-    td.link = 1;
-    td.status = 0x80 | 0x700000;
-    td.token = (1 << 29) | ((dev & 0x7F) << 8) | ((ep & 0x0F) << 15) | (0 << 19) | (((max_len / 4) - 1) << 21);
-    td.buffer = (uint32_t)buf;
+    td->link = 1;
+    td->status = UHCI_TD_INIT_STATUS;
+    td->token = uhci_token(UHCI_PID_IN, dev, ep, 0, max_len);
+    td->buffer = (uint32_t)buf;
 
-    c->async_qh->element = (uint32_t)&td;
+    c->async_qh->element = (uint32_t)td;
 
     int t = 500000;
     while (--t) {
-        if (!(td.status & 0x80)) break;
+        inb(0x80);
+        if (!(td->status & UHCI_TD_ACTIVE)) break;
     }
 
     c->async_qh->element = 1;
 
-    if (td.status & 0x80) return -1;
-    if (td.status & 0x700000) return -1;
+    if (td->status & UHCI_TD_ACTIVE) return -1;
+    if (td->status & UHCI_TD_ERROR_MASK) return -1;
+    return 0;
+}
+
+int uhci_bulk_transfer(uhci_controller_t *c, int dev, int ep, int dir, void *buf, int len, int maxpacket, int *toggle)
+{
+    uint8_t *p = (uint8_t *)buf;
+    int remaining = len;
+
+    if (maxpacket <= 0) maxpacket = 64;
+
+    while (remaining > 0 || len == 0) {
+        int chunk = remaining > maxpacket ? maxpacket : remaining;
+
+        uint32_t tdp;
+        uhci_td_t *td = (uhci_td_t *)dma_zalloc(sizeof(uhci_td_t), &tdp);
+
+        td->link = 1;
+        td->status = UHCI_TD_INIT_STATUS;
+        td->token = uhci_token(dir ? UHCI_PID_IN : UHCI_PID_OUT, dev, ep, *toggle, chunk);
+        td->buffer = (uint32_t)p;
+
+        c->async_qh->element = (uint32_t)td;
+
+        int t = 2000000;
+        while (--t) {
+            inb(0x80);
+            if (!(td->status & UHCI_TD_ACTIVE)) break;
+        }
+
+        c->async_qh->element = 1;
+
+        if (!t) return -1;
+        if (td->status & UHCI_TD_ERROR_MASK) return -1;
+
+        *toggle ^= 1;
+        p += chunk;
+        remaining -= chunk;
+        if (len == 0) break;
+    }
+
     return 0;
 }

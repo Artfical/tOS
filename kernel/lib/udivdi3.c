@@ -49,3 +49,10 @@ int64_t __moddi3(int64_t num, int64_t den)
     if (den < 0) { den = -den; }
     return neg ? -(int64_t)__umoddi3((uint64_t)num, (uint64_t)den) : (int64_t)__umoddi3((uint64_t)num, (uint64_t)den);
 }
+
+uint64_t __udivmoddi4(uint64_t num, uint64_t den, uint64_t *rem)
+{
+    uint64_t quot = __udivmoddi3(num, den, 0);
+    if (rem) *rem = __udivmoddi3(num, den, 1);
+    return quot;
+}

@@ -6,15 +6,15 @@
 #include "usb.h"
 
 typedef struct {
-    uint32_t link;
-    uint32_t status;
-    uint32_t token;
-    uint32_t buffer;
+    volatile uint32_t link;
+    volatile uint32_t status;
+    volatile uint32_t token;
+    volatile uint32_t buffer;
 } __attribute__((packed)) uhci_td_t;
 
 typedef struct {
-    uint32_t link;
-    uint32_t element;
+    volatile uint32_t link;
+    volatile uint32_t element;
 } __attribute__((packed)) uhci_qh_t;
 
 typedef struct {
@@ -29,5 +29,6 @@ int uhci_init(uhci_controller_t *ctrl);
 int uhci_port_detect(uhci_controller_t *ctrl, int port);
 int uhci_control(uhci_controller_t *ctrl, int dev, int ep, usb_device_request_t *req, void *data, int dir);
 int uhci_interrupt_read(uhci_controller_t *ctrl, int dev, int ep, int max_len, void *buf);
+int uhci_bulk_transfer(uhci_controller_t *ctrl, int dev, int ep, int dir, void *buf, int len, int maxpacket, int *toggle);
 
 #endif

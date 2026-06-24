@@ -58,5 +58,6 @@ void cmd_history(int argc, char **args);
 void cmd_unalias(int argc, char **args);
 void cmd_font(int argc, char **args);
 void cmd_htop(int argc, char **args);
+void cmd_disk(int argc, char **args);
 
 #endif
