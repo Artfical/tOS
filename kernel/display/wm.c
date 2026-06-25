@@ -307,16 +307,9 @@ static void build_menu_items(int which)
     if (which == MENU_T) {
         menu_names[menu_count] = "About This Computer..."; menu_is_app[menu_count] = -1; menu_disabled[menu_count] = 1;
         menu_count++;
-        const char **builtin = shell_builtin_names();
-        int i = 0;
-        while (builtin[i] && menu_count < MENU_MAX_ITEMS - 2) {
-            menu_names[menu_count] = builtin[i];
-            menu_is_app[menu_count] = 0;
-            menu_disabled[menu_count] = 0;
-            menu_count++;
-            i++;
-        }
         menu_names[menu_count] = "Notepad"; menu_is_app[menu_count] = 1; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "Terminal"; menu_is_app[menu_count] = 3; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Clock"; menu_is_app[menu_count] = 2; menu_disabled[menu_count] = 0;
         menu_count++;
@@ -557,8 +550,8 @@ static void handle_menu_click(int idx)
             wm_open_notepad();
         } else if (menu_is_app[idx] == 2) {
             wm_open_clock();
-        } else if (menu_is_app[idx] == 0) {
-            wm_open_window(menu_names[idx]);
+        } else if (menu_is_app[idx] == 3) {
+            wm_open_window("");
         }
     } else if (active_menu == MENU_FILE) {
         if (menu_is_app[idx] == -3) {
