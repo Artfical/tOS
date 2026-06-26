@@ -63,6 +63,8 @@ static int fmt2(char *buf, int v)
     return 2;
 }
 
+static int tab_x0[3], tab_x1[3];
+
 static void draw_header(int view)
 {
     uint8_t base = clk_color(VGA_BLACK, VGA_LIGHT_GREY);
@@ -71,8 +73,11 @@ static void draw_header(int view)
     int x = 1;
     for (int i = 0; i < 3; i++) {
         uint8_t c = (i == view) ? hi : base;
+        int len = (int)strlen(labels[i]);
         put_str(x, 0, labels[i], c);
-        x += (int)strlen(labels[i]) + 1;
+        tab_x0[i] = x;
+        tab_x1[i] = x + len - 1;
+        x += len + 1;
     }
 }
 
@@ -149,6 +154,26 @@ static void draw_analog(void)
     put_char_at(cx, cy, 'o', clk_color(VGA_BLACK, VGA_LIGHT_GREY));
 }
 
+#define SW_BTN_ROW 11
+static int sw_btn_x0[2], sw_btn_x1[2];
+
+static void sw_toggle(void)
+{
+    if (sw_running) {
+        sw_accum_ticks += task_get_ticks() - sw_start_tick;
+        sw_running = 0;
+    } else {
+        sw_start_tick = task_get_ticks();
+        sw_running = 1;
+    }
+}
+
+static void sw_reset(void)
+{
+    sw_running = 0;
+    sw_accum_ticks = 0;
+}
+
 static void draw_stopwatch(void)
 {
     uint32_t elapsed = sw_accum_ticks;
@@ -172,9 +197,19 @@ static void draw_stopwatch(void)
     int sx = (CLK_COLS - (int)strlen(status)) / 2;
     put_str(sx, 8, status, sw_running ? clk_color(VGA_WHITE, VGA_GREEN) : clk_color(VGA_WHITE, VGA_RED));
 
-    const char *hint = "[Space] Start/Stop   [R] Reset";
-    int hx = (CLK_COLS - (int)strlen(hint)) / 2;
-    put_str(hx, 11, hint, clk_color(VGA_DARK_GREY, VGA_LIGHT_GREY));
+    const char *btn1 = sw_running ? "[ Stop ]" : "[ Start ]";
+    const char *btn2 = "[ Reset ]";
+    int gap = 3;
+    int total_len = (int)strlen(btn1) + gap + (int)strlen(btn2);
+    int hx = (CLK_COLS - total_len) / 2;
+
+    uint8_t btnc = clk_color(VGA_WHITE, VGA_BLUE);
+    put_str(hx, SW_BTN_ROW, btn1, btnc);
+    sw_btn_x0[0] = hx; sw_btn_x1[0] = hx + (int)strlen(btn1) - 1;
+
+    int hx2 = hx + (int)strlen(btn1) + gap;
+    put_str(hx2, SW_BTN_ROW, btn2, btnc);
+    sw_btn_x0[1] = hx2; sw_btn_x1[1] = hx2 + (int)strlen(btn2) - 1;
 }
 
 void clock_run(void)
@@ -195,24 +230,27 @@ void clock_run(void)
 
         if (!wm_current_task_has_focus()) { task_yield(); continue; }
 
+        int ccx, ccy;
+        if (wm_get_content_click(&ccx, &ccy)) {
+            if (ccy == 0) {
+                for (int i = 0; i < 3; i++) {
+                    if (ccx >= tab_x0[i] && ccx <= tab_x1[i]) { view = i; break; }
+                }
+            } else if (view == VIEW_STOPWATCH && ccy == SW_BTN_ROW) {
+                if (ccx >= sw_btn_x0[0] && ccx <= sw_btn_x1[0]) sw_toggle();
+                else if (ccx >= sw_btn_x0[1] && ccx <= sw_btn_x1[1]) sw_reset();
+            }
+            continue;
+        }
+
         if (keyboard_data_available()) {
             char c = keyboard_getchar();
             if (c == '1') view = VIEW_DIGITAL;
             else if (c == '2') view = VIEW_ANALOG;
             else if (c == '3') view = VIEW_STOPWATCH;
             else if (view == VIEW_STOPWATCH) {
-                if (c == ' ') {
-                    if (sw_running) {
-                        sw_accum_ticks += task_get_ticks() - sw_start_tick;
-                        sw_running = 0;
-                    } else {
-                        sw_start_tick = task_get_ticks();
-                        sw_running = 1;
-                    }
-                } else if (c == 'r' || c == 'R') {
-                    sw_running = 0;
-                    sw_accum_ticks = 0;
-                }
+                if (c == ' ') sw_toggle();
+                else if (c == 'r' || c == 'R') sw_reset();
             }
         }
 
