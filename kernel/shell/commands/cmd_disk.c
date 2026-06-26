@@ -4,14 +4,7 @@
 #include "stdio.h"
 #include "vfs.h"
 #include "blockdev.h"
-#include "tfsk.h"
-#include "fat16.h"
-#include "fat32.h"
-#include "exfat.h"
-#include "ext2.h"
-#include "ext3.h"
-#include "ext4.h"
-#include "ntfs.h"
+#include "diskops.h"
 
 static const char *bd_type_name(blockdev_type_t t)
 {
@@ -101,165 +94,13 @@ static void disk_properties(void)
 
 static int do_mount(const char *name, const char *mount_point, const char *fstype)
 {
-    blockdev_t *bd = blockdev_find(name);
-    if (!bd) {
-        terminal_writestring("disk: no such device\n");
-        return -1;
-    }
-    if (bd->mounted) {
-        terminal_writestring("disk: device already mounted\n");
-        return -1;
-    }
-
-    if (strcmp(fstype, "tfsk") == 0) {
-        if (bd->type != BLOCKDEV_ATA) {
-            terminal_writestring("disk: tfsk is currently only supported on ATA devices\n");
-            return -1;
-        }
-        static tfsk_t fs_instances[VFS_MAX_MOUNTS];
-        static int fs_next = 0;
-        if (fs_next >= VFS_MAX_MOUNTS) {
-            terminal_writestring("disk: too many mounted filesystems\n");
-            return -1;
-        }
-        tfsk_t *fs = &fs_instances[fs_next];
-        memset(fs, 0, sizeof(*fs));
-        fs->dev = (ata_device_t *)bd->driver_data;
-        if (tfsk_probe_and_mount(fs) != 0) {
-            terminal_writestring("disk: tfsk probe failed (not formatted?)\n");
-            return -1;
-        }
-        fs_next++;
-        tfsk_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
-    } else if (strcmp(fstype, "fat16") == 0) {
-        static fat16_t fat16_instances[VFS_MAX_MOUNTS];
-        static int fat16_next = 0;
-        if (fat16_next >= VFS_MAX_MOUNTS) {
-            terminal_writestring("disk: too many mounted filesystems\n");
-            return -1;
-        }
-        fat16_t *fs = &fat16_instances[fat16_next];
-        memset(fs, 0, sizeof(*fs));
-        if (fat16_probe_and_mount(fs, bd) != 0) {
-            terminal_writestring("disk: fat16 probe failed (not formatted?)\n");
-            return -1;
-        }
-        fat16_next++;
-        fat16_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
-    } else if (strcmp(fstype, "fat32") == 0) {
-        static fat32_t fat32_instances[VFS_MAX_MOUNTS];
-        static int fat32_next = 0;
-        if (fat32_next >= VFS_MAX_MOUNTS) {
-            terminal_writestring("disk: too many mounted filesystems\n");
-            return -1;
-        }
-        fat32_t *fs = &fat32_instances[fat32_next];
-        memset(fs, 0, sizeof(*fs));
-        if (fat32_probe_and_mount(fs, bd) != 0) {
-            terminal_writestring("disk: fat32 probe failed (not formatted?)\n");
-            return -1;
-        }
-        fat32_next++;
-        fat32_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
-    } else if (strcmp(fstype, "exfat") == 0) {
-        static exfat_t exfat_instances[VFS_MAX_MOUNTS];
-        static int exfat_next = 0;
-        if (exfat_next >= VFS_MAX_MOUNTS) {
-            terminal_writestring("disk: too many mounted filesystems\n");
-            return -1;
-        }
-        exfat_t *fs = &exfat_instances[exfat_next];
-        memset(fs, 0, sizeof(*fs));
-        if (exfat_probe_and_mount(fs, bd) != 0) {
-            terminal_writestring("disk: exfat probe failed (not formatted?)\n");
-            return -1;
-        }
-        exfat_next++;
-        exfat_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
-    } else if (strcmp(fstype, "ext2") == 0) {
-        static ext2_t ext2_instances[VFS_MAX_MOUNTS];
-        static int ext2_next = 0;
-        if (ext2_next >= VFS_MAX_MOUNTS) {
-            terminal_writestring("disk: too many mounted filesystems\n");
-            return -1;
-        }
-        ext2_t *fs = &ext2_instances[ext2_next];
-        memset(fs, 0, sizeof(*fs));
-        if (ext2_probe_and_mount(fs, bd) != 0) {
-            terminal_writestring("disk: ext2 probe failed (not formatted?)\n");
-            return -1;
-        }
-        ext2_next++;
-        ext2_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
-    } else if (strcmp(fstype, "ext3") == 0) {
-        static ext3_t ext3_instances[VFS_MAX_MOUNTS];
-        static int ext3_next = 0;
-        if (ext3_next >= VFS_MAX_MOUNTS) {
-            terminal_writestring("disk: too many mounted filesystems\n");
-            return -1;
-        }
-        ext3_t *fs = &ext3_instances[ext3_next];
-        memset(fs, 0, sizeof(*fs));
-        if (ext3_probe_and_mount(fs, bd) != 0) {
-            terminal_writestring("disk: ext3 probe failed (not formatted?)\n");
-            return -1;
-        }
-        ext3_next++;
-        ext3_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
-    } else if (strcmp(fstype, "ext4") == 0) {
-        static ext4_t ext4_instances[VFS_MAX_MOUNTS];
-        static int ext4_next = 0;
-        if (ext4_next >= VFS_MAX_MOUNTS) {
-            terminal_writestring("disk: too many mounted filesystems\n");
-            return -1;
-        }
-        ext4_t *fs = &ext4_instances[ext4_next];
-        memset(fs, 0, sizeof(*fs));
-        if (ext4_probe_and_mount(fs, bd) != 0) {
-            terminal_writestring("disk: ext4 probe failed (not formatted?)\n");
-            return -1;
-        }
-        ext4_next++;
-        ext4_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
-    } else if (strcmp(fstype, "ntfs") == 0) {
-        static ntfs_t ntfs_instances[VFS_MAX_MOUNTS];
-        static int ntfs_next = 0;
-        if (ntfs_next >= VFS_MAX_MOUNTS) {
-            terminal_writestring("disk: too many mounted filesystems\n");
-            return -1;
-        }
-        ntfs_t *fs = &ntfs_instances[ntfs_next];
-        memset(fs, 0, sizeof(*fs));
-        if (ntfs_probe_and_mount(fs, bd) != 0) {
-            terminal_writestring("disk: ntfs probe failed (not formatted?)\n");
-            return -1;
-        }
-        ntfs_next++;
-        ntfs_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
-    } else {
-        terminal_writestring("disk: unsupported filesystem type: ");
-        terminal_writestring(fstype);
+    char err[80];
+    if (diskops_mount(name, mount_point, fstype, err, sizeof(err)) != 0) {
+        terminal_writestring("disk: ");
+        terminal_writestring(err);
         terminal_putchar('\n');
-        terminal_writestring("disk: supported types: tfsk, fat16, fat32, exfat, ext2, ext3, ext4, ntfs\n");
         return -1;
     }
-
-    bd->mounted = 1;
-    int i = 0;
-    while (mount_point[i] && i < BLOCKDEV_MOUNT_LEN - 1) { bd->mount_point[i] = mount_point[i]; i++; }
-    bd->mount_point[i] = 0;
-    i = 0;
-    while (fstype[i] && i < BLOCKDEV_FSTYPE_LEN - 1) { bd->fs_type[i] = fstype[i]; i++; }
-    bd->fs_type[i] = 0;
-
     terminal_writestring("disk: mounted ");
     terminal_writestring(name);
     terminal_writestring(" at ");
@@ -270,20 +111,12 @@ static int do_mount(const char *name, const char *mount_point, const char *fstyp
 
 static int do_umount(const char *mount_point)
 {
-    if (vfs_unmount(mount_point) != 0) {
-        terminal_writestring("disk: umount failed (not mounted, or busy)\n");
+    char err[80];
+    if (diskops_umount(mount_point, err, sizeof(err)) != 0) {
+        terminal_writestring("disk: ");
+        terminal_writestring(err);
+        terminal_putchar('\n');
         return -1;
-    }
-    int n = blockdev_count();
-    for (int i = 0; i < n; i++) {
-        blockdev_t *bd = blockdev_get(i);
-        if (bd && bd->mounted && strcmp(bd->mount_point, mount_point) == 0) {
-            bd->mounted = 0;
-            bd->mount_point[0] = 0;
-            bd->fs_type[0] = 0;
-            bd->fs_ctx = 0;
-            break;
-        }
     }
     terminal_writestring("disk: unmounted ");
     terminal_writestring(mount_point);
@@ -293,68 +126,13 @@ static int do_umount(const char *mount_point)
 
 static int do_format(const char *name, const char *fstype)
 {
-    blockdev_t *bd = blockdev_find(name);
-    if (!bd) {
-        terminal_writestring("disk: no such device\n");
-        return -1;
-    }
-    if (bd->mounted) {
-        terminal_writestring("disk: cannot format a mounted device, umount first\n");
-        return -1;
-    }
-
-    if (strcmp(fstype, "tfsk") == 0) {
-        if (bd->type != BLOCKDEV_ATA) {
-            terminal_writestring("disk: tfsk is currently only supported on ATA devices\n");
-            return -1;
-        }
-        if (tfsk_format((ata_device_t *)bd->driver_data, bd->total_sectors / 8, "tOS") != 0) {
-            terminal_writestring("disk: format failed\n");
-            return -1;
-        }
-    } else if (strcmp(fstype, "fat16") == 0) {
-        if (fat16_format(bd, "tOS") != 0) {
-            terminal_writestring("disk: format failed\n");
-            return -1;
-        }
-    } else if (strcmp(fstype, "fat32") == 0) {
-        if (fat32_format(bd, "tOS") != 0) {
-            terminal_writestring("disk: format failed\n");
-            return -1;
-        }
-    } else if (strcmp(fstype, "exfat") == 0) {
-        if (exfat_format(bd, "tOS") != 0) {
-            terminal_writestring("disk: format failed\n");
-            return -1;
-        }
-    } else if (strcmp(fstype, "ext2") == 0) {
-        if (ext2_format(bd, "tOS") != 0) {
-            terminal_writestring("disk: format failed\n");
-            return -1;
-        }
-    } else if (strcmp(fstype, "ext3") == 0) {
-        if (ext3_format(bd, "tOS") != 0) {
-            terminal_writestring("disk: format failed\n");
-            return -1;
-        }
-    } else if (strcmp(fstype, "ext4") == 0) {
-        if (ext4_format(bd, "tOS") != 0) {
-            terminal_writestring("disk: format failed\n");
-            return -1;
-        }
-    } else if (strcmp(fstype, "ntfs") == 0) {
-        if (ntfs_format(bd, "tOS") != 0) {
-            terminal_writestring("disk: format failed\n");
-            return -1;
-        }
-    } else {
-        terminal_writestring("disk: unsupported filesystem type: ");
-        terminal_writestring(fstype);
+    char err[80];
+    if (diskops_format(name, fstype, err, sizeof(err)) != 0) {
+        terminal_writestring("disk: ");
+        terminal_writestring(err);
         terminal_putchar('\n');
-        terminal_writestring("disk: supported types: tfsk, fat16, fat32, exfat, ext2, ext3, ext4, ntfs\n");
         return -1;
     }
-
     terminal_writestring("disk: formatted ");
     terminal_writestring(name);
     terminal_writestring(" as ");
