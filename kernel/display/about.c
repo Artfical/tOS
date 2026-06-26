@@ -12,17 +12,17 @@
 
 static uint8_t abt_color(uint8_t fg, uint8_t bg) { return fg | (bg << 4); }
 
-static void put_str(int x, int y, const char *s, uint8_t color)
-{
-    terminal_setcolor(color);
-    terminal_setpos((size_t)x, (size_t)y);
-    while (*s) terminal_putchar(*s++);
-}
-
-static void clear_area(void)
+/* One-time light-grey dialog background, painted once at window-open instead
+   of every redraw (see centered()'s comment for why repeating this caused
+   flicker). */
+static void fill_background(void)
 {
     uint8_t bg = abt_color(VGA_BLACK, VGA_LIGHT_GREY);
-    for (int r = 0; r < ABT_ROWS; r++) put_str(0, r, "                                                            ", bg);
+    terminal_setcolor(bg);
+    for (int r = 0; r < ABT_ROWS; r++) {
+        terminal_setpos(0, (size_t)r);
+        for (int x = 0; x < ABT_COLS; x++) terminal_putchar(' ');
+    }
 }
 
 static int fmt_uint(char *buf, unsigned int v)
@@ -35,11 +35,22 @@ static int fmt_uint(char *buf, unsigned int v)
     return n;
 }
 
+/* Pads the whole row width in one pass (instead of a separate full-area
+   clear before redrawing) so a window compositor snapshot taken mid-update
+   never catches a blanked-but-not-yet-redrawn row, which is what caused the
+   visible flicker. */
 static void centered(int y, const char *s, uint8_t color)
 {
-    int x = (ABT_COLS - (int)strlen(s)) / 2;
+    int len = (int)strlen(s);
+    int x = (ABT_COLS - len) / 2;
     if (x < 0) x = 0;
-    put_str(x, y, s, color);
+
+    terminal_setcolor(color);
+    terminal_setpos(0, (size_t)y);
+    int i = 0;
+    for (; i < x; i++) terminal_putchar(' ');
+    for (int j = 0; j < len; j++) terminal_putchar(s[j]);
+    for (i = x + len; i < ABT_COLS; i++) terminal_putchar(' ');
 }
 
 static void draw_about(void)
@@ -78,6 +89,7 @@ static void draw_about(void)
 void about_run(void)
 {
     terminal_clear();
+    fill_background();
 
     uint32_t last_redraw = 0;
 
@@ -89,7 +101,6 @@ void about_run(void)
         uint32_t now = task_get_ticks();
         if (now - last_redraw >= 20) {
             last_redraw = now;
-            clear_area();
             draw_about();
         }
 
