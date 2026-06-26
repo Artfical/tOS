@@ -48,6 +48,12 @@ static window_t *wm_focused = NULL;
 static window_t *pending_window;
 static int next_z = 1;
 
+/* One-shot mouse click within a window's content area (below the titlebar),
+ * in surface-local coordinates, claimable by that window's own task via
+ * wm_get_content_click(). Cleared on read or overwritten by the next click. */
+static window_t *content_click_target = NULL;
+static int content_click_x, content_click_y;
+
 /* Top menu bar: T (apple-logo stand-in) + File/Edit/View/Label/Special */
 enum { MENU_NONE = 0, MENU_T, MENU_FILE, MENU_EDIT, MENU_VIEW, MENU_LABEL, MENU_SPECIAL };
 static int active_menu = MENU_NONE;
@@ -100,6 +106,16 @@ int wm_current_task_has_focus(void)
     void *ud = task_get_userdata();
     if (!ud) return 1;
     return ud == (void *)wm_focused;
+}
+
+int wm_get_content_click(int *x, int *y)
+{
+    window_t *self = (window_t *)task_get_userdata();
+    if (!self || content_click_target != self) return 0;
+    content_click_target = NULL;
+    if (x) *x = content_click_x;
+    if (y) *y = content_click_y;
+    return 1;
 }
 
 static void window_geom(window_t *w, int *x0, int *y0, int *w0, int *h0)
@@ -713,7 +729,13 @@ static void wm_desktop_tick(void)
                     else if (cx == gx + 2) { wm_close_window(hit); }
                     else { wm_focus_window(hit); }
                 } else {
+                    int was_focused = (hit == wm_focused);
                     wm_focus_window(hit);
+                    if (was_focused) {
+                        content_click_target = hit;
+                        content_click_x = cx - hit->x0;
+                        content_click_y = cy - hit->y0 - 1;
+                    }
                 }
             }
         }
