@@ -4,6 +4,10 @@
 #include "irq.h"
 #include "io.h"
 #include "terminal.h"
+#include "synaptics.h"
+#include "alps.h"
+#include "elantech.h"
+#include "trackpoint.h"
 
 #define MOUSE_IRQ 12
 #define MOUSE_PORT 0x60
@@ -122,6 +126,25 @@ static void mouse_enable_irq12(void)
     outb(MOUSE_PORT, config);
 }
 
+/* Probes for known PS/2 touchpad/pointing-stick vendor extensions. Whatever
+   is found (or not), we always fall through to standard PS/2 relative
+   reporting below -- vendor absolute/extended packet formats are never
+   enabled, since they can't be validated without real hardware. */
+static void detect_touchpad(void)
+{
+    if (synaptics_detect()) {
+        terminal_writestring("mouse: Synaptics TouchPad detected\n");
+    } else if (alps_detect()) {
+        terminal_writestring("mouse: ALPS TouchPad detected\n");
+    } else if (elantech_detect()) {
+        terminal_writestring("mouse: Elantech TouchPad detected\n");
+    } else if (trackpoint_detect()) {
+        terminal_writestring("mouse: TrackPoint detected\n");
+    } else {
+        terminal_writestring("mouse: standard PS/2 mouse\n");
+    }
+}
+
 void mouse_init(void)
 {
     asm volatile("cli");
@@ -133,6 +156,8 @@ void mouse_init(void)
     mouse_read();
 
     mouse_enable_irq12();
+
+    detect_touchpad();
 
     mouse_write(0xF4);
     mouse_read();
