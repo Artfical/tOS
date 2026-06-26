@@ -54,6 +54,11 @@ static int next_z = 1;
 static window_t *content_click_target = NULL;
 static int content_click_x, content_click_y;
 
+/* One-shot menu action requested for a window via the top File/Edit/... bar,
+ * claimable by that window's own task via wm_get_menu_action(). */
+static window_t *action_target = NULL;
+static int pending_action = WM_ACTION_NONE;
+
 /* Top menu bar: T (apple-logo stand-in) + File/Edit/View/Label/Special */
 enum { MENU_NONE = 0, MENU_T, MENU_FILE, MENU_EDIT, MENU_VIEW, MENU_LABEL, MENU_SPECIAL };
 static int active_menu = MENU_NONE;
@@ -116,6 +121,16 @@ int wm_get_content_click(int *x, int *y)
     if (x) *x = content_click_x;
     if (y) *y = content_click_y;
     return 1;
+}
+
+int wm_get_menu_action(void)
+{
+    window_t *self = (window_t *)task_get_userdata();
+    if (!self || action_target != self || pending_action == WM_ACTION_NONE) return WM_ACTION_NONE;
+    int a = pending_action;
+    action_target = NULL;
+    pending_action = WM_ACTION_NONE;
+    return a;
 }
 
 static void window_geom(window_t *w, int *x0, int *y0, int *w0, int *h0)
@@ -388,6 +403,11 @@ static void build_menu_items(int which)
         menu_names[menu_count] = "Shut Down"; menu_is_app[menu_count] = -2; menu_disabled[menu_count] = 0;
         menu_count++;
     } else if (which == MENU_FILE) {
+        if (wm_focused && wm_focused->kind == WIN_KIND_NOTEPAD) {
+            menu_names[menu_count] = "New"; menu_is_app[menu_count] = -5; menu_disabled[menu_count] = 0; menu_count++;
+            menu_names[menu_count] = "Open..."; menu_is_app[menu_count] = -6; menu_disabled[menu_count] = 0; menu_count++;
+            menu_names[menu_count] = "Save"; menu_is_app[menu_count] = -7; menu_disabled[menu_count] = 0; menu_count++;
+        }
         menu_names[menu_count] = "New Window"; menu_is_app[menu_count] = -3; menu_disabled[menu_count] = 0; menu_count++;
         menu_names[menu_count] = "Close Window"; menu_is_app[menu_count] = -4; menu_disabled[menu_count] = 0; menu_count++;
     } else {
@@ -675,6 +695,12 @@ static void handle_menu_click(int idx)
             wm_open_window("");
         } else if (menu_is_app[idx] == -4) {
             if (wm_focused) wm_close_window(wm_focused);
+        } else if (menu_is_app[idx] == -5) {
+            if (wm_focused) { action_target = wm_focused; pending_action = WM_ACTION_NEW; }
+        } else if (menu_is_app[idx] == -6) {
+            if (wm_focused) { action_target = wm_focused; pending_action = WM_ACTION_OPEN; }
+        } else if (menu_is_app[idx] == -7) {
+            if (wm_focused) { action_target = wm_focused; pending_action = WM_ACTION_SAVE; }
         }
     }
 }

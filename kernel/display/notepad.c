@@ -254,6 +254,15 @@ void notepad_run(void)
     for (;;) {
         gui_poll();
 
+        int action = wm_get_menu_action();
+        if (action) {
+            if (action == WM_ACTION_NEW) do_new();
+            else if (action == WM_ACTION_OPEN) do_open();
+            else if (action == WM_ACTION_SAVE) do_save();
+            redraw();
+            continue;
+        }
+
         int ccx, ccy;
         if (wm_get_content_click(&ccx, &ccy)) {
             if (ccy == BUTTON_ROW) {
