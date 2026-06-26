@@ -35,6 +35,10 @@ static void put_char_at(int x, int y, char c, uint8_t color)
     terminal_putchar(c);
 }
 
+/* Full-area blank, used only once on window open. The list/status rows are
+ * always rewritten full-width in a single pass below, so a periodic clear
+ * before redraw isn't needed — that two-pass clear-then-redraw is what
+ * caused the visible flicker (same root cause as about.c). */
 static void clear_area(void)
 {
     uint8_t bg = dm_color(VGA_BLACK, VGA_LIGHT_GREY);
@@ -99,7 +103,15 @@ static void draw_list(void)
 
     int n = blockdev_count();
     if (n == 0) {
-        put_str(2, LIST_Y0, "No block devices found.", dm_color(VGA_BLACK, VGA_LIGHT_GREY));
+        char line[DM_COLS + 1];
+        const char *msg = "No block devices found.";
+        int k = 0;
+        while (msg[k]) { line[k + 2] = msg[k]; k++; }
+        line[0] = ' '; line[1] = ' ';
+        k += 2;
+        while (k < DM_COLS) line[k++] = ' ';
+        line[k] = 0;
+        put_str(0, LIST_Y0, line, dm_color(VGA_BLACK, VGA_LIGHT_GREY));
         return;
     }
 
@@ -138,6 +150,7 @@ static void draw_list(void)
             const char *p = "unmounted";
             while (*p && k < DM_COLS) line[k++] = *p++;
         }
+        while (k < DM_COLS) line[k++] = ' ';
         line[k] = 0;
 
         uint8_t color = is_sel ? dm_color(VGA_WHITE, VGA_BLUE) : dm_color(VGA_BLACK, VGA_LIGHT_GREY);
@@ -149,9 +162,12 @@ static void draw_list(void)
 
 static void draw_status(void)
 {
-    put_str(0, STATUS_Y, "                                                            ",
-            dm_color(VGA_BLACK, VGA_LIGHT_GREY));
-    put_str(0, STATUS_Y, status_msg, dm_color(VGA_BLACK, VGA_LIGHT_GREY));
+    char line[DM_COLS + 1];
+    int k = 0;
+    while (status_msg[k] && k < DM_COLS) { line[k] = status_msg[k]; k++; }
+    while (k < DM_COLS) line[k++] = ' ';
+    line[k] = 0;
+    put_str(0, STATUS_Y, line, dm_color(VGA_BLACK, VGA_LIGHT_GREY));
 }
 
 static void do_toggle_mount(blockdev_t *bd)
@@ -222,6 +238,7 @@ void diskmgr_run(void)
     selected = 0;
     status_msg[0] = 0;
     terminal_clear();
+    clear_area();
 
     uint32_t last_redraw = 0;
 
@@ -252,7 +269,6 @@ void diskmgr_run(void)
         uint32_t now = task_get_ticks();
         if (now - last_redraw >= 5) {
             last_redraw = now;
-            clear_area();
             draw_list();
             draw_status();
         }

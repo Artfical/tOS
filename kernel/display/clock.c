@@ -35,6 +35,10 @@ static void put_char_at(int x, int y, char c, uint8_t color)
     terminal_putchar(c);
 }
 
+/* Full-area blank, used only on window open and on view switch (not every
+ * redraw tick) so static views don't flicker — see about.c for the same
+ * fix applied to the About dialog. The Analog view still calls this every
+ * tick since its hands genuinely move and must be erased each frame. */
 static void clear_area(void)
 {
     uint8_t bg = clk_color(VGA_BLACK, VGA_LIGHT_GREY);
@@ -181,8 +185,10 @@ void clock_run(void)
     sw_accum_ticks = 0;
 
     terminal_clear();
+    clear_area();
 
     uint32_t last_redraw = 0;
+    int prev_view = view;
 
     for (;;) {
         gui_poll();
@@ -213,7 +219,8 @@ void clock_run(void)
         uint32_t now = task_get_ticks();
         if (now - last_redraw >= 5) {
             last_redraw = now;
-            clear_area();
+            if (view != prev_view) { clear_area(); prev_view = view; }
+            else if (view == VIEW_ANALOG) clear_area();
             draw_header(view);
             if (view == VIEW_DIGITAL) draw_digital();
             else if (view == VIEW_ANALOG) draw_analog();
