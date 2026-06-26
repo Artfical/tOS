@@ -2,6 +2,7 @@
 #include "io.h"
 #include "string.h"
 #include "terminal.h"
+#include "serial.h"
 ata_device_t ata_devices[ATA_MAX_DEVICES];
 int ata_device_count = 0;
 
@@ -12,6 +13,7 @@ static int ata_wait(ata_device_t *dev, int timeout)
         uint8_t s = inb(dev->io_base + ATA_REG_STATUS);
         if (!(s & ATA_STATUS_BSY)) return 0;
     }
+    serial_write("ata_wait: TIMEOUT\n");
     return -1;
 }
 int ata_identify(ata_device_t *dev, int is_slave)
@@ -96,9 +98,17 @@ int ata_write_sectors(ata_device_t *dev, uint64_t lba, uint8_t count, const void
     outb(dev->io_base + ATA_REG_CMD, ATA_CMD_WRITE_PIO);
     const uint16_t *ptr = (const uint16_t *)buf;
     for (int s = 0; s < count; s++) {
-        if (ata_wait(dev, 10000)) return -1;
+        if (ata_wait(dev, 10000)) { serial_write("ata_write: wait failed mid-sector\n"); return -1; }
         uint8_t st = inb(dev->io_base + ATA_REG_STATUS);
-        if (st & ATA_STATUS_ERR) return -1;
+        if (st & ATA_STATUS_ERR) {
+            char b[64]; int n = 0;
+            const char *p = "ata_write: ERR status=";
+            while (*p) b[n++] = *p++;
+            const char *hex = "0123456789ABCDEF";
+            b[n++] = hex[(st >> 4) & 0xF]; b[n++] = hex[st & 0xF]; b[n++] = '\n'; b[n] = 0;
+            serial_write(b);
+            return -1;
+        }
         for (int i = 0; i < 256; i++)
             outw(dev->io_base + ATA_REG_DATA, ptr[s * 256 + i]);
     }

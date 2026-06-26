@@ -102,10 +102,24 @@ void free_physical_page(uint32_t addr)
 uint32_t get_total_pages(void) { return total_pages; }
 uint32_t get_used_pages(void)  { return used_pages; }
 
+static inline uint32_t heap_irq_save(void)
+{
+    uint32_t flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    return flags;
+}
+
+static inline void heap_irq_restore(uint32_t flags)
+{
+    asm volatile("pushl %0; popfl" : : "r"(flags));
+}
+
 static void *heap_alloc(uint32_t size)
 {
     if (size == 0) return NULL;
     size = (size + 3) & ~3;
+
+    uint32_t flags = heap_irq_save();
 
     heap_header_t *curr = heap_list;
     while (curr) {
@@ -120,6 +134,7 @@ static void *heap_alloc(uint32_t size)
                 curr->next = new_hdr;
             }
             curr->used = 1;
+            heap_irq_restore(flags);
             return (void *)((uint32_t)curr + sizeof(heap_header_t));
         }
         curr = curr->next;
@@ -151,9 +166,11 @@ static void *heap_alloc(uint32_t size)
             new_hdr->next = split;
         }
         new_hdr->used = 1;
+        heap_irq_restore(flags);
         return (void *)((uint32_t)new_hdr + sizeof(heap_header_t));
     }
 
+    heap_irq_restore(flags);
     return NULL;
 }
 
@@ -166,8 +183,10 @@ void free(void *ptr)
 {
     if (!ptr) return;
     heap_header_t *hdr = (heap_header_t *)((uint32_t)ptr - sizeof(heap_header_t));
-    if (hdr->magic != HEAP_MAGIC) return;
+    uint32_t flags = heap_irq_save();
+    if (hdr->magic != HEAP_MAGIC) { heap_irq_restore(flags); return; }
     hdr->used = 0;
+    heap_irq_restore(flags);
 }
 
 void *krealloc(void *ptr, size_t size)

@@ -80,13 +80,16 @@ int tfsk_umount(tfsk_t *fs)
 
 int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
 {
-    uint8_t zero[TFSK_BLOCK_SIZE];
-    memset(zero, 0, TFSK_BLOCK_SIZE);
+    uint8_t *zero = kcalloc(1, TFSK_BLOCK_SIZE);
+    if (!zero) return -1;
 
     for (uint64_t i = 0; i < blocks; i++) {
-        if (ata_write_sectors(dev, i * 8, 8, zero) < 0)
+        if (ata_write_sectors(dev, i * 8, 8, zero) < 0) {
+            free(zero);
             return -1;
+        }
     }
+    free(zero);
 
     uint32_t bmp_blocks = (blocks + TFSK_BLOCK_SIZE * 8 - 1) / (TFSK_BLOCK_SIZE * 8);
     uint32_t inode_blocks = (TFSK_MAX_INODES + TFSK_INODES_PER_BLK - 1) / TFSK_INODES_PER_BLK;
@@ -154,11 +157,13 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
     uint32_t inode_blk = inode_table_blk + (TFSK_ROOT_INODE - 1) / TFSK_INODES_PER_BLK;
     uint32_t inode_off = ((TFSK_ROOT_INODE - 1) % TFSK_INODES_PER_BLK) * TFSK_INODE_SIZE;
 
-    uint8_t ibuf[TFSK_BLOCK_SIZE];
-    memset(ibuf, 0, TFSK_BLOCK_SIZE);
+    uint8_t *ibuf = kcalloc(1, TFSK_BLOCK_SIZE);
+    if (!ibuf) return -1;
     memcpy(ibuf + inode_off, &root, sizeof(root));
-    if (ata_write_sectors(dev, inode_blk * 8, 8, ibuf) < 0)
+    if (ata_write_sectors(dev, inode_blk * 8, 8, ibuf) < 0) {
+        free(ibuf);
         return -1;
+    }
 
     tfsk_dentry_t dot;
     memset(&dot, 0, sizeof(dot));
@@ -176,13 +181,17 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
     dotdot.file_type = TFSK_FT_DIR;
     dotdot.name[0] = '.'; dotdot.name[1] = '.';
 
-    uint8_t dir_block[TFSK_BLOCK_SIZE];
-    memset(dir_block, 0, TFSK_BLOCK_SIZE);
+    uint8_t *dir_block = kcalloc(1, TFSK_BLOCK_SIZE);
+    if (!dir_block) { free(ibuf); return -1; }
     memcpy(dir_block, &dot, sizeof(tfsk_dentry_t));
     memcpy(dir_block + sizeof(tfsk_dentry_t), &dotdot, sizeof(tfsk_dentry_t));
 
-    if (ata_write_sectors(dev, root_data_blk * 8, 8, dir_block) < 0)
+    if (ata_write_sectors(dev, root_data_blk * 8, 8, dir_block) < 0) {
+        free(dir_block);
+        free(ibuf);
         return -1;
+    }
+    free(dir_block);
 
     root.size = sizeof(tfsk_dentry_t) * 2;
     root.blocks = 1;
@@ -190,8 +199,11 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
 
     memset(ibuf, 0, TFSK_BLOCK_SIZE);
     memcpy(ibuf + inode_off, &root, sizeof(root));
-    if (ata_write_sectors(dev, inode_blk * 8, 8, ibuf) < 0)
+    if (ata_write_sectors(dev, inode_blk * 8, 8, ibuf) < 0) {
+        free(ibuf);
         return -1;
+    }
+    free(ibuf);
 
     sb.free_blocks = blocks - data_start - 1;
     sb.free_inodes = TFSK_MAX_INODES - 3;

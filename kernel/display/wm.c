@@ -9,6 +9,7 @@
 #include "notepad.h"
 #include "clock.h"
 #include "about.h"
+#include "diskmgr.h"
 
 #define VGA_W 80
 #define VGA_H 25
@@ -23,6 +24,7 @@
 #define WIN_KIND_NOTEPAD 1
 #define WIN_KIND_CLOCK 2
 #define WIN_KIND_ABOUT 3
+#define WIN_KIND_DISKMGR 4
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -147,6 +149,8 @@ static void window_task_entry(void)
         clock_run();
     else if (w->kind == WIN_KIND_ABOUT)
         about_run();
+    else if (w->kind == WIN_KIND_DISKMGR)
+        diskmgr_run();
     else
         shell_run_windowed(w->initial_cmd);
 }
@@ -271,6 +275,29 @@ static void wm_open_about(void)
     wm_focused = w;
 }
 
+static void wm_open_diskmgr(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 0;
+    w->z = next_z++;
+    w->kind = WIN_KIND_DISKMGR;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "Disk Utility");
+
+    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
 static void draw_window(window_t *w)
 {
     int x0, y0, w0, h0;
@@ -339,6 +366,8 @@ static void build_menu_items(int which)
         menu_names[menu_count] = "Terminal"; menu_is_app[menu_count] = 3; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Clock"; menu_is_app[menu_count] = 2; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "Disk Utility"; menu_is_app[menu_count] = 5; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Shut Down"; menu_is_app[menu_count] = -2; menu_disabled[menu_count] = 0;
         menu_count++;
@@ -622,6 +651,8 @@ static void handle_menu_click(int idx)
             wm_open_window("");
         } else if (menu_is_app[idx] == 4) {
             wm_open_about();
+        } else if (menu_is_app[idx] == 5) {
+            wm_open_diskmgr();
         }
     } else if (active_menu == MENU_FILE) {
         if (menu_is_app[idx] == -3) {
