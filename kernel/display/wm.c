@@ -513,35 +513,39 @@ static void draw_dock(void)
 }
 
 /* Decorative trash can in the bottom-right corner of the desktop, like the
-   classic Mac OS Finder desktop. Drawn as a small black-on-white pixel icon
-   (handle, lid, ridged body, base) instead of a flat colored box, so it
-   reads as a bin rather than a solid rectangle. Purely cosmetic; not wired
-   to file deletion. */
+   classic Mac OS Finder desktop. Drawn as a crisp black-on-white line-art
+   icon (handle, double-rule lid, ridged outline body, base) in the spirit
+   of the System 7 Trash icon, rather than a dithered fill. Purely cosmetic;
+   not wired to file deletion. */
 static void draw_trash(void)
 {
     int x = VGA_W - 9;
-    int y = DOCK_ROW - 6;
+    int y = DOCK_ROW - 8;
     uint8_t line = mk_color(VGA_BLACK, VGA_WHITE);
-    uint8_t shade = mk_color(VGA_DARK_GREY, VGA_WHITE);
 
     vga_put(x + 2, y, 0xDA, line);
     vga_put(x + 3, y, 0xC4, line);
     vga_put(x + 4, y, 0xBF, line);
+    vga_put(x + 2, y + 1, 0xB3, line);
+    vga_put(x + 4, y + 1, 0xB3, line);
 
-    vga_fill_rect(x, y + 1, 7, 1, 0xC4, line);
+    vga_fill_rect(x, y + 2, 7, 1, 0xCD, line);
 
-    for (int r = 0; r < 2; r++) {
-        vga_put(x + 1, y + 2 + r, 0xB3, line);
-        for (int i = 0; i < 3; i++)
-            vga_put(x + 2 + i, y + 2 + r, (r + i) % 2 ? 0xB1 : 0xB2, shade);
-        vga_put(x + 5, y + 2 + r, 0xB3, line);
-    }
+    vga_put(x + 1, y + 3, 0xB3, line);
+    vga_put(x + 5, y + 3, 0xB3, line);
 
-    vga_put(x + 1, y + 4, 0xC0, line);
+    vga_put(x + 1, y + 4, 0xB3, line);
     vga_fill_rect(x + 2, y + 4, 3, 1, 0xC4, line);
-    vga_put(x + 5, y + 4, 0xD9, line);
+    vga_put(x + 5, y + 4, 0xB3, line);
 
-    vga_text(x + 1, y + 5, "Trash", mk_color(VGA_BLACK, VGA_WHITE));
+    vga_put(x + 1, y + 5, 0xB3, line);
+    vga_put(x + 5, y + 5, 0xB3, line);
+
+    vga_put(x + 1, y + 6, 0xC0, line);
+    vga_fill_rect(x + 2, y + 6, 3, 1, 0xC4, line);
+    vga_put(x + 5, y + 6, 0xD9, line);
+
+    vga_text(x + 1, y + 7, "Trash", mk_color(VGA_BLACK, VGA_WHITE));
 }
 
 #define MOUSE_CURSOR_GLYPH 0x10 /* CP437 solid right-pointing arrow */
