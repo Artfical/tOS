@@ -102,6 +102,7 @@ KERNEL_OBJS = \
     kernel/display/wm.o \
     kernel/display/notepad.o \
     kernel/display/clock.o \
+    kernel/display/about.o \
     kernel/net/net.o \
     kernel/net/nic.o \
     kernel/net/rtl8139.o \
