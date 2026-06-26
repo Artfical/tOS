@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+int trackpoint_detect(void);
 int trackpoint_init(void);
 void trackpoint_shutdown(void);
 
