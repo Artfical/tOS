@@ -519,33 +519,24 @@ static void draw_dock(void)
    not wired to file deletion. */
 static void draw_trash(void)
 {
-    int x = VGA_W - 9;
-    int y = DOCK_ROW - 8;
+    int x = VGA_W - 7;
+    int y = DOCK_ROW - 5;
     uint8_t line = mk_color(VGA_BLACK, VGA_WHITE);
 
-    vga_put(x + 2, y, 0xDA, line);
-    vga_put(x + 3, y, 0xC4, line);
-    vga_put(x + 4, y, 0xBF, line);
-    vga_put(x + 2, y + 1, 0xB3, line);
-    vga_put(x + 4, y + 1, 0xB3, line);
+    vga_put(x + 1, y, 0xDA, line);
+    vga_put(x + 2, y, 0xC4, line);
+    vga_put(x + 3, y, 0xBF, line);
 
-    vga_fill_rect(x, y + 2, 7, 1, 0xCD, line);
+    vga_fill_rect(x, y + 1, 5, 1, 0xC4, line);
 
-    vga_put(x + 1, y + 3, 0xB3, line);
-    vga_put(x + 5, y + 3, 0xB3, line);
+    vga_put(x, y + 2, 0xB3, line);
+    vga_put(x + 4, y + 2, 0xB3, line);
 
-    vga_put(x + 1, y + 4, 0xB3, line);
-    vga_fill_rect(x + 2, y + 4, 3, 1, 0xC4, line);
-    vga_put(x + 5, y + 4, 0xB3, line);
+    vga_put(x, y + 3, 0xC0, line);
+    vga_fill_rect(x + 1, y + 3, 3, 1, 0xC4, line);
+    vga_put(x + 4, y + 3, 0xD9, line);
 
-    vga_put(x + 1, y + 5, 0xB3, line);
-    vga_put(x + 5, y + 5, 0xB3, line);
-
-    vga_put(x + 1, y + 6, 0xC0, line);
-    vga_fill_rect(x + 2, y + 6, 3, 1, 0xC4, line);
-    vga_put(x + 5, y + 6, 0xD9, line);
-
-    vga_text(x + 1, y + 7, "Trash", mk_color(VGA_BLACK, VGA_WHITE));
+    vga_text(x, y + 4, "Trash", mk_color(VGA_BLACK, VGA_WHITE));
 }
 
 #define MOUSE_CURSOR_GLYPH 0x10 /* CP437 solid right-pointing arrow */
