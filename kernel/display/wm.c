@@ -8,6 +8,7 @@
 #include "net.h"
 #include "notepad.h"
 #include "clock.h"
+#include "about.h"
 
 #define VGA_W 80
 #define VGA_H 25
@@ -21,6 +22,7 @@
 #define WIN_KIND_TERMINAL 0
 #define WIN_KIND_NOTEPAD 1
 #define WIN_KIND_CLOCK 2
+#define WIN_KIND_ABOUT 3
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -143,6 +145,8 @@ static void window_task_entry(void)
         notepad_run();
     else if (w->kind == WIN_KIND_CLOCK)
         clock_run();
+    else if (w->kind == WIN_KIND_ABOUT)
+        about_run();
     else
         shell_run_windowed(w->initial_cmd);
 }
@@ -244,6 +248,29 @@ static void wm_open_clock(void)
     wm_focused = w;
 }
 
+static void wm_open_about(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 0;
+    w->z = next_z++;
+    w->kind = WIN_KIND_ABOUT;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "About This Computer");
+
+    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
 static void draw_window(window_t *w)
 {
     int x0, y0, w0, h0;
@@ -305,7 +332,7 @@ static void build_menu_items(int which)
 {
     menu_count = 0;
     if (which == MENU_T) {
-        menu_names[menu_count] = "About This Computer..."; menu_is_app[menu_count] = -1; menu_disabled[menu_count] = 1;
+        menu_names[menu_count] = "About This Computer..."; menu_is_app[menu_count] = 4; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Notepad"; menu_is_app[menu_count] = 1; menu_disabled[menu_count] = 0;
         menu_count++;
@@ -363,7 +390,8 @@ static void draw_t_menu(int anchor_x0)
     for (int y = my0; y < my0 + menu_h; y++) vga_put(mx0 + total_w, y, 0xB1, mk_color(VGA_DARK_GREY, VGA_BLACK));
     vga_fill_rect(mx0, my0 + menu_h, total_w + 1, 1, 0xB1, mk_color(VGA_DARK_GREY, VGA_BLACK));
 
-    vga_text(mx0 + 1, my0, menu_names[header_idx], mk_color(VGA_LIGHT_GREY, VGA_WHITE));
+    uint8_t header_color = menu_disabled[header_idx] ? mk_color(VGA_LIGHT_GREY, VGA_WHITE) : mk_color(VGA_BLACK, VGA_WHITE);
+    vga_text(mx0 + 1, my0, menu_names[header_idx], header_color);
     menu_x0[header_idx] = mx0; menu_y0[header_idx] = my0; menu_x1[header_idx] = mx0 + total_w - 1;
 
     draw_divider(mx0, my0 + 1, total_w);
@@ -556,17 +584,44 @@ static void draw_cursor(void)
 #define FRAME_INTERVAL_TICKS 1
 static uint32_t last_draw_tick = 0;
 
+static void wm_shutdown(void)
+{
+    uint8_t color = mk_color(VGA_WHITE, VGA_BLACK);
+    for (int y = 0; y < VGA_H; y++)
+        for (int x = 0; x < VGA_W; x++)
+            backbuffer[y * VGA_W + x] = mk_cell(' ', color);
+
+    const char *lines[] = {
+        "tOS",
+        "",
+        "It is now safe to turn off your computer.",
+    };
+    int start_y = VGA_H / 2 - 1;
+    for (int i = 0; i < 3; i++) {
+        const char *s = lines[i];
+        int len = (int)strlen(s);
+        int x = (VGA_W - len) / 2;
+        vga_text(x, start_y + i, s, color);
+    }
+
+    for (int i = 0; i < VGA_W * VGA_H; i++) VGA_MEM[i] = backbuffer[i];
+
+    for (;;) asm volatile("hlt");
+}
+
 static void handle_menu_click(int idx)
 {
     if (active_menu == MENU_T) {
         if (menu_is_app[idx] == -2) {
-            /* Shut Down: nothing destructive to wire up yet, just close the menu */
+            wm_shutdown();
         } else if (menu_is_app[idx] == 1) {
             wm_open_notepad();
         } else if (menu_is_app[idx] == 2) {
             wm_open_clock();
         } else if (menu_is_app[idx] == 3) {
             wm_open_window("");
+        } else if (menu_is_app[idx] == 4) {
+            wm_open_about();
         }
     } else if (active_menu == MENU_FILE) {
         if (menu_is_app[idx] == -3) {
