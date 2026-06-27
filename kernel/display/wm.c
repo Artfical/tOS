@@ -659,10 +659,31 @@ static void draw_cursor(void)
     mouse_get_state(&mx, &my, &btns);
     (void)btns;
     if (mx < 0 || mx >= VGA_W || my < 0 || my >= VGA_H) return;
+
     uint16_t cell = backbuffer[my * VGA_W + mx];
     uint8_t bg = (cell >> 12) & 0x0F;
-    uint8_t cursor_fg = (bg == VGA_BLACK) ? VGA_WHITE : VGA_BLACK;
-    backbuffer[my * VGA_W + mx] = mk_cell(0x10, mk_color(cursor_fg, bg));
+    uint8_t fg = (bg == VGA_WHITE || bg == VGA_LIGHT_GREY) ? VGA_BLACK : VGA_WHITE;
+
+    static const uint8_t cursor_bits[6] = {
+        0x80,
+        0x40,
+        0x20,
+        0xF0,
+        0x40,
+        0x40,
+    };
+
+    for (int row = 0; row < 6; row++) {
+        uint8_t bits = cursor_bits[row];
+        for (int col = 0; col < 4; col++) {
+            int dx = mx + col;
+            int dy = my + row;
+            if (dx < VGA_W && dy < VGA_H) {
+                if (bits & (0x80 >> col))
+                    backbuffer[dy * VGA_W + dx] = mk_cell(0xDB, mk_color(fg, bg));
+            }
+        }
+    }
 }
 
 #define FRAME_INTERVAL_TICKS 1
