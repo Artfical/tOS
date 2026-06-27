@@ -123,16 +123,29 @@ static void draw_hand(int cx, int cy, int octant, int len, int xscale, char ch, 
         put_char_at(cx + dx * i * xscale, cy + dy * i, ch, color);
 }
 
-static void draw_analog(void)
+static void erase_hand(int cx, int cy, int octant, int len, int xscale, uint8_t bg_color)
 {
-    cmos_time_t t;
-    cmos_get_time(&t);
+    int dx = dir8[octant][0];
+    int dy = dir8[octant][1];
+    for (int i = 1; i <= len; i++)
+        put_char_at(cx + dx * i * xscale, cy + dy * i, ' ', bg_color);
+}
 
+static int prev_second_oct = -1;
+static int prev_minute_oct = -1;
+static int prev_hour_oct = -1;
+static int analog_face_drawn = 0;
+
+static void draw_analog_face(void)
+{
     int cx = CLK_COLS / 2;
     int cy = 1 + (CLK_ROWS - 1) / 2;
     int rx = 14, ry = 6;
 
     uint8_t face = clk_color(VGA_BLACK, VGA_LIGHT_GREY);
+    uint8_t bg = clk_color(VGA_BLACK, VGA_LIGHT_GREY);
+
+    for (int r = 0; r < CLK_ROWS; r++) put_str(0, r, "                                                            ", bg);
 
     put_str(cx - 1, cy - ry, "12", face);
     put_str(cx + rx, cy, "3", face);
@@ -144,14 +157,40 @@ static void draw_analog(void)
     put_char_at(cx + drx, cy + dry, '.', face);
     put_char_at(cx - drx, cy + dry, '.', face);
     put_char_at(cx - drx, cy - dry, '.', face);
+}
+
+static void draw_analog(void)
+{
+    cmos_time_t t;
+    cmos_get_time(&t);
+
+    int cx = CLK_COLS / 2;
+    int cy = 1 + (CLK_ROWS - 1) / 2;
+    uint8_t bg = clk_color(VGA_BLACK, VGA_LIGHT_GREY);
+
+    if (!analog_face_drawn) {
+        draw_analog_face();
+        analog_face_drawn = 1;
+    }
 
     int hour_pos = (t.hour % 12) * 5 + t.minute / 12;
+    int second_oct = octant_for(t.second);
+    int minute_oct = octant_for(t.minute);
+    int hour_oct = octant_for(hour_pos);
 
-    draw_hand(cx, cy, octant_for(t.second), 6, 2, '.', clk_color(VGA_RED, VGA_LIGHT_GREY));
-    draw_hand(cx, cy, octant_for(t.minute), 5, 2, '+', clk_color(VGA_BLACK, VGA_LIGHT_GREY));
-    draw_hand(cx, cy, octant_for(hour_pos), 3, 2, '#', clk_color(VGA_BLACK, VGA_LIGHT_GREY));
+    if (prev_second_oct >= 0) erase_hand(cx, cy, prev_second_oct, 6, 2, bg);
+    if (prev_minute_oct >= 0) erase_hand(cx, cy, prev_minute_oct, 5, 2, bg);
+    if (prev_hour_oct >= 0) erase_hand(cx, cy, prev_hour_oct, 3, 2, bg);
+
+    draw_hand(cx, cy, hour_oct, 3, 2, '#', clk_color(VGA_BLACK, VGA_LIGHT_GREY));
+    draw_hand(cx, cy, minute_oct, 5, 2, '+', clk_color(VGA_DARK_GREY, VGA_LIGHT_GREY));
+    draw_hand(cx, cy, second_oct, 6, 2, '.', clk_color(VGA_RED, VGA_LIGHT_GREY));
 
     put_char_at(cx, cy, 'o', clk_color(VGA_BLACK, VGA_LIGHT_GREY));
+
+    prev_second_oct = second_oct;
+    prev_minute_oct = minute_oct;
+    prev_hour_oct = hour_oct;
 }
 
 #define SW_BTN_ROW 11
@@ -257,8 +296,16 @@ void clock_run(void)
         uint32_t now = task_get_ticks();
         if (now - last_redraw >= 5) {
             last_redraw = now;
-            if (view != prev_view) { clear_area(); prev_view = view; }
-            else if (view == VIEW_ANALOG) clear_area();
+            if (view != prev_view) {
+                clear_area();
+                prev_view = view;
+                if (view == VIEW_ANALOG) {
+                    analog_face_drawn = 0;
+                    prev_second_oct = -1;
+                    prev_minute_oct = -1;
+                    prev_hour_oct = -1;
+                }
+            }
             draw_header(view);
             if (view == VIEW_DIGITAL) draw_digital();
             else if (view == VIEW_ANALOG) draw_analog();

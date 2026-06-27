@@ -519,13 +519,12 @@ static void draw_menu_bar(void)
 {
     vga_fill_rect(0, MENU_ROW, VGA_W, 1, ' ', mk_color(VGA_BLACK, VGA_WHITE));
 
-    /* The "T" stands in for the old rainbow Apple logo; cycle through the
-       classic stripe colors since one VGA text cell can only hold one color
-       at a time. */
     uint32_t ticks = task_get_ticks();
     uint8_t t_color = rainbow_colors[(ticks / 8) % 6];
-    t_x0 = 1; t_x1 = 2;
-    vga_put(t_x0, MENU_ROW, 'T', mk_color(t_color, VGA_WHITE));
+    t_x0 = 1; t_x1 = 3;
+    vga_put(t_x0, MENU_ROW, ' ', mk_color(VGA_WHITE, t_color));
+    vga_put(t_x0 + 1, MENU_ROW, 'T', mk_color(VGA_WHITE, t_color));
+    vga_put(t_x0 + 2, MENU_ROW, ' ', mk_color(VGA_WHITE, t_color));
 
     int x = 4;
     uint8_t menu_color = mk_color(VGA_BLACK, VGA_WHITE);
@@ -582,6 +581,18 @@ static void draw_menu_bar(void)
     vga_text(VGA_W - rlen - 1, MENU_ROW, right, mk_color(VGA_BLACK, VGA_WHITE));
 }
 
+static const char *get_icon_char(int kind)
+{
+    switch (kind) {
+        case WIN_KIND_TERMINAL: return ">";
+        case WIN_KIND_NOTEPAD:  return "\xF8";
+        case WIN_KIND_CLOCK:    return "\xF8";
+        case WIN_KIND_ABOUT:    return "?";
+        case WIN_KIND_DISKMGR:  return "\xF7";
+        default:                return ".";
+    }
+}
+
 static void draw_dock(void)
 {
     vga_fill_rect(0, DOCK_ROW, VGA_W, 1, ' ', mk_color(VGA_BLACK, VGA_LIGHT_GREY));
@@ -590,49 +601,64 @@ static void draw_dock(void)
     for (int i = 0; i < MAX_WINDOWS; i++) {
         window_t *w = &windows[i];
         if (!w->open) continue;
-        char buf[12];
+        char buf[14];
         int k = 0;
-        while (w->title[k] && k < 10) { buf[k] = w->title[k]; k++; }
+        buf[k++] = ' ';
+        const char *icon = get_icon_char(w->kind);
+        while (*icon) buf[k++] = *icon++;
+        buf[k++] = ' ';
+        int j = 0;
+        while (w->title[j] && k < 12) { buf[k++] = w->title[j++]; }
         buf[k] = 0;
-        int len = (int)strlen(buf) + 2;
-        if (x + len >= VGA_W - 1) break;
-        uint8_t c = (w == wm_focused && !w->minimized) ? mk_color(VGA_BLACK, VGA_WHITE) : mk_color(VGA_BLACK, VGA_LIGHT_GREY);
+        int len = k + 2;
+        if (x + len >= VGA_W - 8) break;
+        uint8_t c = (w == wm_focused && !w->minimized) ? mk_color(VGA_WHITE, VGA_BLUE) : mk_color(VGA_BLACK, VGA_LIGHT_GREY);
+        uint8_t icon_c = (w == wm_focused && !w->minimized) ? mk_color(VGA_LIGHT_CYAN, VGA_BLUE) : mk_color(VGA_DARK_GREY, VGA_LIGHT_GREY);
         vga_put(x, DOCK_ROW, '[', c);
-        vga_text(x + 1, DOCK_ROW, buf, c);
-        vga_put(x + 1 + (int)strlen(buf), DOCK_ROW, ']', c);
+        vga_put(x + 1, DOCK_ROW, buf[0], icon_c);
+        vga_put(x + 2, DOCK_ROW, buf[1], icon_c);
+        vga_put(x + 3, DOCK_ROW, ' ', c);
+        vga_text(x + 4, DOCK_ROW, buf + 3, c);
+        vga_put(x + len - 1, DOCK_ROW, ']', c);
         w->tb_x0 = x; w->tb_x1 = x + len - 1;
         x += len + 1;
     }
 }
 
-/* Decorative trash can in the bottom-right corner of the desktop, like the
-   classic Mac OS Finder desktop. Drawn as a crisp black-on-white line-art
-   icon (handle, double-rule lid, ridged outline body, base) in the spirit
-   of the System 7 Trash icon, rather than a dithered fill. Purely cosmetic;
-   not wired to file deletion. */
 static void draw_trash(void)
 {
     int x = VGA_W - 7;
-    int y = DOCK_ROW - 5;
+    int y = DOCK_ROW - 6;
     uint8_t line = mk_color(VGA_BLACK, VGA_WHITE);
 
-    vga_put(x + 1, y, 0xDA, line);
-    vga_put(x + 2, y, 0xC4, line);
-    vga_put(x + 3, y, 0xBF, line);
+    vga_put(x + 2, y, 0xD5, line);
+    vga_put(x + 3, y, 0xC4, line);
+    vga_put(x + 4, y, 0xB8, line);
 
-    vga_fill_rect(x, y + 1, 5, 1, 0xC4, line);
+    vga_put(x + 1, y + 1, 0xC4, line);
+    vga_put(x + 2, y + 1, 0xD1, line);
+    vga_put(x + 3, y + 1, 0xC4, line);
+    vga_put(x + 4, y + 1, 0xD1, line);
+    vga_put(x + 5, y + 1, 0xC4, line);
 
-    vga_put(x, y + 2, 0xB3, line);
-    vga_put(x + 4, y + 2, 0xB3, line);
+    vga_put(x + 1, y + 2, 0xB3, line);
+    vga_put(x + 2, y + 2, ' ', line);
+    vga_put(x + 3, y + 2, 0xB3, line);
+    vga_put(x + 4, y + 2, ' ', line);
+    vga_put(x + 5, y + 2, 0xB3, line);
 
-    vga_put(x, y + 3, 0xC0, line);
-    vga_fill_rect(x + 1, y + 3, 3, 1, 0xC4, line);
-    vga_put(x + 4, y + 3, 0xD9, line);
+    vga_put(x + 1, y + 3, 0xB3, line);
+    vga_put(x + 2, y + 3, ' ', line);
+    vga_put(x + 3, y + 3, 0xB3, line);
+    vga_put(x + 4, y + 3, ' ', line);
+    vga_put(x + 5, y + 3, 0xB3, line);
 
-    vga_text(x, y + 4, "Trash", mk_color(VGA_BLACK, VGA_WHITE));
+    vga_put(x, y + 4, 0xC0, line);
+    vga_fill_rect(x + 1, y + 4, 5, 1, 0xC4, line);
+    vga_put(x + 6, y + 4, 0xD9, line);
+
+    vga_text(x, y + 5, " Trash ", mk_color(VGA_BLACK, VGA_WHITE));
 }
-
-#define MOUSE_CURSOR_GLYPH 0x10 /* CP437 solid right-pointing arrow */
 
 static void draw_cursor(void)
 {
@@ -640,10 +666,17 @@ static void draw_cursor(void)
     mouse_get_state(&mx, &my, &btns);
     (void)btns;
     if (mx < 0 || mx >= VGA_W || my < 0 || my >= VGA_H) return;
+
     uint16_t cell = backbuffer[my * VGA_W + mx];
     uint8_t bg = (cell >> 12) & 0x0F;
-    uint8_t cursor_fg = (bg == VGA_BLACK) ? VGA_WHITE : VGA_BLACK;
-    backbuffer[my * VGA_W + mx] = mk_cell((char)MOUSE_CURSOR_GLYPH, mk_color(bg, cursor_fg));
+    uint8_t cursor_fg = (bg == VGA_WHITE) ? VGA_BLACK : VGA_WHITE;
+    uint8_t cursor_border = (cursor_fg == VGA_BLACK) ? VGA_LIGHT_GREY : VGA_DARK_GREY;
+
+    backbuffer[my * VGA_W + mx] = mk_cell(0xDB, mk_color(cursor_fg, cursor_border));
+    if (my + 1 < VGA_H)
+        backbuffer[(my + 1) * VGA_W + mx] = mk_cell(0xDC, mk_color(cursor_fg, bg));
+    if (mx + 1 < VGA_W)
+        backbuffer[my * VGA_W + mx + 1] = mk_cell(0xDD, mk_color(cursor_fg, bg));
 }
 
 #define FRAME_INTERVAL_TICKS 1
