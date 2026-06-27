@@ -7,9 +7,14 @@
 #include "wm.h"
 #include "scheduler.h"
 
-#define NP_ROWS 22
+#define NP_ROWS 20
 #define NP_COLS 79
-#define STATUS_ROW 22
+#define BUTTON_ROW 20
+#define STATUS_ROW 21
+
+#define NUM_BUTTONS 3
+static const char *btn_labels[NUM_BUTTONS] = { "New", "Open", "Save" };
+static int btn_x0[NUM_BUTTONS], btn_x1[NUM_BUTTONS];
 
 static char lines[NP_ROWS][NP_COLS + 1];
 static int line_len[NP_ROWS];
@@ -40,6 +45,33 @@ static void status_line(const char *msg)
     terminal_setcolor(np_color(VGA_LIGHT_GREY, VGA_BLACK));
 }
 
+static void draw_buttons(void)
+{
+    terminal_setpos(0, BUTTON_ROW);
+    terminal_setcolor(np_color(VGA_BLACK, VGA_LIGHT_GREY));
+    for (int i = 0; i < NP_COLS; i++) terminal_putchar(' ');
+
+    int x = 2;
+    for (int i = 0; i < NUM_BUTTONS; i++) {
+        const char *lbl = btn_labels[i];
+        int len = (int)strlen(lbl);
+        int w = len + 4; /* "[ " + label + " ]" */
+        btn_x0[i] = x;
+        btn_x1[i] = x + w - 1;
+
+        terminal_setpos((size_t)x, BUTTON_ROW);
+        terminal_setcolor(np_color(VGA_WHITE, VGA_BLUE));
+        terminal_putchar('[');
+        terminal_putchar(' ');
+        for (int j = 0; j < len; j++) terminal_putchar(lbl[j]);
+        terminal_putchar(' ');
+        terminal_putchar(']');
+
+        x += w + 2;
+    }
+    terminal_setcolor(np_color(VGA_LIGHT_GREY, VGA_BLACK));
+}
+
 static void redraw(void)
 {
     for (int r = 0; r < NP_ROWS; r++) {
@@ -48,14 +80,13 @@ static void redraw(void)
             terminal_putchar(c < line_len[r] ? lines[r][c] : ' ');
     }
 
+    draw_buttons();
+
     char status[NP_COLS + 1];
     int k = 0;
     const char *name = filename[0] ? filename : "Untitled";
     while (name[k] && k < 40) { status[k] = name[k]; k++; }
     if (modified) status[k++] = '*';
-    const char *hint = "  ^S Save  ^O Open";
-    int h = 0;
-    while (hint[h] && k < NP_COLS) status[k++] = hint[h++];
     status[k] = 0;
     status_line(status);
 
@@ -127,6 +158,36 @@ static void prompt_filename(const char *prompt, char *buf, int max)
     keyboard_readline(buf, max);
 }
 
+static void do_save(void)
+{
+    char fname[64];
+    if (filename[0]) {
+        save_file(filename);
+    } else {
+        prompt_filename("Save as: ", fname, sizeof(fname));
+        if (fname[0]) {
+            ensure_txt_extension(fname, sizeof(fname));
+            save_file(fname);
+        }
+    }
+}
+
+static void do_open(void)
+{
+    char fname[64];
+    prompt_filename("Open: ", fname, sizeof(fname));
+    if (fname[0]) {
+        ensure_txt_extension(fname, sizeof(fname));
+        load_file(fname);
+    }
+}
+
+static void do_new(void)
+{
+    reset_buffer();
+    terminal_clear();
+}
+
 static void insert_char(char c)
 {
     if (line_len[cur_row] >= NP_COLS) return;
@@ -192,6 +253,32 @@ void notepad_run(void)
 
     for (;;) {
         gui_poll();
+
+        int action = wm_get_menu_action();
+        if (action) {
+            if (action == WM_ACTION_NEW) do_new();
+            else if (action == WM_ACTION_OPEN) do_open();
+            else if (action == WM_ACTION_SAVE) do_save();
+            redraw();
+            continue;
+        }
+
+        int ccx, ccy;
+        if (wm_get_content_click(&ccx, &ccy)) {
+            if (ccy == BUTTON_ROW) {
+                for (int i = 0; i < NUM_BUTTONS; i++) {
+                    if (ccx >= btn_x0[i] && ccx <= btn_x1[i]) {
+                        if (i == 0) do_new();
+                        else if (i == 1) do_open();
+                        else if (i == 2) do_save();
+                        break;
+                    }
+                }
+                redraw();
+            }
+            continue;
+        }
+
         int spec = keyboard_get_special();
         if (spec) {
             if (spec == 1) { if (cur_col > 0) cur_col--; }
@@ -210,24 +297,13 @@ void notepad_run(void)
         char c = keyboard_getchar();
 
         if (c == 0x13) {
-            char fname[64];
-            if (filename[0]) {
-                save_file(filename);
-            } else {
-                prompt_filename("Save as: ", fname, sizeof(fname));
-                if (fname[0]) {
-                    ensure_txt_extension(fname, sizeof(fname));
-                    save_file(fname);
-                }
-            }
+            do_save();
             redraw();
         } else if (c == 0x0F) {
-            char fname[64];
-            prompt_filename("Open: ", fname, sizeof(fname));
-            if (fname[0]) {
-                ensure_txt_extension(fname, sizeof(fname));
-                load_file(fname);
-            }
+            do_open();
+            redraw();
+        } else if (c == 0x0E) {
+            do_new();
             redraw();
         } else if (c == '\n') {
             insert_newline();

@@ -7,6 +7,9 @@
 #include "cmos.h"
 #include "net.h"
 #include "notepad.h"
+#include "clock.h"
+#include "about.h"
+#include "diskmgr.h"
 
 #define VGA_W 80
 #define VGA_H 25
@@ -19,6 +22,9 @@
 
 #define WIN_KIND_TERMINAL 0
 #define WIN_KIND_NOTEPAD 1
+#define WIN_KIND_CLOCK 2
+#define WIN_KIND_ABOUT 3
+#define WIN_KIND_DISKMGR 4
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -41,6 +47,17 @@ static window_t windows[MAX_WINDOWS];
 static window_t *wm_focused = NULL;
 static window_t *pending_window;
 static int next_z = 1;
+
+/* One-shot mouse click within a window's content area (below the titlebar),
+ * in surface-local coordinates, claimable by that window's own task via
+ * wm_get_content_click(). Cleared on read or overwritten by the next click. */
+static window_t *content_click_target = NULL;
+static int content_click_x, content_click_y;
+
+/* One-shot menu action requested for a window via the top File/Edit/... bar,
+ * claimable by that window's own task via wm_get_menu_action(). */
+static window_t *action_target = NULL;
+static int pending_action = WM_ACTION_NONE;
 
 /* Top menu bar: T (apple-logo stand-in) + File/Edit/View/Label/Special */
 enum { MENU_NONE = 0, MENU_T, MENU_FILE, MENU_EDIT, MENU_VIEW, MENU_LABEL, MENU_SPECIAL };
@@ -96,6 +113,26 @@ int wm_current_task_has_focus(void)
     return ud == (void *)wm_focused;
 }
 
+int wm_get_content_click(int *x, int *y)
+{
+    window_t *self = (window_t *)task_get_userdata();
+    if (!self || content_click_target != self) return 0;
+    content_click_target = NULL;
+    if (x) *x = content_click_x;
+    if (y) *y = content_click_y;
+    return 1;
+}
+
+int wm_get_menu_action(void)
+{
+    window_t *self = (window_t *)task_get_userdata();
+    if (!self || action_target != self || pending_action == WM_ACTION_NONE) return WM_ACTION_NONE;
+    int a = pending_action;
+    action_target = NULL;
+    pending_action = WM_ACTION_NONE;
+    return a;
+}
+
 static void window_geom(window_t *w, int *x0, int *y0, int *w0, int *h0)
 {
     int slot = (int)(w - windows);
@@ -139,6 +176,12 @@ static void window_task_entry(void)
     task_set_userdata(w);
     if (w->kind == WIN_KIND_NOTEPAD)
         notepad_run();
+    else if (w->kind == WIN_KIND_CLOCK)
+        clock_run();
+    else if (w->kind == WIN_KIND_ABOUT)
+        about_run();
+    else if (w->kind == WIN_KIND_DISKMGR)
+        diskmgr_run();
     else
         shell_run_windowed(w->initial_cmd);
 }
@@ -217,6 +260,75 @@ static void wm_open_notepad(void)
     wm_focused = w;
 }
 
+static void wm_open_clock(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 0;
+    w->z = next_z++;
+    w->kind = WIN_KIND_CLOCK;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "Clock");
+
+    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
+static void wm_open_about(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 0;
+    w->z = next_z++;
+    w->kind = WIN_KIND_ABOUT;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "About This Computer");
+
+    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
+static void wm_open_diskmgr(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 0;
+    w->z = next_z++;
+    w->kind = WIN_KIND_DISKMGR;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "Disk Utility");
+
+    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
 static void draw_window(window_t *w)
 {
     int x0, y0, w0, h0;
@@ -278,22 +390,24 @@ static void build_menu_items(int which)
 {
     menu_count = 0;
     if (which == MENU_T) {
-        menu_names[menu_count] = "About This Computer..."; menu_is_app[menu_count] = -1; menu_disabled[menu_count] = 1;
+        menu_names[menu_count] = "About This Computer..."; menu_is_app[menu_count] = 4; menu_disabled[menu_count] = 0;
         menu_count++;
-        const char **builtin = shell_builtin_names();
-        int i = 0;
-        while (builtin[i] && menu_count < MENU_MAX_ITEMS - 2) {
-            menu_names[menu_count] = builtin[i];
-            menu_is_app[menu_count] = 0;
-            menu_disabled[menu_count] = 0;
-            menu_count++;
-            i++;
-        }
         menu_names[menu_count] = "Notepad"; menu_is_app[menu_count] = 1; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "Terminal"; menu_is_app[menu_count] = 3; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "Clock"; menu_is_app[menu_count] = 2; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "Disk Utility"; menu_is_app[menu_count] = 5; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Shut Down"; menu_is_app[menu_count] = -2; menu_disabled[menu_count] = 0;
         menu_count++;
     } else if (which == MENU_FILE) {
+        if (wm_focused && wm_focused->kind == WIN_KIND_NOTEPAD) {
+            menu_names[menu_count] = "New"; menu_is_app[menu_count] = -5; menu_disabled[menu_count] = 0; menu_count++;
+            menu_names[menu_count] = "Open..."; menu_is_app[menu_count] = -6; menu_disabled[menu_count] = 0; menu_count++;
+            menu_names[menu_count] = "Save"; menu_is_app[menu_count] = -7; menu_disabled[menu_count] = 0; menu_count++;
+        }
         menu_names[menu_count] = "New Window"; menu_is_app[menu_count] = -3; menu_disabled[menu_count] = 0; menu_count++;
         menu_names[menu_count] = "Close Window"; menu_is_app[menu_count] = -4; menu_disabled[menu_count] = 0; menu_count++;
     } else {
@@ -341,7 +455,8 @@ static void draw_t_menu(int anchor_x0)
     for (int y = my0; y < my0 + menu_h; y++) vga_put(mx0 + total_w, y, 0xB1, mk_color(VGA_DARK_GREY, VGA_BLACK));
     vga_fill_rect(mx0, my0 + menu_h, total_w + 1, 1, 0xB1, mk_color(VGA_DARK_GREY, VGA_BLACK));
 
-    vga_text(mx0 + 1, my0, menu_names[header_idx], mk_color(VGA_LIGHT_GREY, VGA_WHITE));
+    uint8_t header_color = menu_disabled[header_idx] ? mk_color(VGA_LIGHT_GREY, VGA_WHITE) : mk_color(VGA_BLACK, VGA_WHITE);
+    vga_text(mx0 + 1, my0, menu_names[header_idx], header_color);
     menu_x0[header_idx] = mx0; menu_y0[header_idx] = my0; menu_x1[header_idx] = mx0 + total_w - 1;
 
     draw_divider(mx0, my0 + 1, total_w);
@@ -491,15 +606,30 @@ static void draw_dock(void)
 }
 
 /* Decorative trash can in the bottom-right corner of the desktop, like the
-   classic Mac OS Finder desktop. Purely cosmetic; not wired to file deletion. */
+   classic Mac OS Finder desktop. Drawn as a crisp black-on-white line-art
+   icon (handle, double-rule lid, ridged outline body, base) in the spirit
+   of the System 7 Trash icon, rather than a dithered fill. Purely cosmetic;
+   not wired to file deletion. */
 static void draw_trash(void)
 {
     int x = VGA_W - 7;
-    int y = DOCK_ROW - 2;
-    uint8_t c = mk_color(VGA_BLACK, VGA_CYAN);
-    vga_text(x, y, " ___ ", c);
-    vga_text(x, y + 1, "|___|", c);
-    vga_text(x - 1, y + 2, "Trash", mk_color(VGA_BLACK, VGA_CYAN));
+    int y = DOCK_ROW - 5;
+    uint8_t line = mk_color(VGA_BLACK, VGA_WHITE);
+
+    vga_put(x + 1, y, 0xDA, line);
+    vga_put(x + 2, y, 0xC4, line);
+    vga_put(x + 3, y, 0xBF, line);
+
+    vga_fill_rect(x, y + 1, 5, 1, 0xC4, line);
+
+    vga_put(x, y + 2, 0xB3, line);
+    vga_put(x + 4, y + 2, 0xB3, line);
+
+    vga_put(x, y + 3, 0xC0, line);
+    vga_fill_rect(x + 1, y + 3, 3, 1, 0xC4, line);
+    vga_put(x + 4, y + 3, 0xD9, line);
+
+    vga_text(x, y + 4, "Trash", mk_color(VGA_BLACK, VGA_WHITE));
 }
 
 #define MOUSE_CURSOR_GLYPH 0x10 /* CP437 solid right-pointing arrow */
@@ -519,21 +649,58 @@ static void draw_cursor(void)
 #define FRAME_INTERVAL_TICKS 1
 static uint32_t last_draw_tick = 0;
 
+static void wm_shutdown(void)
+{
+    uint8_t color = mk_color(VGA_WHITE, VGA_BLACK);
+    for (int y = 0; y < VGA_H; y++)
+        for (int x = 0; x < VGA_W; x++)
+            backbuffer[y * VGA_W + x] = mk_cell(' ', color);
+
+    const char *lines[] = {
+        "tOS",
+        "",
+        "It is now safe to turn off your computer.",
+    };
+    int start_y = VGA_H / 2 - 1;
+    for (int i = 0; i < 3; i++) {
+        const char *s = lines[i];
+        int len = (int)strlen(s);
+        int x = (VGA_W - len) / 2;
+        vga_text(x, start_y + i, s, color);
+    }
+
+    for (int i = 0; i < VGA_W * VGA_H; i++) VGA_MEM[i] = backbuffer[i];
+
+    for (;;) asm volatile("hlt");
+}
+
 static void handle_menu_click(int idx)
 {
     if (active_menu == MENU_T) {
         if (menu_is_app[idx] == -2) {
-            /* Shut Down: nothing destructive to wire up yet, just close the menu */
+            wm_shutdown();
         } else if (menu_is_app[idx] == 1) {
             wm_open_notepad();
-        } else if (menu_is_app[idx] == 0) {
-            wm_open_window(menu_names[idx]);
+        } else if (menu_is_app[idx] == 2) {
+            wm_open_clock();
+        } else if (menu_is_app[idx] == 3) {
+            wm_open_window("");
+        } else if (menu_is_app[idx] == 4) {
+            wm_open_about();
+        } else if (menu_is_app[idx] == 5) {
+            wm_open_diskmgr();
         }
     } else if (active_menu == MENU_FILE) {
         if (menu_is_app[idx] == -3) {
             wm_open_window("");
         } else if (menu_is_app[idx] == -4) {
             if (wm_focused) wm_close_window(wm_focused);
+        } else if (menu_is_app[idx] == -5) {
+            if (wm_focused) { action_target = wm_focused; pending_action = WM_ACTION_NEW; }
+        } else if (menu_is_app[idx] == -6) {
+            if (wm_focused) { action_target = wm_focused; pending_action = WM_ACTION_OPEN; }
+        } else if (menu_is_app[idx] == -7) {
+            if (wm_focused) { action_target = wm_focused; pending_action = WM_ACTION_SAVE; }
         }
     }
 }
@@ -588,7 +755,13 @@ static void wm_desktop_tick(void)
                     else if (cx == gx + 2) { wm_close_window(hit); }
                     else { wm_focus_window(hit); }
                 } else {
+                    int was_focused = (hit == wm_focused);
                     wm_focus_window(hit);
+                    if (was_focused) {
+                        content_click_target = hit;
+                        content_click_x = cx - hit->x0;
+                        content_click_y = cy - hit->y0 - 1;
+                    }
                 }
             }
         }

@@ -96,11 +96,15 @@ KERNEL_OBJS = \
     kernel/fs/ext3.o \
     kernel/fs/ext4.o \
     kernel/fs/ntfs.o \
+    kernel/fs/diskops.o \
     kernel/fs/installer.o \
     kernel/shell/tsharp.o \
     kernel/display/gui.o \
     kernel/display/wm.o \
     kernel/display/notepad.o \
+    kernel/display/clock.o \
+    kernel/display/about.o \
+    kernel/display/diskmgr.o \
     kernel/net/net.o \
     kernel/net/nic.o \
     kernel/net/rtl8139.o \
