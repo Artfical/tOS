@@ -521,10 +521,8 @@ static void draw_menu_bar(void)
 
     uint32_t ticks = task_get_ticks();
     uint8_t t_color = rainbow_colors[(ticks / 8) % 6];
-    t_x0 = 1; t_x1 = 3;
-    vga_put(t_x0, MENU_ROW, ' ', mk_color(VGA_WHITE, t_color));
-    vga_put(t_x0 + 1, MENU_ROW, 'T', mk_color(VGA_WHITE, t_color));
-    vga_put(t_x0 + 2, MENU_ROW, ' ', mk_color(VGA_WHITE, t_color));
+    t_x0 = 1; t_x1 = 2;
+    vga_put(t_x0, MENU_ROW, 'T', mk_color(t_color, VGA_WHITE));
 
     int x = 4;
     uint8_t menu_color = mk_color(VGA_BLACK, VGA_WHITE);
@@ -666,17 +664,10 @@ static void draw_cursor(void)
     mouse_get_state(&mx, &my, &btns);
     (void)btns;
     if (mx < 0 || mx >= VGA_W || my < 0 || my >= VGA_H) return;
-
     uint16_t cell = backbuffer[my * VGA_W + mx];
     uint8_t bg = (cell >> 12) & 0x0F;
-    uint8_t cursor_fg = (bg == VGA_WHITE) ? VGA_BLACK : VGA_WHITE;
-    uint8_t cursor_border = (cursor_fg == VGA_BLACK) ? VGA_LIGHT_GREY : VGA_DARK_GREY;
-
-    backbuffer[my * VGA_W + mx] = mk_cell(0xDB, mk_color(cursor_fg, cursor_border));
-    if (my + 1 < VGA_H)
-        backbuffer[(my + 1) * VGA_W + mx] = mk_cell(0xDC, mk_color(cursor_fg, bg));
-    if (mx + 1 < VGA_W)
-        backbuffer[my * VGA_W + mx + 1] = mk_cell(0xDD, mk_color(cursor_fg, bg));
+    uint8_t cursor_fg = (bg == VGA_BLACK) ? VGA_WHITE : VGA_BLACK;
+    backbuffer[my * VGA_W + mx] = mk_cell(0x10, mk_color(cursor_fg, bg));
 }
 
 #define FRAME_INTERVAL_TICKS 1
