@@ -130,12 +130,26 @@ qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev
 
 ## Filesystem
 
-tOS uses two filesystems:
+tOS boots with two filesystems active by default, and can mount several more on demand:
 
 - **ramfs** — Memory-resident filesystem mounted at `/`. Volatile — all data is lost on reboot.
 - **tFS** — Persistent on-disk filesystem mounted at `/mnt` when an IDE disk is detected. Built on a custom on-disk format with 4 KB blocks, bitmap-based allocation, inline data for small files, and indirect/double-indirect block pointers.
 
 At first boot with a blank IDE disk, an interactive installer (Turkish UI) formats the disk and copies system files. On subsequent boots, tFS is auto-detected and mounted.
+
+### Mountable Disk Filesystems
+
+In addition to ramfs and tFS, the `disk` shell command can probe, mount, and format the following on-disk filesystems on any detected block device (IDE, AHCI, NVMe, or USB mass storage), with full read/write support through the VFS layer:
+
+- **FAT16** (`kernel/fs/fat16.c`)
+- **FAT32** (`kernel/fs/fat32.c`)
+- **exFAT** (`kernel/fs/exfat.c`)
+- **ext2** (`kernel/fs/ext2.c`)
+- **ext3** (`kernel/fs/ext3.c`) — with journaling
+- **ext4** (`kernel/fs/ext4.c`) — with extent-based block mapping
+- **NTFS** (`kernel/fs/ntfs.c`)
+
+Use `disk list` to see detected block devices, `disk mount <device> <mountpoint> <fstype>` to mount one, and `disk format <device> <fstype>` to format it. The graphical Disk Manager app (see [GUI Mode](#gui-mode)) exposes the same operations visually.
 
 The VFS layer supports:
 - Hierarchical directories
