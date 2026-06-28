@@ -11,6 +11,7 @@
 #include "about.h"
 #include "diskmgr.h"
 #include "calculator.h"
+#include "filemgr.h"
 
 #define VGA_W 80
 #define VGA_H 25
@@ -27,6 +28,7 @@
 #define WIN_KIND_ABOUT 3
 #define WIN_KIND_DISKMGR 4
 #define WIN_KIND_CALCULATOR 5
+#define WIN_KIND_FILEMGR 6
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -181,6 +183,8 @@ static void window_task_entry(void)
         diskmgr_run();
     else if (w->kind == WIN_KIND_CALCULATOR)
         calculator_run();
+    else if (w->kind == WIN_KIND_FILEMGR)
+        filemgr_run();
     else
         shell_run_windowed(w->initial_cmd);
 }
@@ -257,6 +261,12 @@ static void wm_open_notepad(void)
     if (pid < 0) { w->open = 0; return; }
     w->pid = pid;
     wm_focused = w;
+}
+
+void wm_open_notepad_file(const char *path)
+{
+    notepad_open_path(path);
+    wm_open_notepad();
 }
 
 static void wm_open_clock(void)
@@ -351,6 +361,29 @@ static void wm_open_calculator(void)
     wm_focused = w;
 }
 
+static void wm_open_filemgr(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 1;
+    w->z = next_z++;
+    w->kind = WIN_KIND_FILEMGR;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "Files");
+
+    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
 static void draw_window(window_t *w)
 {
     int x0, y0, w0, h0;
@@ -415,6 +448,8 @@ static void build_menu_items(int which)
         menu_names[menu_count] = "About This Computer..."; menu_is_app[menu_count] = 4; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Notepad"; menu_is_app[menu_count] = 1; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "Files"; menu_is_app[menu_count] = 7; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Calculator"; menu_is_app[menu_count] = 6; menu_disabled[menu_count] = 0;
         menu_count++;
@@ -610,6 +645,7 @@ static const char *get_icon_char(int kind)
         case WIN_KIND_ABOUT:    return "?";
         case WIN_KIND_DISKMGR:  return "\xF7";
         case WIN_KIND_CALCULATOR: return "#";
+        case WIN_KIND_FILEMGR:  return "\xF6";
         default:                return ".";
     }
 }
@@ -738,6 +774,8 @@ static void handle_menu_click(int idx)
             wm_open_diskmgr();
         } else if (menu_is_app[idx] == 6) {
             wm_open_calculator();
+        } else if (menu_is_app[idx] == 7) {
+            wm_open_filemgr();
         }
     } else if (active_menu == MENU_FILE) {
         if (menu_is_app[idx] == -3) {

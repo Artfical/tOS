@@ -11,5 +11,6 @@ void wm_run(void);
 int wm_current_task_has_focus(void);
 int wm_get_content_click(int *x, int *y);
 int wm_get_menu_action(void);
+void wm_open_notepad_file(const char *path);
 
 #endif

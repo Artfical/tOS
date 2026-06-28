@@ -1,7 +1,7 @@
 #include "notepad.h"
 #include "terminal.h"
 #include "keyboard.h"
-#include "ramfs.h"
+#include "fsbridge.h"
 #include "string.h"
 #include "gui.h"
 #include "wm.h"
@@ -22,6 +22,15 @@ static int num_lines;
 static int cur_row, cur_col;
 static char filename[64];
 static int modified;
+static char pending_path[64];
+static int has_pending;
+
+void notepad_open_path(const char *path)
+{
+    strncpy(pending_path, path, sizeof(pending_path) - 1);
+    pending_path[sizeof(pending_path) - 1] = 0;
+    has_pending = 1;
+}
 
 static uint8_t np_color(uint8_t fg, uint8_t bg) { return fg | (bg << 4); }
 
@@ -103,17 +112,17 @@ static void ensure_txt_extension(char *name, int max)
 
 static void save_file(const char *fname)
 {
-    if (ramfs_exists(fname)) ramfs_delete(fname);
-    if (ramfs_create(fname) != 0) return;
+    if (fsbridge_exists(fname)) fsbridge_delete(fname);
+    if (fsbridge_create(fname) != 0) return;
 
     uint32_t offset = 0;
     for (int r = 0; r < num_lines; r++) {
         if (line_len[r] > 0) {
-            ramfs_write(fname, lines[r], (uint32_t)line_len[r], offset);
+            fsbridge_write(fname, lines[r], (uint32_t)line_len[r], offset);
             offset += (uint32_t)line_len[r];
         }
         if (r < num_lines - 1) {
-            ramfs_write(fname, "\n", 1, offset);
+            fsbridge_write(fname, "\n", 1, offset);
             offset++;
         }
     }
@@ -129,12 +138,12 @@ static void load_file(const char *fname)
     strncpy(filename, fname, sizeof(filename) - 1);
     filename[sizeof(filename) - 1] = 0;
 
-    if (!ramfs_exists(fname)) return;
+    if (!fsbridge_exists(fname)) return;
 
-    uint32_t sz = ramfs_size(fname);
+    uint32_t sz = fsbridge_size(fname);
     char buf[NP_ROWS * (NP_COLS + 1)];
     if (sz >= sizeof(buf)) sz = sizeof(buf) - 1;
-    ramfs_read(fname, buf, sz, 0);
+    fsbridge_read(fname, buf, sz, 0);
 
     int r = 0, c = 0;
     for (uint32_t i = 0; i < sz && r < NP_ROWS; i++) {
@@ -248,6 +257,10 @@ static void backspace(void)
 void notepad_run(void)
 {
     reset_buffer();
+    if (has_pending) {
+        load_file(pending_path);
+        has_pending = 0;
+    }
     terminal_clear();
     redraw();
 

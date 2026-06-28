@@ -251,6 +251,19 @@ int vfs_path_has_mount(const char *path)
     return (m != 0 && m->path_len > 0);
 }
 
+int vfs_get_mounts(char out[][VFS_NAME_LEN], int max)
+{
+    int n = 0;
+    for (int i = 0; i < mount_count && n < max; i++) {
+        if (!mounts[i].used) continue;
+        int j = 0;
+        while (mounts[i].path[j] && j < VFS_NAME_LEN - 1) { out[n][j] = mounts[i].path[j]; j++; }
+        out[n][j] = 0;
+        n++;
+    }
+    return n;
+}
+
 char *vfs_abspath(const char *path)
 {
     static char buf[VFS_NAME_LEN];
