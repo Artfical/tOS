@@ -29,6 +29,8 @@ static char filename[64];
 static char status_msg[VIEWER_COLS + 1];
 static char pending_path[64];
 static int has_pending;
+static int dragging;
+static int drag_last_x, drag_last_y;
 
 static const uint8_t vga_palette[16][3] = {
     {0, 0, 0}, {0, 0, 170}, {0, 170, 0}, {0, 170, 170},
@@ -261,6 +263,7 @@ void viewer_run(void)
     view_x = view_y = 0;
     filename[0] = 0;
     status_msg[0] = 0;
+    dragging = 0;
 
     if (has_pending) {
         do_open(pending_path);
@@ -294,6 +297,32 @@ void viewer_run(void)
             redraw();
             task_yield();
             continue;
+        }
+
+        int mx, my, btns;
+        if (wm_get_content_mouse(&mx, &my, &btns)) {
+            if ((btns & 1) && img_rgb) {
+                if (!dragging) {
+                    if (my >= CANVAS_Y0 && my < CANVAS_Y0 + CANVAS_H) {
+                        dragging = 1;
+                        drag_last_x = mx;
+                        drag_last_y = my;
+                    }
+                } else {
+                    int dx = mx - drag_last_x;
+                    int dy = my - drag_last_y;
+                    if (dx || dy) {
+                        view_x -= dx * scale;
+                        view_y -= dy * scale;
+                        clamp_view();
+                        drag_last_x = mx;
+                        drag_last_y = my;
+                        redraw();
+                    }
+                }
+            } else {
+                dragging = 0;
+            }
         }
 
         task_yield();
