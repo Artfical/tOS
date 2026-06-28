@@ -49,6 +49,7 @@ static void put_str(int x, int y, const char *s, uint8_t color)
 
 static void clear_area(void)
 {
+    terminal_setcolor(calc_color(VGA_BLACK, VGA_LIGHT_GREY));
     for (int r = 0; r < CALC_ROWS; r++) {
         terminal_setpos(0, (size_t)r);
         for (int c = 0; c < CALC_COLS; c++) terminal_putchar(' ');
