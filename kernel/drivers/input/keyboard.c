@@ -7,6 +7,7 @@
 #include "gui.h"
 #include "wm.h"
 #include "net.h"
+#include "scheduler.h"
 
 static volatile char key_buffer[256];
 static volatile int key_buffer_head = 0;
@@ -173,6 +174,10 @@ char keyboard_getchar(void)
             char c = key_buffer[key_buffer_tail];
             key_buffer_tail = (key_buffer_tail + 1) % 256;
             return c;
+        }
+        if (!wm_current_task_has_focus()) {
+            task_yield();
+            continue;
         }
         keyboard_poll();
         char usb_c;
