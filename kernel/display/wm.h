@@ -1,6 +1,8 @@
 #ifndef WM_H
 #define WM_H
 
+#include <stdint.h>
+
 /* Actions a window can be sent from the top File/Edit/... menu bar, claimed
  * one-shot via wm_get_menu_action() from the target window's own task. */
 enum { WM_ACTION_NONE = 0, WM_ACTION_NEW, WM_ACTION_OPEN, WM_ACTION_SAVE };
@@ -14,5 +16,6 @@ int wm_get_content_mouse(int *x, int *y, int *buttons);
 int wm_get_menu_action(void);
 void wm_open_notepad_file(const char *path);
 void wm_open_viewer_file(const char *path);
+int wm_kill_task_window(uint32_t pid);
 
 #endif

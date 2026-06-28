@@ -214,7 +214,7 @@ static void do_kill(void)
 
     if (!keyboard_yesno()) { status_msg[0] = 0; return; }
 
-    if (task_kill(pid) == 0) set_status("Killed.");
+    if (wm_kill_task_window(pid) == 0 || task_kill(pid) == 0) set_status("Killed.");
     else set_status("Kill failed (cannot kill this task).");
 }
 

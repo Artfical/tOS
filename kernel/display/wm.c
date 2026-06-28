@@ -243,6 +243,22 @@ static void wm_close_window(window_t *w)
     if (wm_focused == w) wm_focused = NULL;
 }
 
+/* Killing a window's task out from under it (e.g. from Task Manager)
+ * needs the same cleanup wm_close_window() does — open/minimized/
+ * maximized flags and wm_focused — not just task_kill(), or the now-dead
+ * window keeps drawing its last frame forever. Returns 0 if pid matched
+ * an open window (and it was closed), -1 if pid isn't a window task. */
+int wm_kill_task_window(uint32_t pid)
+{
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (windows[i].open && (uint32_t)windows[i].pid == pid) {
+            wm_close_window(&windows[i]);
+            return 0;
+        }
+    }
+    return -1;
+}
+
 static void wm_open_window(const char *cmd)
 {
     int slot = wm_find_free_slot();
