@@ -48,8 +48,12 @@ typedef struct {
     char title[40];
     char initial_cmd[64];
     int x0, y0, w0, h0;
+    int rest_x0, rest_y0, rest_w0, rest_h0;
     int tb_x0, tb_x1;
 } window_t;
+
+static window_t *drag_window;
+static int drag_offset_x, drag_offset_y;
 
 static window_t windows[MAX_WINDOWS];
 static window_t *wm_focused = NULL;
@@ -152,16 +156,22 @@ int wm_get_menu_action(void)
     return a;
 }
 
-static void window_geom(window_t *w, int *x0, int *y0, int *w0, int *h0)
+/* Computes the initial position/size for a newly opened window (called
+ * once at creation, not on every redraw) and stores both the active
+ * geometry and the "restore" geometry to return to when un-maximized.
+ * Windows are freely draggable afterwards by their title bar; this only
+ * ever runs again when a window is opened. */
+static void window_geom_init(window_t *w)
 {
     int slot = (int)(w - windows);
+    w->rest_x0 = 4 + (slot % 4) * 3;
+    w->rest_y0 = 2 + (slot % 3) * 2;
+    w->rest_w0 = NORMAL_W;
+    w->rest_h0 = NORMAL_H;
     if (w->maximized) {
-        *x0 = 0; *y0 = MENU_ROW + 1; *w0 = VGA_W; *h0 = VGA_H - 2;
+        w->x0 = 0; w->y0 = MENU_ROW + 1; w->w0 = VGA_W; w->h0 = VGA_H - 2;
     } else {
-        *x0 = 4 + (slot % 4) * 3;
-        *y0 = 2 + (slot % 3) * 2;
-        *w0 = NORMAL_W;
-        *h0 = NORMAL_H;
+        w->x0 = w->rest_x0; w->y0 = w->rest_y0; w->w0 = w->rest_w0; w->h0 = w->rest_h0;
     }
 }
 
@@ -255,7 +265,7 @@ static void wm_open_window(const char *cmd)
         strcpy(w->title, "Terminal");
     }
 
-    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+    window_geom_init(w);
 
     pending_window = w;
     int pid = task_spawn(window_task_entry, w->title);
@@ -278,7 +288,7 @@ static void wm_open_notepad(void)
     w->initial_cmd[0] = 0;
     strcpy(w->title, "Notepad");
 
-    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+    window_geom_init(w);
 
     pending_window = w;
     int pid = task_spawn(window_task_entry, w->title);
@@ -307,7 +317,7 @@ static void wm_open_clock(void)
     w->initial_cmd[0] = 0;
     strcpy(w->title, "Clock");
 
-    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+    window_geom_init(w);
 
     pending_window = w;
     int pid = task_spawn(window_task_entry, w->title);
@@ -330,7 +340,7 @@ static void wm_open_about(void)
     w->initial_cmd[0] = 0;
     strcpy(w->title, "About This Computer");
 
-    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+    window_geom_init(w);
 
     pending_window = w;
     int pid = task_spawn(window_task_entry, w->title);
@@ -353,7 +363,7 @@ static void wm_open_diskmgr(void)
     w->initial_cmd[0] = 0;
     strcpy(w->title, "Disk Utility");
 
-    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+    window_geom_init(w);
 
     pending_window = w;
     int pid = task_spawn(window_task_entry, w->title);
@@ -376,7 +386,7 @@ static void wm_open_calculator(void)
     w->initial_cmd[0] = 0;
     strcpy(w->title, "Calculator");
 
-    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+    window_geom_init(w);
 
     pending_window = w;
     int pid = task_spawn(window_task_entry, w->title);
@@ -399,7 +409,7 @@ static void wm_open_filemgr(void)
     w->initial_cmd[0] = 0;
     strcpy(w->title, "Files");
 
-    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+    window_geom_init(w);
 
     pending_window = w;
     int pid = task_spawn(window_task_entry, w->title);
@@ -422,7 +432,7 @@ static void wm_open_paint(void)
     w->initial_cmd[0] = 0;
     strcpy(w->title, "Paint");
 
-    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+    window_geom_init(w);
 
     pending_window = w;
     int pid = task_spawn(window_task_entry, w->title);
@@ -445,7 +455,7 @@ static void wm_open_viewer(void)
     w->initial_cmd[0] = 0;
     strcpy(w->title, "Image Viewer");
 
-    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+    window_geom_init(w);
 
     pending_window = w;
     int pid = task_spawn(window_task_entry, w->title);
@@ -462,8 +472,7 @@ void wm_open_viewer_file(const char *path)
 
 static void draw_window(window_t *w)
 {
-    int x0, y0, w0, h0;
-    window_geom(w, &x0, &y0, &w0, &h0);
+    int x0 = w->x0, y0 = w->y0, w0 = w->w0, h0 = w->h0;
 
     int is_active = (w == wm_focused);
     uint8_t title_color = is_active ? mk_color(VGA_BLACK, VGA_WHITE) : mk_color(VGA_BLACK, VGA_LIGHT_GREY);
@@ -907,6 +916,24 @@ static void wm_desktop_tick(void)
 {
     mouse_poll();
 
+    if (drag_window) {
+        int mx, my;
+        uint8_t btns;
+        mouse_get_state(&mx, &my, &btns);
+        if (btns & 1) {
+            int nx = mx - drag_offset_x;
+            int ny = my - drag_offset_y;
+            if (nx < 0) nx = 0;
+            if (ny < MENU_ROW + 1) ny = MENU_ROW + 1;
+            if (nx > VGA_W - drag_window->w0) nx = VGA_W - drag_window->w0;
+            if (ny > DOCK_ROW - 1) ny = DOCK_ROW - 1;
+            drag_window->x0 = nx;
+            drag_window->y0 = ny;
+        } else {
+            drag_window = NULL;
+        }
+    }
+
     int cx, cy;
     if (mouse_get_click(&cx, &cy)) {
         if (active_menu != MENU_NONE) {
@@ -949,9 +976,27 @@ static void wm_desktop_tick(void)
                     int gx = hit->x0 + hit->w0 - 4;
                     if (cx == hit->x0 + 1) { wm_close_window(hit); }
                     else if (cx == gx) { hit->minimized = 1; }
-                    else if (cx == gx + 1) { hit->maximized = !hit->maximized; }
+                    else if (cx == gx + 1) {
+                        if (!hit->maximized) {
+                            hit->rest_x0 = hit->x0; hit->rest_y0 = hit->y0;
+                            hit->rest_w0 = hit->w0; hit->rest_h0 = hit->h0;
+                            hit->maximized = 1;
+                            hit->x0 = 0; hit->y0 = MENU_ROW + 1; hit->w0 = VGA_W; hit->h0 = VGA_H - 2;
+                        } else {
+                            hit->maximized = 0;
+                            hit->x0 = hit->rest_x0; hit->y0 = hit->rest_y0;
+                            hit->w0 = hit->rest_w0; hit->h0 = hit->rest_h0;
+                        }
+                    }
                     else if (cx == gx + 2) { wm_close_window(hit); }
-                    else { wm_focus_window(hit); }
+                    else {
+                        wm_focus_window(hit);
+                        if (!hit->maximized) {
+                            drag_window = hit;
+                            drag_offset_x = cx - hit->x0;
+                            drag_offset_y = cy - hit->y0;
+                        }
+                    }
                 } else if (hit->kind == WIN_KIND_TERMINAL && hit->surface.scrollback_count > 0 &&
                            cx == hit->x0 + hit->w0 - 1) {
                     wm_focus_window(hit);
