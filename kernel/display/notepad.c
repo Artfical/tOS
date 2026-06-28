@@ -6,20 +6,24 @@
 #include "gui.h"
 #include "wm.h"
 #include "scheduler.h"
+#include "memory.h"
 
 #define NP_ROWS 20
 #define NP_COLS 79
 #define BUTTON_ROW 20
 #define STATUS_ROW 21
+#define SCROLLBAR_X NP_COLS
+#define MAX_LINES 1000
 
 #define NUM_BUTTONS 3
 static const char *btn_labels[NUM_BUTTONS] = { "New", "Open", "Save" };
 static int btn_x0[NUM_BUTTONS], btn_x1[NUM_BUTTONS];
 
-static char lines[NP_ROWS][NP_COLS + 1];
-static int line_len[NP_ROWS];
+static char lines[MAX_LINES][NP_COLS + 1];
+static int line_len[MAX_LINES];
 static int num_lines;
 static int cur_row, cur_col;
+static int view_top;
 static char filename[64];
 static int modified;
 static char pending_path[64];
@@ -34,14 +38,35 @@ void notepad_open_path(const char *path)
 
 static uint8_t np_color(uint8_t fg, uint8_t bg) { return fg | (bg << 4); }
 
+static int fmt_uint(char *buf, uint32_t v)
+{
+    char tmp[12];
+    int n = 0;
+    if (v == 0) { buf[0] = '0'; return 1; }
+    while (v > 0 && n < 11) { tmp[n++] = '0' + (v % 10); v /= 10; }
+    for (int i = 0; i < n; i++) buf[i] = tmp[n - 1 - i];
+    return n;
+}
+
+static void ensure_visible(void)
+{
+    if (cur_row < view_top) view_top = cur_row;
+    if (cur_row >= view_top + NP_ROWS) view_top = cur_row - NP_ROWS + 1;
+    int max_top = num_lines - NP_ROWS;
+    if (max_top < 0) max_top = 0;
+    if (view_top > max_top) view_top = max_top;
+    if (view_top < 0) view_top = 0;
+}
+
 static void reset_buffer(void)
 {
     num_lines = 1;
     cur_row = 0;
     cur_col = 0;
+    view_top = 0;
     modified = 0;
     filename[0] = 0;
-    for (int i = 0; i < NP_ROWS; i++) { lines[i][0] = 0; line_len[i] = 0; }
+    for (int i = 0; i < MAX_LINES; i++) { lines[i][0] = 0; line_len[i] = 0; }
 }
 
 static void status_line(const char *msg)
@@ -81,14 +106,42 @@ static void draw_buttons(void)
     terminal_setcolor(np_color(VGA_LIGHT_GREY, VGA_BLACK));
 }
 
+static void draw_scrollbar(void)
+{
+    int can_scroll = num_lines > NP_ROWS;
+    int max_top = can_scroll ? num_lines - NP_ROWS : 0;
+    int thumb_row = (can_scroll && max_top > 0) ? (view_top * (NP_ROWS - 1)) / max_top : 0;
+
+    for (int r = 0; r < NP_ROWS; r++) {
+        terminal_setpos((size_t)SCROLLBAR_X, (size_t)r);
+        if (!can_scroll) {
+            terminal_setcolor(np_color(VGA_LIGHT_GREY, VGA_BLACK));
+            terminal_putchar(' ');
+        } else if (r == thumb_row) {
+            terminal_setcolor(np_color(VGA_WHITE, VGA_BLUE));
+            terminal_putchar((char)0xDB);
+        } else {
+            terminal_setcolor(np_color(VGA_DARK_GREY, VGA_BLACK));
+            terminal_putchar((char)0xB1);
+        }
+    }
+}
+
 static void redraw(void)
 {
+    ensure_visible();
+
+    terminal_setcolor(np_color(VGA_LIGHT_GREY, VGA_BLACK));
     for (int r = 0; r < NP_ROWS; r++) {
+        int src = view_top + r;
         terminal_setpos(0, r);
-        for (int c = 0; c < NP_COLS; c++)
-            terminal_putchar(c < line_len[r] ? lines[r][c] : ' ');
+        for (int c = 0; c < NP_COLS; c++) {
+            char ch = (src < num_lines && c < line_len[src]) ? lines[src][c] : ' ';
+            terminal_putchar(ch);
+        }
     }
 
+    draw_scrollbar();
     draw_buttons();
 
     char status[NP_COLS + 1];
@@ -96,10 +149,16 @@ static void redraw(void)
     const char *name = filename[0] ? filename : "Untitled";
     while (name[k] && k < 40) { status[k] = name[k]; k++; }
     if (modified) status[k++] = '*';
+    status[k++] = ' '; status[k++] = '(';
+    k += fmt_uint(status + k, (uint32_t)(cur_row + 1));
+    status[k++] = '/';
+    k += fmt_uint(status + k, (uint32_t)num_lines);
+    status[k++] = ')';
     status[k] = 0;
     status_line(status);
 
-    terminal_setpos((size_t)cur_col, (size_t)cur_row);
+    terminal_setcolor(np_color(VGA_LIGHT_GREY, VGA_BLACK));
+    terminal_setpos((size_t)cur_col, (size_t)(cur_row - view_top));
 }
 
 static void ensure_txt_extension(char *name, int max)
@@ -141,12 +200,12 @@ static void load_file(const char *fname)
     if (!fsbridge_exists(fname)) return;
 
     uint32_t sz = fsbridge_size(fname);
-    char buf[NP_ROWS * (NP_COLS + 1)];
-    if (sz >= sizeof(buf)) sz = sizeof(buf) - 1;
+    char *buf = (char *)malloc(sz ? sz : 1);
+    if (!buf) return;
     fsbridge_read(fname, buf, sz, 0);
 
     int r = 0, c = 0;
-    for (uint32_t i = 0; i < sz && r < NP_ROWS; i++) {
+    for (uint32_t i = 0; i < sz && r < MAX_LINES - 1; i++) {
         if (buf[i] == '\n') {
             line_len[r] = c;
             lines[r][c] = 0;
@@ -158,6 +217,7 @@ static void load_file(const char *fname)
     line_len[r] = c;
     lines[r][c] = 0;
     num_lines = r + 1;
+    free(buf);
 }
 
 static void prompt_filename(const char *prompt, char *buf, int max)
@@ -210,7 +270,7 @@ static void insert_char(char c)
 
 static void insert_newline(void)
 {
-    if (num_lines >= NP_ROWS) return;
+    if (num_lines >= MAX_LINES) return;
     for (int r = num_lines; r > cur_row + 1; r--) {
         strcpy(lines[r], lines[r - 1]);
         line_len[r] = line_len[r - 1];
@@ -287,6 +347,15 @@ void notepad_run(void)
                         break;
                     }
                 }
+                redraw();
+            } else if (ccx == SCROLLBAR_X && ccy >= 0 && ccy < NP_ROWS && num_lines > NP_ROWS) {
+                int max_top = num_lines - NP_ROWS;
+                int target = (NP_ROWS > 1) ? (ccy * max_top) / (NP_ROWS - 1) : 0;
+                if (target < 0) target = 0;
+                if (target > max_top) target = max_top;
+                cur_row = target;
+                if (cur_row >= num_lines) cur_row = num_lines - 1;
+                if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row];
                 redraw();
             }
             continue;
