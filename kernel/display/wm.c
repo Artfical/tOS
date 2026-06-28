@@ -416,16 +416,37 @@ static void draw_window(window_t *w)
     vga_put(gx + 2, y0, 'X', mk_color(VGA_WHITE, VGA_RED));
 
     int content_h = h0 - 1;
+    int vo = w->surface.view_offset;
     for (int row = 0; row < content_h; row++) {
         for (int col = 0; col < w0; col++) {
             uint16_t cell;
-            if (row < TERM_SURFACE_H && col < TERM_SURFACE_W)
-                cell = w->surface.cells[row * TERM_SURFACE_W + col];
-            else
+            int shown = row - vo;
+            if (shown >= 0 && shown < TERM_SURFACE_H && col < TERM_SURFACE_W) {
+                cell = w->surface.cells[shown * TERM_SURFACE_W + col];
+            } else if (shown < 0 && col < TERM_SURFACE_W) {
+                const uint16_t *sb = terminal_scrollback_row(&w->surface, -shown);
+                cell = sb ? sb[col] : mk_cell(' ', mk_color(VGA_LIGHT_GREY, VGA_BLACK));
+            } else {
                 cell = mk_cell(' ', mk_color(VGA_LIGHT_GREY, VGA_BLACK));
+            }
             int vx = x0 + col, vy = y0 + 1 + row;
             if (vx >= 0 && vx < VGA_W && vy >= 0 && vy < VGA_H - 1)
                 backbuffer[vy * VGA_W + vx] = cell;
+        }
+    }
+
+    /* Scrollback slider in the rightmost content column, terminal windows
+     * only — other app kinds (e.g. Notepad) manage that column themselves. */
+    if (w->kind == WIN_KIND_TERMINAL && w->surface.scrollback_count > 0) {
+        int max_off = w->surface.scrollback_count;
+        int thumb_row = content_h - 1 - (content_h > 1 ? ((content_h - 1) * vo) / max_off : 0);
+        for (int row = 0; row < content_h; row++) {
+            int vx = x0 + w0 - 1, vy = y0 + 1 + row;
+            if (vx < 0 || vx >= VGA_W || vy < 0 || vy >= VGA_H - 1) continue;
+            if (row == thumb_row)
+                backbuffer[vy * VGA_W + vx] = mk_cell(0xDB, mk_color(VGA_WHITE, VGA_BLUE));
+            else
+                backbuffer[vy * VGA_W + vx] = mk_cell(0xB1, mk_color(VGA_DARK_GREY, VGA_BLACK));
         }
     }
 
@@ -841,6 +862,18 @@ static void wm_desktop_tick(void)
                     else if (cx == gx + 1) { hit->maximized = !hit->maximized; }
                     else if (cx == gx + 2) { wm_close_window(hit); }
                     else { wm_focus_window(hit); }
+                } else if (hit->kind == WIN_KIND_TERMINAL && hit->surface.scrollback_count > 0 &&
+                           cx == hit->x0 + hit->w0 - 1) {
+                    wm_focus_window(hit);
+                    int content_h = hit->h0 - 1;
+                    int row_clicked = cy - hit->y0 - 1;
+                    int max_off = hit->surface.scrollback_count;
+                    int vo = (content_h > 1)
+                        ? max_off - (row_clicked * max_off) / (content_h - 1)
+                        : 0;
+                    if (vo < 0) vo = 0;
+                    if (vo > max_off) vo = max_off;
+                    hit->surface.view_offset = vo;
                 } else {
                     int was_focused = (hit == wm_focused);
                     wm_focus_window(hit);

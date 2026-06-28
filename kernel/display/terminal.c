@@ -50,6 +50,23 @@ void terminal_surface_init(term_surface_t *s)
     s->color = color;
     for (int i = 0; i < TERM_SURFACE_W * TERM_SURFACE_H; i++)
         s->cells[i] = make_vgaentry(' ', color);
+    s->scrollback_head = 0;
+    s->scrollback_count = 0;
+    s->view_offset = 0;
+}
+
+const uint16_t *terminal_scrollback_row(const term_surface_t *s, int lines_back)
+{
+    if (lines_back < 1 || lines_back > s->scrollback_count) return 0;
+    int idx = (s->scrollback_head - lines_back + TERM_SCROLLBACK_LINES) % TERM_SCROLLBACK_LINES;
+    return s->scrollback[idx];
+}
+
+static void scrollback_push(term_surface_t *s, const uint16_t *row)
+{
+    for (int x = 0; x < TERM_SURFACE_W; x++) s->scrollback[s->scrollback_head][x] = row[x];
+    s->scrollback_head = (s->scrollback_head + 1) % TERM_SCROLLBACK_LINES;
+    if (s->scrollback_count < TERM_SCROLLBACK_LINES) s->scrollback_count++;
 }
 
 void terminal_set_y_offset(int offset)
@@ -103,6 +120,7 @@ void terminal_setcolor(uint8_t color)
 
 static void surface_scroll(term_surface_t *s)
 {
+    scrollback_push(s, &s->cells[0]);
     for (int y = 1; y < TERM_SURFACE_H; y++) {
         for (int x = 0; x < TERM_SURFACE_W; x++)
             s->cells[(y - 1) * TERM_SURFACE_W + x] = s->cells[y * TERM_SURFACE_W + x];
@@ -129,6 +147,7 @@ void terminal_scroll(void)
 
 static void surface_putchar(term_surface_t *s, char c)
 {
+    s->view_offset = 0;
     if (c == '\n') {
         s->cur_col = 0;
         s->cur_row++;

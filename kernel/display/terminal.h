@@ -9,6 +9,7 @@
 
 #define TERM_SURFACE_W 80
 #define TERM_SURFACE_H 23
+#define TERM_SCROLLBACK_LINES 100
 
 /* When bound (via task_set_userdata) on the current task, all terminal_*
  * calls made by that task read/write this surface instead of the real
@@ -19,9 +20,18 @@ typedef struct {
     int cur_row;
     int cur_col;
     uint8_t color;
+    /* Lines pushed off the top by scrolling, oldest overwritten once full.
+     * scrollback_head is the next write slot; view_offset is how many
+     * lines the window manager is currently showing scrolled back from
+     * live (0 = live), driven by the scrollbar in wm.c. */
+    uint16_t scrollback[TERM_SCROLLBACK_LINES][TERM_SURFACE_W];
+    int scrollback_head;
+    int scrollback_count;
+    int view_offset;
 } term_surface_t;
 
 void terminal_surface_init(term_surface_t *s);
+const uint16_t *terminal_scrollback_row(const term_surface_t *s, int lines_back);
 
 enum vga_color {
     VGA_BLACK = 0,
