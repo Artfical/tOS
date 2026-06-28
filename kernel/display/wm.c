@@ -514,10 +514,8 @@ static void draw_menu_bar(void)
 {
     vga_fill_rect(0, MENU_ROW, VGA_W, 1, ' ', mk_color(VGA_BLACK, VGA_WHITE));
 
-    t_x0 = 1; t_x1 = 3;
-    vga_put(t_x0,     MENU_ROW, 'T', mk_color(VGA_RED,     VGA_WHITE));
-    vga_put(t_x0 + 1, MENU_ROW, 'T', mk_color(VGA_LIGHT_GREEN, VGA_WHITE));
-    vga_put(t_x0 + 2, MENU_ROW, 'T', mk_color(VGA_LIGHT_BLUE,  VGA_WHITE));
+    t_x0 = 1; t_x1 = 2;
+    vga_put(t_x0, MENU_ROW, 'T', mk_color(VGA_RED, VGA_WHITE));
 
     int x = 4;
     uint8_t menu_color = mk_color(VGA_BLACK, VGA_WHITE);
@@ -537,7 +535,7 @@ static void draw_menu_bar(void)
         x += len + 3;
     }
 
-    if (active_menu == MENU_T) vga_fill_rect(t_x0 - 1, MENU_ROW, 5, 1, ' ', menu_active_color);
+    if (active_menu == MENU_T) vga_fill_rect(t_x0 - 1, MENU_ROW, 4, 1, ' ', menu_active_color);
 
     cmos_time_t t;
     cmos_get_time(&t);
