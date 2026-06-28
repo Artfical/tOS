@@ -594,7 +594,11 @@ static void draw_t_menu(int anchor_x0)
     int apps_count = menu_count - 2;
 
     int cols = 4;
-    int item_w = 11;
+    int item_w = 0;
+    for (int i = 0; i < apps_count; i++) {
+        int len = (int)strlen(menu_names[apps_start + i]) + 2;
+        if (len > item_w) item_w = len;
+    }
     int rows = (apps_count + cols - 1) / cols;
     int grid_w = cols * item_w;
 
