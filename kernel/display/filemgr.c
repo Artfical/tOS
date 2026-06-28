@@ -102,6 +102,14 @@ static void path_up(char *path)
     else path[i] = 0;
 }
 
+static int has_suffix(const char *name, const char *suffix)
+{
+    int nlen = (int)strlen(name);
+    int slen = (int)strlen(suffix);
+    if (slen > nlen) return 0;
+    return strcmp(name + (nlen - slen), suffix) == 0;
+}
+
 static const char *base_name(const char *path)
 {
     const char *last = path;
@@ -225,6 +233,9 @@ static void do_open_selected(void)
         scroll_off = 0;
         refresh_list();
         status_msg[0] = 0;
+    } else if (has_suffix(e->name, ".png")) {
+        wm_open_viewer_file(full);
+        set_status("Opened in Image Viewer.");
     } else {
         wm_open_notepad_file(full);
         set_status("Opened in Notepad.");

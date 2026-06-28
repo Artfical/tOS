@@ -13,6 +13,7 @@
 #include "calculator.h"
 #include "filemgr.h"
 #include "paint.h"
+#include "viewer.h"
 
 #define VGA_W 80
 #define VGA_H 25
@@ -31,6 +32,7 @@
 #define WIN_KIND_CALCULATOR 5
 #define WIN_KIND_FILEMGR 6
 #define WIN_KIND_PAINT 7
+#define WIN_KIND_VIEWER 8
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -205,6 +207,8 @@ static void window_task_entry(void)
         filemgr_run();
     else if (w->kind == WIN_KIND_PAINT)
         paint_run();
+    else if (w->kind == WIN_KIND_VIEWER)
+        viewer_run();
     else
         shell_run_windowed(w->initial_cmd);
 }
@@ -427,6 +431,35 @@ static void wm_open_paint(void)
     wm_focused = w;
 }
 
+static void wm_open_viewer(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 1;
+    w->z = next_z++;
+    w->kind = WIN_KIND_VIEWER;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "Image Viewer");
+
+    window_geom(w, &w->x0, &w->y0, &w->w0, &w->h0);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
+void wm_open_viewer_file(const char *path)
+{
+    viewer_open_path(path);
+    wm_open_viewer();
+}
+
 static void draw_window(window_t *w)
 {
     int x0, y0, w0, h0;
@@ -516,6 +549,8 @@ static void build_menu_items(int which)
         menu_names[menu_count] = "Files"; menu_is_app[menu_count] = 7; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Paint"; menu_is_app[menu_count] = 8; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "Image Viewer"; menu_is_app[menu_count] = 9; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Calculator"; menu_is_app[menu_count] = 6; menu_disabled[menu_count] = 0;
         menu_count++;
@@ -713,6 +748,7 @@ static const char *get_icon_char(int kind)
         case WIN_KIND_CALCULATOR: return "#";
         case WIN_KIND_FILEMGR:  return "\xF6";
         case WIN_KIND_PAINT:    return "\x0E";
+        case WIN_KIND_VIEWER:   return "\x0C";
         default:                return ".";
     }
 }
@@ -845,6 +881,8 @@ static void handle_menu_click(int idx)
             wm_open_filemgr();
         } else if (menu_is_app[idx] == 8) {
             wm_open_paint();
+        } else if (menu_is_app[idx] == 9) {
+            wm_open_viewer();
         }
     } else if (active_menu == MENU_FILE) {
         if (menu_is_app[idx] == -3) {

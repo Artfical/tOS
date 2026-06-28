@@ -13,5 +13,6 @@ int wm_get_content_click(int *x, int *y);
 int wm_get_content_mouse(int *x, int *y, int *buttons);
 int wm_get_menu_action(void);
 void wm_open_notepad_file(const char *path);
+void wm_open_viewer_file(const char *path);
 
 #endif

@@ -108,6 +108,8 @@ KERNEL_OBJS = \
     kernel/display/calculator.o \
     kernel/display/filemgr.o \
     kernel/display/paint.o \
+    kernel/display/png.o \
+    kernel/display/viewer.o \
     kernel/net/net.o \
     kernel/net/nic.o \
     kernel/net/rtl8139.o \
