@@ -206,6 +206,7 @@ Several built-in GUI applications are launchable from the dock:
 - **Calculator** (`calculator.c`) — basic calculator with 4 operations
 - **Disk Manager** (`diskmgr.c`) — view and manage attached disks
 - **Files** (`filemgr.c`) — graphical file manager with full mouse support: browse, copy/cut/paste, delete, rename, create folders, open files directly in Notepad, and switch between mounted filesystems (ramfs, tFS, FAT16/32, exFAT, ext2/3/4, NTFS) via a one-click disk bar
+- **Paint** (`paint.c`) — mouse-driven drawing app: click-and-drag with a pen or eraser, 3 brush sizes, a 16-color VGA palette, and a "Save" that exports the canvas as a real, standard PNG file (cell grid rasterized to RGB pixels through a from-scratch PNG/zlib encoder — tOS itself never leaves VGA text mode to draw it)
 - **About** (`about.c`) — system information window
 
 ## MicroPython Interpreter
