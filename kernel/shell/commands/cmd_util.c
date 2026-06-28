@@ -197,6 +197,7 @@ void cmd_which(int argc, char **args)
         "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
         "basename", "dirname", "which", "env", "uptime", "ps", "kill",
         "chmod", "hexdump", "tee", "alias", "unalias", "history",
+        "disk", "rev", "uniq",
         NULL
     };
     for (int i = 0; i < argc; i++) {

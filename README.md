@@ -6,7 +6,7 @@ tOS is a from-scratch x86 hobby operating system with a Linux-like command envir
 
 - **CPU:** i586 compatible (32-bit x86)
 - **Memory:** Minimum 32 MB recommended (3 MB absolute minimum)
-- **Boot:** GRUB (Multiboot1) — bootable via ISO or PXE
+- **Boot:** GRUB (Multiboot1 or Multiboot2, auto-detected) — bootable via ISO or PXE
 - **Display:** VGA text mode (80x25), optional GUI mode with PS/2 mouse
 - **Input:** PS/2 keyboard (mandatory), PS/2 mouse (optional)
 - **Network:** RTL8139, PCnet (AMD Am79C970A/PCnet32), E1000, virtio-net, or NE2000 (RTL8029) NIC
@@ -52,7 +52,7 @@ qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev
 
 ## Boot Process
 
-1. GRUB loads the kernel at 0x200000 (2 MB) via Multiboot1.
+1. GRUB loads the kernel at 0x200000 (2 MB) via Multiboot1 or Multiboot2 (the kernel detects which one was used from the magic value passed by the bootloader).
 2. The kernel sets up the Global Descriptor Table (GDT) and Interrupt Descriptor Table (IDT).
 3. Interrupt Service Routines (ISR) and IRQ handlers are installed for exceptions 0--31 and hardware IRQs 0--15.
 4. Memory detection occurs via Multiboot information; a page bitmap is initialized and a kernel heap is carved out.
@@ -80,6 +80,14 @@ qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev
 | `rm <path>`   | Remove a file |
 | `touch <path>`| Create an empty file |
 | `cat <path>`  | Display file contents |
+| `head [-n N] <path>` | Show the first lines of a file |
+| `tail [-n N] <path>` | Show the last lines of a file |
+| `wc <path>`   | Count lines, words, and characters |
+| `sort <path>` | Sort lines of a file alphabetically |
+| `grep <pattern> <path>...` | Search for a pattern in one or more files |
+| `find <path>` | Find files in a directory tree |
+| `rev <path>`  | Reverse the characters of each line |
+| `uniq <path>` | Filter out adjacent duplicate lines |
 | `mv <src> <dst>` | Move or rename a file |
 | `cp <src> <dst>` | Copy a file |
 | `edit <path>` | Simple line-based text editor |
@@ -88,6 +96,32 @@ qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev
 | `python`      | Enter the MicroPython REPL |
 | `ping <host>` | ICMP ping a host |
 | `wget <url>`  | Download a file over HTTP |
+| `date`        | Show the current date/time |
+| `cal`         | Show a calendar |
+| `whoami`      | Show the current user |
+| `hostname`    | Show the system hostname |
+| `df`          | Show filesystem disk usage |
+| `free`        | Show memory usage |
+| `dmesg`       | Show kernel log messages |
+| `yes [str]`   | Print a string repeatedly |
+| `seq [start] [step] <end>` | Print a sequence of numbers |
+| `sleep <seconds>` | Delay for N seconds |
+| `basename <path>` | Strip the directory from a path |
+| `dirname <path>` | Strip the filename from a path |
+| `which <cmd>` | Locate a command |
+| `env`         | Print environment variables |
+| `uptime`      | Show system uptime |
+| `ps`          | List running processes |
+| `htop`        | Live process monitor |
+| `kill <pid>`  | Kill a process |
+| `chmod <mode> <path>` | Change file permissions |
+| `hexdump <path>` | Hex dump of a file |
+| `tee <path>`  | Write stdin to both terminal and file |
+| `alias [name=value]` | Set or list command aliases |
+| `unalias <name>` | Remove a command alias |
+| `history`     | Show command history |
+| `font`        | List/change the terminal font style |
+| `disk`        | Manage disks (list/info/mount/umount/format) |
 | `reboot`      | Reboot the system |
 | `shutdown`    | Halt the system |
 | `version`     | Show kernel version |
@@ -144,12 +178,20 @@ The scheduler uses the PIT (Programmable Interval Timer) at approximately 100 Hz
 
 ## GUI Mode
 
-At boot, the user is prompted to enter GUI mode. When enabled:
+At boot, the user is prompted to enter GUI mode. When enabled, a window manager (`kernel/display/wm.c`) takes over:
 
-- A title bar is drawn at the top of the screen.
-- The terminal is offset below the title bar.
-- A mouse cursor is rendered and tracks PS/2 mouse movement.
+- A title bar and a taskbar/dock with app icons are drawn.
+- The terminal runs in its own movable, focusable window below the title bar.
+- A mouse cursor is rendered and tracks PS/2 mouse movement; windows can be dragged, focused, and minimized.
 - The GUI polls mouse and keyboard events in the shell loop.
+
+Several built-in GUI applications are launchable from the dock:
+
+- **Notepad** (`notepad.c`) — simple text editor window
+- **Clock** (`clock.c`) — analog/digital clock
+- **Calculator** (`calculator.c`) — basic calculator with 4 operations
+- **Disk Manager** (`diskmgr.c`) — view and manage attached disks
+- **About** (`about.c`) — system information window
 
 ## MicroPython Interpreter
 
@@ -202,8 +244,20 @@ The kernel can load and execute ELF binaries from the ramfs. Programs are loaded
 System calls are invoked via `int 0x80` with the syscall number in `eax`. The following syscalls are available:
 
 - `SYS_EXIT` (1) — Terminate the current process
-- `SYS_WRITE` (4) — Write to a file descriptor
+- `SYS_FORK` (2) — Fork the current process
 - `SYS_READ` (3) — Read from a file descriptor
+- `SYS_WRITE` (4) — Write to a file descriptor
+- `SYS_OPEN` (5) — Open a file
+- `SYS_CLOSE` (6) — Close a file descriptor
+- `SYS_WAITPID` (7) — Wait for a child process
+- `SYS_EXECVE` (11) — Execute a program
+- `SYS_CHDIR` (12) — Change the current directory
+- `SYS_BRK` (17) — Adjust the process heap break
+- `SYS_LSEEK` (19) — Reposition a file descriptor's offset
+- `SYS_GETPID` (20) — Get the current process ID
+- `SYS_KILL` (37) — Send a signal to a process
+- `SYS_ISATTY` (71) — Test whether a file descriptor is a terminal
+- `SYS_FSTAT` (108) — Get file status
 
 ## License
 

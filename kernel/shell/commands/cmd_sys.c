@@ -49,6 +49,8 @@ void cmd_help(int argc, char **args)
     terminal_writestring("  mv         - move/rename file\n");
     terminal_writestring("  cp         - copy file\n");
     terminal_writestring("  find       - find files in directory tree\n");
+    terminal_writestring("  rev        - reverse characters of each line\n");
+    terminal_writestring("  uniq       - filter adjacent duplicate lines\n");
     terminal_writestring("  edit       - simple line editor\n");
     terminal_writestring("  exec       - run ELF program\n");
     terminal_writestring("  tsharp     - run T# 4.1 Lite\n");

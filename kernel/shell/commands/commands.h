@@ -32,6 +32,8 @@ void cmd_wc(int argc, char **args);
 void cmd_sort(int argc, char **args);
 void cmd_grep(int argc, char **args);
 void cmd_find(int argc, char **args);
+void cmd_rev(int argc, char **args);
+void cmd_uniq(int argc, char **args);
 void cmd_date(int argc, char **args);
 void cmd_whoami(int argc, char **args);
 void cmd_hostname(int argc, char **args);

@@ -303,6 +303,69 @@ void cmd_hexdump(int argc, char **args)
     free(buf);
 }
 
+void cmd_rev(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: rev <file>\n");
+        return;
+    }
+    if (!fsbridge_exists(args[1]) || fsbridge_is_dir(args[1])) {
+        terminal_writestring("rev: ");
+        terminal_writestring(args[1]);
+        terminal_writestring(": No such file\n");
+        return;
+    }
+    uint32_t sz = fsbridge_size(args[1]);
+    char *buf = (char *)malloc(sz + 1);
+    if (!buf) return;
+    fsbridge_read(args[1], buf, sz, 0);
+    buf[sz] = '\0';
+    char *line = buf;
+    while (*line) {
+        char *next = strchr(line, '\n');
+        if (next) *next = '\0';
+        for (int i = strlen(line) - 1; i >= 0; i--)
+            terminal_putchar(line[i]);
+        terminal_putchar('\n');
+        if (!next) break;
+        line = next + 1;
+    }
+    free(buf);
+}
+
+void cmd_uniq(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: uniq <file>\n");
+        return;
+    }
+    if (!fsbridge_exists(args[1]) || fsbridge_is_dir(args[1])) {
+        terminal_writestring("uniq: ");
+        terminal_writestring(args[1]);
+        terminal_writestring(": No such file\n");
+        return;
+    }
+    uint32_t sz = fsbridge_size(args[1]);
+    char *buf = (char *)malloc(sz + 1);
+    if (!buf) return;
+    fsbridge_read(args[1], buf, sz, 0);
+    buf[sz] = '\0';
+    char *line = buf;
+    char *prev = NULL;
+    while (*line) {
+        char *next = strchr(line, '\n');
+        if (next) *next = '\0';
+        if (!prev || strcmp(prev, line) != 0) {
+            terminal_writestring(line);
+            terminal_putchar('\n');
+        }
+        prev = line;
+        if (!next) break;
+        line = next + 1;
+    }
+    free(buf);
+}
+
 void cmd_tee(int argc, char **args)
 {
     if (argc < 2) {

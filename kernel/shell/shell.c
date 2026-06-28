@@ -78,6 +78,7 @@ static const char *builtin_names[] = {
     "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
     "basename", "dirname", "which", "env", "uptime", "ps", "kill",
     "chmod", "hexdump", "tee", "alias", "history", "font", "htop",
+    "disk", "rev", "uniq",
     NULL
 };
 
@@ -389,6 +390,10 @@ static void shell_exec_line(char *cmd_line)
             cmd_cp(argc, args);
         } else if (strcmp(c, "find") == 0) {
             cmd_find(argc, args);
+        } else if (strcmp(c, "rev") == 0) {
+            cmd_rev(argc, args);
+        } else if (strcmp(c, "uniq") == 0) {
+            cmd_uniq(argc, args);
         } else if (strcmp(c, "edit") == 0) {
             cmd_edit(argc, args);
         } else if (strcmp(c, "exec") == 0) {
