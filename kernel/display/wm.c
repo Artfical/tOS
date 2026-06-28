@@ -57,6 +57,11 @@ typedef struct {
 static window_t *drag_window;
 static int drag_offset_x, drag_offset_y;
 
+#define MIN_WIN_W 20
+#define MIN_WIN_H 6
+static window_t *resize_window;
+static int resize_start_w, resize_start_h, resize_start_mx, resize_start_my;
+
 static window_t windows[MAX_WINDOWS];
 static window_t *wm_focused = NULL;
 static window_t *pending_window;
@@ -578,6 +583,14 @@ static void draw_window(window_t *w)
         }
     }
 
+    /* Resize-handle hint at the bottom-right corner of any non-maximized
+     * window; dragging it is handled in wm_desktop_tick(). */
+    if (!w->maximized) {
+        int rx = x0 + w0 - 1, ry = y0 + h0 - 1;
+        if (rx >= 0 && rx < VGA_W && ry >= 0 && ry < VGA_H - 1)
+            backbuffer[ry * VGA_W + rx] = mk_cell(0xD8, mk_color(VGA_DARK_GREY, VGA_LIGHT_GREY));
+    }
+
     w->x0 = x0; w->y0 = y0; w->w0 = w0; w->h0 = h0;
 }
 
@@ -982,6 +995,24 @@ static void wm_desktop_tick(void)
         }
     }
 
+    if (resize_window) {
+        int mx, my;
+        uint8_t btns;
+        mouse_get_state(&mx, &my, &btns);
+        if (btns & 1) {
+            int neww = resize_start_w + (mx - resize_start_mx);
+            int newh = resize_start_h + (my - resize_start_my);
+            if (neww < MIN_WIN_W) neww = MIN_WIN_W;
+            if (newh < MIN_WIN_H) newh = MIN_WIN_H;
+            if (resize_window->x0 + neww > VGA_W) neww = VGA_W - resize_window->x0;
+            if (resize_window->y0 + newh > DOCK_ROW) newh = DOCK_ROW - resize_window->y0;
+            resize_window->w0 = neww;
+            resize_window->h0 = newh;
+        } else {
+            resize_window = NULL;
+        }
+    }
+
     int cx, cy;
     if (mouse_get_click(&cx, &cy)) {
         if (active_menu != MENU_NONE) {
@@ -1045,6 +1076,13 @@ static void wm_desktop_tick(void)
                             drag_offset_y = cy - hit->y0;
                         }
                     }
+                } else if (!hit->maximized && cx == hit->x0 + hit->w0 - 1 && cy == hit->y0 + hit->h0 - 1) {
+                    wm_focus_window(hit);
+                    resize_window = hit;
+                    resize_start_w = hit->w0;
+                    resize_start_h = hit->h0;
+                    resize_start_mx = cx;
+                    resize_start_my = cy;
                 } else if (hit->kind == WIN_KIND_TERMINAL && hit->surface.scrollback_count > 0 &&
                            cx == hit->x0 + hit->w0 - 1) {
                     wm_focus_window(hit);

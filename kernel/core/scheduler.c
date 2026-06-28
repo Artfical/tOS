@@ -117,6 +117,7 @@ uint32_t timer_handler(uint32_t esp)
 {
     outb(0x20, 0x20);
     system_ticks++;
+    current->cpu_ticks++;
     current->esp = esp;
     if (current->state == TASK_STATE_RUNNING)
         current->state = TASK_STATE_READY;
@@ -190,6 +191,13 @@ uint32_t task_get_state(uint32_t pid)
     for (int i = 0; i < MAX_TASKS; i++)
         if (tasks[i].pid == pid) return tasks[i].state;
     return 0xFFFFFFFF;
+}
+
+uint32_t task_get_cpu_ticks(uint32_t pid)
+{
+    for (int i = 0; i < MAX_TASKS; i++)
+        if (tasks[i].pid == pid) return tasks[i].cpu_ticks;
+    return 0;
 }
 
 void task_foreach(void (*callback)(uint32_t pid, const char *name, uint32_t state))

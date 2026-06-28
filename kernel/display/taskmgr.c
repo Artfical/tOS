@@ -16,10 +16,19 @@
 static uint32_t row_pid[MAX_TASKS];
 static char row_name[MAX_TASKS][TASK_NAME_MAX];
 static uint32_t row_state[MAX_TASKS];
+static uint32_t row_cpu_pct[MAX_TASKS];
 static int row_count;
 static int selected;
 static int scroll_off;
 static char status_msg[TM_COLS + 1];
+
+/* Snapshot of each task's cumulative CPU ticks at the last refresh, used
+ * to compute a rolling (not lifetime-average) CPU% the same way top/htop
+ * do: (delta cpu_ticks for the task) / (delta wall ticks elapsed) * 100. */
+static uint32_t prev_pid[MAX_TASKS];
+static uint32_t prev_cpu_ticks[MAX_TASKS];
+static int prev_count;
+static uint32_t prev_sample_tick;
 
 static int btn_x0, btn_x1;
 
@@ -81,6 +90,28 @@ static void refresh_tasks(void)
     if (selected < scroll_off) scroll_off = selected;
     if (selected >= scroll_off + LIST_VISIBLE) scroll_off = selected - LIST_VISIBLE + 1;
     if (scroll_off < 0) scroll_off = 0;
+
+    uint32_t now_tick = task_get_ticks();
+    uint32_t elapsed = now_tick - prev_sample_tick;
+
+    for (int i = 0; i < row_count; i++) {
+        uint32_t cur_cpu = task_get_cpu_ticks(row_pid[i]);
+        uint32_t prev_cpu = 0;
+        for (int j = 0; j < prev_count; j++) {
+            if (prev_pid[j] == row_pid[i]) { prev_cpu = prev_cpu_ticks[j]; break; }
+        }
+        uint32_t delta = (cur_cpu >= prev_cpu) ? cur_cpu - prev_cpu : 0;
+        uint32_t pct = (elapsed > 0) ? (delta * 100) / elapsed : 0;
+        if (pct > 100) pct = 100;
+        row_cpu_pct[i] = pct;
+    }
+
+    prev_count = row_count;
+    for (int i = 0; i < row_count; i++) {
+        prev_pid[i] = row_pid[i];
+        prev_cpu_ticks[i] = task_get_cpu_ticks(row_pid[i]);
+    }
+    prev_sample_tick = now_tick;
 }
 
 static void set_status(const char *s)
@@ -119,7 +150,7 @@ static void draw_header(void)
     line[k] = 0;
     put_str(0, 1, line, tm_color(VGA_BLACK, VGA_LIGHT_GREY));
 
-    put_str(0, 2, " PID   NAME                          STATE                                     ",
+    put_str(0, 2, " PID   NAME                           STATE   CPU%                             ",
             tm_color(VGA_DARK_GREY, VGA_LIGHT_GREY));
 
     const char *lbl = "Kill";
@@ -156,7 +187,10 @@ static void draw_list(void)
             while (k < 38) line[k++] = ' ';
             const char *st = state_name(row_state[idx]);
             int sj = 0;
-            while (st[sj] && k < TM_COLS) line[k++] = st[sj++];
+            while (st[sj] && k < 46) line[k++] = st[sj++];
+            while (k < 46) line[k++] = ' ';
+            k += fmt_uint(line + k, row_cpu_pct[idx]);
+            line[k++] = '%';
             while (k < TM_COLS) line[k++] = ' ';
         }
         line[TM_COLS] = 0;
@@ -223,6 +257,8 @@ void taskmgr_run(void)
     selected = 0;
     scroll_off = 0;
     status_msg[0] = 0;
+    prev_count = 0;
+    prev_sample_tick = task_get_ticks();
     terminal_clear();
     clear_area();
 

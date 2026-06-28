@@ -17,6 +17,7 @@ typedef struct task {
     uint32_t pid;
     uint32_t state;
     uint32_t sleep_ticks;
+    uint32_t cpu_ticks;
     uint32_t in_use;
     struct task *next;
     uint8_t *kernel_stack;
@@ -39,6 +40,7 @@ int      task_kill(uint32_t pid);
 uint32_t task_get_pid(void);
 const char *task_get_name(uint32_t pid);
 uint32_t task_get_state(uint32_t pid);
+uint32_t task_get_cpu_ticks(uint32_t pid);
 void     task_foreach(void (*callback)(uint32_t pid, const char *name, uint32_t state));
 
 #endif
