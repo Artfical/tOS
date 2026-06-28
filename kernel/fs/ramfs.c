@@ -363,12 +363,21 @@ int ramfs_mkdir_mode(const char *path, uint32_t mode)
     while (path[i]) i++;
     int last_sep = -1;
     for (int j = i - 1; j >= 0; j--) { if (path[j] == '/') { last_sep = j; break; } }
-    if (last_sep < 0) return -1;
-    for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
-    parent_path[last_sep < 1 ? 1 : last_sep] = 0;
-    int k = 0;
-    for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
-    name_buf[k] = 0;
+    if (last_sep < 0) {
+        /* No '/' in path: a single top-level component. This happens for
+         * VFS-dispatched calls on the root mount, whose "/" prefix has
+         * already been stripped by strip_mount() — the parent is root. */
+        parent_path[0] = 0;
+        int k = 0;
+        for (int j = 0; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        name_buf[k] = 0;
+    } else {
+        for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
+        parent_path[last_sep < 1 ? 1 : last_sep] = 0;
+        int k = 0;
+        for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        name_buf[k] = 0;
+    }
     uint32_t p_ino = resolve_path(parent_path, 1);
     if (!p_ino) return -1;
     if (find_child(p_ino, name_buf)) return -1;
@@ -390,12 +399,18 @@ int ramfs_vfs_unlink(const char *path)
     while (path[i]) i++;
     int last_sep = -1;
     for (int j = i - 1; j >= 0; j--) { if (path[j] == '/') { last_sep = j; break; } }
-    if (last_sep < 0) return -1;
-    for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
-    parent_path[last_sep < 1 ? 1 : last_sep] = 0;
-    int k = 0;
-    for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
-    name_buf[k] = 0;
+    if (last_sep < 0) {
+        parent_path[0] = 0;
+        int k = 0;
+        for (int j = 0; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        name_buf[k] = 0;
+    } else {
+        for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
+        parent_path[last_sep < 1 ? 1 : last_sep] = 0;
+        int k = 0;
+        for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        name_buf[k] = 0;
+    }
 
     uint32_t p_ino = resolve_path(parent_path, 1);
     if (!p_ino) return -1;
@@ -431,20 +446,33 @@ int ramfs_rename(const char *old_path, const char *new_path)
     char old_parent[VFS_NAME_LEN], old_name[RAMFS_NAME_LEN];
     char new_parent[VFS_NAME_LEN], new_name[RAMFS_NAME_LEN];
     int i;
+    int k;
 
     i = 0; while (old_path[i]) i++;
     int os = -1; for (int j = i-1; j >= 0; j--) { if (old_path[j]=='/') { os=j; break; } }
-    for (int j = 0; j < (os<1?1:os) && j < VFS_NAME_LEN-1; j++) old_parent[j] = old_path[j];
-    old_parent[os<1?1:os] = 0;
-    int k = 0; for (int j = os+1; old_path[j] && k < RAMFS_NAME_LEN-1; j++) old_name[k++] = old_path[j];
-    old_name[k] = 0;
+    if (os < 0) {
+        old_parent[0] = 0;
+        k = 0; for (int j = 0; old_path[j] && k < RAMFS_NAME_LEN-1; j++) old_name[k++] = old_path[j];
+        old_name[k] = 0;
+    } else {
+        for (int j = 0; j < (os<1?1:os) && j < VFS_NAME_LEN-1; j++) old_parent[j] = old_path[j];
+        old_parent[os<1?1:os] = 0;
+        k = 0; for (int j = os+1; old_path[j] && k < RAMFS_NAME_LEN-1; j++) old_name[k++] = old_path[j];
+        old_name[k] = 0;
+    }
 
     i = 0; while (new_path[i]) i++;
     int ns = -1; for (int j = i-1; j >= 0; j--) { if (new_path[j]=='/') { ns=j; break; } }
-    for (int j = 0; j < (ns<1?1:ns) && j < VFS_NAME_LEN-1; j++) new_parent[j] = new_path[j];
-    new_parent[ns<1?1:ns] = 0;
-    k = 0; for (int j = ns+1; new_path[j] && k < RAMFS_NAME_LEN-1; j++) new_name[k++] = new_path[j];
-    new_name[k] = 0;
+    if (ns < 0) {
+        new_parent[0] = 0;
+        k = 0; for (int j = 0; new_path[j] && k < RAMFS_NAME_LEN-1; j++) new_name[k++] = new_path[j];
+        new_name[k] = 0;
+    } else {
+        for (int j = 0; j < (ns<1?1:ns) && j < VFS_NAME_LEN-1; j++) new_parent[j] = new_path[j];
+        new_parent[ns<1?1:ns] = 0;
+        k = 0; for (int j = ns+1; new_path[j] && k < RAMFS_NAME_LEN-1; j++) new_name[k++] = new_path[j];
+        new_name[k] = 0;
+    }
 
     uint32_t op_ino = resolve_path(old_parent, 1);
     uint32_t np_ino = resolve_path(new_parent, 1);
@@ -466,12 +494,18 @@ int ramfs_vfs_symlink(const char *target, const char *path)
     while (path[i]) i++;
     int last_sep = -1;
     for (int j = i - 1; j >= 0; j--) { if (path[j] == '/') { last_sep = j; break; } }
-    if (last_sep < 0) return -1;
-    for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
-    parent_path[last_sep < 1 ? 1 : last_sep] = 0;
-    int k = 0;
-    for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
-    name_buf[k] = 0;
+    if (last_sep < 0) {
+        parent_path[0] = 0;
+        int k = 0;
+        for (int j = 0; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        name_buf[k] = 0;
+    } else {
+        for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
+        parent_path[last_sep < 1 ? 1 : last_sep] = 0;
+        int k = 0;
+        for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        name_buf[k] = 0;
+    }
 
     uint32_t p_ino = resolve_path(parent_path, 1);
     if (!p_ino) return -1;
