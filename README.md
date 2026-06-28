@@ -201,10 +201,11 @@ At boot, the user is prompted to enter GUI mode. When enabled, a window manager 
 
 Several built-in GUI applications are launchable from the dock:
 
-- **Notepad** (`notepad.c`) — simple text editor window
+- **Notepad** (`notepad.c`) — simple text editor window, can open/save files on any mounted filesystem
 - **Clock** (`clock.c`) — analog/digital clock
 - **Calculator** (`calculator.c`) — basic calculator with 4 operations
 - **Disk Manager** (`diskmgr.c`) — view and manage attached disks
+- **Files** (`filemgr.c`) — graphical file manager with full mouse support: browse, copy/cut/paste, delete, rename, create folders, open files directly in Notepad, and switch between mounted filesystems (ramfs, tFS, FAT16/32, exFAT, ext2/3/4, NTFS) via a one-click disk bar
 - **About** (`about.c`) — system information window
 
 ## MicroPython Interpreter
