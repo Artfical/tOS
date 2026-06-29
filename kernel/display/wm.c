@@ -678,15 +678,21 @@ static void draw_window(window_t *w)
 
     int content_h = h0 - 1;
     int vo = w->surface.view_offset;
-    /* Anchor to the *bottom* of the surface, not the top: with vo == 0
-     * the window's last row must show cells[TERM_SURFACE_H - 1] (the
-     * line currently being written), not cells[content_h - 1] — those
-     * differ whenever the window is shorter than the full surface
-     * height, which silently hid the newest line and made "scroll
-     * back down to the bottom" never actually reach the bottom. */
+    /* Anchor to the *current* row, not a hardcoded TERM_SURFACE_H - 1:
+     * before the surface has filled up and scrolled at least once,
+     * cur_row is small (e.g. 0 or 1 right after opening) and most of
+     * cells[] below it is still blank — treating TERM_SURFACE_H - 1 as
+     * "the newest line" in that state pulled from rows that were never
+     * written, making a freshly-opened window look like it opened
+     * scrolled to the bottom of nothing instead of at its first line.
+     * Once the surface has scrolled at least once, cur_row is pinned
+     * at TERM_SURFACE_H - 1 by surface_scroll(), so this matches the
+     * original bottom-anchored behavior exactly in that steady state. */
+    int newest_row = w->surface.cur_row;
+    if (newest_row >= TERM_SURFACE_H) newest_row = TERM_SURFACE_H - 1;
     for (int row = 0; row < content_h; row++) {
         int from_bottom = (content_h - 1 - row) + vo;
-        int cells_idx = TERM_SURFACE_H - 1 - from_bottom;
+        int cells_idx = newest_row - from_bottom;
         for (int col = 0; col < w0; col++) {
             uint16_t cell;
             if (cells_idx >= 0 && cells_idx < TERM_SURFACE_H && col < TERM_SURFACE_W) {
@@ -1190,8 +1196,16 @@ static void draw_context_menu(void)
     }
 }
 
-static void handle_context_click(int cx, int cy)
+/* Returns 1 if the click landed on the menu itself (consumed), 0 if it
+ * landed elsewhere — a click outside the menu should still close it,
+ * but must fall through to its normal handling (menu bar, dock,
+ * window, ...) instead of being silently swallowed, otherwise a
+ * left-over open context menu eats the *next* unrelated click anywhere
+ * on screen and makes it look like the menu re-opened somewhere
+ * random or that a real click on the T/File/... bar did nothing. */
+static int handle_context_click(int cx, int cy)
 {
+    ctx_open = 0;
     if (cx >= ctx_x0 && cx < ctx_x0 + ctx_w &&
         cy >= ctx_item_y0[0] && cy < ctx_item_y0[0] + CTX_NUM_ITEMS) {
         int idx = cy - ctx_item_y0[0];
@@ -1204,8 +1218,9 @@ static void handle_context_click(int cx, int cy)
             case 5: desktop_change_background(); break;
             case 6: break; /* "Refresh Desktop" — the desktop already redraws every frame */
         }
+        return 1;
     }
-    ctx_open = 0;
+    return 0;
 }
 
 static void wm_desktop_tick(void)
@@ -1297,8 +1312,8 @@ static void wm_desktop_tick(void)
 
     int cx, cy;
     if (mouse_get_click(&cx, &cy)) {
-        if (ctx_open) {
-            handle_context_click(cx, cy);
+        if (ctx_open && handle_context_click(cx, cy)) {
+            /* click landed on the menu and was already handled */
         } else if (active_menu != MENU_NONE) {
             int idx;
             if (dropdown_hit(cx, cy, &idx)) {
