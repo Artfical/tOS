@@ -93,13 +93,20 @@ static int active_menu = MENU_NONE;
 /* Right-click context menu on the empty desktop (not over any window).
  * Anchored at the click point rather than the top menu bar, so it gets
  * its own small renderer instead of reusing draw_simple_menu(). */
-#define CTX_NUM_ITEMS 5
+#define CTX_NUM_ITEMS 7
 static const char *ctx_labels[CTX_NUM_ITEMS] = {
-    "New Folder", "Open Files", "Open Terminal", "About This Computer...", "Refresh Desktop"
+    "New Folder", "New File", "Open Files", "Open Terminal",
+    "About This Computer...", "Change Background", "Refresh Desktop"
 };
 static int ctx_open;
 static int ctx_x0, ctx_y0, ctx_w;
 static int ctx_item_y0[CTX_NUM_ITEMS];
+
+static const uint8_t desktop_bg_palette[] = {
+    VGA_WHITE, VGA_LIGHT_CYAN, VGA_LIGHT_GREEN, VGA_LIGHT_BLUE, VGA_LIGHT_GREY
+};
+#define DESKTOP_BG_COUNT (int)(sizeof(desktop_bg_palette) / sizeof(desktop_bg_palette[0]))
+static int desktop_bg_idx = 0;
 
 static int t_x0, t_x1;
 static int file_x0, file_x1;
@@ -1009,28 +1016,55 @@ static void handle_menu_click(int idx)
     }
 }
 
-static void desktop_new_folder(void)
+/* Builds "<base> (1)<suffix>", "<base> (2)<suffix>", etc. into out until
+ * an unused name is found (capped at 50 tries as a safety net). */
+static void unique_name(const char *base, const char *suffix, char *out, int out_cap)
 {
-    char name[40];
-    strcpy(name, "New Folder");
+    (void)out_cap;
+    strcpy(out, base);
+    strcat(out, suffix);
+
     int n = 0;
-    while (fsbridge_exists(name) && n < 50) {
+    while (fsbridge_exists(out) && n < 50) {
         n++;
-        char buf[40];
+        char buf[48];
         int k = 0;
-        const char *p = "New Folder (";
-        while (*p) buf[k++] = *p++;
+        const char *p = base;
+        while (*p && k < (int)sizeof(buf) - 1) buf[k++] = *p++;
+        p = " (";
+        while (*p && k < (int)sizeof(buf) - 1) buf[k++] = *p++;
         char tmp[12];
         int tn = 0, v = n;
         while (v > 0) { tmp[tn++] = '0' + (v % 10); v /= 10; }
-        while (tn > 0) buf[k++] = tmp[--tn];
-        buf[k++] = ')';
+        while (tn > 0 && k < (int)sizeof(buf) - 1) buf[k++] = tmp[--tn];
+        if (k < (int)sizeof(buf) - 1) buf[k++] = ')';
+        p = suffix;
+        while (*p && k < (int)sizeof(buf) - 1) buf[k++] = *p++;
         buf[k] = 0;
-        strncpy(name, buf, sizeof(name) - 1);
-        name[sizeof(name) - 1] = 0;
+        strncpy(out, buf, out_cap - 1);
+        out[out_cap - 1] = 0;
     }
+}
+
+static void desktop_new_folder(void)
+{
+    char name[48];
+    unique_name("New Folder", "", name, sizeof(name));
     fsbridge_mkdir(name);
     wm_open_filemgr();
+}
+
+static void desktop_new_file(void)
+{
+    char name[48];
+    unique_name("New File", ".txt", name, sizeof(name));
+    fsbridge_create(name);
+    wm_open_notepad_file(name);
+}
+
+static void desktop_change_background(void)
+{
+    desktop_bg_idx = (desktop_bg_idx + 1) % DESKTOP_BG_COUNT;
 }
 
 static void draw_context_menu(void)
@@ -1070,10 +1104,12 @@ static void handle_context_click(int cx, int cy)
         int idx = cy - ctx_item_y0[0];
         switch (idx) {
             case 0: desktop_new_folder(); break;
-            case 1: wm_open_filemgr(); break;
-            case 2: wm_open_window(""); break;
-            case 3: wm_open_about(); break;
-            case 4: break; /* "Refresh Desktop" — the desktop already redraws every frame */
+            case 1: desktop_new_file(); break;
+            case 2: wm_open_filemgr(); break;
+            case 3: wm_open_window(""); break;
+            case 4: wm_open_about(); break;
+            case 5: desktop_change_background(); break;
+            case 6: break; /* "Refresh Desktop" — the desktop already redraws every frame */
         }
     }
     ctx_open = 0;
@@ -1267,14 +1303,18 @@ static void wm_desktop_tick(void)
     if (now - last_draw_tick >= FRAME_INTERVAL_TICKS) {
         last_draw_tick = now;
 
-        /* Classic Mac OS desktop: near-white background with a sparse grey
-           stipple, instead of a solid teal fill. */
-        for (int y = MENU_ROW + 1; y < DOCK_ROW; y++) {
-            for (int x = 0; x < VGA_W; x++) {
-                if (((x + y * 3) % 7) == 0)
-                    vga_put(x, y, 0xFA, mk_color(VGA_LIGHT_GREY, VGA_WHITE));
-                else
-                    vga_put(x, y, ' ', mk_color(VGA_LIGHT_GREY, VGA_WHITE));
+        /* Classic Mac OS desktop: a flat background with a sparse stipple,
+           instead of a solid teal fill. Background color is cycled via
+           the desktop right-click menu's "Change Background". */
+        {
+            uint8_t bg = desktop_bg_palette[desktop_bg_idx];
+            for (int y = MENU_ROW + 1; y < DOCK_ROW; y++) {
+                for (int x = 0; x < VGA_W; x++) {
+                    if (((x + y * 3) % 7) == 0)
+                        vga_put(x, y, 0xFA, mk_color(VGA_DARK_GREY, bg));
+                    else
+                        vga_put(x, y, ' ', mk_color(VGA_DARK_GREY, bg));
+                }
             }
         }
 
