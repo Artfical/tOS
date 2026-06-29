@@ -475,6 +475,23 @@ static void shell_exec_line(char *cmd_line)
         }
 }
 
+/* Runs a single command line with its output captured into `out`
+ * instead of going to the screen, for scripting APIs (T#, MicroPython)
+ * that want a command's text back rather than its side effects on the
+ * visible terminal. shell_exec_line() mutates its argument in place
+ * (alias expansion, tokenizing), so it gets its own writable copy. */
+void shell_exec_capture(const char *cmd, char *out, int max)
+{
+    char buf[MAX_CMD_LEN];
+    int i = 0;
+    while (cmd[i] && i < MAX_CMD_LEN - 1) { buf[i] = cmd[i]; i++; }
+    buf[i] = 0;
+
+    terminal_capture_start(out, max);
+    shell_exec_line(buf);
+    terminal_capture_stop();
+}
+
 void shell_run(void)
 {
     char cmd_line[MAX_CMD_LEN];

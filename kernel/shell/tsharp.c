@@ -4,6 +4,8 @@
 #include "ramfs.h"
 #include "string.h"
 #include "memory.h"
+#include "stdlib.h"
+#include "tos_api.h"
 
 #define TS_MAX_VARS 256
 #define TS_VAR_NAME 64
@@ -426,10 +428,49 @@ typedef struct {
 static ts_func_t ts_functions[TS_MAX_VARS];
 static int ts_func_count;
 
+/* tOS scripting API builtins (see tos_api.h): one function per OS
+ * capability, available from T# the same way a user-defined function
+ * would be, but checked first so a script can't accidentally shadow
+ * one by defining a same-named function (the user-defined lookup below
+ * would just never be reached for these names). */
+static int ts_call_builtin(const char *norm_name, int argc, char **args, char *result)
+{
+    if (strcmp(norm_name, "calistir") == 0) {
+        tos_exec(argc > 0 ? args[0] : "", result, TS_VAR_VAL);
+    } else if (strcmp(norm_name, "dosyaoku") == 0) {
+        if (tos_read(argc > 0 ? args[0] : "", result, TS_VAR_VAL) < 0) result[0] = 0;
+    } else if (strcmp(norm_name, "dosyayaz") == 0) {
+        const char *data = argc > 1 ? args[1] : "";
+        int ok = (argc > 0) && tos_write(args[0], data, (int)strlen(data)) == 0;
+        strcpy(result, ok ? "1" : "0");
+    } else if (strcmp(norm_name, "klasoryap") == 0) {
+        strcpy(result, (argc > 0 && tos_mkdir(args[0]) == 0) ? "1" : "0");
+    } else if (strcmp(norm_name, "dosyasil") == 0) {
+        strcpy(result, (argc > 0 && tos_delete(args[0]) == 0) ? "1" : "0");
+    } else if (strcmp(norm_name, "dosyavarmi") == 0) {
+        strcpy(result, (argc > 0 && tos_exists(args[0])) ? "1" : "0");
+    } else if (strcmp(norm_name, "listele") == 0) {
+        if (argc == 0 || tos_list(args[0], result, TS_VAR_VAL) < 0) result[0] = 0;
+    } else if (strcmp(norm_name, "uygulamaac") == 0) {
+        strcpy(result, (argc > 0 && tos_open_app(args[0]) == 0) ? "1" : "0");
+    } else if (strcmp(norm_name, "surecler") == 0) {
+        tos_ps(result, TS_VAR_VAL);
+    } else if (strcmp(norm_name, "sureldur") == 0) {
+        strcpy(result, (argc > 0 && tos_kill((uint32_t)atoi(args[0])) == 0) ? "1" : "0");
+    } else if (strcmp(norm_name, "calismasuresi") == 0) {
+        ts_itoa((int)tos_uptime(), result);
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
 static void ts_call_func(const char *name, int argc, char **args, char *result)
 {
     char norm_name[TS_VAR_NAME];
     ts_normalize(norm_name, name);
+
+    if (ts_call_builtin(norm_name, argc, args, result)) return;
 
     for (int i = 0; i < ts_func_count; i++) {
         if (!ts_functions[i].defined) continue;

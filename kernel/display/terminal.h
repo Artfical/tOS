@@ -63,5 +63,7 @@ void terminal_getpos(size_t *x, size_t *y);
 void terminal_scroll(void);
 void terminal_set_y_offset(int offset);
 int terminal_get_y_offset(void);
+void terminal_capture_start(char *buf, int max);
+void terminal_capture_stop(void);
 
 #endif

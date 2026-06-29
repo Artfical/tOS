@@ -99,6 +99,7 @@ KERNEL_OBJS = \
     kernel/fs/diskops.o \
     kernel/fs/installer.o \
     kernel/shell/tsharp.o \
+    kernel/shell/tos_api.o \
     kernel/display/gui.o \
     kernel/display/wm.o \
     kernel/display/notepad.o \
@@ -129,6 +130,7 @@ KERNEL_OBJS = \
     kernel/micropython/ports/tos/tos_hal.o \
     kernel/micropython/ports/tos/math_stubs.o \
     kernel/micropython/ports/tos/tos_stubs.o \
+    kernel/micropython/ports/tos/modtos.o \
     kernel/micropython/shared/runtime/pyexec.o \
     kernel/micropython/shared/readline/readline.o
 

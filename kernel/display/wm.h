@@ -18,5 +18,6 @@ int wm_get_menu_action(void);
 void wm_open_notepad_file(const char *path);
 void wm_open_viewer_file(const char *path);
 int wm_kill_task_window(uint32_t pid);
+int wm_open_app(const char *name);
 
 #endif

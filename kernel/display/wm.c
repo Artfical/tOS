@@ -561,6 +561,26 @@ static void wm_open_taskmgr(void)
     wm_focused = w;
 }
 
+/* Name-based app launcher for scripting APIs (T#, MicroPython) that
+ * shouldn't need to know about every individual wm_open_*() function.
+ * Returns 0 if the name was recognized (whether or not the window
+ * actually opened — e.g. no free slot), -1 for an unknown name. */
+int wm_open_app(const char *name)
+{
+    if (strcmp(name, "notepad") == 0) wm_open_notepad();
+    else if (strcmp(name, "clock") == 0) wm_open_clock();
+    else if (strcmp(name, "about") == 0) wm_open_about();
+    else if (strcmp(name, "diskutil") == 0 || strcmp(name, "disk") == 0) wm_open_diskmgr();
+    else if (strcmp(name, "calculator") == 0) wm_open_calculator();
+    else if (strcmp(name, "files") == 0) wm_open_filemgr();
+    else if (strcmp(name, "paint") == 0) wm_open_paint();
+    else if (strcmp(name, "viewer") == 0) wm_open_viewer();
+    else if (strcmp(name, "taskmgr") == 0) wm_open_taskmgr();
+    else if (strcmp(name, "terminal") == 0) wm_open_window("");
+    else return -1;
+    return 0;
+}
+
 static void draw_window(window_t *w)
 {
     int x0 = w->x0, y0 = w->y0, w0 = w->w0, h0 = w->h0;

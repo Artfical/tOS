@@ -225,6 +225,7 @@ MicroPython v1.24.1 is embedded directly into the kernel. The interpreter is ava
 - **ure** — Regular expressions
 - **array** — Typed arrays
 - **collections** — namedtuple
+- **tos** — the tOS scripting API (see [Scripting API](#scripting-api) below)
 
 ### REPL Usage
 
@@ -236,6 +237,9 @@ hello from tOS
 >>> import math
 >>> math.sqrt(42)
 6.480741
+>>> import tos
+>>> tos.exec("ls /")
+'d  /\nd  programs\n'
 >>>
 ```
 
@@ -252,7 +256,29 @@ Press **Ctrl+D** to exit the REPL and return to the shell.
 
 ## T# 4.1 Lite
 
-T# is a minimal scripting language implemented within the kernel. It supports basic arithmetic, conditionals, and loops. It is available via the `tsharp` command.
+T# is a minimal scripting language implemented within the kernel. It supports basic arithmetic, conditionals, and loops. It is available via the `tsharp` command. T# also has access to the [Scripting API](#scripting-api) below through built-in functions (`calistir`, `dosyaoku`, ...).
+
+## Scripting API
+
+Both MicroPython (the `tos` module) and T# (built-in functions) share a single underlying API (`kernel/shell/tos_api.c`) for running shell commands and touching the filesystem, GUI, and task list from a script — "run anything the shell can, from code." Each language gets a thin wrapper around the same C functions:
+
+| Capability | MicroPython | T# | What it does |
+|---|---|---|---|
+| Run a shell command | `tos.exec(cmd)` | `calistir(cmd)` | Runs any shell builtin (`ls`, `cat`, `mkdir`, `ping`, `disk`, `ps`, `kill`, ...) with its output captured and returned as a string instead of printed |
+| Read a file | `tos.read(path)` | `dosyaoku(path)` | |
+| Write a file | `tos.write(path, data)` | `dosyayaz(path, data)` | |
+| Create a directory | `tos.mkdir(path)` | `klasoryap(path)` | |
+| Delete a file/dir | `tos.delete(path)` | `dosyasil(path)` | |
+| Check a path exists | `tos.exists(path)` | `dosyavarmi(path)` | |
+| List a directory | `tos.list(path)` | `listele(path)` | MicroPython gets a real list of names; T# gets them newline-joined (256-byte variable limit) |
+| Open a GUI app | `tos.open_app(name)` | `uygulamaac(name)` | `name` is one of `notepad`, `paint`, `files`, `viewer`, `calculator`, `clock`, `about`, `diskutil`, `taskmgr`, `terminal` |
+| List running tasks | `tos.ps()` | `surecler()` | `"pid name state"` lines |
+| Kill a task | `tos.kill(pid)` | `sureldur(pid)` | Refuses the idle task and the caller's own task |
+| Uptime in seconds | `tos.uptime()` | `calismasuresi()` | |
+
+Command output capture works by temporarily redirecting `terminal_putchar()` into a buffer (`terminal_capture_start()`/`_stop()` in `terminal.c`) for the duration of the call, so a script-run command doesn't spam the visible terminal — only its text comes back.
+
+The MicroPython `tos` module is registered entirely at runtime (`tos_module_init()`, called once from `micropython_init()`) rather than through MicroPython's usual compile-time `MP_REGISTER_MODULE()` mechanism: this port's `kernel/micropython/genhdr/` qstr tables are a frozen, pre-generated snapshot with no build step that regenerates them, so adding new compile-time qstrs would mean manually re-running MicroPython's host-side qstr extraction scripts across the whole tree. Instead, `qstr_from_str()` (interning a qstr at runtime — explicitly supported for this purpose) plus `mp_obj_new_module()` (which inserts directly into `sys.modules`, so `import tos` finds it with no source file at all) registers the whole module without touching the static tables.
 
 ## ELF Program Loading
 

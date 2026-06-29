@@ -10,6 +10,30 @@ static size_t terminal_row;
 static size_t terminal_column;
 static int terminal_y_offset = 0;
 
+/* Output capture for scripting APIs (T#, MicroPython): while active,
+ * terminal_putchar() appends to this buffer instead of touching the
+ * screen/serial/surface at all, so a script can run a shell command and
+ * get its text back without spamming the visible terminal. */
+static char *capture_buf = 0;
+static int capture_len = 0;
+static int capture_cap = 0;
+
+void terminal_capture_start(char *buf, int max)
+{
+    capture_buf = buf;
+    capture_len = 0;
+    capture_cap = max;
+    if (capture_cap > 0) capture_buf[0] = 0;
+}
+
+void terminal_capture_stop(void)
+{
+    if (capture_buf && capture_cap > 0) capture_buf[capture_len < capture_cap ? capture_len : capture_cap - 1] = 0;
+    capture_buf = 0;
+    capture_len = 0;
+    capture_cap = 0;
+}
+
 static uint8_t make_color(enum vga_color fg, enum vga_color bg)
 {
     return fg | bg << 4;
@@ -172,6 +196,11 @@ static void surface_putchar(term_surface_t *s, char c)
 
 void terminal_putchar(char c)
 {
+    if (capture_buf) {
+        if (capture_len < capture_cap - 1) capture_buf[capture_len++] = c;
+        return;
+    }
+
     serial_putchar(c);
 
     term_surface_t *s = current_surface();
