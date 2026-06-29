@@ -11,19 +11,23 @@
 #define PAINT_COLS 79
 #define PAINT_ROWS 22
 #define TOOLBAR_ROW 0
-#define PALETTE_ROW 1
-#define CANVAS_Y0 2
+#define SIZEBAR_ROW 1
+#define PALETTE_ROW 2
+#define CANVAS_Y0 3
 #define STATUS_ROW (PAINT_ROWS - 1)
 #define CANVAS_H (STATUS_ROW - CANVAS_Y0)
 #define CANVAS_W PAINT_COLS
 
 #define TOOL_PEN 0
 #define TOOL_ERASER 1
+#define TOOL_LINE 2
+#define TOOL_RECT 3
+#define TOOL_CIRCLE 4
 #define CANVAS_BG VGA_WHITE
 #define MAX_BRUSH 3
 
-#define NUM_TOOLS 4
-static const char *tool_labels[NUM_TOOLS] = { "Pen", "Eraser", "New", "Save" };
+#define NUM_TOOLS 7
+static const char *tool_labels[NUM_TOOLS] = { "Pen", "Eraser", "Line", "Rect", "Circle", "New", "Save" };
 static int tool_x0[NUM_TOOLS], tool_x1[NUM_TOOLS];
 
 #define NUM_SIZES MAX_BRUSH
@@ -34,11 +38,15 @@ static int size_x0[NUM_SIZES], size_x1[NUM_SIZES];
 static int pal_x0[NUM_COLORS], pal_x1[NUM_COLORS];
 
 static uint8_t canvas[CANVAS_H][CANVAS_W];
+static uint8_t shape_base[CANVAS_H][CANVAS_W];
 static int cur_color;
 static int brush_size;
 static int tool;
 static char filename[64];
 static char status_msg[PAINT_COLS + 1];
+
+static int shape_dragging;
+static int shape_start_x, shape_start_y;
 
 static uint8_t pcolor(uint8_t fg, uint8_t bg) { return fg | (bg << 4); }
 
@@ -65,14 +73,67 @@ static void new_canvas(void)
     set_status("New canvas.");
 }
 
-static void stamp(int cx, int cy)
+static void paint_at(int cx, int cy, uint8_t val)
 {
-    uint8_t val = (tool == TOOL_ERASER) ? (uint8_t)CANVAS_BG : (uint8_t)cur_color;
     for (int dy = 0; dy < brush_size; dy++) {
         for (int dx = 0; dx < brush_size; dx++) {
             int yy = cy + dy, xx = cx + dx;
             if (yy >= 0 && yy < CANVAS_H && xx >= 0 && xx < CANVAS_W) canvas[yy][xx] = val;
         }
+    }
+}
+
+static void stamp(int cx, int cy)
+{
+    paint_at(cx, cy, (tool == TOOL_ERASER) ? (uint8_t)CANVAS_BG : (uint8_t)cur_color);
+}
+
+static int iabs(int v) { return v < 0 ? -v : v; }
+
+static int isqrt(int v)
+{
+    if (v <= 0) return 0;
+    int r = v;
+    for (int i = 0; i < 20; i++) r = (r + v / r) / 2;
+    return r;
+}
+
+static void draw_line_shape(int x0, int y0, int x1, int y1, uint8_t val)
+{
+    int dx = iabs(x1 - x0), dy = iabs(y1 - y0);
+    int sx = (x1 >= x0) ? 1 : -1, sy = (y1 >= y0) ? 1 : -1;
+    int err = dx - dy;
+    int x = x0, y = y0;
+    for (;;) {
+        paint_at(x, y, val);
+        if (x == x1 && y == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x += sx; }
+        if (e2 < dx) { err += dx; y += sy; }
+    }
+}
+
+static void draw_rect_shape(int x0, int y0, int x1, int y1, uint8_t val)
+{
+    int xa = x0 < x1 ? x0 : x1, xb = x0 < x1 ? x1 : x0;
+    int ya = y0 < y1 ? y0 : y1, yb = y0 < y1 ? y1 : y0;
+    for (int x = xa; x <= xb; x++) { paint_at(x, ya, val); paint_at(x, yb, val); }
+    for (int y = ya; y <= yb; y++) { paint_at(xa, y, val); paint_at(xb, y, val); }
+}
+
+static void draw_circle_shape(int cx, int cy, int ex, int ey, uint8_t val)
+{
+    int dx = ex - cx, dy = ey - cy;
+    int r = isqrt(dx * dx + dy * dy);
+    int x = r, y = 0, err = 0;
+    while (x >= y) {
+        paint_at(cx + x, cy + y, val); paint_at(cx + y, cy + x, val);
+        paint_at(cx - y, cy + x, val); paint_at(cx - x, cy + y, val);
+        paint_at(cx - x, cy - y, val); paint_at(cx - y, cy - x, val);
+        paint_at(cx + y, cy - x, val); paint_at(cx + x, cy - y, val);
+        y++;
+        err += 1 + 2 * y;
+        if (2 * (err - x) + 1 > 0) { x--; err += 1 - 2 * x; }
     }
 }
 
@@ -88,7 +149,7 @@ static void draw_toolbar(void)
         tool_x0[i] = x;
         tool_x1[i] = x + w - 1;
 
-        int active = (i == 0 && tool == TOOL_PEN) || (i == 1 && tool == TOOL_ERASER);
+        int active = (i <= TOOL_CIRCLE) && (tool == i);
         terminal_setpos((size_t)x, TOOLBAR_ROW);
         terminal_setcolor(active ? pcolor(VGA_WHITE, VGA_BLUE) : pcolor(VGA_BLACK, VGA_LIGHT_GREY));
         terminal_putchar('[');
@@ -99,9 +160,14 @@ static void draw_toolbar(void)
 
         x += w + 1;
     }
+}
 
-    x += 1;
-    put_str(x, TOOLBAR_ROW, "Size:", pcolor(VGA_BLACK, VGA_LIGHT_GREY));
+static void draw_sizebar(void)
+{
+    put_str(0, SIZEBAR_ROW, "                                                                               ",
+            pcolor(VGA_BLACK, VGA_LIGHT_GREY));
+    int x = 1;
+    put_str(x, SIZEBAR_ROW, "Size:", pcolor(VGA_BLACK, VGA_LIGHT_GREY));
     x += 6;
     for (int i = 0; i < NUM_SIZES; i++) {
         const char *lbl = size_labels[i];
@@ -111,7 +177,7 @@ static void draw_toolbar(void)
         size_x1[i] = x + w - 1;
 
         int active = (brush_size == i + 1);
-        terminal_setpos((size_t)x, TOOLBAR_ROW);
+        terminal_setpos((size_t)x, SIZEBAR_ROW);
         terminal_setcolor(active ? pcolor(VGA_WHITE, VGA_BLUE) : pcolor(VGA_BLACK, VGA_LIGHT_GREY));
         terminal_putchar('[');
         terminal_putchar(' ');
@@ -165,6 +231,7 @@ static void draw_status(void)
 static void redraw(void)
 {
     draw_toolbar();
+    draw_sizebar();
     draw_palette();
     draw_canvas();
     draw_status();
@@ -365,13 +432,16 @@ static void handle_toolbar_click(int ccx)
 {
     for (int i = 0; i < NUM_TOOLS; i++) {
         if (ccx >= tool_x0[i] && ccx <= tool_x1[i]) {
-            if (i == 0) tool = TOOL_PEN;
-            else if (i == 1) tool = TOOL_ERASER;
-            else if (i == 2) do_new();
-            else if (i == 3) do_save();
+            if (i <= TOOL_CIRCLE) { tool = i; shape_dragging = 0; }
+            else if (i == 5) do_new();
+            else if (i == 6) do_save();
             return;
         }
     }
+}
+
+static void handle_sizebar_click(int ccx)
+{
     for (int i = 0; i < NUM_SIZES; i++) {
         if (ccx >= size_x0[i] && ccx <= size_x1[i]) { brush_size = i + 1; return; }
     }
@@ -390,6 +460,7 @@ void paint_run(void)
     cur_color = VGA_BLACK;
     brush_size = 1;
     tool = TOOL_PEN;
+    shape_dragging = 0;
     status_msg[0] = 0;
 
     terminal_clear();
@@ -403,8 +474,9 @@ void paint_run(void)
         int ccx, ccy;
         if (wm_get_content_click(&ccx, &ccy)) {
             if (ccy == TOOLBAR_ROW) handle_toolbar_click(ccx);
+            else if (ccy == SIZEBAR_ROW) handle_sizebar_click(ccx);
             else if (ccy == PALETTE_ROW) handle_palette_click(ccx);
-            else if (ccy >= CANVAS_Y0 && ccy < CANVAS_Y0 + CANVAS_H)
+            else if (ccy >= CANVAS_Y0 && ccy < CANVAS_Y0 + CANVAS_H && tool <= TOOL_ERASER)
                 stamp(ccx, ccy - CANVAS_Y0);
             redraw();
             task_yield();
@@ -412,10 +484,28 @@ void paint_run(void)
         }
 
         int mx, my, btns;
-        if (wm_get_content_mouse(&mx, &my, &btns) && (btns & 1)) {
-            if (my >= CANVAS_Y0 && my < CANVAS_Y0 + CANVAS_H && mx >= 0 && mx < CANVAS_W) {
-                stamp(mx, my - CANVAS_Y0);
+        int got_mouse = wm_get_content_mouse(&mx, &my, &btns);
+        int held = got_mouse && (btns & 1);
+        int in_canvas = held && my >= CANVAS_Y0 && my < CANVAS_Y0 + CANVAS_H && mx >= 0 && mx < CANVAS_W;
+
+        if (tool <= TOOL_ERASER) {
+            if (in_canvas) { stamp(mx, my - CANVAS_Y0); draw_canvas(); }
+        } else {
+            if (in_canvas) {
+                int ex = mx, ey = my - CANVAS_Y0;
+                if (!shape_dragging) {
+                    shape_dragging = 1;
+                    shape_start_x = ex;
+                    shape_start_y = ey;
+                    memcpy(shape_base, canvas, sizeof(canvas));
+                }
+                memcpy(canvas, shape_base, sizeof(canvas));
+                if (tool == TOOL_LINE) draw_line_shape(shape_start_x, shape_start_y, ex, ey, (uint8_t)cur_color);
+                else if (tool == TOOL_RECT) draw_rect_shape(shape_start_x, shape_start_y, ex, ey, (uint8_t)cur_color);
+                else if (tool == TOOL_CIRCLE) draw_circle_shape(shape_start_x, shape_start_y, ex, ey, (uint8_t)cur_color);
                 draw_canvas();
+            } else if (shape_dragging) {
+                shape_dragging = 0;
             }
         }
 
