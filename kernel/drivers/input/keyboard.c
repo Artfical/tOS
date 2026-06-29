@@ -237,6 +237,9 @@ int keyboard_get_special(void)
     return 0;
 }
 
+int keyboard_shift_held(void) { return shift_pressed; }
+int keyboard_ctrl_held(void) { return ctrl_pressed; }
+
 int keyboard_yesno(void)
 {
     for (;;) {

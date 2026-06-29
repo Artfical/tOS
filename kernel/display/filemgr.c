@@ -38,9 +38,11 @@ static vfs_entry_t entries[MAX_ENTRIES];
 static int entry_count;
 static int selected;
 static int scroll_off;
+static int multi_selected[MAX_ENTRIES];
+static int select_anchor;
 
-static char clipboard_path[256];
-static int clipboard_active;
+static char clipboard_paths[MAX_ENTRIES][256];
+static int clipboard_count;
 static int clipboard_cut;
 
 static char status_msg[FM_COLS + 1];
@@ -117,6 +119,26 @@ static const char *base_name(const char *path)
     return last;
 }
 
+static void clear_multi_select(void)
+{
+    for (int i = 0; i < MAX_ENTRIES; i++) multi_selected[i] = 0;
+}
+
+static int count_multi_selected(void)
+{
+    int n = 0;
+    for (int i = 0; i < entry_count; i++) if (multi_selected[i]) n++;
+    return n;
+}
+
+static int is_clipboard_cut_entry(const char *full)
+{
+    if (!clipboard_cut) return 0;
+    for (int i = 0; i < clipboard_count; i++)
+        if (strcmp(full, clipboard_paths[i]) == 0) return 1;
+    return 0;
+}
+
 static void fix_scroll(void)
 {
     if (selected < 0) selected = 0;
@@ -147,6 +169,9 @@ static void refresh_list(void)
         }
     }
     fix_scroll();
+    clear_multi_select();
+    if (entry_count > 0) multi_selected[selected] = 1;
+    select_anchor = selected;
 }
 
 static void prompt_line(const char *prompt, char *buf, int max)
@@ -256,57 +281,105 @@ static void do_new_folder(void)
 
 static void do_copy(void)
 {
-    if (entry_count == 0) return;
-    join_path(cur_path, entries[selected].name, clipboard_path, sizeof(clipboard_path));
-    clipboard_active = 1;
+    clipboard_count = 0;
+    for (int i = 0; i < entry_count && clipboard_count < MAX_ENTRIES; i++) {
+        if (multi_selected[i]) join_path(cur_path, entries[i].name, clipboard_paths[clipboard_count++], sizeof(clipboard_paths[0]));
+    }
+    if (clipboard_count == 0) { set_status("Nothing selected."); return; }
     clipboard_cut = 0;
-    set_status("Copied.");
+
+    char msg[40];
+    int k = 0;
+    k += fmt_uint(msg + k, (uint32_t)clipboard_count);
+    const char *p = " item(s) copied.";
+    while (*p) msg[k++] = *p++;
+    msg[k] = 0;
+    set_status(msg);
 }
 
 static void do_cut(void)
 {
-    if (entry_count == 0) return;
-    join_path(cur_path, entries[selected].name, clipboard_path, sizeof(clipboard_path));
-    clipboard_active = 1;
+    clipboard_count = 0;
+    for (int i = 0; i < entry_count && clipboard_count < MAX_ENTRIES; i++) {
+        if (multi_selected[i]) join_path(cur_path, entries[i].name, clipboard_paths[clipboard_count++], sizeof(clipboard_paths[0]));
+    }
+    if (clipboard_count == 0) { set_status("Nothing selected."); return; }
     clipboard_cut = 1;
-    set_status("Cut.");
+
+    char msg[40];
+    int k = 0;
+    k += fmt_uint(msg + k, (uint32_t)clipboard_count);
+    const char *p = " item(s) cut.";
+    while (*p) msg[k++] = *p++;
+    msg[k] = 0;
+    set_status(msg);
 }
 
 static void do_paste(void)
 {
-    if (!clipboard_active) { set_status("Clipboard is empty."); return; }
-    char dst[256];
-    join_path(cur_path, base_name(clipboard_path), dst, sizeof(dst));
-    if (fsbridge_exists(dst)) { set_status("Paste failed: destination exists."); return; }
+    if (clipboard_count == 0) { set_status("Clipboard is empty."); return; }
 
-    int ok;
-    if (clipboard_cut) {
-        ok = (fsbridge_rename(clipboard_path, dst) == 0);
-        if (!ok) {
-            ok = (copy_recursive(clipboard_path, dst) == 0);
-            if (ok) delete_recursive(clipboard_path);
+    int ok_count = 0, fail_count = 0;
+    for (int i = 0; i < clipboard_count; i++) {
+        char dst[256];
+        join_path(cur_path, base_name(clipboard_paths[i]), dst, sizeof(dst));
+        if (fsbridge_exists(dst)) { fail_count++; continue; }
+
+        int ok;
+        if (clipboard_cut) {
+            ok = (fsbridge_rename(clipboard_paths[i], dst) == 0);
+            if (!ok) {
+                ok = (copy_recursive(clipboard_paths[i], dst) == 0);
+                if (ok) delete_recursive(clipboard_paths[i]);
+            }
+        } else {
+            ok = (copy_recursive(clipboard_paths[i], dst) == 0);
         }
-        if (ok) clipboard_active = 0;
-    } else {
-        ok = (copy_recursive(clipboard_path, dst) == 0);
+        if (ok) ok_count++; else fail_count++;
     }
-    set_status(ok ? "Pasted." : "Paste failed.");
+    if (clipboard_cut) clipboard_count = 0;
+
+    char msg[60];
+    int k = 0;
+    k += fmt_uint(msg + k, (uint32_t)ok_count);
+    const char *p = " pasted";
+    while (*p) msg[k++] = *p++;
+    if (fail_count > 0) {
+        p = ", "; while (*p) msg[k++] = *p++;
+        k += fmt_uint(msg + k, (uint32_t)fail_count);
+        p = " failed"; while (*p) msg[k++] = *p++;
+    }
+    msg[k++] = '.';
+    msg[k] = 0;
+    set_status(msg);
     refresh_list();
 }
 
 static void do_delete(void)
 {
-    if (entry_count == 0) return;
-    char full[256];
-    join_path(cur_path, entries[selected].name, full, sizeof(full));
+    int n = count_multi_selected();
+    if (n == 0) return;
 
     char confirm[200];
     int k = 0;
-    const char *p = "Delete '";
+    const char *p = "Delete ";
     while (*p) confirm[k++] = *p++;
-    const char *n = entries[selected].name;
-    while (*n && k < 180) confirm[k++] = *n++;
-    p = "'? (y/n) ";
+    if (n == 1) {
+        for (int i = 0; i < entry_count; i++) {
+            if (multi_selected[i]) {
+                const char *nm = entries[i].name;
+                confirm[k++] = '\'';
+                while (*nm && k < 180) confirm[k++] = *nm++;
+                confirm[k++] = '\'';
+                break;
+            }
+        }
+    } else {
+        k += fmt_uint(confirm + k, (uint32_t)n);
+        p = " items";
+        while (*p) confirm[k++] = *p++;
+    }
+    p = "? (y/n) ";
     while (*p) confirm[k++] = *p++;
     confirm[k] = 0;
     put_str(0, STATUS_ROW, "                                                                               ",
@@ -316,8 +389,27 @@ static void do_delete(void)
 
     if (!keyboard_yesno()) { status_msg[0] = 0; return; }
 
-    if (delete_recursive(full) != 0) set_status("Delete failed.");
-    else set_status("Deleted.");
+    int ok_count = 0, fail_count = 0;
+    for (int i = 0; i < entry_count; i++) {
+        if (!multi_selected[i]) continue;
+        char full[256];
+        join_path(cur_path, entries[i].name, full, sizeof(full));
+        if (delete_recursive(full) == 0) ok_count++; else fail_count++;
+    }
+
+    char msg[60];
+    k = 0;
+    k += fmt_uint(msg + k, (uint32_t)ok_count);
+    p = " deleted";
+    while (*p) msg[k++] = *p++;
+    if (fail_count > 0) {
+        p = ", "; while (*p) msg[k++] = *p++;
+        k += fmt_uint(msg + k, (uint32_t)fail_count);
+        p = " failed"; while (*p) msg[k++] = *p++;
+    }
+    msg[k++] = '.';
+    msg[k] = 0;
+    set_status(msg);
     refresh_list();
 }
 
@@ -428,7 +520,7 @@ static void draw_list(void)
 
         if (idx < entry_count) {
             vfs_entry_t *e = &entries[idx];
-            line[0] = (idx == selected) ? '>' : ' ';
+            line[0] = multi_selected[idx] ? '>' : ' ';
             line[1] = ' ';
             line[2] = e->is_dir ? 'D' : 'F';
             line[3] = ' ';
@@ -454,14 +546,14 @@ static void draw_list(void)
             }
 
             int is_clip = 0;
-            if (clipboard_active && clipboard_cut) {
+            if (clipboard_cut) {
                 char full[256];
                 join_path(cur_path, e->name, full, sizeof(full));
-                if (strcmp(full, clipboard_path) == 0) is_clip = 1;
+                is_clip = is_clipboard_cut_entry(full);
             }
 
             uint8_t color;
-            if (idx == selected) color = fm_color(VGA_WHITE, VGA_BLUE);
+            if (multi_selected[idx]) color = fm_color(VGA_WHITE, VGA_BLUE);
             else if (is_clip) color = fm_color(VGA_DARK_GREY, VGA_LIGHT_GREY);
             else if (e->is_dir) color = fm_color(VGA_BLUE, VGA_LIGHT_GREY);
             else color = fm_color(VGA_BLACK, VGA_LIGHT_GREY);
@@ -515,7 +607,7 @@ void filemgr_run(void)
     strcpy(cur_path, "/");
     selected = 0;
     scroll_off = 0;
-    clipboard_active = 0;
+    clipboard_count = 0;
     status_msg[0] = 0;
     last_click_idx = -1;
     last_click_tick = 0;
@@ -544,11 +636,26 @@ void filemgr_run(void)
                 int idx = scroll_off + (ccy - LIST_Y0);
                 if (idx < entry_count) {
                     uint32_t now = task_get_ticks();
-                    if (idx == last_click_idx && now - last_click_tick < DOUBLECLICK_TICKS) {
+                    int shift = keyboard_shift_held();
+                    int ctrl = keyboard_ctrl_held();
+
+                    if (shift) {
+                        int lo = idx < select_anchor ? idx : select_anchor;
+                        int hi = idx < select_anchor ? select_anchor : idx;
+                        for (int i = 0; i < entry_count; i++) multi_selected[i] = (i >= lo && i <= hi);
+                        selected = idx;
+                    } else if (ctrl) {
+                        multi_selected[idx] = !multi_selected[idx];
+                        selected = idx;
+                        select_anchor = idx;
+                    } else if (idx == last_click_idx && now - last_click_tick < DOUBLECLICK_TICKS) {
                         selected = idx;
                         do_open_selected();
                     } else {
+                        clear_multi_select();
+                        multi_selected[idx] = 1;
                         selected = idx;
+                        select_anchor = idx;
                     }
                     last_click_idx = idx;
                     last_click_tick = now;
@@ -562,6 +669,15 @@ void filemgr_run(void)
         if (spec) {
             if (spec == 3) { if (selected > 0) selected--; fix_scroll(); }
             else if (spec == 4) { if (selected < entry_count - 1) selected++; fix_scroll(); }
+            if (!keyboard_shift_held()) {
+                clear_multi_select();
+                if (entry_count > 0) multi_selected[selected] = 1;
+                select_anchor = selected;
+            } else if (entry_count > 0) {
+                int lo = selected < select_anchor ? selected : select_anchor;
+                int hi = selected < select_anchor ? select_anchor : selected;
+                for (int i = 0; i < entry_count; i++) multi_selected[i] = (i >= lo && i <= hi);
+            }
             redraw();
             continue;
         }
