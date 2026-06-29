@@ -82,6 +82,20 @@ static int content_click_x, content_click_y;
 static window_t *wheel_target = NULL;
 static int pending_wheel_delta;
 
+/* Highest valid view_offset for a terminal window: scrollback_count
+ * plus however many extra rows the surface (TERM_SURFACE_H) has over
+ * the window's visible content height — those extra rows are still
+ * inside w->surface.cells, not yet pushed into scrollback, but are
+ * just as much "history" once the window is shorter than the full
+ * surface. */
+static int term_max_view_offset(window_t *w)
+{
+    int content_h = w->h0 - 1;
+    int extra = TERM_SURFACE_H - content_h;
+    if (extra < 0) extra = 0;
+    return w->surface.scrollback_count + extra;
+}
+
 /* One-shot menu action requested for a window via the top File/Edit/... bar,
  * claimable by that window's own task via wm_get_menu_action(). */
 static window_t *action_target = NULL;
@@ -664,14 +678,21 @@ static void draw_window(window_t *w)
 
     int content_h = h0 - 1;
     int vo = w->surface.view_offset;
+    /* Anchor to the *bottom* of the surface, not the top: with vo == 0
+     * the window's last row must show cells[TERM_SURFACE_H - 1] (the
+     * line currently being written), not cells[content_h - 1] — those
+     * differ whenever the window is shorter than the full surface
+     * height, which silently hid the newest line and made "scroll
+     * back down to the bottom" never actually reach the bottom. */
     for (int row = 0; row < content_h; row++) {
+        int from_bottom = (content_h - 1 - row) + vo;
+        int cells_idx = TERM_SURFACE_H - 1 - from_bottom;
         for (int col = 0; col < w0; col++) {
             uint16_t cell;
-            int shown = row - vo;
-            if (shown >= 0 && shown < TERM_SURFACE_H && col < TERM_SURFACE_W) {
-                cell = w->surface.cells[shown * TERM_SURFACE_W + col];
-            } else if (shown < 0 && col < TERM_SURFACE_W) {
-                const uint16_t *sb = terminal_scrollback_row(&w->surface, -shown);
+            if (cells_idx >= 0 && cells_idx < TERM_SURFACE_H && col < TERM_SURFACE_W) {
+                cell = w->surface.cells[cells_idx * TERM_SURFACE_W + col];
+            } else if (cells_idx < 0 && col < TERM_SURFACE_W) {
+                const uint16_t *sb = terminal_scrollback_row(&w->surface, -cells_idx);
                 cell = sb ? sb[col] : mk_cell(' ', mk_color(VGA_LIGHT_GREY, VGA_BLACK));
             } else {
                 cell = mk_cell(' ', mk_color(VGA_LIGHT_GREY, VGA_BLACK));
@@ -684,8 +705,8 @@ static void draw_window(window_t *w)
 
     /* Scrollback slider in the rightmost content column, terminal windows
      * only — other app kinds (e.g. Notepad) manage that column themselves. */
-    if (w->kind == WIN_KIND_TERMINAL && w->surface.scrollback_count > 0) {
-        int max_off = w->surface.scrollback_count;
+    if (w->kind == WIN_KIND_TERMINAL && term_max_view_offset(w) > 0) {
+        int max_off = term_max_view_offset(w);
         int thumb_row = content_h - 1 - (content_h > 1 ? ((content_h - 1) * vo) / max_off : 0);
         for (int row = 0; row < content_h; row++) {
             int vx = x0 + w0 - 1, vy = y0 + 1 + row;
@@ -1245,8 +1266,8 @@ static void wm_desktop_tick(void)
         }
 
         if (under) {
-            if (under->kind == WIN_KIND_TERMINAL && under->surface.scrollback_count > 0) {
-                int max_off = under->surface.scrollback_count;
+            if (under->kind == WIN_KIND_TERMINAL && term_max_view_offset(under) > 0) {
+                int max_off = term_max_view_offset(under);
                 int vo = under->surface.view_offset + wheel * 2;
                 if (vo < 0) vo = 0;
                 if (vo > max_off) vo = max_off;
@@ -1346,12 +1367,12 @@ static void wm_desktop_tick(void)
                     resize_start_h = hit->h0;
                     resize_start_mx = cx;
                     resize_start_my = cy;
-                } else if (hit->kind == WIN_KIND_TERMINAL && hit->surface.scrollback_count > 0 &&
+                } else if (hit->kind == WIN_KIND_TERMINAL && term_max_view_offset(hit) > 0 &&
                            cx == hit->x0 + hit->w0 - 1) {
                     wm_focus_window(hit);
                     int content_h = hit->h0 - 1;
                     int row_clicked = cy - hit->y0 - 1;
-                    int max_off = hit->surface.scrollback_count;
+                    int max_off = term_max_view_offset(hit);
                     int vo = (content_h > 1)
                         ? max_off - (row_clicked * max_off) / (content_h - 1)
                         : 0;
