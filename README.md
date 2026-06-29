@@ -202,7 +202,7 @@ At boot, the user is prompted to enter GUI mode. When enabled, a window manager 
 
 Several built-in GUI applications are launchable from the dock:
 
-- **Notepad** (`notepad.c`) — text editor window (up to 1000 lines, with a scrollbar), can open/save files on any mounted filesystem, with Find (Ctrl+F) and Replace All (Ctrl+R)
+- **Notepad** (`notepad.c`) — text editor window (up to 1000 lines, with a scrollbar), can open/save files on any mounted filesystem, with Find (Ctrl+F), Replace All (Ctrl+R), and text selection (Shift+arrows, including across lines) with Copy/Cut/Paste (Ctrl+C/X/V)
 - **Clock** (`clock.c`) — analog/digital clock
 - **Calculator** (`calculator.c`) — the 4 basic operations plus a scientific row: sin/cos/tan, sqrt, log/ln, x², and π, backed by from-scratch Newton's-method/Taylor-series math (no libm in this freestanding kernel)
 - **Disk Manager** (`diskmgr.c`) — view and manage attached disks

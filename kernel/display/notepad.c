@@ -30,6 +30,10 @@ static int modified;
 static char pending_path[64];
 static int has_pending;
 
+static int sel_active;
+static int sel_anchor_row, sel_anchor_col;
+static char clipboard[4096];
+
 void notepad_open_path(const char *path)
 {
     strncpy(pending_path, path, sizeof(pending_path) - 1);
@@ -38,6 +42,9 @@ void notepad_open_path(const char *path)
 }
 
 static uint8_t np_color(uint8_t fg, uint8_t bg) { return fg | (bg << 4); }
+
+static void insert_char(char c);
+static void insert_newline(void);
 
 static int fmt_uint(char *buf, uint32_t v)
 {
@@ -67,7 +74,92 @@ static void reset_buffer(void)
     view_top = 0;
     modified = 0;
     filename[0] = 0;
+    sel_active = 0;
     for (int i = 0; i < MAX_LINES; i++) { lines[i][0] = 0; line_len[i] = 0; }
+}
+
+static int selection_empty(void)
+{
+    return !sel_active || (sel_anchor_row == cur_row && sel_anchor_col == cur_col);
+}
+
+static void get_selection_range(int *sr, int *sc, int *er, int *ec)
+{
+    if (sel_anchor_row < cur_row || (sel_anchor_row == cur_row && sel_anchor_col <= cur_col)) {
+        *sr = sel_anchor_row; *sc = sel_anchor_col; *er = cur_row; *ec = cur_col;
+    } else {
+        *sr = cur_row; *sc = cur_col; *er = sel_anchor_row; *ec = sel_anchor_col;
+    }
+}
+
+static void copy_selection(void)
+{
+    if (selection_empty()) return;
+    int sr, sc, er, ec;
+    get_selection_range(&sr, &sc, &er, &ec);
+    int k = 0;
+    for (int r = sr; r <= er && k < (int)sizeof(clipboard) - 1; r++) {
+        int c0 = (r == sr) ? sc : 0;
+        int c1 = (r == er) ? ec : line_len[r];
+        for (int c = c0; c < c1 && k < (int)sizeof(clipboard) - 1; c++) clipboard[k++] = lines[r][c];
+        if (r != er && k < (int)sizeof(clipboard) - 1) clipboard[k++] = '\n';
+    }
+    clipboard[k] = 0;
+}
+
+/* Deletes the selected range, merging the start and end lines if it
+ * spans more than one. The merged line is left alone (selection not
+ * removed) if it wouldn't fit within NP_COLS, same policy as
+ * replace_in_line() — no silent truncation. */
+static void delete_selection(void)
+{
+    if (selection_empty()) return;
+    int sr, sc, er, ec;
+    get_selection_range(&sr, &sc, &er, &ec);
+
+    if (sr == er) {
+        int tail = line_len[sr] - ec;
+        memmove(lines[sr] + sc, lines[sr] + ec, (size_t)tail);
+        line_len[sr] = sc + tail;
+        lines[sr][line_len[sr]] = 0;
+    } else {
+        int prefix_len = sc;
+        int suffix_len = line_len[er] - ec;
+        if (prefix_len + suffix_len <= NP_COLS) {
+            memcpy(lines[sr] + prefix_len, lines[er] + ec, (size_t)suffix_len);
+            line_len[sr] = prefix_len + suffix_len;
+            lines[sr][line_len[sr]] = 0;
+
+            int removed = er - sr;
+            for (int r = sr + 1; r < num_lines - removed; r++) {
+                strcpy(lines[r], lines[r + removed]);
+                line_len[r] = line_len[r + removed];
+            }
+            for (int r = num_lines - removed; r < num_lines; r++) { lines[r][0] = 0; line_len[r] = 0; }
+            num_lines -= removed;
+        }
+    }
+
+    cur_row = sr;
+    cur_col = sc;
+    sel_active = 0;
+    modified = 1;
+}
+
+static void cut_selection(void)
+{
+    copy_selection();
+    delete_selection();
+}
+
+static void paste_clipboard(void)
+{
+    if (!clipboard[0]) return;
+    if (!selection_empty()) delete_selection();
+    for (int i = 0; clipboard[i]; i++) {
+        if (clipboard[i] == '\n') insert_newline();
+        else insert_char(clipboard[i]);
+    }
 }
 
 static void status_line(const char *msg)
@@ -132,12 +224,23 @@ static void redraw(void)
 {
     ensure_visible();
 
-    terminal_setcolor(np_color(VGA_LIGHT_GREY, VGA_BLACK));
+    int has_sel = !selection_empty();
+    int sr = 0, sc = 0, er = 0, ec = 0;
+    if (has_sel) get_selection_range(&sr, &sc, &er, &ec);
+
     for (int r = 0; r < NP_ROWS; r++) {
         int src = view_top + r;
         terminal_setpos(0, r);
         for (int c = 0; c < NP_COLS; c++) {
             char ch = (src < num_lines && c < line_len[src]) ? lines[src][c] : ' ';
+            int selected = 0;
+            if (has_sel) {
+                if (src > sr && src < er) selected = 1;
+                else if (src == sr && src == er) selected = (c >= sc && c < ec);
+                else if (src == sr && src != er) selected = (c >= sc);
+                else if (src == er && src != sr) selected = (c < ec);
+            }
+            terminal_setcolor(selected ? np_color(VGA_WHITE, VGA_BLUE) : np_color(VGA_LIGHT_GREY, VGA_BLACK));
             terminal_putchar(ch);
         }
     }
@@ -283,6 +386,7 @@ static int find_in_buffer(const char *needle, int start_row, int start_col, int 
 
 static void do_find(void)
 {
+    sel_active = 0;
     char term[64];
     prompt_filename("Find: ", term, sizeof(term));
     if (term[0]) {
@@ -335,6 +439,7 @@ static int replace_in_line(int row, const char *term, const char *repl)
 
 static void do_replace_all(void)
 {
+    sel_active = 0;
     char term[64], repl[64];
     prompt_filename("Replace - find: ", term, sizeof(term));
     if (!term[0]) { redraw(); return; }
@@ -461,6 +566,7 @@ void notepad_run(void)
                 cur_row = target;
                 if (cur_row >= num_lines) cur_row = num_lines - 1;
                 if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row];
+                sel_active = 0;
                 redraw();
             }
             continue;
@@ -489,9 +595,22 @@ void notepad_run(void)
 
         int spec = keyboard_get_special();
         if (spec) {
-            if (spec == 1) { if (cur_col > 0) cur_col--; }
-            else if (spec == 2) { if (cur_col < line_len[cur_row]) cur_col++; }
-            else if (spec == 3) { if (cur_row > 0) { cur_row--; if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row]; } }
+            int shift = keyboard_shift_held();
+            if (shift && !sel_active) {
+                sel_anchor_row = cur_row;
+                sel_anchor_col = cur_col;
+                sel_active = 1;
+            } else if (!shift) {
+                sel_active = 0;
+            }
+
+            if (spec == 1) {
+                if (cur_col > 0) cur_col--;
+                else if (cur_row > 0) { cur_row--; cur_col = line_len[cur_row]; }
+            } else if (spec == 2) {
+                if (cur_col < line_len[cur_row]) cur_col++;
+                else if (cur_row < num_lines - 1) { cur_row++; cur_col = 0; }
+            } else if (spec == 3) { if (cur_row > 0) { cur_row--; if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row]; } }
             else if (spec == 4) { if (cur_row < num_lines - 1) { cur_row++; if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row]; } }
             redraw();
             continue;
@@ -517,13 +636,24 @@ void notepad_run(void)
             do_find();
         } else if (c == 0x12) {
             do_replace_all();
+        } else if (c == 0x03) {
+            copy_selection();
+        } else if (c == 0x18) {
+            cut_selection();
+            redraw();
+        } else if (c == 0x16) {
+            paste_clipboard();
+            redraw();
         } else if (c == '\n') {
+            if (!selection_empty()) delete_selection();
             insert_newline();
             redraw();
         } else if (c == '\b' || c == 127) {
-            backspace();
+            if (!selection_empty()) delete_selection();
+            else backspace();
             redraw();
         } else if ((unsigned char)c >= ' ' && c < 127) {
+            if (!selection_empty()) delete_selection();
             insert_char(c);
             redraw();
         }
