@@ -5,19 +5,22 @@
 #include "gui.h"
 #include "wm.h"
 #include "string.h"
+#include <stdint.h>
 
 #define CALC_COLS 40
-#define CALC_ROWS 18
+#define CALC_ROWS 20
 
-#define BTN_ROWS 5
+#define BTN_ROWS 7
 #define BTN_COLS 4
 
 static const char *btn_labels[BTN_ROWS][BTN_COLS] = {
-    { "C",  "CE", "%",  "/"  },
-    { "7",  "8",  "9",  "*"  },
-    { "4",  "5",  "6",  "-"  },
-    { "1",  "2",  "3",  "+"  },
-    { "0",  ".",  "=",  "="  },
+    { "C",    "CE",  "%",   "/"   },
+    { "7",    "8",   "9",   "*"   },
+    { "4",    "5",   "6",   "-"   },
+    { "1",    "2",   "3",   "+"   },
+    { "0",    ".",   "=",   "="   },
+    { "sin",  "cos", "tan", "sqrt"},
+    { "log",  "ln",  "x^2", "pi"  },
 };
 
 static int btn_x0[BTN_ROWS][BTN_COLS];
@@ -156,6 +159,8 @@ static void draw_buttons(void)
                 btn_color = calc_color(VGA_WHITE, VGA_RED);
             } else if (label[0] == '=' ) {
                 btn_color = calc_color(VGA_WHITE, VGA_BLUE);
+            } else if (r >= 5) {
+                btn_color = calc_color(VGA_WHITE, VGA_GREEN);
             } else {
                 btn_color = calc_color(VGA_BLACK, VGA_WHITE);
             }
@@ -221,6 +226,77 @@ static double parse_number(const char *s, int len)
     return result * sign;
 }
 
+/* No libm in this freestanding kernel, so these are small from-scratch
+ * implementations: Newton's method for sqrt/ln, a halve-and-square
+ * Taylor series for exp (accurate and fast-converging for any
+ * magnitude), and range-reduced Taylor series for sin/cos. Precision is
+ * "good enough for a calculator display", not IEEE-grade. */
+#define CALC_PI 3.14159265358979323846
+#define CALC_LN2 0.69314718055994530942
+#define CALC_LN10 2.302585092994046
+
+static double calc_exp(double x)
+{
+    int neg = 0;
+    if (x < 0) { neg = 1; x = -x; }
+    int n = 0;
+    while (x > 0.5) { x *= 0.5; n++; }
+    double term = 1.0, sum = 1.0;
+    for (int i = 1; i <= 25; i++) { term *= x / i; sum += term; }
+    for (int i = 0; i < n; i++) sum *= sum;
+    return neg ? 1.0 / sum : sum;
+}
+
+static double calc_sqrt(double x)
+{
+    if (x <= 0.0) return 0.0;
+    double r = x;
+    for (int i = 0; i < 40; i++) r = 0.5 * (r + x / r);
+    return r;
+}
+
+static double calc_ln(double x)
+{
+    if (x <= 0.0) return 0.0;
+    union { double d; uint64_t u; } un;
+    un.d = x;
+    int exp2 = (int)((un.u >> 52) & 0x7FF) - 1023;
+    un.u = (un.u & 0x000FFFFFFFFFFFFFULL) | 0x3FF0000000000000ULL;
+    double m = un.d;
+    double y = m - 1.0;
+    for (int i = 0; i < 12; i++) y = y - 1.0 + m / calc_exp(y);
+    return y + (double)exp2 * CALC_LN2;
+}
+
+static double calc_log10(double x)
+{
+    return calc_ln(x) / CALC_LN10;
+}
+
+static double calc_sin(double x)
+{
+    while (x > CALC_PI) x -= 2 * CALC_PI;
+    while (x < -CALC_PI) x += 2 * CALC_PI;
+    double x2 = x * x, term = x, sum = x;
+    for (int n = 1; n <= 10; n++) {
+        term *= -x2 / ((2 * n) * (2 * n + 1));
+        sum += term;
+    }
+    return sum;
+}
+
+static double calc_cos(double x)
+{
+    while (x > CALC_PI) x -= 2 * CALC_PI;
+    while (x < -CALC_PI) x += 2 * CALC_PI;
+    double x2 = x * x, term = 1.0, sum = 1.0;
+    for (int n = 1; n <= 10; n++) {
+        term *= -x2 / ((2 * n - 1) * (2 * n));
+        sum += term;
+    }
+    return sum;
+}
+
 static void do_operation(double a, double b, int op, double *result)
 {
     switch (op) {
@@ -255,6 +331,41 @@ static void on_button(const char *label)
         current = 0;
         just_calculated = 0;
         error_state = 0;
+        update_display();
+        return;
+    }
+
+    if (strcmp(label, "sin") == 0) { current = calc_sin(current); just_calculated = 1; update_display(); return; }
+    if (strcmp(label, "cos") == 0) { current = calc_cos(current); just_calculated = 1; update_display(); return; }
+    if (strcmp(label, "tan") == 0) {
+        double c = calc_cos(current);
+        if (c == 0.0) error_state = 1; else current = calc_sin(current) / c;
+        just_calculated = 1;
+        update_display();
+        return;
+    }
+    if (strcmp(label, "sqrt") == 0) {
+        if (current < 0) error_state = 1; else current = calc_sqrt(current);
+        just_calculated = 1;
+        update_display();
+        return;
+    }
+    if (strcmp(label, "log") == 0) {
+        if (current <= 0) error_state = 1; else current = calc_log10(current);
+        just_calculated = 1;
+        update_display();
+        return;
+    }
+    if (strcmp(label, "ln") == 0) {
+        if (current <= 0) error_state = 1; else current = calc_ln(current);
+        just_calculated = 1;
+        update_display();
+        return;
+    }
+    if (strcmp(label, "x^2") == 0) { current = current * current; just_calculated = 1; update_display(); return; }
+    if (strcmp(label, "pi") == 0) {
+        if (just_calculated) just_calculated = 0;
+        current = CALC_PI;
         update_display();
         return;
     }

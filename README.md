@@ -203,7 +203,7 @@ Several built-in GUI applications are launchable from the dock:
 
 - **Notepad** (`notepad.c`) — text editor window (up to 1000 lines, with a scrollbar), can open/save files on any mounted filesystem, with Find (Ctrl+F) and Replace All (Ctrl+R)
 - **Clock** (`clock.c`) — analog/digital clock
-- **Calculator** (`calculator.c`) — basic calculator with 4 operations
+- **Calculator** (`calculator.c`) — the 4 basic operations plus a scientific row: sin/cos/tan, sqrt, log/ln, x², and π, backed by from-scratch Newton's-method/Taylor-series math (no libm in this freestanding kernel)
 - **Disk Manager** (`diskmgr.c`) — view and manage attached disks
 - **Files** (`filemgr.c`) — graphical file manager with full mouse support: browse, copy/cut/paste, delete, rename, create folders, open files directly in Notepad or the Image Viewer, and switch between mounted filesystems (ramfs, tFS, FAT16/32, exFAT, ext2/3/4, NTFS) via a one-click disk bar. Supports multi-select (Ctrl+click to toggle individual files, Shift+click or Shift+arrows for a range) for bulk copy/cut/delete.
 - **Paint** (`paint.c`) — mouse-driven drawing app: click-and-drag with a pen or eraser, 3 brush sizes, a 16-color VGA palette, and a "Save" that exports the canvas as a real, standard PNG file (cell grid rasterized to RGB pixels through a from-scratch PNG/zlib encoder — tOS itself never leaves VGA text mode to draw it)

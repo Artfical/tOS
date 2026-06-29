@@ -432,6 +432,10 @@ static void wm_open_calculator(void)
     strcpy(w->title, "Calculator");
 
     window_geom_init(w);
+    /* Scientific mode's extra two button rows need more vertical room
+     * than the default non-maximized window size. */
+    w->w0 = 42; w->h0 = 21;
+    w->rest_w0 = w->w0; w->rest_h0 = w->h0;
 
     pending_window = w;
     int pid = task_spawn(window_task_entry, w->title);
