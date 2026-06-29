@@ -36,8 +36,8 @@ int micropython_run_repl(void) {
     return 0;
 }
 
+int tos_micropython_exec_file(const char *path);
+
 int micropython_run_file(const char *path) {
-    (void)path;
-    terminal_writestring("micropython: file exec not yet\r\n");
-    return -1;
+    return tos_micropython_exec_file(path);
 }

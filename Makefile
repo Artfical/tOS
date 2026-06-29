@@ -82,6 +82,7 @@ KERNEL_OBJS = \
     kernel/shell/commands/cmd_file.o \
     kernel/shell/commands/cmd_fs.o \
     kernel/shell/commands/cmd_sys.o \
+    kernel/shell/commands/cmd_man.o \
     kernel/shell/commands/cmd_util.o \
     kernel/shell/commands/cmd_net.o \
     kernel/shell/commands/cmd_htop.o \
@@ -132,6 +133,7 @@ KERNEL_OBJS = \
     kernel/micropython/ports/tos/tos_stubs.o \
     kernel/micropython/ports/tos/modtos.o \
     kernel/micropython/ports/tos/modtosgui.o \
+    kernel/micropython/ports/tos/runfile.o \
     kernel/micropython/shared/runtime/pyexec.o \
     kernel/micropython/shared/readline/readline.o
 
@@ -144,7 +146,7 @@ MPY_PY_SRCS := $(filter-out %/asmarm.c %/asmthumb.c %/asmxtensa.c %/asmrv32.c \
 MPY_PY_OBJS := $(MPY_PY_SRCS:.c=.o)
 KERNEL_OBJS += $(MPY_PY_OBJS)
 
-PROGRAMS = programs/hello.elf
+PROGRAMS = programs/hello.elf programs/tosgui_demo.py
 
 .PHONY: all clean run iso
 

@@ -71,7 +71,7 @@ static int parse_args(char *cmd, char **args)
 }
 
 static const char *builtin_names[] = {
-    "help", "echo", "clear", "pwd", "ls", "cd", "mkdir", "rmdir", "rm",
+    "help", "man", "echo", "clear", "pwd", "ls", "cd", "mkdir", "rmdir", "rm",
     "touch", "cat", "mv", "cp", "edit", "exec", "reboot", "shutdown",
     "version", "about", "uname", "ping", "wget", "python", "tsharp",
     "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
@@ -354,6 +354,8 @@ static void shell_exec_line(char *cmd_line)
 
         if (strcmp(c, "help") == 0) {
             cmd_help(argc, args);
+        } else if (strcmp(c, "man") == 0) {
+            cmd_man(argc, args);
         } else if (strcmp(c, "echo") == 0) {
             cmd_echo(argc, args);
         } else if (strcmp(c, "clear") == 0) {

@@ -2,6 +2,7 @@
 #define COMMANDS_H
 
 void cmd_help(int argc, char **args);
+void cmd_man(int argc, char **args);
 void cmd_echo(int argc, char **args);
 void cmd_clear(int argc, char **args);
 void cmd_pwd(int argc, char **args);

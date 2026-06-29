@@ -31,6 +31,7 @@ void cmd_help(int argc, char **args)
     (void)argc; (void)args;
     terminal_writestring("tOS Commands:\n");
     terminal_writestring("  help       - show help\n");
+    terminal_writestring("  man        - long-form manual (run 'man' for the list, 'man <cmd>' for details)\n");
     terminal_writestring("  echo       - echo text\n");
     terminal_writestring("  clear      - clear screen\n");
     terminal_writestring("  pwd        - print working directory\n");

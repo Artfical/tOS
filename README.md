@@ -315,6 +315,20 @@ tg.close()
 
 Opening a window doesn't spawn a separate task the way every C-implemented app does — there's no second task to hand draw commands to, so `wm_script_open()` (`wm.c`) instead hands the *calling task's own* window-manager context over to a newly created window, the same way `terminal_*()` calls already route through whichever task is "current". This means while a `tosgui` window is open, anything else that writes to the terminal in that same task (e.g. `print()` in an interactive REPL session) also lands in the window instead of the visible terminal — `tosgui` is meant for script *files* that open a window, run an event loop, and close it again, not for poking at it line-by-line in the REPL.
 
+### Running `.py` files
+
+`python <path>` compiles and runs a MicroPython script straight out of tOS's VFS via `fsbridge_read()` — the whole file is read into a buffer and handed to the parser/compiler directly (`tos_micropython_exec_file()` in `kernel/micropython/ports/tos/runfile.c`), since this port has no real file-handle-based reader. A working `tosgui` demo (a click counter) ships at `/programs/tosgui_demo.py`:
+
+```
+/> python /programs/tosgui_demo.py
+```
+
+Press `q` or click the "Quit" button to close it and return to the shell.
+
+## `man` — the manual
+
+`man <command>` prints a long-form description and at least one runnable example for every shell command, plus three scripting topics: `man tos_api` (the C API shared by MicroPython and T#), `man tsharp_api` (T# built-ins in detail), and `man tosgui` (this GUI module). Run `man` with no arguments for the full list of pages. `help` still gives the quick one-line-per-command summary.
+
 ## ELF Program Loading
 
 The kernel can load and execute ELF binaries from the ramfs. Programs are loaded into memory and executed in user context. The `exec` shell command loads and runs ELF files.
