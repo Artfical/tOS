@@ -15,6 +15,7 @@
 #include "paint.h"
 #include "viewer.h"
 #include "taskmgr.h"
+#include "fsbridge.h"
 
 #define VGA_W 80
 #define VGA_H 25
@@ -88,6 +89,17 @@ static int pending_action = WM_ACTION_NONE;
 /* Top menu bar: T (apple-logo stand-in) + File/Edit/View/Label/Special */
 enum { MENU_NONE = 0, MENU_T, MENU_FILE, MENU_EDIT, MENU_VIEW, MENU_LABEL, MENU_SPECIAL };
 static int active_menu = MENU_NONE;
+
+/* Right-click context menu on the empty desktop (not over any window).
+ * Anchored at the click point rather than the top menu bar, so it gets
+ * its own small renderer instead of reusing draw_simple_menu(). */
+#define CTX_NUM_ITEMS 5
+static const char *ctx_labels[CTX_NUM_ITEMS] = {
+    "New Folder", "Open Files", "Open Terminal", "About This Computer...", "Refresh Desktop"
+};
+static int ctx_open;
+static int ctx_x0, ctx_y0, ctx_w;
+static int ctx_item_y0[CTX_NUM_ITEMS];
 
 static int t_x0, t_x1;
 static int file_x0, file_x1;
@@ -997,6 +1009,76 @@ static void handle_menu_click(int idx)
     }
 }
 
+static void desktop_new_folder(void)
+{
+    char name[40];
+    strcpy(name, "New Folder");
+    int n = 0;
+    while (fsbridge_exists(name) && n < 50) {
+        n++;
+        char buf[40];
+        int k = 0;
+        const char *p = "New Folder (";
+        while (*p) buf[k++] = *p++;
+        char tmp[12];
+        int tn = 0, v = n;
+        while (v > 0) { tmp[tn++] = '0' + (v % 10); v /= 10; }
+        while (tn > 0) buf[k++] = tmp[--tn];
+        buf[k++] = ')';
+        buf[k] = 0;
+        strncpy(name, buf, sizeof(name) - 1);
+        name[sizeof(name) - 1] = 0;
+    }
+    fsbridge_mkdir(name);
+    wm_open_filemgr();
+}
+
+static void draw_context_menu(void)
+{
+    int item_w = 0;
+    for (int i = 0; i < CTX_NUM_ITEMS; i++) {
+        int len = (int)strlen(ctx_labels[i]) + 2;
+        if (len > item_w) item_w = len;
+    }
+    ctx_w = item_w;
+
+    int mx0 = ctx_x0;
+    if (mx0 + item_w >= VGA_W) mx0 = VGA_W - item_w;
+    if (mx0 < 0) mx0 = 0;
+    int menu_h = CTX_NUM_ITEMS + 1;
+    int my0 = ctx_y0;
+    if (my0 + menu_h > DOCK_ROW) my0 = DOCK_ROW - menu_h;
+    if (my0 < MENU_ROW + 1) my0 = MENU_ROW + 1;
+    ctx_x0 = mx0;
+    ctx_y0 = my0;
+
+    vga_fill_rect(mx0, my0, item_w, menu_h, ' ', mk_color(VGA_BLACK, VGA_WHITE));
+    for (int y = my0; y < my0 + menu_h; y++) vga_put(mx0 + item_w, y, 0xB1, mk_color(VGA_DARK_GREY, VGA_BLACK));
+    vga_fill_rect(mx0, my0 + menu_h, item_w + 1, 1, 0xB1, mk_color(VGA_DARK_GREY, VGA_BLACK));
+
+    for (int i = 0; i < CTX_NUM_ITEMS; i++) {
+        int iy = my0 + i;
+        vga_text(mx0 + 1, iy, ctx_labels[i], mk_color(VGA_BLACK, VGA_WHITE));
+        ctx_item_y0[i] = iy;
+    }
+}
+
+static void handle_context_click(int cx, int cy)
+{
+    if (cx >= ctx_x0 && cx < ctx_x0 + ctx_w &&
+        cy >= ctx_item_y0[0] && cy < ctx_item_y0[0] + CTX_NUM_ITEMS) {
+        int idx = cy - ctx_item_y0[0];
+        switch (idx) {
+            case 0: desktop_new_folder(); break;
+            case 1: wm_open_filemgr(); break;
+            case 2: wm_open_window(""); break;
+            case 3: wm_open_about(); break;
+            case 4: break; /* "Refresh Desktop" — the desktop already redraws every frame */
+        }
+    }
+    ctx_open = 0;
+}
+
 static void wm_desktop_tick(void)
 {
     mouse_poll();
@@ -1068,9 +1150,27 @@ static void wm_desktop_tick(void)
         }
     }
 
+    int rcx, rcy;
+    if (mouse_get_rclick(&rcx, &rcy) && !ctx_open && active_menu == MENU_NONE &&
+        rcy != MENU_ROW && rcy != DOCK_ROW) {
+        window_t *under = NULL;
+        for (int i = 0; i < MAX_WINDOWS; i++) {
+            window_t *w = &windows[i];
+            if (!w->open || w->minimized) continue;
+            if (rcx >= w->x0 && rcx < w->x0 + w->w0 && rcy >= w->y0 && rcy < w->y0 + w->h0) { under = w; break; }
+        }
+        if (!under) {
+            ctx_open = 1;
+            ctx_x0 = rcx;
+            ctx_y0 = rcy;
+        }
+    }
+
     int cx, cy;
     if (mouse_get_click(&cx, &cy)) {
-        if (active_menu != MENU_NONE) {
+        if (ctx_open) {
+            handle_context_click(cx, cy);
+        } else if (active_menu != MENU_NONE) {
             int idx;
             if (dropdown_hit(cx, cy, &idx)) {
                 handle_menu_click(idx);
@@ -1208,6 +1308,8 @@ static void wm_desktop_tick(void)
             }
             draw_dropdown_menu(active_menu, ax0, ax1);
         }
+
+        if (ctx_open) draw_context_menu();
 
         draw_cursor();
 

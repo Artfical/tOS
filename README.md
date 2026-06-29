@@ -198,6 +198,7 @@ At boot, the user is prompted to enter GUI mode. When enabled, a window manager 
 - The terminal runs in its own movable, focusable window below the title bar.
 - A mouse cursor is rendered and tracks PS/2 mouse movement (with IntelliMouse wheel support auto-detected at boot); windows can be dragged by their title bar, resized from the bottom-right corner, focused, and minimized.
 - The GUI polls mouse and keyboard events in the shell loop.
+- Right-clicking empty desktop space opens a context menu: New Folder, Open Files, Open Terminal, About This Computer, and Refresh Desktop.
 
 Several built-in GUI applications are launchable from the dock:
 

@@ -17,6 +17,9 @@ static volatile int mouse_x = 40;
 static volatile int mouse_y = 12;
 static volatile uint8_t mouse_buttons = 0;
 static volatile int mouse_click_pending = 0;
+static volatile int mouse_rclick_pending = 0;
+static int rclick_x = 0;
+static int rclick_y = 0;
 static volatile int click_x = 0;
 static volatile int click_y = 0;
 int mouse_initialized = 0;
@@ -87,6 +90,12 @@ static void mouse_process_packet(void)
         mouse_click_pending = 1;
         click_x = mouse_x;
         click_y = mouse_y;
+    }
+
+    if ((mouse_packet[0] & 2) && !mouse_rclick_pending) {
+        mouse_rclick_pending = 1;
+        rclick_x = mouse_x;
+        rclick_y = mouse_y;
     }
 
     if (mouse_has_wheel) {
@@ -234,6 +243,12 @@ void mouse_poll(void)
             click_x = mouse_x;
             click_y = mouse_y;
         }
+
+        if ((btns & 2) && !mouse_rclick_pending) {
+            mouse_rclick_pending = 1;
+            rclick_x = mouse_x;
+            rclick_y = mouse_y;
+        }
     }
 }
 
@@ -255,6 +270,15 @@ int mouse_get_click(int *x, int *y)
     if (x) *x = click_x;
     if (y) *y = click_y;
     mouse_click_pending = 0;
+    return 1;
+}
+
+int mouse_get_rclick(int *x, int *y)
+{
+    if (!mouse_rclick_pending) return 0;
+    if (x) *x = rclick_x;
+    if (y) *y = rclick_y;
+    mouse_rclick_pending = 0;
     return 1;
 }
 
