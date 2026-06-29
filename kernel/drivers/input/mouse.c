@@ -46,7 +46,9 @@ static uint8_t mouse_read(void)
 }
 
 static int mouse_packet_phase = 0;
-static uint8_t mouse_packet[3];
+static uint8_t mouse_packet[4];
+static int mouse_has_wheel = 0;
+static volatile int mouse_wheel_accum = 0;
 
 #define MOUSE_SENS_DIV 4
 static int accum_dx = 0;
@@ -73,6 +75,30 @@ static void mouse_apply_delta(int dx, int dy)
     mouse_y = ny;
 }
 
+static void mouse_process_packet(void)
+{
+    int dx = (int)(int8_t)mouse_packet[1];
+    int dy = -(int)(int8_t)mouse_packet[2];
+    mouse_apply_delta(dx, dy);
+
+    mouse_buttons = mouse_packet[0] & 0x07;
+
+    if ((mouse_packet[0] & 1) && !mouse_click_pending) {
+        mouse_click_pending = 1;
+        click_x = mouse_x;
+        click_y = mouse_y;
+    }
+
+    if (mouse_has_wheel) {
+        /* IntelliMouse wheel byte: low nibble is a signed -8..7 motion
+         * count (the upper nibble is used by some 5-button mice for
+         * extra buttons, which we don't support, so it's masked off). */
+        int8_t raw = (int8_t)(mouse_packet[3] & 0x0F);
+        if (raw & 0x08) raw |= 0xF0;
+        if (raw != 0) mouse_wheel_accum += raw;
+    }
+}
+
 static void mouse_callback(registers_t *regs)
 {
     (void)regs;
@@ -94,19 +120,17 @@ static void mouse_callback(registers_t *regs)
             break;
         case 2:
             mouse_packet[2] = data;
-            mouse_packet_phase = 0;
-
-            int dx = (int)(int8_t)mouse_packet[1];
-            int dy = -(int)(int8_t)mouse_packet[2];
-            mouse_apply_delta(dx, dy);
-
-            mouse_buttons = mouse_packet[0] & 0x07;
-
-            if ((mouse_packet[0] & 1) && !mouse_click_pending) {
-                mouse_click_pending = 1;
-                click_x = mouse_x;
-                click_y = mouse_y;
+            if (mouse_has_wheel) {
+                mouse_packet_phase = 3;
+                break;
             }
+            mouse_packet_phase = 0;
+            mouse_process_packet();
+            break;
+        case 3:
+            mouse_packet[3] = data;
+            mouse_packet_phase = 0;
+            mouse_process_packet();
             break;
     }
 }
@@ -145,6 +169,29 @@ static void detect_touchpad(void)
     }
 }
 
+/* Standard "Microsoft IntelliMouse" wheel-enable handshake: setting the
+ * sample rate to 200, then 100, then 80 in succession (without any other
+ * command in between) is the documented magic sequence real PS/2 mice
+ * and every common emulator (QEMU, VirtualBox, Bochs) recognize as a
+ * request to start sending a 4th wheel-motion byte per packet. Querying
+ * the device ID (0xF2) afterwards confirms it: 0x03 means the mouse
+ * switched into wheel mode, 0x00 means it ignored the sequence (a plain
+ * 3-byte mouse) and we keep using the original packet format. */
+static int mouse_detect_wheel(void)
+{
+    mouse_write(0xF3); mouse_read();
+    mouse_write(200);  mouse_read();
+    mouse_write(0xF3); mouse_read();
+    mouse_write(100);  mouse_read();
+    mouse_write(0xF3); mouse_read();
+    mouse_write(80);   mouse_read();
+
+    mouse_write(0xF2);
+    mouse_read();
+    uint8_t id = mouse_read();
+    return id == 3;
+}
+
 void mouse_init(void)
 {
     asm volatile("cli");
@@ -158,6 +205,9 @@ void mouse_init(void)
     mouse_enable_irq12();
 
     detect_touchpad();
+
+    mouse_has_wheel = mouse_detect_wheel();
+    if (mouse_has_wheel) terminal_writestring("mouse: scroll wheel detected\n");
 
     mouse_write(0xF4);
     mouse_read();
@@ -206,4 +256,11 @@ int mouse_get_click(int *x, int *y)
     if (y) *y = click_y;
     mouse_click_pending = 0;
     return 1;
+}
+
+int mouse_get_wheel_delta(void)
+{
+    int d = mouse_wheel_accum;
+    mouse_wheel_accum = 0;
+    return d;
 }

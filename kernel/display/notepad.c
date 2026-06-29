@@ -15,8 +15,8 @@
 #define SCROLLBAR_X NP_COLS
 #define MAX_LINES 1000
 
-#define NUM_BUTTONS 3
-static const char *btn_labels[NUM_BUTTONS] = { "New", "Open", "Save" };
+#define NUM_BUTTONS 5
+static const char *btn_labels[NUM_BUTTONS] = { "New", "Open", "Save", "Find", "Replace" };
 static int btn_x0[NUM_BUTTONS], btn_x1[NUM_BUTTONS];
 
 static char lines[MAX_LINES][NP_COLS + 1];
@@ -25,6 +25,7 @@ static int num_lines;
 static int cur_row, cur_col;
 static int view_top;
 static char filename[64];
+static char last_search[64];
 static int modified;
 static char pending_path[64];
 static int has_pending;
@@ -257,6 +258,109 @@ static void do_new(void)
     terminal_clear();
 }
 
+/* Searches forward from (start_row, start_col), wrapping around to the
+ * top of the buffer if nothing matches before the end. */
+static int find_in_buffer(const char *needle, int start_row, int start_col, int *out_row, int *out_col)
+{
+    int nlen = (int)strlen(needle);
+    if (nlen == 0 || num_lines == 0) return 0;
+
+    int row = start_row;
+    int col = start_col;
+    for (int scanned = 0; scanned <= num_lines; scanned++) {
+        for (int c = col; c <= line_len[row] - nlen; c++) {
+            if (strncmp(lines[row] + c, needle, (size_t)nlen) == 0) {
+                *out_row = row;
+                *out_col = c;
+                return 1;
+            }
+        }
+        row = (row + 1) % num_lines;
+        col = 0;
+    }
+    return 0;
+}
+
+static void do_find(void)
+{
+    char term[64];
+    prompt_filename("Find: ", term, sizeof(term));
+    if (term[0]) {
+        strncpy(last_search, term, sizeof(last_search) - 1);
+        last_search[sizeof(last_search) - 1] = 0;
+    }
+    if (!last_search[0]) { redraw(); return; }
+
+    int fr, fc;
+    if (find_in_buffer(last_search, cur_row, cur_col + 1, &fr, &fc)) {
+        cur_row = fr;
+        cur_col = fc;
+        redraw();
+        status_line("Found.");
+    } else {
+        redraw();
+        status_line("Not found.");
+    }
+}
+
+/* Replaces every occurrence of term within a single line in place,
+ * shifting the tail left/right as the replacement's length differs from
+ * the search term's. Occurrences that wouldn't fit within NP_COLS after
+ * substitution are left alone (skipped) rather than truncating the line. */
+static int replace_in_line(int row, const char *term, const char *repl)
+{
+    int tlen = (int)strlen(term);
+    int rlen = (int)strlen(repl);
+    if (tlen == 0) return 0;
+
+    int count = 0;
+    int col = 0;
+    while (col <= line_len[row] - tlen) {
+        if (strncmp(lines[row] + col, term, (size_t)tlen) != 0) { col++; continue; }
+
+        int newlen = line_len[row] - tlen + rlen;
+        if (newlen > NP_COLS) { col++; continue; }
+
+        int tail_len = line_len[row] - (col + tlen);
+        if (rlen != tlen) memmove(lines[row] + col + rlen, lines[row] + col + tlen, (size_t)tail_len);
+        memcpy(lines[row] + col, repl, (size_t)rlen);
+        line_len[row] = newlen;
+        lines[row][line_len[row]] = 0;
+
+        count++;
+        col += rlen;
+    }
+    return count;
+}
+
+static void do_replace_all(void)
+{
+    char term[64], repl[64];
+    prompt_filename("Replace - find: ", term, sizeof(term));
+    if (!term[0]) { redraw(); return; }
+    prompt_filename("Replace - with: ", repl, sizeof(repl));
+
+    int total = 0;
+    for (int r = 0; r < num_lines; r++) total += replace_in_line(r, term, repl);
+    if (total > 0) modified = 1;
+
+    char msg[40];
+    int k = 0;
+    const char *p = "Replaced ";
+    while (*p) msg[k++] = *p++;
+    char numbuf[12];
+    int n = 0, v = total;
+    if (v == 0) numbuf[n++] = '0';
+    else { char tmp[12]; int tn = 0; while (v > 0) { tmp[tn++] = '0' + (v % 10); v /= 10; } while (tn > 0) numbuf[n++] = tmp[--tn]; }
+    for (int i = 0; i < n; i++) msg[k++] = numbuf[i];
+    p = " occurrence(s).";
+    while (*p) msg[k++] = *p++;
+    msg[k] = 0;
+
+    redraw();
+    status_line(msg);
+}
+
 static void insert_char(char c)
 {
     if (line_len[cur_row] >= NP_COLS) return;
@@ -341,13 +445,14 @@ void notepad_run(void)
             if (ccy == BUTTON_ROW) {
                 for (int i = 0; i < NUM_BUTTONS; i++) {
                     if (ccx >= btn_x0[i] && ccx <= btn_x1[i]) {
-                        if (i == 0) do_new();
-                        else if (i == 1) do_open();
-                        else if (i == 2) do_save();
+                        if (i == 0) { do_new(); redraw(); }
+                        else if (i == 1) { do_open(); redraw(); }
+                        else if (i == 2) { do_save(); redraw(); }
+                        else if (i == 3) do_find();
+                        else if (i == 4) do_replace_all();
                         break;
                     }
                 }
-                redraw();
             } else if (ccx == SCROLLBAR_X && ccy >= 0 && ccy < NP_ROWS && num_lines > NP_ROWS) {
                 int max_top = num_lines - NP_ROWS;
                 int target = (NP_ROWS > 1) ? (ccy * max_top) / (NP_ROWS - 1) : 0;
@@ -358,6 +463,17 @@ void notepad_run(void)
                 if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row];
                 redraw();
             }
+            continue;
+        }
+
+        int wheel = wm_get_content_wheel();
+        if (wheel) {
+            int target = cur_row - wheel * 3;
+            if (target < 0) target = 0;
+            if (target >= num_lines) target = num_lines - 1;
+            cur_row = target;
+            if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row];
+            redraw();
             continue;
         }
 
@@ -387,6 +503,10 @@ void notepad_run(void)
         } else if (c == 0x0E) {
             do_new();
             redraw();
+        } else if (c == 0x06) {
+            do_find();
+        } else if (c == 0x12) {
+            do_replace_all();
         } else if (c == '\n') {
             insert_newline();
             redraw();

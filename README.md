@@ -196,12 +196,12 @@ At boot, the user is prompted to enter GUI mode. When enabled, a window manager 
 
 - A title bar and a taskbar/dock with app icons are drawn.
 - The terminal runs in its own movable, focusable window below the title bar.
-- A mouse cursor is rendered and tracks PS/2 mouse movement; windows can be dragged, focused, and minimized.
+- A mouse cursor is rendered and tracks PS/2 mouse movement (with IntelliMouse wheel support auto-detected at boot); windows can be dragged by their title bar, resized from the bottom-right corner, focused, and minimized.
 - The GUI polls mouse and keyboard events in the shell loop.
 
 Several built-in GUI applications are launchable from the dock:
 
-- **Notepad** (`notepad.c`) — simple text editor window, can open/save files on any mounted filesystem
+- **Notepad** (`notepad.c`) — text editor window (up to 1000 lines, with a scrollbar), can open/save files on any mounted filesystem, with Find (Ctrl+F) and Replace All (Ctrl+R)
 - **Clock** (`clock.c`) — analog/digital clock
 - **Calculator** (`calculator.c`) — basic calculator with 4 operations
 - **Disk Manager** (`diskmgr.c`) — view and manage attached disks

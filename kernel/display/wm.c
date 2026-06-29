@@ -73,6 +73,13 @@ static int next_z = 1;
 static window_t *content_click_target = NULL;
 static int content_click_x, content_click_y;
 
+/* One-shot scroll-wheel delta for whichever window is under the mouse
+ * cursor, claimable by that window's own task via wm_get_content_wheel().
+ * Terminal windows are scrolled directly here instead, since their
+ * scrollback view_offset already lives in wm.c. */
+static window_t *wheel_target = NULL;
+static int pending_wheel_delta;
+
 /* One-shot menu action requested for a window via the top File/Edit/... bar,
  * claimable by that window's own task via wm_get_menu_action(). */
 static window_t *action_target = NULL;
@@ -135,6 +142,19 @@ int wm_get_content_click(int *x, int *y)
     if (x) *x = content_click_x;
     if (y) *y = content_click_y;
     return 1;
+}
+
+/* Positive = wheel scrolled up (toward the user's content history),
+ * negative = scrolled down. Zero if no wheel motion is pending for the
+ * calling task's own window. */
+int wm_get_content_wheel(void)
+{
+    window_t *self = (window_t *)task_get_userdata();
+    if (!self || wheel_target != self) return 0;
+    wheel_target = NULL;
+    int d = pending_wheel_delta;
+    pending_wheel_delta = 0;
+    return d;
 }
 
 /* Continuous (per-frame) content-relative mouse position + live button
@@ -1010,6 +1030,37 @@ static void wm_desktop_tick(void)
             resize_window->h0 = newh;
         } else {
             resize_window = NULL;
+        }
+    }
+
+    int wheel = mouse_get_wheel_delta();
+    if (wheel != 0) {
+        int wmx, wmy;
+        uint8_t wbtns;
+        mouse_get_state(&wmx, &wmy, &wbtns);
+        (void)wbtns;
+
+        window_t *under = NULL;
+        int under_z = -1;
+        for (int i = 0; i < MAX_WINDOWS; i++) {
+            window_t *w = &windows[i];
+            if (!w->open || w->minimized) continue;
+            if (wmx >= w->x0 && wmx < w->x0 + w->w0 && wmy > w->y0 && wmy < w->y0 + w->h0) {
+                if (w->z > under_z) { under_z = w->z; under = w; }
+            }
+        }
+
+        if (under) {
+            if (under->kind == WIN_KIND_TERMINAL && under->surface.scrollback_count > 0) {
+                int max_off = under->surface.scrollback_count;
+                int vo = under->surface.view_offset + wheel * 2;
+                if (vo < 0) vo = 0;
+                if (vo > max_off) vo = max_off;
+                under->surface.view_offset = vo;
+            } else {
+                wheel_target = under;
+                pending_wheel_delta = wheel;
+            }
         }
     }
 
