@@ -36,6 +36,7 @@
 #define WIN_KIND_PAINT 7
 #define WIN_KIND_VIEWER 8
 #define WIN_KIND_TASKMGR 9
+#define WIN_KIND_SCRIPT 10
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -280,11 +281,61 @@ static void wm_focus_window(window_t *w)
 
 static void wm_close_window(window_t *w)
 {
-    task_kill((uint32_t)w->pid);
+    /* A script window's "task" is whatever task called wm_script_open()
+     * (no dedicated task is spawned for it — see wm_script_open()) — that
+     * could be the same task running, say, the GUI terminal underneath
+     * it. task_kill()-ing it here would kill that script's own task out
+     * from under it, not just close the window. */
+    if (w->kind != WIN_KIND_SCRIPT) task_kill((uint32_t)w->pid);
     w->open = 0;
     w->minimized = 0;
     w->maximized = 0;
     if (wm_focused == w) wm_focused = NULL;
+}
+
+/* Lets a script (MicroPython's tosgui module, or anything similar added
+ * later) turn its own calling task into the owner of a new window,
+ * instead of spawning a dedicated task the way every other app does —
+ * the script drives its own window directly via terminal_*()/wm_get_*()
+ * calls, which already route through whichever task is "current"
+ * (task_get_userdata()). Returns the previous userdata via
+ * *out_prev_userdata so the caller can restore it on close (e.g. the
+ * GUI terminal window it was running inside of). Returns NULL on
+ * failure (no free window slot). */
+void *wm_script_open(const char *title, void **out_prev_userdata)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return 0;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 0;
+    w->z = next_z++;
+    w->kind = WIN_KIND_SCRIPT;
+    w->initial_cmd[0] = 0;
+    strncpy(w->title, title, sizeof(w->title) - 1);
+    w->title[sizeof(w->title) - 1] = 0;
+
+    window_geom_init(w);
+
+    if (out_prev_userdata) *out_prev_userdata = task_get_userdata();
+    w->pid = (int)task_get_pid();
+    task_set_userdata(w);
+    wm_focused = w;
+    return w;
+}
+
+void wm_script_close(void *handle, void *prev_userdata)
+{
+    window_t *w = (window_t *)handle;
+    if (w) {
+        w->open = 0;
+        w->minimized = 0;
+        w->maximized = 0;
+        if (wm_focused == w) wm_focused = NULL;
+    }
+    task_set_userdata(prev_userdata);
 }
 
 /* Killing a window's task out from under it (e.g. from Task Manager)
@@ -884,6 +935,7 @@ static const char *get_icon_char(int kind)
         case WIN_KIND_PAINT:    return "\x0E";
         case WIN_KIND_VIEWER:   return "\x0C";
         case WIN_KIND_TASKMGR:  return "\x05";
+        case WIN_KIND_SCRIPT:   return "\x1E";
         default:                return ".";
     }
 }

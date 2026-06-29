@@ -280,6 +280,41 @@ Command output capture works by temporarily redirecting `terminal_putchar()` int
 
 The MicroPython `tos` module is registered entirely at runtime (`tos_module_init()`, called once from `micropython_init()`) rather than through MicroPython's usual compile-time `MP_REGISTER_MODULE()` mechanism: this port's `kernel/micropython/genhdr/` qstr tables are a frozen, pre-generated snapshot with no build step that regenerates them, so adding new compile-time qstrs would mean manually re-running MicroPython's host-side qstr extraction scripts across the whole tree. Instead, `qstr_from_str()` (interning a qstr at runtime — explicitly supported for this purpose) plus `mp_obj_new_module()` (which inserts directly into `sys.modules`, so `import tos` finds it with no source file at all) registers the whole module without touching the static tables.
 
+### `tosgui` — a tiny tkinter-like GUI module for MicroPython
+
+`tosgui` (`kernel/micropython/ports/tos/modtosgui.c`) lets a MicroPython script open its own GUI window and draw text/buttons into it — tOS has no pixel graphics (see Paint and the Image Viewer's notes above), so "widgets" are just text drawn at a row/column with a color; the script does its own hit-testing against coordinates it already drew at.
+
+```python
+import tosgui as tg
+
+tg.open("My App")
+tg.text(2, 2, "Hello from MicroPython!")
+tg.button(2, 4, "Quit", tg.WHITE, tg.RED)
+
+while True:
+    click = tg.poll_click()
+    if click and click[1] == 4 and 2 <= click[0] <= 9:
+        break
+    tg.update()  # yields to the rest of the OS each frame
+
+tg.close()
+```
+
+| Function | What it does |
+|---|---|
+| `tg.open(title)` | Opens a window, handing this task's own terminal/window context over to it (see below) |
+| `tg.close()` | Closes it and restores the previous context |
+| `tg.clear()` | Clears the window |
+| `tg.text(x, y, s, fg=LIGHT_GREY, bg=BLACK)` | Draws text at a position |
+| `tg.button(x, y, s, fg=WHITE, bg=BLUE)` | Draws a `[ s ]` button (purely visual — compare `poll_click()` against where you drew it) |
+| `tg.poll_click()` | Returns an `(x, y)` tuple or `None` (one-shot, like a mouse click event) |
+| `tg.poll_key()` | Returns an ASCII code or `None` |
+| `tg.has_focus()` | Whether this window is currently focused |
+| `tg.update()` | Yields a frame to the rest of the OS — call this every loop iteration |
+| `tg.BLACK` … `tg.WHITE` | The 16 VGA color constants |
+
+Opening a window doesn't spawn a separate task the way every C-implemented app does — there's no second task to hand draw commands to, so `wm_script_open()` (`wm.c`) instead hands the *calling task's own* window-manager context over to a newly created window, the same way `terminal_*()` calls already route through whichever task is "current". This means while a `tosgui` window is open, anything else that writes to the terminal in that same task (e.g. `print()` in an interactive REPL session) also lands in the window instead of the visible terminal — `tosgui` is meant for script *files* that open a window, run an event loop, and close it again, not for poking at it line-by-line in the REPL.
+
 ## ELF Program Loading
 
 The kernel can load and execute ELF binaries from the ramfs. Programs are loaded into memory and executed in user context. The `exec` shell command loads and runs ELF files.

@@ -131,6 +131,7 @@ KERNEL_OBJS = \
     kernel/micropython/ports/tos/math_stubs.o \
     kernel/micropython/ports/tos/tos_stubs.o \
     kernel/micropython/ports/tos/modtos.o \
+    kernel/micropython/ports/tos/modtosgui.o \
     kernel/micropython/shared/runtime/pyexec.o \
     kernel/micropython/shared/readline/readline.o
 

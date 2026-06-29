@@ -15,12 +15,14 @@
 static char heap[16 * 1024];
 
 void tos_module_init(void);
+void tosgui_module_init(void);
 
 int micropython_init(void) {
     serial_write("micropython: init\n");
     gc_init(heap, heap + sizeof(heap));
     mp_init();
     tos_module_init();
+    tosgui_module_init();
     interrupt_callback = mp_sched_keyboard_interrupt;
     serial_write("micropython: ready\n");
     return 0;
