@@ -189,10 +189,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         klog_write("[WARN] Unknown bootloader\n");
     }
 
-    if (initrd_start && initrd_end > initrd_start) {
+    int have_initrd = (initrd_start && initrd_end > initrd_start);
+    if (have_initrd) {
         terminal_writestring("[OK] Initrd module found\n");
         klog_write("[OK] Initrd module found\n");
-        ramfs_import_initrd(initrd_start, initrd_end - initrd_start);
     } else {
         terminal_writestring("[WARN] No initrd module found\n");
         klog_write("[WARN] No initrd module found\n");
@@ -208,6 +208,15 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     ramfs_init();
     terminal_writestring("[OK] Ramfs initialized\n");
     klog_write("[OK] Ramfs initialized\n");
+
+    /* Must run after ramfs_init() (the root inode and inode table don't
+     * exist before that) and after memory_init() (file data is copied
+     * in via malloc) — importing earlier, against an uninitialized
+     * ramfs that ramfs_init() then resets, silently dropped every file
+     * the initrd ever carried. */
+    if (have_initrd) {
+        ramfs_import_initrd(initrd_start, initrd_end - initrd_start);
+    }
 
     vfs_init();
     ramfs_mount_vfs();

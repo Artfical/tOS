@@ -468,10 +468,20 @@ void notepad_run(void)
 
         int wheel = wm_get_content_wheel();
         if (wheel) {
-            int target = cur_row - wheel * 3;
-            if (target < 0) target = 0;
-            if (target >= num_lines) target = num_lines - 1;
-            cur_row = target;
+            /* The wheel pans the viewport directly, independent of the
+             * cursor — the cursor only moves the minimum needed to stay
+             * within the new view (it doesn't get dragged all the way
+             * to wherever the view ends up, the way moving it and
+             * letting ensure_visible() follow would do). */
+            int max_top = num_lines - NP_ROWS;
+            if (max_top < 0) max_top = 0;
+            view_top -= wheel * 3;
+            if (view_top < 0) view_top = 0;
+            if (view_top > max_top) view_top = max_top;
+
+            if (cur_row < view_top) cur_row = view_top;
+            if (cur_row > view_top + NP_ROWS - 1) cur_row = view_top + NP_ROWS - 1;
+            if (cur_row >= num_lines) cur_row = num_lines - 1;
             if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row];
             redraw();
             continue;

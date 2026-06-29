@@ -546,7 +546,12 @@ void ramfs_import_initrd(uint32_t addr, uint32_t size)
         if (!ino) {
             char dir_path[VFS_NAME_LEN];
             int k = 0;
-            while (name[k] && k < VFS_NAME_LEN - 1) { dir_path[k] = name[k]; k++; }
+            int last_slash = -1;
+            while (name[k] && k < VFS_NAME_LEN - 1) {
+                dir_path[k] = name[k];
+                if (name[k] == '/') last_slash = k;
+                k++;
+            }
             dir_path[k] = 0;
             for (int j = 0; j < k; j++) {
                 if (dir_path[j] == '/') {
@@ -556,7 +561,10 @@ void ramfs_import_initrd(uint32_t addr, uint32_t size)
                     dir_path[j] = '/';
                 }
             }
-            uint32_t f_ino = make_inode(name + k - 1, S_IFREG | 0644, resolve_path(dir_path, 1));
+            const char *base = (last_slash >= 0) ? name + last_slash + 1 : name;
+            if (last_slash >= 0) dir_path[last_slash] = 0;
+            else dir_path[0] = 0;
+            uint32_t f_ino = make_inode(base, S_IFREG | 0644, resolve_path(dir_path, 1));
             if (f_ino && fsize > 0) {
                 ramfs_inode_t *fn = iget(f_ino);
                 fn->data = malloc(fsize);
