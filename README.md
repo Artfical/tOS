@@ -112,6 +112,7 @@ qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev
 | `env`         | Print environment variables |
 | `uptime`      | Show system uptime |
 | `ps`          | List running processes |
+| `log`         | Running tasks + full kernel/operation log (disk ops, hex dumps) |
 | `htop`        | Live process monitor |
 | `kill <pid>`  | Kill a process |
 | `chmod <mode> <path>` | Change file permissions |
@@ -205,7 +206,7 @@ Several built-in GUI applications are launchable from the dock:
 - **Notepad** (`notepad.c`) — text editor window (up to 1000 lines, with a scrollbar), can open/save files on any mounted filesystem, with Find (Ctrl+F), Replace All (Ctrl+R), and text selection (Shift+arrows, including across lines) with Copy/Cut/Paste (Ctrl+C/X/V)
 - **Clock** (`clock.c`) — analog/digital clock
 - **Calculator** (`calculator.c`) — the 4 basic operations plus a scientific row: sin/cos/tan, sqrt, log/ln, x², and π, backed by from-scratch Newton's-method/Taylor-series math (no libm in this freestanding kernel)
-- **Disk Manager** (`diskmgr.c`) — view and manage attached disks
+- **Disk Manager** (`diskmgr.c`) — view and manage attached disks; every mount/unmount/format goes through `diskops.c`, which logs a start line, a result line, and — for format — a hex dump of sector 0 read back from disk afterward, all readable with the `log` shell command
 - **Files** (`filemgr.c`) — graphical file manager with full mouse support: browse, copy/cut/paste, delete, rename, create folders, open files directly in Notepad or the Image Viewer, and switch between mounted filesystems (ramfs, tFS, FAT16/32, exFAT, ext2/3/4, NTFS) via a one-click disk bar. Supports multi-select (Ctrl+click to toggle individual files, Shift+click or Shift+arrows for a range) for bulk copy/cut/delete.
 - **Paint** (`paint.c`) — mouse-driven drawing app: pen, eraser, and line/rectangle/circle shape tools (click-drag previews the shape live, release to commit it), 3 brush sizes, a 16-color VGA palette, and a "Save" that exports the canvas as a real, standard PNG file (cell grid rasterized to RGB pixels through a from-scratch PNG/zlib encoder — tOS itself never leaves VGA text mode to draw it)
 - **Image Viewer** (`viewer.c`) — opens real PNG files (decoded through a from-scratch INFLATE/DEFLATE + PNG decoder in `png.c`, supporting stored/fixed/dynamic Huffman blocks and grayscale/RGB/palette/RGBA color types), downsampled and quantized to the nearest of the 16 VGA colors for display, with zoom in/out/fit and arrow-key panning. File Manager opens `.png` files here automatically.

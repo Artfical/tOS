@@ -78,6 +78,7 @@ void cmd_help(int argc, char **args)
     terminal_writestring("  env        - print environment\n");
     terminal_writestring("  uptime     - system uptime\n");
     terminal_writestring("  ps         - list processes\n");
+    terminal_writestring("  log        - running tasks + kernel/operation log (disk ops, hex dumps)\n");
     terminal_writestring("  htop       - live process monitor\n");
     terminal_writestring("  disk       - manage disks (list/info/mount/umount/format)\n");
     terminal_writestring("  kill       - kill a process\n");
@@ -407,6 +408,20 @@ void cmd_ps(int argc, char **args)
     (void)argc; (void)args;
     terminal_writestring(" PID  NAME         STATE\n");
     task_foreach(ps_callback);
+}
+
+void cmd_log(int argc, char **args)
+{
+    (void)argc; (void)args;
+    terminal_writestring("=== Running tasks ===\n");
+    terminal_writestring(" PID  NAME         STATE\n");
+    task_foreach(ps_callback);
+
+    terminal_writestring("\n=== Kernel / operation log (boot, disk ops, hex dumps) ===\n");
+    int len = 0;
+    const char *log = klog_get(&len);
+    if (len == 0) terminal_writestring("(empty)\n");
+    else terminal_writestring(log);
 }
 
 void cmd_kill(int argc, char **args)

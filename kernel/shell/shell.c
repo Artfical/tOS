@@ -77,7 +77,7 @@ static const char *builtin_names[] = {
     "version", "about", "uname", "ping", "wget", "python", "tsharp",
     "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
     "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
-    "basename", "dirname", "which", "env", "uptime", "ps", "kill",
+    "basename", "dirname", "which", "env", "uptime", "ps", "log", "kill",
     "chmod", "hexdump", "tee", "alias", "history", "font", "htop",
     "disk", "rev", "uniq",
     NULL
@@ -461,6 +461,8 @@ static void shell_exec_line(char *cmd_line)
             cmd_uptime(argc, args);
         } else if (strcmp(c, "ps") == 0) {
             cmd_ps(argc, args);
+        } else if (strcmp(c, "log") == 0) {
+            cmd_log(argc, args);
         } else if (strcmp(c, "kill") == 0) {
             cmd_kill(argc, args);
         } else if (strcmp(c, "chmod") == 0) {

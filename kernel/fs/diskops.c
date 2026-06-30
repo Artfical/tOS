@@ -11,17 +11,35 @@
 #include "ext3.h"
 #include "ext4.h"
 #include "ntfs.h"
+#include "klog.h"
 
 const char *diskops_fstypes[] = { "tfsk", "fat16", "fat32", "exfat", "ext2", "ext3", "ext4", "ntfs" };
 const int diskops_fstypes_count = 8;
 
+/* Every mount/umount/format failure funnels through here, so the
+ * kernel log (`log`/`dmesg`) sees every error a caller sees in `err`,
+ * without having to remember to log at each of the many per-fstype
+ * return points above. */
 static void seterr(char *err, int err_len, const char *msg)
 {
     if (err && err_len > 0) { strncpy(err, msg, err_len - 1); err[err_len - 1] = 0; }
+    klog_write("diskops: error: ");
+    klog_write(msg);
+    klog_write("\n");
+}
+
+static void log3(const char *a, const char *b, const char *c)
+{
+    klog_write(a);
+    if (b) klog_write(b);
+    if (c) klog_write(c);
+    klog_write("\n");
 }
 
 int diskops_mount(const char *name, const char *mount_point, const char *fstype, char *err, int err_len)
 {
+    log3("diskops: mounting ", name, NULL);
+
     blockdev_t *bd = blockdev_find(name);
     if (!bd) { seterr(err, err_len, "no such device"); return -1; }
     if (bd->mounted) { seterr(err, err_len, "device already mounted"); return -1; }
@@ -120,11 +138,14 @@ int diskops_mount(const char *name, const char *mount_point, const char *fstype,
     i = 0;
     while (fstype[i] && i < BLOCKDEV_FSTYPE_LEN - 1) { bd->fs_type[i] = fstype[i]; i++; }
     bd->fs_type[i] = 0;
+    log3("diskops: mounted ", name, " OK");
     return 0;
 }
 
 int diskops_umount(const char *mount_point, char *err, int err_len)
 {
+    log3("diskops: unmounting ", mount_point, NULL);
+
     if (vfs_unmount(mount_point) != 0) { seterr(err, err_len, "umount failed (not mounted, or busy)"); return -1; }
     int n = blockdev_count();
     for (int i = 0; i < n; i++) {
@@ -142,6 +163,10 @@ int diskops_umount(const char *mount_point, char *err, int err_len)
 
 int diskops_format(const char *name, const char *fstype, char *err, int err_len)
 {
+    log3("diskops: formatting ", name, " as...");
+    klog_write(fstype);
+    klog_write("\n");
+
     blockdev_t *bd = blockdev_find(name);
     if (!bd) { seterr(err, err_len, "no such device"); return -1; }
     if (bd->mounted) { seterr(err, err_len, "cannot format a mounted device, umount first"); return -1; }
@@ -167,5 +192,17 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
         seterr(err, err_len, "unsupported filesystem type");
         return -1;
     }
+
+    log3("diskops: formatted ", name, " OK");
+
+    /* Read back the freshly-written boot sector / superblock area so
+     * the operation log shows real evidence of what landed on disk,
+     * not just "it returned 0" — the same kind of hex dump `hexdump`
+     * gives for files, but for the raw sector a format just wrote. */
+    uint8_t sector0[512];
+    if (blockdev_read(bd, 0, 1, sector0) == 0) {
+        klog_write_hex("diskops: sector 0 after format:", sector0, 128);
+    }
+
     return 0;
 }
