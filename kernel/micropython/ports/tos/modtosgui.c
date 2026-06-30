@@ -102,6 +102,52 @@ static mp_obj_t mp_tosgui_button(size_t n_args, const mp_obj_t *args)
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_tosgui_button_obj, 3, 5, mp_tosgui_button);
 
+/* input(x, y, prompt="") — draws `prompt` at (x,y) and blocks (yielding
+ * to the rest of the OS each iteration, like update() does) until the
+ * user types a line and presses Enter, echoing characters right after
+ * the prompt and supporting backspace. Returns the typed string. Meant
+ * for simple "ask a question, then keep drawing" scripts; for anything
+ * that needs to keep its own event loop running (clicks, animation)
+ * while also taking text input, poll_key() is the lower-level building
+ * block this is built on. */
+static mp_obj_t mp_tosgui_input(size_t n_args, const mp_obj_t *args)
+{
+    mp_int_t x = mp_obj_get_int(args[0]);
+    mp_int_t y = mp_obj_get_int(args[1]);
+    const char *prompt = (n_args > 2) ? mp_obj_str_get_str(args[2]) : "";
+    int plen = (int)strlen(prompt);
+
+    terminal_setcolor(tg_color(VGA_LIGHT_GREY, VGA_BLACK));
+    terminal_setpos((size_t)x, (size_t)y);
+    terminal_writestring(prompt);
+
+    static char buf[256];
+    int i = 0;
+
+    for (;;) {
+        gui_poll();
+        if (!wm_current_task_has_focus() || !keyboard_data_available()) {
+            task_yield();
+            continue;
+        }
+        char c = keyboard_getchar();
+        if (c == '\n') {
+            break;
+        } else if ((c == '\b' || c == 127) && i > 0) {
+            i--;
+            terminal_setpos((size_t)(x + plen + i), (size_t)y);
+            terminal_putchar(' ');
+            terminal_setpos((size_t)(x + plen + i), (size_t)y);
+        } else if ((unsigned char)c >= ' ' && i < (int)sizeof(buf) - 1) {
+            buf[i++] = c;
+            terminal_putchar(c);
+        }
+    }
+    buf[i] = 0;
+    return mp_obj_new_str(buf, (size_t)i);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_tosgui_input_obj, 2, 3, mp_tosgui_input);
+
 static mp_obj_t mp_tosgui_poll_click(void)
 {
     int x, y;
@@ -155,6 +201,7 @@ void tosgui_module_init(void)
     tosgui_store_fun(g, "button", &mp_tosgui_button_obj);
     tosgui_store_fun(g, "poll_click", &mp_tosgui_poll_click_obj);
     tosgui_store_fun(g, "poll_key", &mp_tosgui_poll_key_obj);
+    tosgui_store_fun(g, "input", &mp_tosgui_input_obj);
     tosgui_store_fun(g, "has_focus", &mp_tosgui_has_focus_obj);
     tosgui_store_fun(g, "update", &mp_tosgui_update_obj);
 

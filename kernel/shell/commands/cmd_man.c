@@ -557,6 +557,10 @@ static const man_page_t man_pages[] = {
 "  tosgui.has_focus()      - True if this window is focused\n"
 "  tosgui.update()         - pump the event loop; call this once per\n"
 "                            loop iteration\n"
+"  tosgui.input(x,y,prompt=\"\") - draw prompt, block until Enter, and\n"
+"                            return the typed string (backspace works);\n"
+"                            for asking a single question, not for use\n"
+"                            inside an open event loop\n"
 "  Color constants: BLACK, BLUE, GREEN, CYAN, RED, MAGENTA, BROWN,\n"
 "  LIGHT_GREY, DARK_GREY, LIGHT_BLUE, LIGHT_GREEN, LIGHT_CYAN,\n"
 "  LIGHT_RED, LIGHT_MAGENTA, YELLOW, WHITE\n\n"
@@ -580,7 +584,12 @@ static const man_page_t man_pages[] = {
 "      if key is not None and chr(key) == 'q':\n"
 "          running = False\n"
 "      tosgui.update()\n"
-"  tosgui.close()\n"
+"  tosgui.close()\n\n"
+"Example (tosgui.input):\n"
+"  tosgui.open(\"asker\")\n"
+"  name = tosgui.input(2, 2, \"Adin nedir? \")\n"
+"  tosgui.text(2, 4, \"merhaba \" + name)\n"
+"  tosgui.update()\n"
 },
 {0, 0}
 };

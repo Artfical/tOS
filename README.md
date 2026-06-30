@@ -310,6 +310,7 @@ tg.close()
 | `tg.button(x, y, s, fg=WHITE, bg=BLUE)` | Draws a `[ s ]` button (purely visual — compare `poll_click()` against where you drew it) |
 | `tg.poll_click()` | Returns an `(x, y)` tuple or `None` (one-shot, like a mouse click event) |
 | `tg.poll_key()` | Returns an ASCII code or `None` |
+| `tg.input(x, y, prompt="")` | Draws `prompt` and blocks (yielding every iteration, like `update()`) until Enter, returning the typed string; backspace works |
 | `tg.has_focus()` | Whether this window is currently focused |
 | `tg.update()` | Yields a frame to the rest of the OS — call this every loop iteration |
 | `tg.BLACK` … `tg.WHITE` | The 16 VGA color constants |

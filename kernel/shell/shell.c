@@ -7,6 +7,7 @@
 #include "ramfs.h"
 #include "commands.h"
 #include "vfs.h"
+#include "scheduler.h"
 
 #define MAX_ARGS 16
 #define MAX_CMD_LEN 512
@@ -195,6 +196,16 @@ static void shell_readline(char *buf, int max)
             }
             continue;
         }
+
+        /* Don't call the blocking keyboard_getchar() here: it only
+         * watches the regular character queue, not the separate
+         * special-key (arrow) queue checked above, so it would block
+         * forever waiting for a printable key and never notice an
+         * arrow press that arrived in the meantime — history recall
+         * would only "wake up" once another regular key was typed.
+         * Polling keyboard_data_available() first keeps every loop
+         * iteration short enough to re-check keyboard_get_special(). */
+        if (!keyboard_data_available()) { task_yield(); continue; }
 
         char c = keyboard_getchar();
         if (c == '\n') {
