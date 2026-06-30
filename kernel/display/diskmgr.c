@@ -1,4 +1,5 @@
 #include "diskmgr.h"
+#include "stdio.h"
 #include "terminal.h"
 #include "keyboard.h"
 #include "scheduler.h"
@@ -183,15 +184,25 @@ static void do_toggle_mount(blockdev_t *bd)
         return;
     }
 
-    char mp[64], fstype[16];
+    char mp[64];
     prompt_line("Mount point: ", mp, sizeof(mp));
     if (!mp[0]) { status_msg[0] = 0; return; }
-    prompt_line("Filesystem (tfsk/fat16/fat32/exfat/ext2/ext3/ext4/ntfs): ", fstype, sizeof(fstype));
-    if (!fstype[0]) { status_msg[0] = 0; return; }
+
+    char fstype[16];
+    const char *detected = diskops_detect(bd->name);
+    if (detected) {
+        strncpy(fstype, detected, sizeof(fstype) - 1);
+        fstype[sizeof(fstype) - 1] = 0;
+    } else {
+        prompt_line("Filesystem not auto-detected (tfsk/fat16/fat32/exfat/ext2/ext3/ext4/ntfs): ", fstype, sizeof(fstype));
+        if (!fstype[0]) { status_msg[0] = 0; return; }
+    }
 
     if (diskops_mount(bd->name, mp, fstype, err, sizeof(err)) != 0) {
         strncpy(status_msg, err, sizeof(status_msg) - 1);
         status_msg[sizeof(status_msg) - 1] = 0;
+    } else if (detected) {
+        snprintf(status_msg, sizeof(status_msg), "Mounted as %s (auto-detected).", fstype);
     } else {
         strcpy(status_msg, "Mounted.");
     }

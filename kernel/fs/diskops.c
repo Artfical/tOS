@@ -142,6 +142,49 @@ int diskops_mount(const char *name, const char *mount_point, const char *fstype,
     return 0;
 }
 
+const char *diskops_detect(const char *name)
+{
+    blockdev_t *bd = blockdev_find(name);
+    if (!bd || bd->mounted) return NULL;
+
+    if (bd->type == BLOCKDEV_ATA) {
+        tfsk_t tfs;
+        memset(&tfs, 0, sizeof(tfs));
+        tfs.dev = (ata_device_t *)bd->driver_data;
+        if (tfsk_probe_and_mount(&tfs) == 0) return "tfsk";
+    }
+
+    fat32_t f32;
+    memset(&f32, 0, sizeof(f32));
+    if (fat32_probe_and_mount(&f32, bd) == 0) return "fat32";
+
+    fat16_t f16;
+    memset(&f16, 0, sizeof(f16));
+    if (fat16_probe_and_mount(&f16, bd) == 0) return "fat16";
+
+    exfat_t ef;
+    memset(&ef, 0, sizeof(ef));
+    if (exfat_probe_and_mount(&ef, bd) == 0) return "exfat";
+
+    ext4_t e4;
+    memset(&e4, 0, sizeof(e4));
+    if (ext4_probe_and_mount(&e4, bd) == 0) return "ext4";
+
+    ext3_t e3;
+    memset(&e3, 0, sizeof(e3));
+    if (ext3_probe_and_mount(&e3, bd) == 0) return "ext3";
+
+    ext2_t e2;
+    memset(&e2, 0, sizeof(e2));
+    if (ext2_probe_and_mount(&e2, bd) == 0) return "ext2";
+
+    ntfs_t nt;
+    memset(&nt, 0, sizeof(nt));
+    if (ntfs_probe_and_mount(&nt, bd) == 0) return "ntfs";
+
+    return NULL;
+}
+
 int diskops_umount(const char *mount_point, char *err, int err_len)
 {
     log3("diskops: unmounting ", mount_point, NULL);
