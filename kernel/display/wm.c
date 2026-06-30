@@ -678,21 +678,22 @@ static void draw_window(window_t *w)
 
     int content_h = h0 - 1;
     int vo = w->surface.view_offset;
-    /* Anchor to the *current* row, not a hardcoded TERM_SURFACE_H - 1:
-     * before the surface has filled up and scrolled at least once,
-     * cur_row is small (e.g. 0 or 1 right after opening) and most of
-     * cells[] below it is still blank — treating TERM_SURFACE_H - 1 as
-     * "the newest line" in that state pulled from rows that were never
-     * written, making a freshly-opened window look like it opened
-     * scrolled to the bottom of nothing instead of at its first line.
-     * Once the surface has scrolled at least once, cur_row is pinned
-     * at TERM_SURFACE_H - 1 by surface_scroll(), so this matches the
-     * original bottom-anchored behavior exactly in that steady state. */
+    /* While the surface hasn't filled the window yet (cur_row hasn't
+     * reached content_h - 1), content must stay top-anchored like any
+     * ordinary terminal — line 1 at the top, growing downward — not
+     * pinned to the window's bottom edge. Only once cur_row overflows
+     * past content_h - 1 does the *overflow* amount start pushing
+     * content up/scrolling, which is what naturally produces the
+     * bottom-anchored behavior once the window is full and beyond
+     * (including once cur_row itself is pinned at TERM_SURFACE_H - 1
+     * by surface_scroll()). "overflow" unifies both cases: 0 while
+     * there's nothing to scroll, growing by 1 per line afterward. */
     int newest_row = w->surface.cur_row;
     if (newest_row >= TERM_SURFACE_H) newest_row = TERM_SURFACE_H - 1;
+    int overflow = newest_row - (content_h - 1);
+    if (overflow < 0) overflow = 0;
     for (int row = 0; row < content_h; row++) {
-        int from_bottom = (content_h - 1 - row) + vo;
-        int cells_idx = newest_row - from_bottom;
+        int cells_idx = overflow + row - vo;
         for (int col = 0; col < w0; col++) {
             uint16_t cell;
             if (cells_idx >= 0 && cells_idx < TERM_SURFACE_H && col < TERM_SURFACE_W) {
