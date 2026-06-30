@@ -5,6 +5,7 @@
 #include "wm.h"
 #include "scheduler.h"
 #include "string.h"
+#include "http.h"
 
 int tos_exec(const char *cmd, char *out, int out_max)
 {
@@ -133,4 +134,44 @@ int tos_kill(uint32_t pid)
 uint32_t tos_uptime(void)
 {
     return task_get_ticks() / 100;
+}
+
+int tos_http_get(const char *url, char *out, int out_max)
+{
+    if (out_max <= 0) return -1;
+    out[0] = 0;
+    if (strncmp(url, "http://", 7) != 0) return -1;
+    url += 7;
+
+    char host[256], path[256];
+    int i = 0, j = 0;
+    while (*url && *url != '/' && *url != ':' && i < 255) host[i++] = *url++;
+    host[i] = '\0';
+
+    uint16_t port = 80;
+    if (*url == ':') {
+        url++;
+        port = 0;
+        while (*url >= '0' && *url <= '9') { port = port * 10 + (*url - '0'); url++; }
+    }
+
+    if (*url == '/') { while (*url && j < 255) path[j++] = *url++; path[j] = '\0'; }
+    else { path[0] = '/'; path[1] = '\0'; }
+
+    static char resp[8192];
+    int n = http_get(host, port, path, (uint8_t *)resp, sizeof(resp) - 1);
+    if (n <= 0) return -1;
+    resp[n] = '\0';
+
+    /* The response is the raw "status line + headers + \r\n\r\n + body"
+     * HTTP/1.0 reply; callers want just the body, same as a browser. */
+    const char *body = strstr(resp, "\r\n\r\n");
+    body = body ? body + 4 : resp;
+
+    int blen = n - (int)(body - resp);
+    if (blen < 0) blen = 0;
+    if (blen > out_max - 1) blen = out_max - 1;
+    for (int k = 0; k < blen; k++) out[k] = body[k];
+    out[blen] = 0;
+    return blen;
 }

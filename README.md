@@ -275,6 +275,7 @@ Both MicroPython (the `tos` module) and T# (built-in functions) share a single u
 | List running tasks | `tos.ps()` | `surecler()` | `"pid name state"` lines |
 | Kill a task | `tos.kill(pid)` | `sureldur(pid)` | Refuses the idle task and the caller's own task |
 | Uptime in seconds | `tos.uptime()` | `calismasuresi()` | |
+| Fetch a URL (HTTP only) | `tos.http_get(url)` | `agetir(url)` | Returns just the response body (status line/headers parsed off); MicroPython gets up to 8KB, T# up to 256 bytes (the variable-value limit) |
 
 Command output capture works by temporarily redirecting `terminal_putchar()` into a buffer (`terminal_capture_start()`/`_stop()` in `terminal.c`) for the duration of the call, so a script-run command doesn't spam the visible terminal — only its text comes back.
 

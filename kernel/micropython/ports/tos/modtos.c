@@ -110,6 +110,16 @@ static mp_obj_t mp_tos_uptime(void)
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(mp_tos_uptime_obj, mp_tos_uptime);
 
+static mp_obj_t mp_tos_http_get(mp_obj_t url_obj)
+{
+    const char *url = mp_obj_str_get_str(url_obj);
+    static char buf[8192];
+    int n = tos_http_get(url, buf, sizeof(buf));
+    if (n < 0) return mp_obj_new_str("", 0);
+    return mp_obj_new_str(buf, (size_t)n);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mp_tos_http_get_obj, mp_tos_http_get);
+
 static void tos_module_store(mp_obj_dict_t *globals, const char *name, const void *fun_obj)
 {
     mp_obj_dict_store(MP_OBJ_FROM_PTR(globals), MP_OBJ_NEW_QSTR(qstr_from_str(name)), MP_OBJ_FROM_PTR(fun_obj));
@@ -131,4 +141,5 @@ void tos_module_init(void)
     tos_module_store(g, "ps", &mp_tos_ps_obj);
     tos_module_store(g, "kill", &mp_tos_kill_obj);
     tos_module_store(g, "uptime", &mp_tos_uptime_obj);
+    tos_module_store(g, "http_get", &mp_tos_http_get_obj);
 }

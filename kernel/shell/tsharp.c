@@ -459,6 +459,8 @@ static int ts_call_builtin(const char *norm_name, int argc, char **args, char *r
         strcpy(result, (argc > 0 && tos_kill((uint32_t)atoi(args[0])) == 0) ? "1" : "0");
     } else if (strcmp(norm_name, "calismasuresi") == 0) {
         ts_itoa((int)tos_uptime(), result);
+    } else if (strcmp(norm_name, "agetir") == 0) {
+        if (argc == 0 || tos_http_get(args[0], result, TS_VAR_VAL) < 0) result[0] = 0;
     } else {
         return 0;
     }

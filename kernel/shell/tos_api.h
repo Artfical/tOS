@@ -47,4 +47,12 @@ int tos_kill(uint32_t pid);
 /* Seconds since boot. */
 uint32_t tos_uptime(void);
 
+/* Fetches a URL over plain HTTP (only "http://" is supported — same
+ * restriction as the `wget` shell command, since there's no TLS in
+ * this network stack). Writes just the response *body* into `out`
+ * (the status line and headers are parsed off and discarded), NUL-
+ * terminated and truncated to out_max-1 bytes. Returns the body
+ * length, or -1 on a DNS/connect/parse failure. */
+int tos_http_get(const char *url, char *out, int out_max);
+
 #endif
