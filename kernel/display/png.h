@@ -6,4 +6,13 @@
 int png_decode(const uint8_t *file, uint32_t file_len, uint8_t **out_rgb,
                 uint32_t *out_w, uint32_t *out_h, char *err, int err_cap);
 
+/* Decompresses a raw (no zlib wrapper) DEFLATE stream — the same
+ * inflate engine png_decode() uses internally for IDAT data, exposed
+ * standalone for anything else that needs to read DEFLATE-compressed
+ * data, such as a ZIP archive's "deflated" (method 8) entries. Returns
+ * 0 on success with *out_len set, -1 on a malformed/truncated stream
+ * or if the output would exceed out_cap. */
+int inflate_raw_buffer(const uint8_t *src, uint32_t src_len,
+                        uint8_t *out, uint32_t out_cap, uint32_t *out_len);
+
 #endif

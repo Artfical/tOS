@@ -123,6 +123,9 @@ qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev
 | `history`     | Show command history |
 | `font`        | List/change the terminal font style |
 | `disk`        | Manage disks (list/info/mount/umount/format) |
+| `tar c\|x\|t <archive> ...` | Create/extract/list a ustar archive (no compression, from-scratch reader/writer) |
+| `zip <archive> <file...>` | Create a zip archive (entries stored, uncompressed) |
+| `unzip <archive> [dest]` | Extract a zip archive (reads both stored and deflated entries) |
 | `reboot`      | Reboot the system |
 | `shutdown`    | Halt the system |
 | `version`     | Show kernel version |

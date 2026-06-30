@@ -87,6 +87,7 @@ KERNEL_OBJS = \
     kernel/shell/commands/cmd_net.o \
     kernel/shell/commands/cmd_htop.o \
     kernel/shell/commands/cmd_disk.o \
+    kernel/shell/commands/cmd_archive.o \
     kernel/core/klog.o \
     kernel/fs/ramfs.o \
     kernel/fs/tfsk.o \
@@ -98,6 +99,8 @@ KERNEL_OBJS = \
     kernel/fs/ext4.o \
     kernel/fs/ntfs.o \
     kernel/fs/diskops.o \
+    kernel/fs/tarfmt.o \
+    kernel/fs/zipfmt.o \
     kernel/fs/installer.o \
     kernel/shell/tsharp.o \
     kernel/shell/tos_api.o \

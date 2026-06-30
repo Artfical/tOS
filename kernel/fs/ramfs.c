@@ -245,7 +245,17 @@ int ramfs_vfs_open(const char *path, int flags)
     if (!path || !path[0]) return -1;
     uint32_t ino = resolve_path(path, 1);
     if (!ino) {
-        if (!(flags & 2)) return -1;
+        /* ramfs_create() calls this with the literal flag value 2 (an
+         * ad-hoc "creation allowed" convention predating VFS_CREAT) —
+         * but real VFS_CREAT (0x100) callers, i.e. anything going
+         * through vfs_open(path, VFS_CREAT|...) for an *absolute* path
+         * that has a registered mount (vfs_path_has_mount() is true for
+         * "/", since its mount path_len is 1, not 0), never set bit
+         * value 2, so they always got rejected here — every absolute-
+         * path file creation silently failed while the exact same
+         * relative path (which skips vfs_path_has_mount() and goes
+         * straight to ramfs_create()'s literal-2 call) worked fine. */
+        if (!(flags & 2) && !(flags & VFS_CREAT)) return -1;
         char parent_path[VFS_NAME_LEN];
         char name_buf[RAMFS_NAME_LEN];
         int i = 0;
@@ -253,13 +263,21 @@ int ramfs_vfs_open(const char *path, int flags)
         int last_sep = -1;
         for (int j = i - 1; j >= 0; j--) { if (path[j] == '/') { last_sep = j; break; } }
         int k = 0;
-        if (last_sep < 0) {
+        /* last_sep == 0 means the *only* slash is the leading one on an
+         * absolute root-level path ("/name") — that's the same "parent
+         * is root" case as last_sep < 0 ("name", no slash at all), not
+         * the general "a/b" case below. Treating it as the latter left
+         * parent_path[0] uninitialized (the j < last_sep copy loop
+         * never runs when last_sep is 0), so creating any file via an
+         * absolute path directly under root always failed. */
+        if (last_sep <= 0) {
             parent_path[0] = '/';
             parent_path[1] = 0;
-            for (int j = 0; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+            int start = (last_sep == 0) ? 1 : 0;
+            for (int j = start; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
         } else {
             for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
-            parent_path[last_sep < 1 ? 1 : last_sep] = 0;
+            parent_path[last_sep] = 0;
             for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
         }
         name_buf[k] = 0;
@@ -344,8 +362,19 @@ int ramfs_vfs_readdir(const char *path, vfs_entry_t *entries, int max)
     for (int i = 0; i < n; i++) {
         ramfs_inode_t *c = iget(de[i].ino);
         if (!c) continue;
+        /* Use the directory *entry's* own name (de[i].name), not the
+         * target inode's name (c->name). For "." and ".." those
+         * differ on purpose — "." points back at the directory
+         * itself, so c->name is the directory's own name (e.g.
+         * "t1"), not the literal string ".". Reading c->name here
+         * made every directory's listing report a bogus extra child
+         * literally named after the directory itself instead of ".",
+         * which any name_eq(entry, ".") skip-check (used by `find`
+         * and by tar/zip's recursive archiver) could never match —
+         * so it was silently treated as a real subdirectory and
+         * recursed into forever. */
         int j = 0;
-        while (c->name[j] && j < VFS_NAME_LEN - 1) { entries[i].name[j] = c->name[j]; j++; }
+        while (de[i].name[j] && j < VFS_NAME_LEN - 1) { entries[i].name[j] = de[i].name[j]; j++; }
         entries[i].name[j] = 0;
         entries[i].size = c->size;
         entries[i].is_dir = (c->mode & S_IFDIR) ? 1 : 0;
@@ -363,17 +392,21 @@ int ramfs_mkdir_mode(const char *path, uint32_t mode)
     while (path[i]) i++;
     int last_sep = -1;
     for (int j = i - 1; j >= 0; j--) { if (path[j] == '/') { last_sep = j; break; } }
-    if (last_sep < 0) {
-        /* No '/' in path: a single top-level component. This happens for
-         * VFS-dispatched calls on the root mount, whose "/" prefix has
-         * already been stripped by strip_mount() — the parent is root. */
+    if (last_sep <= 0) {
+        /* No '/' in path, or just the leading one on an absolute
+         * root-level path ("name" or "/name") — parent is root either
+         * way. Routing last_sep == 0 into the multi-component branch
+         * below left parent_path[0] uninitialized (its copy loop never
+         * runs when last_sep is 0), so mkdir on an absolute root-level
+         * path always failed to resolve its parent. */
         parent_path[0] = 0;
         int k = 0;
-        for (int j = 0; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        int start = (last_sep == 0) ? 1 : 0;
+        for (int j = start; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
         name_buf[k] = 0;
     } else {
         for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
-        parent_path[last_sep < 1 ? 1 : last_sep] = 0;
+        parent_path[last_sep] = 0;
         int k = 0;
         for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
         name_buf[k] = 0;
@@ -399,14 +432,21 @@ int ramfs_vfs_unlink(const char *path)
     while (path[i]) i++;
     int last_sep = -1;
     for (int j = i - 1; j >= 0; j--) { if (path[j] == '/') { last_sep = j; break; } }
-    if (last_sep < 0) {
+    if (last_sep <= 0) {
+        /* last_sep == 0 ("/name", a single component at root) must be
+         * treated the same as last_sep < 0 ("name", no slash at all) —
+         * both have root as the parent. Routing last_sep == 0 into the
+         * multi-component branch below left parent_path[0] uninitialized
+         * (its copy loop never runs when last_sep is 0), so absolute
+         * root-level paths always failed to resolve their parent. */
         parent_path[0] = 0;
         int k = 0;
-        for (int j = 0; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        int start = (last_sep == 0) ? 1 : 0;
+        for (int j = start; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
         name_buf[k] = 0;
     } else {
         for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
-        parent_path[last_sep < 1 ? 1 : last_sep] = 0;
+        parent_path[last_sep] = 0;
         int k = 0;
         for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
         name_buf[k] = 0;
@@ -494,14 +534,21 @@ int ramfs_vfs_symlink(const char *target, const char *path)
     while (path[i]) i++;
     int last_sep = -1;
     for (int j = i - 1; j >= 0; j--) { if (path[j] == '/') { last_sep = j; break; } }
-    if (last_sep < 0) {
+    if (last_sep <= 0) {
+        /* last_sep == 0 ("/name", a single component at root) must be
+         * treated the same as last_sep < 0 ("name", no slash at all) —
+         * both have root as the parent. Routing last_sep == 0 into the
+         * multi-component branch below left parent_path[0] uninitialized
+         * (its copy loop never runs when last_sep is 0), so absolute
+         * root-level paths always failed to resolve their parent. */
         parent_path[0] = 0;
         int k = 0;
-        for (int j = 0; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        int start = (last_sep == 0) ? 1 : 0;
+        for (int j = start; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
         name_buf[k] = 0;
     } else {
         for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
-        parent_path[last_sep < 1 ? 1 : last_sep] = 0;
+        parent_path[last_sep] = 0;
         int k = 0;
         for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
         name_buf[k] = 0;

@@ -81,6 +81,9 @@ void cmd_help(int argc, char **args)
     terminal_writestring("  log        - running tasks + kernel/operation log (disk ops, hex dumps)\n");
     terminal_writestring("  htop       - live process monitor\n");
     terminal_writestring("  disk       - manage disks (list/info/mount/umount/format)\n");
+    terminal_writestring("  tar        - create/extract/list a tar archive (c/x/t)\n");
+    terminal_writestring("  zip        - create a zip archive\n");
+    terminal_writestring("  unzip      - extract a zip archive\n");
     terminal_writestring("  kill       - kill a process\n");
     terminal_writestring("  chmod      - change file mode\n");
     terminal_writestring("  hexdump    - hex dump of a file\n");

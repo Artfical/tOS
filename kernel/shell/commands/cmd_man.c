@@ -441,6 +441,48 @@ static const man_page_t man_pages[] = {
 "  /> disk list\n"
 "  /> disk mount ata0 /mnt\n"
 },
+{"tar",
+"tar - create, extract, or list a ustar (POSIX tar) archive\n\n"
+"Usage: tar c <archive.tar> <file...>   create (files/dirs added\n"
+"                                        recursively)\n"
+"       tar x <archive.tar> [dest_dir]  extract (default: cwd)\n"
+"       tar t <archive.tar>             list entries and sizes\n\n"
+"From-scratch ustar reader/writer — no compression, same as real\n"
+"tar without a -z/-j flag. Directories are stored and recreated\n"
+"automatically, including nested ones.\n\n"
+"Examples:\n"
+"  /> tar c backup.tar /notes /etc/config.txt\n"
+"  /> tar t backup.tar\n"
+"  /> mkdir /restore\n"
+"  /> tar x backup.tar /restore\n\n"
+"See also: 'man zip' for a compressed-friendlier, more universally\n"
+"recognized archive format.\n"
+},
+{"zip",
+"zip - create a zip archive\n\n"
+"Usage: zip <archive.zip> <file...>\n"
+"Files/directories are added recursively. Entries are stored\n"
+"uncompressed (method 0) — tOS has a DEFLATE *decoder* (built for\n"
+"reading PNG files) but no encoder, so this writes a perfectly valid,\n"
+"ordinary zip file any unzip tool can open, just without the size\n"
+"savings real compression would give.\n\n"
+"Example:\n"
+"  /> zip notes.zip /notes\n\n"
+"See also: 'man unzip', 'man tar'.\n"
+},
+{"unzip",
+"unzip - extract a zip archive\n\n"
+"Usage: unzip <archive.zip> [dest_dir]\n"
+"Extracts every entry under dest_dir (default: cwd), recreating\n"
+"directories as needed. Understands both stored (method 0) and\n"
+"deflated (method 8) entries, so — unlike 'zip', which only writes\n"
+"stored archives — this can open real-world zip files made by other\n"
+"tools, not just ones tOS made itself.\n\n"
+"Example:\n"
+"  /> mkdir /restore\n"
+"  /> unzip notes.zip /restore\n\n"
+"See also: 'man zip', 'man tar'.\n"
+},
 {"kill",
 "kill - terminate a running task\n\n"
 "Usage: kill <pid>\n"

@@ -245,6 +245,13 @@ static int inflate_raw(bitreader_t *br, uint8_t *out, uint32_t out_cap, uint32_t
     return 0;
 }
 
+int inflate_raw_buffer(const uint8_t *src, uint32_t src_len,
+                        uint8_t *out, uint32_t out_cap, uint32_t *out_len)
+{
+    bitreader_t br = { src, src_len, 0, 0, 0 };
+    return inflate_raw(&br, out, out_cap, out_len);
+}
+
 static uint32_t be32(const uint8_t *p)
 {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];

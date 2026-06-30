@@ -79,7 +79,7 @@ static const char *builtin_names[] = {
     "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
     "basename", "dirname", "which", "env", "uptime", "ps", "log", "kill",
     "chmod", "hexdump", "tee", "alias", "history", "font", "htop",
-    "disk", "rev", "uniq",
+    "disk", "rev", "uniq", "tar", "zip", "unzip",
     NULL
 };
 
@@ -483,6 +483,12 @@ static void shell_exec_line(char *cmd_line)
             cmd_htop(argc, args);
         } else if (strcmp(c, "disk") == 0) {
             cmd_disk(argc, args);
+        } else if (strcmp(c, "tar") == 0) {
+            cmd_tar(argc, args);
+        } else if (strcmp(c, "zip") == 0) {
+            cmd_zip(argc, args);
+        } else if (strcmp(c, "unzip") == 0) {
+            cmd_unzip(argc, args);
         } else {
             terminal_writestring("Unknown command: ");
             terminal_writestring(c);
