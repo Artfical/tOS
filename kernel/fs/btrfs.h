@@ -37,6 +37,9 @@ typedef struct {
     char label[256];
     btrfs_chunk_map_t chunks[BTRFS_MAX_CHUNKS];
     int num_chunks;
+    uint64_t next_objectid;
+    uint64_t next_data_logical;
+    uint64_t fs_tree_logical;
     btrfs_fd_t fds[VFS_MAX_FDS];
 } btrfs_t;
 

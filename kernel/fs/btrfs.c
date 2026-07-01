@@ -476,8 +476,47 @@ int btrfs_probe_and_mount(btrfs_t *fs, blockdev_t *bd)
     if (!node_buf) return -1;
 
     btrfs_walk_chunk_tree(fs, node_buf);
-    free(node_buf);
 
+    fs->next_objectid = 7;
+    if (fs->num_chunks > 0)
+        fs->next_data_logical = fs->chunks[0].logical + 3 * fs->nodesize;
+    else
+        fs->next_data_logical = 4 * 1024 * 1024ULL;
+    fs->fs_tree_logical = 0;
+
+    /* Scan FS tree to find real next_objectid and next_data_logical */
+    {
+        uint64_t fst;
+        if (btrfs_find_root(fs, node_buf, BTRFS_FS_TREE_OBJECTID, &fst) == 0) {
+            fs->fs_tree_logical = fst;
+            if (btrfs_read_node(fs, fst, node_buf, fs->nodesize) == 0) {
+                btrfs_node_hdr_t *hdr = (btrfs_node_hdr_t *)node_buf;
+                uint8_t *items_base = node_buf + BTRFS_NODE_HDR_SZ;
+                uint8_t *data_end = node_buf + fs->nodesize;
+                for (uint32_t i = 0; i < hdr->nritems; i++) {
+                    btrfs_item_t *item = (btrfs_item_t *)(items_base + i * BTRFS_ITEM_SZ);
+                    if (item->key.type == BTRFS_INODE_ITEM_KEY &&
+                        item->key.objectid >= fs->next_objectid)
+                        fs->next_objectid = item->key.objectid + 1;
+                    if (item->key.type == BTRFS_EXTENT_DATA_KEY) {
+                        uint8_t *d = data_end - item->data_offset - item->data_size;
+                        if (d >= node_buf &&
+                            item->data_size >= (uint32_t)(sizeof(btrfs_extent_data_t) + sizeof(btrfs_extent_reg_t))) {
+                            btrfs_extent_data_t *ed = (btrfs_extent_data_t *)d;
+                            if (ed->type == 1) {
+                                btrfs_extent_reg_t *reg = (btrfs_extent_reg_t *)(d + sizeof(btrfs_extent_data_t));
+                                uint64_t end = reg->disk_bytenr + reg->disk_num_bytes;
+                                if (end > fs->next_data_logical)
+                                    fs->next_data_logical = (end + 511) & ~(uint64_t)511;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    free(node_buf);
     return 0;
 }
 
@@ -492,10 +531,20 @@ static int btrfs_get_fs_tree(btrfs_t *fs, uint8_t *node_buf, uint64_t *fs_tree_o
     return btrfs_find_root(fs, node_buf, BTRFS_FS_TREE_OBJECTID, fs_tree_out);
 }
 
+/* Forward declarations for write helpers defined later */
+static uint32_t btrfs_leaf_data_total(uint8_t *leaf);
+static int btrfs_leaf_find_exact(uint8_t *leaf, uint64_t objectid, uint8_t type, uint64_t offset);
+static int btrfs_leaf_insert(btrfs_t *fs, uint8_t *leaf, btrfs_key_t *key, const void *data, uint32_t data_size);
+static void btrfs_leaf_remove_at(btrfs_t *fs, uint8_t *leaf, uint32_t pos);
+static int btrfs_load_fs_leaf(btrfs_t *fs, uint8_t *leaf);
+static int btrfs_write_fs_leaf(btrfs_t *fs, uint8_t *leaf);
+static void btrfs_split_path(const char *path, char *parent, char *name);
+static int btrfs_add_dir_entry(btrfs_t *fs, uint8_t *leaf, uint64_t dir_ino,
+                                uint64_t child_ino, const char *name, uint8_t ftype, uint8_t mode_hi);
+
 static int btrfs_vfs_open(void *ctx, const char *path, int flags)
 {
     btrfs_t *fs = (btrfs_t *)ctx;
-    (void)flags;
 
     uint8_t *node_buf = (uint8_t *)malloc(fs->nodesize);
     if (!node_buf) return -1;
@@ -505,12 +554,48 @@ static int btrfs_vfs_open(void *ctx, const char *path, int flags)
 
     uint64_t ino;
     int is_dir = 0;
-    if (btrfs_walk_path(fs, fs_tree, node_buf, path, &ino, &is_dir) != 0) {
-        free(node_buf);
-        return -1;
-    }
+    int found = (btrfs_walk_path(fs, fs_tree, node_buf, path, &ino, &is_dir) == 0);
 
-    if (is_dir) { free(node_buf); return -1; }
+    if (!found) {
+        if (!(flags & VFS_CREAT)) { free(node_buf); return -1; }
+
+        char parent[256], name[BTRFS_MAX_FILENAME + 1];
+        btrfs_split_path(path, parent, name);
+        if (!name[0]) { free(node_buf); return -1; }
+
+        uint64_t dir_ino;
+        int dir_is_dir = 0;
+        if (btrfs_walk_path(fs, fs_tree, node_buf, parent, &dir_ino, &dir_is_dir) != 0 || !dir_is_dir) {
+            free(node_buf); return -1;
+        }
+
+        ino = fs->next_objectid++;
+
+        if (btrfs_load_fs_leaf(fs, node_buf) != 0) { free(node_buf); return -1; }
+        if (btrfs_add_dir_entry(fs, node_buf, dir_ino, ino, name, BTRFS_FT_REG_FILE, 0) != 0) {
+            free(node_buf); return -1;
+        }
+        btrfs_write_fs_leaf(fs, node_buf);
+        is_dir = 0;
+    } else if (is_dir) {
+        free(node_buf); return -1;
+    } else if (flags & VFS_TRUNC) {
+        /* Truncate: remove existing extent data */
+        if (btrfs_load_fs_leaf(fs, node_buf) == 0) {
+            int epos;
+            while ((epos = btrfs_leaf_find_exact(node_buf, ino, BTRFS_EXTENT_DATA_KEY, 0)) >= 0)
+                btrfs_leaf_remove_at(fs, node_buf, (uint32_t)epos);
+            /* Clear size in inode */
+            int ipos = btrfs_leaf_find_exact(node_buf, ino, BTRFS_INODE_ITEM_KEY, 0);
+            if (ipos >= 0) {
+                btrfs_item_t *it = (btrfs_item_t *)(node_buf + BTRFS_NODE_HDR_SZ + (uint32_t)ipos * BTRFS_ITEM_SZ);
+                uint8_t *d = node_buf + fs->nodesize - it->data_offset - it->data_size;
+                if (it->data_size >= sizeof(btrfs_inode_item_t))
+                    ((btrfs_inode_item_t *)d)->size = 0;
+            }
+            btrfs_write_fs_leaf(fs, node_buf);
+        }
+    }
 
     uint64_t size = 0;
     uint32_t mode = 0;
@@ -620,10 +705,287 @@ static int btrfs_vfs_read(void *ctx, int fd, void *buf, uint32_t size)
     return (int)done;
 }
 
+/* ---- leaf write helpers ---- */
+
+static uint32_t btrfs_leaf_data_total(uint8_t *leaf)
+{
+    btrfs_node_hdr_t *hdr = (btrfs_node_hdr_t *)leaf;
+    uint32_t total = 0;
+    uint8_t *ib = leaf + BTRFS_NODE_HDR_SZ;
+    for (uint32_t i = 0; i < hdr->nritems; i++) {
+        btrfs_item_t *it = (btrfs_item_t *)(ib + i * BTRFS_ITEM_SZ);
+        total += it->data_size;
+    }
+    return total;
+}
+
+static int btrfs_leaf_find_exact(uint8_t *leaf, uint64_t objectid, uint8_t type, uint64_t offset)
+{
+    btrfs_node_hdr_t *hdr = (btrfs_node_hdr_t *)leaf;
+    uint8_t *ib = leaf + BTRFS_NODE_HDR_SZ;
+    for (uint32_t i = 0; i < hdr->nritems; i++) {
+        btrfs_item_t *it = (btrfs_item_t *)(ib + i * BTRFS_ITEM_SZ);
+        if (it->key.objectid == objectid && it->key.type == type && it->key.offset == offset)
+            return (int)i;
+    }
+    return -1;
+}
+
+/* Insert item sorted by (objectid,type,offset). Data goes after all existing data. */
+static int btrfs_leaf_insert(btrfs_t *fs, uint8_t *leaf, btrfs_key_t *key,
+                              const void *data, uint32_t data_size)
+{
+    btrfs_node_hdr_t *hdr = (btrfs_node_hdr_t *)leaf;
+    uint32_t nr = hdr->nritems;
+    uint32_t total_data = btrfs_leaf_data_total(leaf);
+    uint32_t free_space = fs->nodesize - BTRFS_NODE_HDR_SZ - (nr + 1) * BTRFS_ITEM_SZ - total_data - data_size;
+    if ((int32_t)free_space < 0) return -1;
+
+    /* Find sorted insertion position */
+    uint8_t *ib = leaf + BTRFS_NODE_HDR_SZ;
+    uint32_t pos = nr;
+    for (uint32_t i = 0; i < nr; i++) {
+        btrfs_item_t *it = (btrfs_item_t *)(ib + i * BTRFS_ITEM_SZ);
+        if (it->key.objectid > key->objectid ||
+            (it->key.objectid == key->objectid && it->key.type > key->type) ||
+            (it->key.objectid == key->objectid && it->key.type == key->type && it->key.offset >= key->offset)) {
+            pos = i;
+            break;
+        }
+    }
+
+    if (pos < nr)
+        memmove(ib + (pos + 1) * BTRFS_ITEM_SZ, ib + pos * BTRFS_ITEM_SZ, (nr - pos) * BTRFS_ITEM_SZ);
+
+    btrfs_item_t *new_item = (btrfs_item_t *)(ib + pos * BTRFS_ITEM_SZ);
+    new_item->key = *key;
+    new_item->data_offset = total_data;
+    new_item->data_size = data_size;
+
+    uint8_t *dst = leaf + fs->nodesize - total_data - data_size;
+    memcpy(dst, data, data_size);
+    hdr->nritems = nr + 1;
+    return 0;
+}
+
+/* Remove item at position pos, compact data. */
+static void btrfs_leaf_remove_at(btrfs_t *fs, uint8_t *leaf, uint32_t pos)
+{
+    btrfs_node_hdr_t *hdr = (btrfs_node_hdr_t *)leaf;
+    if (pos >= hdr->nritems) return;
+    uint8_t *ib = leaf + BTRFS_NODE_HDR_SZ;
+    btrfs_item_t *item = (btrfs_item_t *)(ib + pos * BTRFS_ITEM_SZ);
+    uint32_t rem_off  = item->data_offset;
+    uint32_t rem_size = item->data_size;
+    uint8_t *data_end = leaf + fs->nodesize;
+
+    /* Shift up data that's packed "below" the removed item */
+    for (uint32_t i = 0; i < hdr->nritems; i++) {
+        if (i == pos) continue;
+        btrfs_item_t *it = (btrfs_item_t *)(ib + i * BTRFS_ITEM_SZ);
+        if (it->data_offset > rem_off) {
+            uint8_t *src = data_end - it->data_offset - it->data_size;
+            memmove(src + rem_size, src, it->data_size);
+            it->data_offset -= rem_size;
+        }
+    }
+    memset(data_end - rem_off - rem_size, 0, rem_size);
+
+    if (pos + 1 < hdr->nritems)
+        memmove(ib + pos * BTRFS_ITEM_SZ, ib + (pos + 1) * BTRFS_ITEM_SZ,
+                (hdr->nritems - pos - 1) * BTRFS_ITEM_SZ);
+    memset(ib + (hdr->nritems - 1) * BTRFS_ITEM_SZ, 0, BTRFS_ITEM_SZ);
+    hdr->nritems--;
+}
+
+static int btrfs_load_fs_leaf(btrfs_t *fs, uint8_t *leaf)
+{
+    if (fs->fs_tree_logical == 0) {
+        if (btrfs_find_root(fs, leaf, BTRFS_FS_TREE_OBJECTID, &fs->fs_tree_logical) != 0)
+            return -1;
+    }
+    return btrfs_read_node(fs, fs->fs_tree_logical, leaf, fs->nodesize);
+}
+
+static int btrfs_write_fs_leaf(btrfs_t *fs, uint8_t *leaf)
+{
+    uint64_t phys;
+    btrfs_logical_to_phys(fs, fs->fs_tree_logical, &phys);
+    return blockdev_write_bytes(fs->bd, phys, fs->nodesize, leaf);
+}
+
+static void btrfs_split_path(const char *path, char *parent, char *name)
+{
+    const char *last = path;
+    for (const char *p = path; *p; p++)
+        if (*p == '/') last = p;
+    if (last == path) {
+        parent[0] = '/'; parent[1] = 0;
+        int i = 0;
+        const char *n = (last[0] == '/' && last[1]) ? last + 1 : last;
+        while (*n && i < BTRFS_MAX_FILENAME) name[i++] = *n++;
+        name[i] = 0;
+    } else {
+        int plen = (int)(last - path);
+        memcpy(parent, path, (size_t)plen);
+        parent[plen] = 0;
+        int i = 0;
+        const char *n = last + 1;
+        while (*n && i < BTRFS_MAX_FILENAME) name[i++] = *n++;
+        name[i] = 0;
+    }
+}
+
+/* Add INODE_ITEM + DIR_ITEM + DIR_INDEX for a new entry under dir_ino */
+static int btrfs_add_dir_entry(btrfs_t *fs, uint8_t *leaf, uint64_t dir_ino,
+                                uint64_t child_ino, const char *name, uint8_t ftype, uint8_t mode_hi)
+{
+    int namelen = 0;
+    while (name[namelen]) namelen++;
+
+    /* DIR_ITEM */
+    uint32_t di_total = (uint32_t)sizeof(btrfs_dir_item_t) + (uint32_t)namelen;
+    uint8_t *di_buf = (uint8_t *)malloc(di_total);
+    if (!di_buf) return -1;
+    memset(di_buf, 0, di_total);
+    btrfs_dir_item_t *di = (btrfs_dir_item_t *)di_buf;
+    di->location.objectid = child_ino;
+    di->location.type = BTRFS_INODE_ITEM_KEY;
+    di->location.offset = 0;
+    di->name_len = (uint16_t)namelen;
+    di->type = ftype;
+    memcpy(di_buf + sizeof(btrfs_dir_item_t), name, (size_t)namelen);
+
+    btrfs_key_t k;
+    k.objectid = dir_ino;
+    k.type = BTRFS_DIR_ITEM_KEY;
+    k.offset = 0;
+    if (btrfs_leaf_insert(fs, leaf, &k, di_buf, di_total) != 0) { free(di_buf); return -1; }
+
+    k.type = BTRFS_DIR_INDEX_KEY;
+    k.offset = child_ino;
+    if (btrfs_leaf_insert(fs, leaf, &k, di_buf, di_total) != 0) { free(di_buf); return -1; }
+    free(di_buf);
+
+    /* INODE_ITEM */
+    btrfs_inode_item_t ii;
+    memset(&ii, 0, sizeof(ii));
+    ii.nlink = 1;
+    if (ftype == BTRFS_FT_DIR) {
+        ii.mode = (uint32_t)0040000 | (mode_hi ? mode_hi : 0755);
+        ii.nlink = 2;
+    } else {
+        ii.mode = (uint32_t)0100000 | (mode_hi ? mode_hi : 0644);
+    }
+
+    k.objectid = child_ino;
+    k.type = BTRFS_INODE_ITEM_KEY;
+    k.offset = 0;
+    return btrfs_leaf_insert(fs, leaf, &k, &ii, sizeof(ii));
+}
+
 static int btrfs_vfs_write(void *ctx, int fd, const void *buf, uint32_t size)
 {
-    (void)ctx; (void)fd; (void)buf; (void)size;
-    return -1;
+    btrfs_t *fs = (btrfs_t *)ctx;
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fs->fds[fd].used || fs->fds[fd].is_dir) return -1;
+    if (size == 0) return 0;
+
+    uint8_t *leaf = (uint8_t *)malloc(fs->nodesize);
+    if (!leaf) return -1;
+    if (btrfs_load_fs_leaf(fs, leaf) != 0) { free(leaf); return -1; }
+
+    uint32_t pos = fs->fds[fd].pos;
+    uint64_t ino = fs->fds[fd].ino;
+    uint32_t new_end = pos + size;
+
+    /* Max inline size: keep some headroom */
+    uint32_t max_inline = (fs->nodesize / 4 < 4096) ? fs->nodesize / 4 : 4096;
+
+    if (new_end <= max_inline) {
+        int epos = btrfs_leaf_find_exact(leaf, ino, BTRFS_EXTENT_DATA_KEY, 0);
+        uint32_t existing_inline = 0;
+        uint8_t *existing_data = NULL;
+
+        if (epos >= 0) {
+            btrfs_item_t *it = (btrfs_item_t *)(leaf + BTRFS_NODE_HDR_SZ + (uint32_t)epos * BTRFS_ITEM_SZ);
+            uint8_t *d = leaf + fs->nodesize - it->data_offset - it->data_size;
+            btrfs_extent_data_t *ed = (btrfs_extent_data_t *)d;
+            if (ed->type == 0)
+                existing_inline = it->data_size - (uint32_t)sizeof(btrfs_extent_data_t);
+            existing_data = d + sizeof(btrfs_extent_data_t);
+        }
+
+        uint32_t new_inline = (new_end > existing_inline) ? new_end : existing_inline;
+        uint32_t new_total = (uint32_t)sizeof(btrfs_extent_data_t) + new_inline;
+        uint8_t *ed_buf = (uint8_t *)malloc(new_total);
+        if (!ed_buf) { free(leaf); return -1; }
+        memset(ed_buf, 0, new_total);
+
+        if (epos >= 0 && existing_data)
+            memcpy(ed_buf + sizeof(btrfs_extent_data_t), existing_data, existing_inline);
+        memcpy(ed_buf + sizeof(btrfs_extent_data_t) + pos, buf, size);
+
+        btrfs_extent_data_t *ned = (btrfs_extent_data_t *)ed_buf;
+        ned->ram_bytes = new_inline;
+        ned->type = 0;
+
+        if (epos >= 0)
+            btrfs_leaf_remove_at(fs, leaf, (uint32_t)epos);
+
+        btrfs_key_t k = { .objectid = ino, .type = BTRFS_EXTENT_DATA_KEY, .offset = 0 };
+        int r = btrfs_leaf_insert(fs, leaf, &k, ed_buf, new_total);
+        free(ed_buf);
+        if (r != 0) { free(leaf); return -1; }
+    } else {
+        /* Regular extent: write data to disk and store a regular EXTENT_DATA */
+        uint64_t data_logical = fs->next_data_logical;
+        uint64_t data_phys;
+        btrfs_logical_to_phys(fs, data_logical, &data_phys);
+        blockdev_write_bytes(fs->bd, data_phys, size, buf);
+        fs->next_data_logical = (data_logical + size + 511) & ~(uint64_t)511;
+
+        int epos = btrfs_leaf_find_exact(leaf, ino, BTRFS_EXTENT_DATA_KEY, (uint64_t)pos);
+        if (epos >= 0)
+            btrfs_leaf_remove_at(fs, leaf, (uint32_t)epos);
+
+        uint32_t reg_total = (uint32_t)(sizeof(btrfs_extent_data_t) + sizeof(btrfs_extent_reg_t));
+        uint8_t *ed_buf = (uint8_t *)malloc(reg_total);
+        if (!ed_buf) { free(leaf); return -1; }
+        memset(ed_buf, 0, reg_total);
+        btrfs_extent_data_t *ned = (btrfs_extent_data_t *)ed_buf;
+        ned->ram_bytes = size;
+        ned->type = 1;
+        btrfs_extent_reg_t *reg = (btrfs_extent_reg_t *)(ed_buf + sizeof(btrfs_extent_data_t));
+        reg->disk_bytenr = data_logical;
+        reg->disk_num_bytes = size;
+        reg->offset = 0;
+        reg->num_bytes = size;
+
+        btrfs_key_t k = { .objectid = ino, .type = BTRFS_EXTENT_DATA_KEY, .offset = (uint64_t)pos };
+        int r = btrfs_leaf_insert(fs, leaf, &k, ed_buf, reg_total);
+        free(ed_buf);
+        if (r != 0) { free(leaf); return -1; }
+    }
+
+    /* Update INODE_ITEM size */
+    int ipos = btrfs_leaf_find_exact(leaf, ino, BTRFS_INODE_ITEM_KEY, 0);
+    if (ipos >= 0) {
+        btrfs_item_t *it = (btrfs_item_t *)(leaf + BTRFS_NODE_HDR_SZ + (uint32_t)ipos * BTRFS_ITEM_SZ);
+        uint8_t *d = leaf + fs->nodesize - it->data_offset - it->data_size;
+        if (it->data_size >= sizeof(btrfs_inode_item_t)) {
+            btrfs_inode_item_t *ii = (btrfs_inode_item_t *)d;
+            if (new_end > (uint32_t)ii->size)
+                ii->size = new_end;
+        }
+    }
+
+    btrfs_write_fs_leaf(fs, leaf);
+    free(leaf);
+
+    fs->fds[fd].pos += size;
+    if (fs->fds[fd].pos > fs->fds[fd].size)
+        fs->fds[fd].size = fs->fds[fd].pos;
+    return (int)size;
 }
 
 static int btrfs_vfs_lseek(void *ctx, int fd, uint32_t offset, int whence)
@@ -707,14 +1069,87 @@ static int btrfs_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, 
 
 static int btrfs_vfs_mkdir(void *ctx, const char *path, uint32_t mode)
 {
-    (void)ctx; (void)path; (void)mode;
-    return -1;
+    btrfs_t *fs = (btrfs_t *)ctx;
+
+    uint8_t *node_buf = (uint8_t *)malloc(fs->nodesize);
+    if (!node_buf) return -1;
+
+    uint64_t fs_tree;
+    if (btrfs_get_fs_tree(fs, node_buf, &fs_tree) != 0) { free(node_buf); return -1; }
+
+    uint64_t dummy_ino;
+    int dummy_is_dir;
+    if (btrfs_walk_path(fs, fs_tree, node_buf, path, &dummy_ino, &dummy_is_dir) == 0) {
+        free(node_buf); return -1; /* already exists */
+    }
+
+    char parent[256], name[BTRFS_MAX_FILENAME + 1];
+    btrfs_split_path(path, parent, name);
+    if (!name[0]) { free(node_buf); return -1; }
+
+    uint64_t dir_ino;
+    int dir_is_dir = 0;
+    if (btrfs_walk_path(fs, fs_tree, node_buf, parent, &dir_ino, &dir_is_dir) != 0 || !dir_is_dir) {
+        free(node_buf); return -1;
+    }
+
+    uint64_t new_ino = fs->next_objectid++;
+    if (btrfs_load_fs_leaf(fs, node_buf) != 0) { free(node_buf); return -1; }
+    if (btrfs_add_dir_entry(fs, node_buf, dir_ino, new_ino, name, BTRFS_FT_DIR, (uint8_t)(mode & 0777)) != 0) {
+        free(node_buf); return -1;
+    }
+    btrfs_write_fs_leaf(fs, node_buf);
+    free(node_buf);
+    return 0;
 }
 
 static int btrfs_vfs_unlink(void *ctx, const char *path)
 {
-    (void)ctx; (void)path;
-    return -1;
+    btrfs_t *fs = (btrfs_t *)ctx;
+
+    uint8_t *node_buf = (uint8_t *)malloc(fs->nodesize);
+    if (!node_buf) return -1;
+
+    uint64_t fs_tree;
+    if (btrfs_get_fs_tree(fs, node_buf, &fs_tree) != 0) { free(node_buf); return -1; }
+
+    uint64_t ino;
+    int is_dir = 0;
+    if (btrfs_walk_path(fs, fs_tree, node_buf, path, &ino, &is_dir) != 0) {
+        free(node_buf); return -1;
+    }
+
+    char parent[256], name[BTRFS_MAX_FILENAME + 1];
+    btrfs_split_path(path, parent, name);
+
+    uint64_t dir_ino;
+    int dir_is_dir = 0;
+    btrfs_walk_path(fs, fs_tree, node_buf, parent, &dir_ino, &dir_is_dir);
+
+    if (btrfs_load_fs_leaf(fs, node_buf) != 0) { free(node_buf); return -1; }
+
+    /* Remove DIR_ITEM, DIR_INDEX, INODE_ITEM, EXTENT_DATA */
+    int p;
+    while ((p = btrfs_leaf_find_exact(node_buf, dir_ino, BTRFS_DIR_ITEM_KEY, 0)) >= 0)
+        btrfs_leaf_remove_at(fs, node_buf, (uint32_t)p);
+    while ((p = btrfs_leaf_find_exact(node_buf, dir_ino, BTRFS_DIR_INDEX_KEY, ino)) >= 0)
+        btrfs_leaf_remove_at(fs, node_buf, (uint32_t)p);
+    while ((p = btrfs_leaf_find_exact(node_buf, ino, BTRFS_INODE_ITEM_KEY, 0)) >= 0)
+        btrfs_leaf_remove_at(fs, node_buf, (uint32_t)p);
+    /* Remove any extent data */
+    btrfs_node_hdr_t *hdr = (btrfs_node_hdr_t *)node_buf;
+    for (uint32_t i = 0; i < hdr->nritems; ) {
+        btrfs_item_t *it = (btrfs_item_t *)(node_buf + BTRFS_NODE_HDR_SZ + i * BTRFS_ITEM_SZ);
+        if (it->key.objectid == ino && it->key.type == BTRFS_EXTENT_DATA_KEY) {
+            btrfs_leaf_remove_at(fs, node_buf, i);
+        } else {
+            i++;
+        }
+    }
+
+    btrfs_write_fs_leaf(fs, node_buf);
+    free(node_buf);
+    return 0;
 }
 
 static int btrfs_vfs_stat(void *ctx, const char *path, vfs_entry_t *entry)
@@ -754,8 +1189,70 @@ static int btrfs_vfs_stat(void *ctx, const char *path, vfs_entry_t *entry)
 
 static int btrfs_vfs_rename(void *ctx, const char *old, const char *new)
 {
-    (void)ctx; (void)old; (void)new;
-    return -1;
+    btrfs_t *fs = (btrfs_t *)ctx;
+
+    uint8_t *node_buf = (uint8_t *)malloc(fs->nodesize);
+    if (!node_buf) return -1;
+
+    uint64_t fs_tree;
+    if (btrfs_get_fs_tree(fs, node_buf, &fs_tree) != 0) { free(node_buf); return -1; }
+
+    uint64_t ino;
+    int is_dir = 0;
+    if (btrfs_walk_path(fs, fs_tree, node_buf, old, &ino, &is_dir) != 0) {
+        free(node_buf); return -1;
+    }
+
+    char old_parent[256], old_name[BTRFS_MAX_FILENAME + 1];
+    char new_parent[256], new_name[BTRFS_MAX_FILENAME + 1];
+    btrfs_split_path(old, old_parent, old_name);
+    btrfs_split_path(new, new_parent, new_name);
+
+    uint64_t old_dir_ino, new_dir_ino;
+    int tmp_is_dir = 0;
+    if (btrfs_walk_path(fs, fs_tree, node_buf, old_parent, &old_dir_ino, &tmp_is_dir) != 0) {
+        free(node_buf); return -1;
+    }
+    if (btrfs_walk_path(fs, fs_tree, node_buf, new_parent, &new_dir_ino, &tmp_is_dir) != 0) {
+        free(node_buf); return -1;
+    }
+
+    if (btrfs_load_fs_leaf(fs, node_buf) != 0) { free(node_buf); return -1; }
+
+    /* Remove old dir entries */
+    int p;
+    while ((p = btrfs_leaf_find_exact(node_buf, old_dir_ino, BTRFS_DIR_ITEM_KEY, 0)) >= 0)
+        btrfs_leaf_remove_at(fs, node_buf, (uint32_t)p);
+    while ((p = btrfs_leaf_find_exact(node_buf, old_dir_ino, BTRFS_DIR_INDEX_KEY, ino)) >= 0)
+        btrfs_leaf_remove_at(fs, node_buf, (uint32_t)p);
+
+    /* Add new dir entries */
+    uint8_t ftype = is_dir ? BTRFS_FT_DIR : BTRFS_FT_REG_FILE;
+    uint32_t di_total = (uint32_t)sizeof(btrfs_dir_item_t) + (uint32_t)strlen(new_name);
+    uint8_t *di_buf = (uint8_t *)malloc(di_total);
+    if (di_buf) {
+        memset(di_buf, 0, di_total);
+        btrfs_dir_item_t *di = (btrfs_dir_item_t *)di_buf;
+        di->location.objectid = ino;
+        di->location.type = BTRFS_INODE_ITEM_KEY;
+        di->name_len = (uint16_t)strlen(new_name);
+        di->type = ftype;
+        memcpy(di_buf + sizeof(btrfs_dir_item_t), new_name, strlen(new_name));
+
+        btrfs_key_t k;
+        k.objectid = new_dir_ino;
+        k.type = BTRFS_DIR_ITEM_KEY;
+        k.offset = 0;
+        btrfs_leaf_insert(fs, node_buf, &k, di_buf, di_total);
+        k.type = BTRFS_DIR_INDEX_KEY;
+        k.offset = ino;
+        btrfs_leaf_insert(fs, node_buf, &k, di_buf, di_total);
+        free(di_buf);
+    }
+
+    btrfs_write_fs_leaf(fs, node_buf);
+    free(node_buf);
+    return 0;
 }
 
 static int btrfs_vfs_symlink(void *ctx, const char *target, const char *path)
@@ -861,15 +1358,26 @@ int btrfs_format(blockdev_t *bd, const char *label)
     uint8_t *node = (uint8_t *)malloc(nodesize);
     if (!node) { free(sb); free(zero); return -1; }
 
-    /* Write empty root tree node */
+    /* Write root tree node with a single ROOT_ITEM pointing to the fs tree */
     memset(node, 0, nodesize);
     {
         btrfs_node_hdr_t *hdr = (btrfs_node_hdr_t *)node;
         hdr->bytenr      = chunk_logical;
         hdr->generation  = 1;
         hdr->owner       = BTRFS_FS_TREE_OBJECTID;
-        hdr->nritems     = 0;
         hdr->level       = 0;
+
+        /* One item: ROOT_ITEM for FS_TREE_OBJECTID, data = logical addr of fs tree */
+        uint64_t fs_tree_logical_val = chunk_logical + nodesize * 2;
+        btrfs_item_t *it = (btrfs_item_t *)(node + BTRFS_NODE_HDR_SZ);
+        it->key.objectid = BTRFS_FS_TREE_OBJECTID;
+        it->key.type     = BTRFS_ROOT_ITEM_KEY;
+        it->key.offset   = 0;
+        it->data_offset  = 0;
+        it->data_size    = 8;
+        /* Data at end of node: 8 bytes = fs_tree logical */
+        memcpy(node + nodesize - 8, &fs_tree_logical_val, 8);
+        hdr->nritems = 1;
     }
     blockdev_write_bytes(bd, root_tree_phys, nodesize, node);
 

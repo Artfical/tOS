@@ -28,6 +28,8 @@ typedef struct {
     uint8_t  agblklog;
     uint8_t  inopblog;
     char     fname[13];
+    uint64_t next_ino;
+    uint64_t next_block;
     xfs_fd_t fds[VFS_MAX_FDS];
 } xfs_t;
 
