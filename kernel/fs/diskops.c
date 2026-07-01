@@ -147,40 +147,41 @@ const char *diskops_detect(const char *name)
     blockdev_t *bd = blockdev_find(name);
     if (!bd || bd->mounted) return NULL;
 
+    static tfsk_t  det_tfs;
+    static fat32_t det_f32;
+    static fat16_t det_f16;
+    static exfat_t det_ef;
+    static ext4_t  det_e4;
+    static ext3_t  det_e3;
+    static ext2_t  det_e2;
+    static ntfs_t  det_nt;
+
     if (bd->type == BLOCKDEV_ATA) {
-        tfsk_t tfs;
-        memset(&tfs, 0, sizeof(tfs));
-        tfs.dev = (ata_device_t *)bd->driver_data;
-        if (tfsk_probe_and_mount(&tfs) == 0) return "tfsk";
+        memset(&det_tfs, 0, sizeof(det_tfs));
+        det_tfs.dev = (ata_device_t *)bd->driver_data;
+        if (tfsk_probe_and_mount(&det_tfs) == 0) return "tfsk";
     }
 
-    fat32_t f32;
-    memset(&f32, 0, sizeof(f32));
-    if (fat32_probe_and_mount(&f32, bd) == 0) return "fat32";
+    memset(&det_f32, 0, sizeof(det_f32));
+    if (fat32_probe_and_mount(&det_f32, bd) == 0) return "fat32";
 
-    fat16_t f16;
-    memset(&f16, 0, sizeof(f16));
-    if (fat16_probe_and_mount(&f16, bd) == 0) return "fat16";
+    memset(&det_f16, 0, sizeof(det_f16));
+    if (fat16_probe_and_mount(&det_f16, bd) == 0) return "fat16";
 
-    exfat_t ef;
-    memset(&ef, 0, sizeof(ef));
-    if (exfat_probe_and_mount(&ef, bd) == 0) return "exfat";
+    memset(&det_ef, 0, sizeof(det_ef));
+    if (exfat_probe_and_mount(&det_ef, bd) == 0) return "exfat";
 
-    ext4_t e4;
-    memset(&e4, 0, sizeof(e4));
-    if (ext4_probe_and_mount(&e4, bd) == 0) return "ext4";
+    memset(&det_e4, 0, sizeof(det_e4));
+    if (ext4_probe_and_mount(&det_e4, bd) == 0) return "ext4";
 
-    ext3_t e3;
-    memset(&e3, 0, sizeof(e3));
-    if (ext3_probe_and_mount(&e3, bd) == 0) return "ext3";
+    memset(&det_e3, 0, sizeof(det_e3));
+    if (ext3_probe_and_mount(&det_e3, bd) == 0) return "ext3";
 
-    ext2_t e2;
-    memset(&e2, 0, sizeof(e2));
-    if (ext2_probe_and_mount(&e2, bd) == 0) return "ext2";
+    memset(&det_e2, 0, sizeof(det_e2));
+    if (ext2_probe_and_mount(&det_e2, bd) == 0) return "ext2";
 
-    ntfs_t nt;
-    memset(&nt, 0, sizeof(nt));
-    if (ntfs_probe_and_mount(&nt, bd) == 0) return "ntfs";
+    memset(&det_nt, 0, sizeof(det_nt));
+    if (ntfs_probe_and_mount(&det_nt, bd) == 0) return "ntfs";
 
     return NULL;
 }
