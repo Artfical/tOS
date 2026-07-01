@@ -98,6 +98,10 @@ KERNEL_OBJS = \
     kernel/fs/ext3.o \
     kernel/fs/ext4.o \
     kernel/fs/ntfs.o \
+    kernel/fs/btrfs.o \
+    kernel/fs/xfs.o \
+    kernel/fs/zfs.o \
+    kernel/fs/apfs.o \
     kernel/fs/diskops.o \
     kernel/fs/tarfmt.o \
     kernel/fs/zipfmt.o \

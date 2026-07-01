@@ -11,10 +11,14 @@
 #include "ext3.h"
 #include "ext4.h"
 #include "ntfs.h"
+#include "btrfs.h"
+#include "xfs.h"
+#include "zfs.h"
+#include "apfs.h"
 #include "klog.h"
 
-const char *diskops_fstypes[] = { "tfsk", "fat16", "fat32", "exfat", "ext2", "ext3", "ext4", "ntfs" };
-const int diskops_fstypes_count = 8;
+const char *diskops_fstypes[] = { "tfsk", "fat16", "fat32", "exfat", "ext2", "ext3", "ext4", "ntfs", "btrfs", "xfs", "zfs", "apfs" };
+const int diskops_fstypes_count = 12;
 
 /* Every mount/umount/format failure funnels through here, so the
  * kernel log (`log`/`dmesg`) sees every error a caller sees in `err`,
@@ -126,6 +130,46 @@ int diskops_mount(const char *name, const char *mount_point, const char *fstype,
         ntfs_next++;
         ntfs_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
+    } else if (strcmp(fstype, "btrfs") == 0) {
+        static btrfs_t btrfs_instances[VFS_MAX_MOUNTS];
+        static int btrfs_next = 0;
+        if (btrfs_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
+        btrfs_t *fs = &btrfs_instances[btrfs_next];
+        memset(fs, 0, sizeof(*fs));
+        if (btrfs_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "btrfs probe failed (not formatted?)"); return -1; }
+        btrfs_next++;
+        btrfs_mount_vfs(fs, mount_point);
+        bd->fs_ctx = fs;
+    } else if (strcmp(fstype, "xfs") == 0) {
+        static xfs_t xfs_instances[VFS_MAX_MOUNTS];
+        static int xfs_next = 0;
+        if (xfs_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
+        xfs_t *fs = &xfs_instances[xfs_next];
+        memset(fs, 0, sizeof(*fs));
+        if (xfs_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "xfs probe failed (not formatted?)"); return -1; }
+        xfs_next++;
+        xfs_mount_vfs(fs, mount_point);
+        bd->fs_ctx = fs;
+    } else if (strcmp(fstype, "zfs") == 0) {
+        static zfs_t zfs_instances[VFS_MAX_MOUNTS];
+        static int zfs_next = 0;
+        if (zfs_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
+        zfs_t *fs = &zfs_instances[zfs_next];
+        memset(fs, 0, sizeof(*fs));
+        if (zfs_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "zfs probe failed (not formatted?)"); return -1; }
+        zfs_next++;
+        zfs_mount_vfs(fs, mount_point);
+        bd->fs_ctx = fs;
+    } else if (strcmp(fstype, "apfs") == 0) {
+        static apfs_t apfs_instances[VFS_MAX_MOUNTS];
+        static int apfs_next = 0;
+        if (apfs_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
+        apfs_t *fs = &apfs_instances[apfs_next];
+        memset(fs, 0, sizeof(*fs));
+        if (apfs_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "apfs probe failed (not formatted?)"); return -1; }
+        apfs_next++;
+        apfs_mount_vfs(fs, mount_point);
+        bd->fs_ctx = fs;
     } else {
         seterr(err, err_len, "unsupported filesystem type");
         return -1;
@@ -155,6 +199,10 @@ const char *diskops_detect(const char *name)
     static ext3_t  det_e3;
     static ext2_t  det_e2;
     static ntfs_t  det_nt;
+    static btrfs_t det_btrfs;
+    static xfs_t   det_xfs;
+    static zfs_t   det_zfs;
+    static apfs_t  det_apfs;
 
     if (bd->type == BLOCKDEV_ATA) {
         memset(&det_tfs, 0, sizeof(det_tfs));
@@ -182,6 +230,18 @@ const char *diskops_detect(const char *name)
 
     memset(&det_nt, 0, sizeof(det_nt));
     if (ntfs_probe_and_mount(&det_nt, bd) == 0) return "ntfs";
+
+    memset(&det_btrfs, 0, sizeof(det_btrfs));
+    if (btrfs_probe_and_mount(&det_btrfs, bd) == 0) return "btrfs";
+
+    memset(&det_xfs, 0, sizeof(det_xfs));
+    if (xfs_probe_and_mount(&det_xfs, bd) == 0) return "xfs";
+
+    memset(&det_zfs, 0, sizeof(det_zfs));
+    if (zfs_probe_and_mount(&det_zfs, bd) == 0) return "zfs";
+
+    memset(&det_apfs, 0, sizeof(det_apfs));
+    if (apfs_probe_and_mount(&det_apfs, bd) == 0) return "apfs";
 
     return NULL;
 }
@@ -232,6 +292,14 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
         if (ext4_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
     } else if (strcmp(fstype, "ntfs") == 0) {
         if (ntfs_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
+    } else if (strcmp(fstype, "btrfs") == 0) {
+        if (btrfs_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
+    } else if (strcmp(fstype, "xfs") == 0) {
+        if (xfs_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
+    } else if (strcmp(fstype, "zfs") == 0) {
+        if (zfs_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
+    } else if (strcmp(fstype, "apfs") == 0) {
+        if (apfs_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
     } else {
         seterr(err, err_len, "unsupported filesystem type");
         return -1;
