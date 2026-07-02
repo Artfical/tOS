@@ -12,13 +12,15 @@
 #include "serial.h"
 #include "keyboard.h"
 
-static char heap[16 * 1024];
+static char heap[128 * 1024];
 
 void tos_module_init(void);
 void tosgui_module_init(void);
 
 int micropython_init(void) {
     serial_write("micropython: init\n");
+    mp_stack_ctrl_init();
+    mp_stack_set_limit(32 * 1024); // 32 KB stack limit
     gc_init(heap, heap + sizeof(heap));
     mp_init();
     tos_module_init();
