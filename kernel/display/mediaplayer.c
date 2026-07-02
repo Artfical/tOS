@@ -133,12 +133,7 @@ static void mp_fmt_time(char *buf, uint32_t sec)
 
 static uint32_t current_pos_sec(void)
 {
-    if (g_fmt==FMT_WAV && !g_filebuf)
-        return g_pcmpos / DEMO_SONG_RATE;   /* demo song: exact pump position */
-    if (g_fmt==FMT_WAV && g_filebuf)
-        return wav_pos_sec(&g_wav);
-    if (g_fmt==FMT_MP3)
-        return mp3_pos_sec(&g_mp3);
+    /* SW timer always advances even if HW audio is broken */
     return g_sw_pos_sec;
 }
 
@@ -678,15 +673,23 @@ void mediaplayer_run(void)
                 g_sw_tick = 0;
                 if (g_sw_pos_sec < g_dur_sec)
                     g_sw_pos_sec++;
-                /* No-HW path: advance pcmpos by SW timer */
-                if (!audio_available() && g_fmt==FMT_WAV && !g_filebuf) {
-                    g_pcmpos = g_sw_pos_sec * DEMO_SONG_RATE;
-                    if (g_pcmpos >= DEMO_SONG_LEN) {
-                        if (g_loop) { g_pcmpos=0; g_sw_pos_sec=0; }
-                        else { g_state=ST_STOPPED;
-                               strncpy(g_status,"Playback complete.",MP_COLS);
-                               g_dirty=DIRTY_ALL; }
+                /* No-HW: drive pcmpos from SW timer so demo song "plays" */
+                if (!audio_available()) {
+                    if (g_fmt==FMT_WAV && !g_filebuf) {
+                        g_pcmpos = g_sw_pos_sec * DEMO_SONG_RATE;
+                        if (g_pcmpos >= DEMO_SONG_LEN) {
+                            if (g_loop) { g_pcmpos=0; g_sw_pos_sec=0; }
+                            else { g_state=ST_STOPPED;
+                                   strncpy(g_status,"Playback complete.",MP_COLS);
+                                   g_dirty=DIRTY_ALL; }
+                        }
                     }
+                } else if (g_sw_pos_sec >= g_dur_sec && g_dur_sec>0) {
+                    /* HW mode: if SW timer ran out but pump didn't EOF yet, stop */
+                    if (!g_loop) { g_state=ST_STOPPED;
+                                   strncpy(g_status,"Playback complete.",MP_COLS);
+                                   g_dirty=DIRTY_ALL; }
+                    else { g_sw_pos_sec=0; }
                 }
             }
         }

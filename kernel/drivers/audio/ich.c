@@ -168,10 +168,7 @@ int ich_audio_busy(ich_dev_t *dev)
     uint8_t cr = bm8(dev->nabmbar, ICH_PCO_CR);
     if (!(cr & ICH_CR_RPBM)) return 0;   /* DMA not running */
     uint8_t sr = bm8(dev->nabmbar, ICH_PCO_SR);
-    if (sr & ICH_SR_DCH)  return 0;      /* DMA halted = done */
-    /* CIV has caught up to our last submitted slot = done */
-    uint8_t civ = bm8(dev->nabmbar, ICH_PCO_CIV);
-    if ((int)civ == dev->next_buf) return 0;
+    if (sr & ICH_SR_DCH)  return 0;      /* DMA halted */
     return 1;
 }
 
