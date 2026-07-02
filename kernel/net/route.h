@@ -48,4 +48,8 @@ int  policy_add(uint32_t src_ip, uint32_t src_mask,
 int  policy_del(int priority);
 void policy_list(void);
 
+/* Read-only query API (for Network Monitor GUI) */
+int route_get_count(void);
+int route_get_entry(int i, route_entry_t *out);
+
 #endif

@@ -42,6 +42,8 @@ void net_poll(void)
     uint8_t buf[1540]; /* 1536 + 4 bytes headroom for VLAN tag */
     int len = nic_poll(buf, 1536);
     if (len <= 0) return;
+    nic_rx_packets++;
+    nic_rx_bytes += (uint32_t)len;
 
     /* Pass through bridge ingress first */
     if (bridge_rx("eth0", buf, len)) return;

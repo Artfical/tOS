@@ -95,4 +95,8 @@ void fw_tx(ip_hdr_t *ip, void *payload, int payload_len);
 /* Dump conntrack table */
 void ct_dump(void);
 
+/* Read-only query API (for Network Monitor GUI) */
+int fw_get_rule_count(void);
+int fw_get_rule(int i, fw_rule_t *out);
+
 #endif

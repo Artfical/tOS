@@ -308,3 +308,12 @@ void fw_tx(ip_hdr_t *ip, void *payload, int payload_len)
         break;
     }
 }
+
+/* Read-only query API for Network Monitor */
+int fw_get_rule_count(void) { return fw_rule_count; }
+int fw_get_rule(int i, fw_rule_t *out)
+{
+    if (i < 0 || i >= fw_rule_count) return -1;
+    *out = fw_rules[i];
+    return 0;
+}

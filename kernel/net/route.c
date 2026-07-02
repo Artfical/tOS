@@ -206,3 +206,13 @@ void policy_list(void)
         terminal_putchar('\n');
     }
 }
+
+
+/* Read-only query API for Network Monitor */
+int route_get_count(void) { return route_count; }
+int route_get_entry(int i, route_entry_t *out)
+{
+    if (i < 0 || i >= route_count) return -1;
+    *out = routes[i];
+    return 0;
+}

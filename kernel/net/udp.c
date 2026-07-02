@@ -119,3 +119,16 @@ void udp_handle(ip_hdr_t *ip, void *pkt, int len)
         }
     }
 }
+
+/* Read-only query API for Network Monitor */
+int udp_get_sockets(udp_sock_info_t *out, int max)
+{
+    int n = 0, i;
+    for (i = 0; i < UDP_SOCKETS && n < max; i++) {
+        if (!udp_sockets[i].used) continue;
+        out[n].port     = udp_sockets[i].port;
+        out[n].has_data = udp_sockets[i].has_data;
+        n++;
+    }
+    return n;
+}

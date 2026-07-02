@@ -47,4 +47,14 @@ void tcp_close(void);
 void tcp_handle(ip_hdr_t *ip, void *pkt, int len);
 void tcp_tick(void);
 
+/* Read-only query API (for Network Monitor GUI) */
+typedef struct {
+    int      fd;
+    int      state;
+    uint32_t dst_ip;
+    uint16_t dst_port;
+    uint16_t src_port;
+} tcp_conn_info_t;
+int tcp_get_connections(tcp_conn_info_t *out, int max);
+
 #endif

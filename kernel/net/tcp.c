@@ -518,3 +518,20 @@ void tcp_close(void)
     tcp_close2(compat_fd);
     compat_fd = -1;
 }
+
+/* Read-only query API for Network Monitor */
+int tcp_get_connections(tcp_conn_info_t *out, int max)
+{
+    int n = 0;
+    int i;
+    for (i = 0; i < TCP_MAX_SOCKETS && n < max; i++) {
+        if (!socks[i].used) continue;
+        out[n].fd       = i;
+        out[n].state    = socks[i].state;
+        out[n].dst_ip   = socks[i].dst_ip;
+        out[n].dst_port = socks[i].dst_port;
+        out[n].src_port = socks[i].src_port;
+        n++;
+    }
+    return n;
+}

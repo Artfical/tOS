@@ -82,4 +82,13 @@ int  sctp_recv(uint8_t *buf, int max_len);
 void sctp_close(void);
 void sctp_handle(ip_hdr_t *ip, void *pkt, int len);
 
+/* Read-only query API (for Network Monitor GUI) */
+typedef struct {
+    int      state;
+    uint32_t dst_ip;
+    uint16_t dst_port;
+    uint16_t src_port;
+} sctp_info_t;
+int sctp_get_info(sctp_info_t *out);
+
 #endif

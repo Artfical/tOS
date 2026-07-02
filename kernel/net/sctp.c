@@ -373,3 +373,14 @@ void sctp_handle(ip_hdr_t *ip, void *pkt, int len) {
         rem -= padded;
     }
 }
+
+/* Read-only query API for Network Monitor */
+int sctp_get_info(sctp_info_t *out)
+{
+    if (!assoc_active) return 0;
+    out->state    = assoc.state;
+    out->dst_ip   = assoc.dst_ip;
+    out->dst_port = assoc.dst_port;
+    out->src_port = assoc.src_port;
+    return 1;
+}

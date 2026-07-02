@@ -16,4 +16,8 @@ int  udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port, void *data,
 void udp_handle(ip_hdr_t *ip, void *pkt, int len);
 int  udp_listen(uint16_t port, uint8_t *resp, int max_len, uint32_t *src_ip, uint16_t *src_port);
 
+/* Read-only query API (for Network Monitor GUI) */
+typedef struct { uint16_t port; int has_data; } udp_sock_info_t;
+int udp_get_sockets(udp_sock_info_t *out, int max);
+
 #endif
