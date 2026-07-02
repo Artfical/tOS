@@ -159,15 +159,20 @@ void ich_audio_set_volume(ich_dev_t *dev, uint8_t vol)
 }
 
 /* ── Busy check ──────────────────────────────────────────────────────────── *
- * DMA is busy while RPBM is set AND DCH is clear.
- * DCH=1 means DMA halted (finished current batch) → not busy → ready.     */
+ * Primary: DCH=1 (DMA halted) in SR means done.
+ * Secondary: CIV == next_buf (current index caught up) means done.
+ * Fallback: if CR RPBM not set, DMA wasn't running → not busy.            */
 int ich_audio_busy(ich_dev_t *dev)
 {
     if (!dev->present) return 0;
     uint8_t cr = bm8(dev->nabmbar, ICH_PCO_CR);
-    if (!(cr & ICH_CR_RPBM)) return 0;          /* DMA not even running */
+    if (!(cr & ICH_CR_RPBM)) return 0;   /* DMA not running */
     uint8_t sr = bm8(dev->nabmbar, ICH_PCO_SR);
-    return (sr & ICH_SR_DCH) ? 0 : 1;           /* DCH=1 → done → not busy */
+    if (sr & ICH_SR_DCH)  return 0;      /* DMA halted = done */
+    /* CIV has caught up to our last submitted slot = done */
+    uint8_t civ = bm8(dev->nabmbar, ICH_PCO_CIV);
+    if ((int)civ == dev->next_buf) return 0;
+    return 1;
 }
 
 /* ── Stop ────────────────────────────────────────────────────────────────── */
