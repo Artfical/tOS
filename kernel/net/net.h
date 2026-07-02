@@ -5,6 +5,8 @@
 
 #define ETHERTYPE_IP   0x0800
 #define ETHERTYPE_ARP  0x0806
+#define ETHERTYPE_VLAN 0x8100
+#define ETHERTYPE_IPX  0x8137
 
 #define IPPROTO_ICMP    1
 #define IPPROTO_TCP     6

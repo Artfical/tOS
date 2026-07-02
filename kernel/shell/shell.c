@@ -473,6 +473,14 @@ static void shell_exec_line(char *cmd_line)
             cmd_udplite_send(argc, args);
         } else if (strcmp(c, "ipsec_sa") == 0) {
             cmd_ipsec_sa(argc, args);
+        } else if (strcmp(c, "vlan") == 0) {
+            cmd_vlan(argc, args);
+        } else if (strcmp(c, "bridge") == 0) {
+            cmd_bridge(argc, args);
+        } else if (strcmp(c, "bond") == 0) {
+            cmd_bond(argc, args);
+        } else if (strcmp(c, "ipx") == 0) {
+            cmd_ipx(argc, args);
         } else if (strcmp(c, "wget") == 0) {
             cmd_wget(argc, args);
         } else if (strcmp(c, "uptime") == 0) {

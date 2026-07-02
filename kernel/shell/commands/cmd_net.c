@@ -125,6 +125,10 @@ void cmd_python(int argc, char **args)
 #include "icmpv6.h"
 #include "ipsec.h"
 #include "ip6.h"
+#include "vlan.h"
+#include "bridge.h"
+#include "bonding.h"
+#include "ipx.h"
 
 void cmd_sctp_connect(int argc, char **args)
 {
@@ -245,4 +249,220 @@ void cmd_ipsec_sa(int argc, char **args)
 {
     (void)argc; (void)args;
     ipsec_dump_sa();
+}
+
+/* -----------------------------------------------------------------------
+ * VLAN commands
+ * vlan add <vid>  /  vlan rm <vid>  /  vlan list
+ * ----------------------------------------------------------------------- */
+void cmd_vlan(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: vlan add <vid> | vlan rm <vid> | vlan list\n");
+        return;
+    }
+    if (strcmp(args[1], "add") == 0) {
+        if (argc < 3) { terminal_writestring("usage: vlan add <vid>\n"); return; }
+        int vid = 0;
+        for (char *p = args[2]; *p; p++) vid = vid * 10 + (*p - '0');
+        if (vlan_add((uint16_t)vid) == 0) {
+            terminal_writestring("VLAN ");
+            terminal_writestring(args[2]);
+            terminal_writestring(" added\n");
+        } else {
+            terminal_writestring("vlan add: failed (full or invalid vid)\n");
+        }
+    } else if (strcmp(args[1], "rm") == 0 || strcmp(args[1], "del") == 0) {
+        if (argc < 3) { terminal_writestring("usage: vlan rm <vid>\n"); return; }
+        int vid = 0;
+        for (char *p = args[2]; *p; p++) vid = vid * 10 + (*p - '0');
+        if (vlan_remove((uint16_t)vid) == 0) {
+            terminal_writestring("VLAN ");
+            terminal_writestring(args[2]);
+            terminal_writestring(" removed\n");
+        } else {
+            terminal_writestring("vlan rm: not found\n");
+        }
+    } else if (strcmp(args[1], "list") == 0) {
+        vlan_list();
+    } else {
+        terminal_writestring("vlan: unknown subcommand. Use add/rm/list\n");
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * Bridge commands
+ * bridge create <name>  /  bridge del <name>
+ * bridge addif <br> <if>  /  bridge delif <br> <if>
+ * bridge list
+ * ----------------------------------------------------------------------- */
+void cmd_bridge(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: bridge create <name> | bridge del <name>\n");
+        terminal_writestring("       bridge addif <br> <if> | bridge delif <br> <if>\n");
+        terminal_writestring("       bridge list\n");
+        return;
+    }
+    if (strcmp(args[1], "create") == 0) {
+        if (argc < 3) { terminal_writestring("usage: bridge create <name>\n"); return; }
+        if (bridge_create(args[2]) == 0) {
+            terminal_writestring("bridge ");
+            terminal_writestring(args[2]);
+            terminal_writestring(" created\n");
+        } else {
+            terminal_writestring("bridge create: failed\n");
+        }
+    } else if (strcmp(args[1], "del") == 0) {
+        if (argc < 3) { terminal_writestring("usage: bridge del <name>\n"); return; }
+        if (bridge_destroy(args[2]) == 0) {
+            terminal_writestring("bridge ");
+            terminal_writestring(args[2]);
+            terminal_writestring(" deleted\n");
+        } else {
+            terminal_writestring("bridge del: not found\n");
+        }
+    } else if (strcmp(args[1], "addif") == 0) {
+        if (argc < 4) { terminal_writestring("usage: bridge addif <br> <if>\n"); return; }
+        if (bridge_add_if(args[2], args[3]) == 0) {
+            terminal_writestring(args[3]);
+            terminal_writestring(" added to bridge ");
+            terminal_writestring(args[2]);
+            terminal_putchar('\n');
+        } else {
+            terminal_writestring("bridge addif: failed\n");
+        }
+    } else if (strcmp(args[1], "delif") == 0) {
+        if (argc < 4) { terminal_writestring("usage: bridge delif <br> <if>\n"); return; }
+        if (bridge_remove_if(args[2], args[3]) == 0) {
+            terminal_writestring(args[3]);
+            terminal_writestring(" removed from bridge ");
+            terminal_writestring(args[2]);
+            terminal_putchar('\n');
+        } else {
+            terminal_writestring("bridge delif: failed\n");
+        }
+    } else if (strcmp(args[1], "list") == 0) {
+        bridge_list();
+    } else {
+        terminal_writestring("bridge: unknown subcommand\n");
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * Bonding commands
+ * bond create <name> [failover|balance]
+ * bond del <name>
+ * bond addif <bond> <if>
+ * bond delif <bond> <if>
+ * bond failover <name>
+ * bond list
+ * ----------------------------------------------------------------------- */
+void cmd_bond(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: bond create <name> [failover|balance]\n");
+        terminal_writestring("       bond del <name>\n");
+        terminal_writestring("       bond addif <bond> <if> | bond delif <bond> <if>\n");
+        terminal_writestring("       bond failover <name> | bond list\n");
+        return;
+    }
+    if (strcmp(args[1], "create") == 0) {
+        if (argc < 3) { terminal_writestring("usage: bond create <name> [failover|balance]\n"); return; }
+        bond_mode_t mode = BOND_MODE_FAILOVER;
+        if (argc >= 4 && strcmp(args[3], "balance") == 0)
+            mode = BOND_MODE_BALANCE;
+        if (bond_create(args[2], mode) == 0) {
+            terminal_writestring("bond ");
+            terminal_writestring(args[2]);
+            terminal_writestring(" created (mode=");
+            terminal_writestring(mode == BOND_MODE_FAILOVER ? "failover" : "balance");
+            terminal_writestring(")\n");
+        } else {
+            terminal_writestring("bond create: failed\n");
+        }
+    } else if (strcmp(args[1], "del") == 0) {
+        if (argc < 3) { terminal_writestring("usage: bond del <name>\n"); return; }
+        if (bond_destroy(args[2]) == 0) {
+            terminal_writestring("bond ");
+            terminal_writestring(args[2]);
+            terminal_writestring(" deleted\n");
+        } else {
+            terminal_writestring("bond del: not found\n");
+        }
+    } else if (strcmp(args[1], "addif") == 0) {
+        if (argc < 4) { terminal_writestring("usage: bond addif <bond> <if>\n"); return; }
+        if (bond_add_slave(args[2], args[3]) == 0) {
+            terminal_writestring(args[3]);
+            terminal_writestring(" added to bond ");
+            terminal_writestring(args[2]);
+            terminal_putchar('\n');
+        } else {
+            terminal_writestring("bond addif: failed\n");
+        }
+    } else if (strcmp(args[1], "delif") == 0) {
+        if (argc < 4) { terminal_writestring("usage: bond delif <bond> <if>\n"); return; }
+        if (bond_remove_slave(args[2], args[3]) == 0) {
+            terminal_writestring(args[3]);
+            terminal_writestring(" removed from bond ");
+            terminal_writestring(args[2]);
+            terminal_putchar('\n');
+        } else {
+            terminal_writestring("bond delif: failed\n");
+        }
+    } else if (strcmp(args[1], "failover") == 0) {
+        if (argc < 3) { terminal_writestring("usage: bond failover <name>\n"); return; }
+        if (bond_failover(args[2]) != 0)
+            terminal_writestring("bond failover: failed (need >= 2 slaves)\n");
+    } else if (strcmp(args[1], "list") == 0) {
+        bond_list();
+    } else {
+        terminal_writestring("bond: unknown subcommand\n");
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * IPX command
+ * ipx send <dst_node_hex> <data>   e.g. ipx send FFFFFFFFFFFF hello
+ * ----------------------------------------------------------------------- */
+static int parse_hex_byte(const char *s)
+{
+    int v = 0;
+    for (int i = 0; i < 2; i++) {
+        char c = s[i];
+        if (c >= '0' && c <= '9') v = v * 16 + (c - '0');
+        else if (c >= 'a' && c <= 'f') v = v * 16 + (c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') v = v * 16 + (c - 'A' + 10);
+        else return -1;
+    }
+    return v;
+}
+
+void cmd_ipx(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: ipx send <dst_node_hex12> <data>\n");
+        terminal_writestring("  e.g. ipx send FFFFFFFFFFFF hello\n");
+        return;
+    }
+    if (strcmp(args[1], "send") == 0) {
+        if (argc < 4) { terminal_writestring("usage: ipx send <node12hex> <data>\n"); return; }
+        const char *hex = args[2];
+        if (strlen(hex) != 12) { terminal_writestring("ipx: node must be 12 hex chars\n"); return; }
+        uint8_t node[6];
+        for (int i = 0; i < 6; i++) {
+            int b = parse_hex_byte(hex + i * 2);
+            if (b < 0) { terminal_writestring("ipx: invalid hex in node\n"); return; }
+            node[i] = (uint8_t)b;
+        }
+        static const uint8_t zero_net[4] = {0,0,0,0};
+        const char *data = args[3];
+        if (ipx_send(node, zero_net, IPX_SOCK_ECHO, IPX_SOCK_ECHO,
+                     IPX_TYPE_ECHO, data, strlen(data)) == 0)
+            terminal_writestring("IPX: datagram sent\n");
+        else
+            terminal_writestring("IPX: send failed\n");
+    } else {
+        terminal_writestring("ipx: unknown subcommand (try: send)\n");
+    }
 }

@@ -3,6 +3,9 @@
 #include "arp.h"
 #include "ip.h"
 #include "ip6.h"
+#include "vlan.h"
+#include "bridge.h"
+#include "ipx.h"
 #include "string.h"
 #include "terminal.h"
 
@@ -26,14 +29,32 @@ void net_init(void)
 void net_poll(void)
 {
     if (!nic_poll) return;
-    uint8_t buf[1536];
-    int len = nic_poll(buf, sizeof(buf));
+    uint8_t buf[1540]; /* 1536 + 4 bytes headroom for VLAN tag */
+    int len = nic_poll(buf, 1536);
     if (len <= 0) return;
+
+    /* Pass through bridge ingress first */
+    if (bridge_rx("eth0", buf, len)) return;
+
+    /* Strip 802.1Q VLAN tag if present */
+    uint16_t vid = 0;
+    if (len >= 14) {
+        uint16_t etype = (uint16_t)((buf[12] << 8) | buf[13]);
+        if (etype == ETHERTYPE_VLAN) {
+            vlan_strip(buf, &len, &vid);
+            if (!vlan_allowed(vid)) return;
+        }
+    }
+
     eth_hdr_t *eth = (eth_hdr_t *)buf;
-    if (ntohs(eth->type) == ETHERTYPE_ARP)
+    uint16_t type = ntohs(eth->type);
+
+    if (type == ETHERTYPE_ARP)
         arp_handle(buf, len);
-    else if (ntohs(eth->type) == ETHERTYPE_IP)
+    else if (type == ETHERTYPE_IP)
         ip_handle(buf + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
-    else if (ntohs(eth->type) == ETHERTYPE_IPV6)
+    else if (type == ETHERTYPE_IPV6)
         ip6_handle(buf + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
+    else if (type == ETHERTYPE_IPX)
+        ipx_handle(buf + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
 }

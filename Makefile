@@ -139,6 +139,10 @@ KERNEL_OBJS = \
     kernel/net/ip6.o \
     kernel/net/icmpv6.o \
     kernel/net/ipsec.o \
+    kernel/net/vlan.o \
+    kernel/net/bridge.o \
+    kernel/net/bonding.o \
+    kernel/net/ipx.o \
     kernel/net/http.o \
     kernel/micropython/ports/tos/tos_main.o \
     kernel/micropython/ports/tos/tos_hal.o \

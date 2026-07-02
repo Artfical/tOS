@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with preemptive multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, a graphical UI, and an embedded MicroPython interpreter.
 
-**Current version: v0.9.39**
+**Current version: v0.9.41**
 
 ## System Requirements
 
@@ -105,7 +105,7 @@ qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev
 
 | Command | Description |
 |---|---|
-| `help` | Display command summary |
+| `man [command]` | Show the manual page for a command; without arguments lists all pages |
 | `echo` | Echo arguments to the terminal |
 | `clear` | Clear the terminal screen |
 | `date` | Show the current date/time |
@@ -159,6 +159,21 @@ qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev
 | `dccp_send <data>` | Send a DCCP DATA datagram |
 | `udplite_send <ip> <port> <data> [coverage]` | Send a UDP-Lite datagram; `coverage` = bytes covered by checksum (0 = full, 8 = header only) |
 | `ipsec_sa` | Dump the IPsec Security Association (SA) table |
+| `vlan add <vid>` | Register a VLAN ID in the ingress allow list |
+| `vlan rm <vid>` | Remove a VLAN ID from the allow list |
+| `vlan list` | Show all registered VLANs |
+| `bridge create <name>` | Create a software bridge |
+| `bridge del <name>` | Delete a bridge |
+| `bridge addif <br> <if>` | Add a member interface to a bridge |
+| `bridge delif <br> <if>` | Remove a member interface from a bridge |
+| `bridge list` | Show all bridges and the FDB |
+| `bond create <name> [failover\|balance]` | Create a link aggregation bond |
+| `bond del <name>` | Delete a bond |
+| `bond addif <bond> <if>` | Add a slave interface to a bond |
+| `bond delif <bond> <if>` | Remove a slave from a bond |
+| `bond failover <name>` | Manually trigger failover to the next slave |
+| `bond list` | Show all bonds and active slave |
+| `ipx send <node12hex> <data>` | Send an IPX datagram to a node (12-char hex MAC) |
 
 ## Filesystem
 
@@ -209,6 +224,15 @@ The network stack is implemented from scratch in `kernel/net/`. It supports both
 | **UDP-Lite** | `udplite.c` | Partial-checksum UDP (RFC 3828) |
 | **IPsec AH** | `ipsec.c` | Authentication Header (RFC 4302): parse, replay detection, inner payload re-injection |
 | **IPsec ESP** | `ipsec.c` | Encapsulating Security Payload (RFC 4303): parse + SA tracking (decryption requires IKE) |
+
+### Link Layer Extensions
+
+| Feature | File | Description |
+|---|---|---|
+| **VLAN (802.1Q)** | `vlan.c` | Tag strip/insert in `net_poll()`; per-VID ingress allow list (up to 16 VIDs); PCP field preserved on egress |
+| **Bridge** | `bridge.c` | Software bridge (br0-style); up to 4 bridges × 4 ports; 16-entry FDB with source-MAC learning; `bridge_rx()` called on every ingress frame |
+| **Bonding** | `bonding.c` | Link aggregation; failover (active-backup) and balance (round-robin TX) modes; up to 4 bonds × 4 slaves; `bond_failover()` advances active slave |
+| **IPX** | `ipx.c` | Internetwork Packet Exchange (EtherType 0x8137); 30-byte header; echo service; historical/educational reference |
 
 ### IPv6 Stack
 
