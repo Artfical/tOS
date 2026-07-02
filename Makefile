@@ -181,6 +181,7 @@ MPY_PY_OBJS := $(MPY_PY_SRCS:.c=.o)
 KERNEL_OBJS += $(MPY_PY_OBJS)
 
 PROGRAMS = programs/hello.elf programs/tosgui_demo.py
+MUSIC_FILES = $(wildcard music/*.mp3) $(wildcard music/*.wav)
 
 .PHONY: all clean run iso
 
@@ -219,7 +220,7 @@ programs/hello.elf: programs/hello.c
 	      -fno-pic -fno-pie \
 	      -O2 -Wall -static -T programs/program.ld -I. -o $@ $<
 
-initrd.tar: $(PROGRAMS)
+initrd.tar: $(PROGRAMS) $(MUSIC_FILES)
 	tar cf $@ --format=ustar $^
 
 tOS.iso: kernel/tOS.elf initrd.tar
