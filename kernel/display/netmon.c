@@ -529,13 +529,17 @@ static void draw_firewall(void)
     total_fw_rows = nrows;
 }
 
-/* ---- Full redraw ---- */
-static void redraw(void)
+/* ---- Redraw helpers ---- */
+/* full=1: redraw header+tabs+col header too (tab change, first draw)
+ * full=0: only refresh content rows + status (timer tick — no flicker) */
+static void redraw(int full)
 {
     update_rate();
-    draw_header();
-    draw_tabs();
-    draw_col_header();
+    if (full) {
+        draw_header();
+        draw_tabs();
+        draw_col_header();
+    }
     switch (g_tab) {
         case TAB_IFACES:   draw_ifaces();   break;
         case TAB_CONNS:    draw_conns();    break;
@@ -590,6 +594,9 @@ void netmon_run(void)
 
     uint32_t last_redraw = 0;
 
+    /* First draw: full */
+    redraw(1);
+
     for (;;) {
         gui_poll();
 
@@ -607,39 +614,37 @@ void netmon_run(void)
                         break;
                     }
                 }
-            } else if (ccy >= CONTENT_Y0 && ccy < STATUS_Y) {
-                /* click in content — no action needed */
+                redraw(1); /* tab changed: redraw header too */
             }
-            redraw();
+            /* click in content: no action */
             task_yield();
             continue;
         }
 
         /* Keyboard */
         int spec = keyboard_get_special();
-        if (spec == 3) { scroll_up(); redraw(); task_yield(); continue; }   /* UP */
-        if (spec == 4) { scroll_down(); redraw(); task_yield(); continue; } /* DOWN */
+        if (spec == 3) { scroll_up();   redraw(0); task_yield(); continue; } /* UP   */
+        if (spec == 4) { scroll_down(); redraw(0); task_yield(); continue; } /* DOWN */
 
         if (keyboard_data_available()) {
             char c = keyboard_getchar();
-            if (c == '1') { g_tab = TAB_IFACES;   g_scroll = 0; }
+            int tab_changed = 1;
+            if      (c == '1') { g_tab = TAB_IFACES;   g_scroll = 0; }
             else if (c == '2') { g_tab = TAB_CONNS;    g_scroll = 0; }
             else if (c == '3') { g_tab = TAB_ROUTES;   g_scroll = 0; }
             else if (c == '4') { g_tab = TAB_FIREWALL; g_scroll = 0; }
-            else if (c == '\t') {
-                g_tab = (g_tab + 1) % TAB_COUNT;
-                g_scroll = 0;
-            }
-            redraw();
+            else if (c == '\t') { g_tab = (g_tab + 1) % TAB_COUNT; g_scroll = 0; }
+            else tab_changed = 0;
+            redraw(tab_changed);
             task_yield();
             continue;
         }
 
-        /* Auto-refresh every ~50 ticks (0.5 s) */
+        /* Auto-refresh every ~50 ticks (0.5 s) — content only, no header flicker */
         uint32_t now = task_get_ticks();
         if (now - last_redraw >= 50) {
             last_redraw = now;
-            redraw();
+            redraw(0);
         }
 
         task_yield();
