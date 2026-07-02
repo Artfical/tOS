@@ -133,7 +133,12 @@ static void mp_fmt_time(char *buf, uint32_t sec)
 
 static uint32_t current_pos_sec(void)
 {
-    /* Always return the SW position so the seek bar moves even if HW broken */
+    if (g_fmt==FMT_WAV && !g_filebuf)
+        return g_pcmpos / DEMO_SONG_RATE;   /* demo song: exact pump position */
+    if (g_fmt==FMT_WAV && g_filebuf)
+        return wav_pos_sec(&g_wav);
+    if (g_fmt==FMT_MP3)
+        return mp3_pos_sec(&g_mp3);
     return g_sw_pos_sec;
 }
 
@@ -673,20 +678,14 @@ void mediaplayer_run(void)
                 g_sw_tick = 0;
                 if (g_sw_pos_sec < g_dur_sec)
                     g_sw_pos_sec++;
-                /* sync pcmpos for demo song so HW pump reads right data */
-                if (g_fmt==FMT_WAV && !g_filebuf) {
+                /* No-HW path: advance pcmpos by SW timer */
+                if (!audio_available() && g_fmt==FMT_WAV && !g_filebuf) {
                     g_pcmpos = g_sw_pos_sec * DEMO_SONG_RATE;
                     if (g_pcmpos >= DEMO_SONG_LEN) {
                         if (g_loop) { g_pcmpos=0; g_sw_pos_sec=0; }
-                        else {
-                            if (!audio_available()) {
-                                /* no HW: EOF via SW timer */
-                                g_state=ST_STOPPED;
-                                strncpy(g_status,"Playback complete.",MP_COLS);
-                                g_dirty=DIRTY_ALL;
-                            }
-                            /* with HW: pump handles EOF via mp_fill_pcm */
-                        }
+                        else { g_state=ST_STOPPED;
+                               strncpy(g_status,"Playback complete.",MP_COLS);
+                               g_dirty=DIRTY_ALL; }
                     }
                 }
             }

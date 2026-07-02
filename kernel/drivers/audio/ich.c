@@ -196,9 +196,16 @@ int ich_audio_submit(ich_dev_t *dev, const uint8_t *pcm8, uint32_t n8)
 {
     if (!dev->present) return -1;
 
-    /* Next slot = (current index + 1) mod N */
-    uint8_t civ  = bm8(dev->nabmbar, ICH_PCO_CIV);
-    int     slot = ((int)civ + 1) % ICH_BDL_ENTRIES;
+    uint8_t civ = bm8(dev->nabmbar, ICH_PCO_CIV);
+    uint8_t cr  = bm8(dev->nabmbar, ICH_PCO_CR);
+    int slot;
+    if (cr & ICH_CR_RPBM) {
+        /* DMA running: fill next slot after current */
+        slot = ((int)civ + 1) % ICH_BDL_ENTRIES;
+    } else {
+        /* DMA stopped: fill the current slot so audio starts immediately */
+        slot = (int)civ;
+    }
     int16_t *dst = dev->pcm_buf[slot];
 
     /* Nearest-neighbour resample 22050 → 48000 Hz (Q16 fixed-point step) */
