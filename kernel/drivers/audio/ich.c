@@ -177,10 +177,12 @@ void ich_audio_stop(ich_dev_t *dev)
 {
     if (!dev->present) return;
     bm8w(dev->nabmbar, ICH_PCO_CR, 0);
-    bm8w(dev->nabmbar, ICH_PCO_CR, ICH_CR_RR);
+    bm8w(dev->nabmbar, ICH_PCO_CR, ICH_CR_RR);  /* RR clears ALL regs incl. BDBAR */
     delay_us(5000);
     bm8w(dev->nabmbar, ICH_PCO_CR, 0);
     bm16w(dev->nabmbar, ICH_PCO_SR, 0x1C);
+    /* RR wiped BDBAR — must restore it so DMA knows where our BDL is */
+    bm32w(dev->nabmbar, ICH_PCO_BDBAR, (uint32_t)(unsigned long)dev->bdl);
     for (int i = 0; i < ICH_BDL_ENTRIES; i++)
         memset(dev->pcm_buf[i], 0, ICH_BUF_BYTES);
     dev->next_buf = 0;
