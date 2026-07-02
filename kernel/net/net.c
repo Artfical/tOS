@@ -6,6 +6,11 @@
 #include "vlan.h"
 #include "bridge.h"
 #include "ipx.h"
+#include "route.h"
+#include "fw.h"
+#include "gre.h"
+#include "ipip.h"
+#include "wgtun.h"
 #include "string.h"
 #include "terminal.h"
 
@@ -23,6 +28,11 @@ void net_init(void)
         return;
     }
     ip6_init(net_mac);
+    route_init();
+    fw_init();
+    gre_init();
+    ipip_init();
+    wgtun_init();
     terminal_writestring("[OK] Network stack ready\n");
 }
 

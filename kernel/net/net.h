@@ -9,6 +9,7 @@
 #define ETHERTYPE_IPX  0x8137
 
 #define IPPROTO_ICMP    1
+#define IPPROTO_IPIP    4
 #define IPPROTO_TCP     6
 #define IPPROTO_UDP     17
 #define IPPROTO_DCCP    33
@@ -16,6 +17,7 @@
 #define IPPROTO_ESP     50
 #define IPPROTO_AH      51
 #define IPPROTO_ICMPV6  58
+#define IPPROTO_GRE     47
 #define IPPROTO_SCTP    132
 #define IPPROTO_UDPLITE 136
 

@@ -143,6 +143,12 @@ KERNEL_OBJS = \
     kernel/net/bridge.o \
     kernel/net/bonding.o \
     kernel/net/ipx.o \
+    kernel/net/route.o \
+    kernel/net/fw.o \
+    kernel/net/gre.o \
+    kernel/net/ipip.o \
+    kernel/net/chacha20.o \
+    kernel/net/wgtun.o \
     kernel/net/http.o \
     kernel/micropython/ports/tos/tos_main.o \
     kernel/micropython/ports/tos/tos_hal.o \

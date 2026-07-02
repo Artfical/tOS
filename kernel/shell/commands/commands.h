@@ -37,6 +37,12 @@ void cmd_vlan(int argc, char **args);
 void cmd_bridge(int argc, char **args);
 void cmd_bond(int argc, char **args);
 void cmd_ipx(int argc, char **args);
+void cmd_route(int argc, char **args);
+void cmd_policy(int argc, char **args);
+void cmd_fw(int argc, char **args);
+void cmd_gre(int argc, char **args);
+void cmd_ipip(int argc, char **args);
+void cmd_wg(int argc, char **args);
 void cmd_tsharp(int argc, char **args);
 void cmd_python(int argc, char **args);
 

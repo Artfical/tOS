@@ -481,6 +481,18 @@ static void shell_exec_line(char *cmd_line)
             cmd_bond(argc, args);
         } else if (strcmp(c, "ipx") == 0) {
             cmd_ipx(argc, args);
+        } else if (strcmp(c, "route") == 0) {
+            cmd_route(argc, args);
+        } else if (strcmp(c, "policy") == 0) {
+            cmd_policy(argc, args);
+        } else if (strcmp(c, "fw") == 0) {
+            cmd_fw(argc, args);
+        } else if (strcmp(c, "gre") == 0) {
+            cmd_gre(argc, args);
+        } else if (strcmp(c, "ipip") == 0) {
+            cmd_ipip(argc, args);
+        } else if (strcmp(c, "wg") == 0) {
+            cmd_wg(argc, args);
         } else if (strcmp(c, "wget") == 0) {
             cmd_wget(argc, args);
         } else if (strcmp(c, "uptime") == 0) {

@@ -2,6 +2,10 @@
 #include "arp.h"
 #include "net.h"
 #include "nic.h"
+#include "route.h"
+#include "fw.h"
+#include "gre.h"
+#include "ipip.h"
 #include "string.h"
 #include "memory.h"
 #include "icmp.h"
@@ -26,8 +30,12 @@ static uint16_t ip_checksum(const uint8_t *buf, int len)
 
 int ip_send(uint32_t dst_ip, uint8_t protocol, void *data, int len)
 {
+    /* Route lookup: resolve next-hop gateway */
+    uint32_t nh = route_lookup(net_ip, dst_ip);
+    if (!nh) nh = dst_ip; /* no route configured — try direct */
+
     uint8_t mac[6];
-    if (arp_resolve(dst_ip, mac) != 0) return -1;
+    if (arp_resolve(nh, mac) != 0) return -1;
 
     int total = sizeof(ip_hdr_t) + len;
     uint8_t *buf = (uint8_t *)malloc(total + 14);
@@ -40,19 +48,22 @@ int ip_send(uint32_t dst_ip, uint8_t protocol, void *data, int len)
 
     ip_hdr_t *ip = (ip_hdr_t *)(buf + 14);
     memset(ip, 0, sizeof(ip_hdr_t));
-    ip->ver_ihl = 0x45;
-    ip->total_len = htons(total);
-    ip->id = htons(ip_id);
-    ip_id++;
+    ip->ver_ihl   = 0x45;
+    ip->total_len = htons((uint16_t)total);
+    ip->id        = htons(ip_id); ip_id++;
     ip->flags_frag = htons(0x4000);
-    ip->ttl = 64;
-    ip->protocol = protocol;
-    ip->src_ip = net_ip;
-    ip->dst_ip = dst_ip;
-    ip->checksum = 0;
-    ip->checksum = ip_checksum((uint8_t *)ip, sizeof(ip_hdr_t));
+    ip->ttl       = 64;
+    ip->protocol  = protocol;
+    ip->src_ip    = net_ip;
+    ip->dst_ip    = dst_ip;
+    ip->checksum  = 0;
+    ip->checksum  = ip_checksum((uint8_t *)ip, sizeof(ip_hdr_t));
 
     memcpy(buf + 14 + sizeof(ip_hdr_t), data, len);
+
+    /* Apply SNAT if configured */
+    fw_tx(ip, buf + 14 + sizeof(ip_hdr_t), len);
+
     nic_send(buf, total + 14);
     free(buf);
     return 0;
@@ -74,14 +85,21 @@ void ip_handle(uint8_t *data, int len)
     int payload_len = len - ihl;
     void *payload = (uint8_t *)data + ihl;
 
+    /* Firewall + DNAT check */
+    int verdict = fw_rx(ip, payload, payload_len);
+    if (verdict == FW_DROP)   return;
+    if (verdict == FW_REJECT) return; /* TODO: send ICMP unreachable */
+
     switch (ip->protocol) {
-        case IPPROTO_ICMP:    icmp_handle(ip, payload, payload_len);    break;
-        case IPPROTO_UDP:     udp_handle(ip, payload, payload_len);     break;
-        case IPPROTO_TCP:     tcp_handle(ip, payload, payload_len);     break;
-        case IPPROTO_SCTP:    sctp_handle(ip, payload, payload_len);    break;
-        case IPPROTO_DCCP:    dccp_handle(ip, payload, payload_len);    break;
-        case IPPROTO_UDPLITE: udplite_handle(ip, payload, payload_len); break;
+        case IPPROTO_ICMP:    icmp_handle(ip, payload, payload_len);     break;
+        case IPPROTO_UDP:     udp_handle(ip, payload, payload_len);      break;
+        case IPPROTO_TCP:     tcp_handle(ip, payload, payload_len);      break;
+        case IPPROTO_SCTP:    sctp_handle(ip, payload, payload_len);     break;
+        case IPPROTO_DCCP:    dccp_handle(ip, payload, payload_len);     break;
+        case IPPROTO_UDPLITE: udplite_handle(ip, payload, payload_len);  break;
         case IPPROTO_AH:      ipsec_ah_handle(ip, payload, payload_len); break;
-        case IPPROTO_ESP:     ipsec_esp_handle(ip, payload, payload_len); break;
+        case IPPROTO_ESP:     ipsec_esp_handle(ip, payload, payload_len);break;
+        case IPPROTO_GRE:     gre_handle(ip, payload, payload_len);      break;
+        case IPPROTO_IPIP:    ipip_handle(ip, payload, payload_len);     break;
     }
 }

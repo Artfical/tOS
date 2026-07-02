@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with preemptive multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, a graphical UI, and an embedded MicroPython interpreter.
 
-**Current version: v0.9.41**
+**Current version: v0.9.42**
 
 ## System Requirements
 
@@ -174,6 +174,28 @@ qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev
 | `bond failover <name>` | Manually trigger failover to the next slave |
 | `bond list` | Show all bonds and active slave |
 | `ipx send <node12hex> <data>` | Send an IPX datagram to a node (12-char hex MAC) |
+| `route show` | Display the routing table |
+| `route add <dst/pfx> <gw> [metric] [table]` | Add a static route |
+| `route del <dst/pfx> [table]` | Delete a route |
+| `policy show` | Display policy routing rules |
+| `policy add <src/pfx> <dst/pfx> <table> <prio>` | Add a policy rule |
+| `policy del <prio>` | Delete a policy rule by priority |
+| `fw rule add <proto> <src/pfx> <dst/pfx> [dport] <ACCEPT\|DROP\|REJECT>` | Add a firewall rule |
+| `fw rule del <idx>` | Delete a firewall rule |
+| `fw rule list` | List firewall rules |
+| `fw nat add SNAT\|DNAT <match/pfx> [port] <new_ip> [new_port]` | Add a NAT rule |
+| `fw nat del <idx>` | Delete a NAT rule |
+| `fw nat list` | List NAT rules |
+| `fw ct` | Dump the connection tracking table |
+| `gre add <local> <remote> [key_hex]` | Create a GRE tunnel |
+| `gre del <idx>` | Delete a GRE tunnel |
+| `gre list` | List GRE tunnels |
+| `ipip add <local> <remote>` | Create an IP-in-IP tunnel |
+| `ipip del <idx>` | Delete an IP-in-IP tunnel |
+| `ipip list` | List IP-in-IP tunnels |
+| `wg add <remote_ip> <rport> <lport> <psk_hex64> <peer_id_hex>` | Create a WireGuard-like encrypted tunnel |
+| `wg del <idx>` | Delete a WG tunnel |
+| `wg list` | List WG tunnels |
 
 ## Filesystem
 
@@ -224,6 +246,25 @@ The network stack is implemented from scratch in `kernel/net/`. It supports both
 | **UDP-Lite** | `udplite.c` | Partial-checksum UDP (RFC 3828) |
 | **IPsec AH** | `ipsec.c` | Authentication Header (RFC 4302): parse, replay detection, inner payload re-injection |
 | **IPsec ESP** | `ipsec.c` | Encapsulating Security Payload (RFC 4303): parse + SA tracking (decryption requires IKE) |
+
+### Routing & Filtering
+
+| Feature | File | Description |
+|---|---|---|
+| **Routing Table** | `route.c` | Static routing; 32-entry table; longest-prefix match; 8 independent routing tables (table 0 = main) |
+| **Policy Routing** | `route.c` | Up to 8 policy rules matching src/dst prefix → select routing table; evaluated by priority |
+| **Firewall** | `fw.c` | Stateful packet filtering; ACCEPT / DROP / REJECT actions; first-match rule list (up to 32 rules) |
+| **Connection Tracking** | `fw.c` | 64-entry conntrack table; auto-populated on every rx/tx; used by NAT for translation state |
+| **SNAT / DNAT** | `fw.c` | Source and destination NAT; IP and port rewriting; checksum update on modification |
+
+### VPN & Tunnelling
+
+| Feature | File | Description |
+|---|---|---|
+| **GRE** | `gre.c` | Generic Routing Encapsulation (RFC 2784); proto 47; optional key field; inner IPv4 re-injected into ip_handle() |
+| **IP-in-IP** | `ipip.c` | IP encapsulation (RFC 2003); proto 4; minimal outer-header tunnel |
+| **WG-like tunnel** | `wgtun.c` | WireGuard-inspired pre-shared-key UDP tunnel (port 51820); XChaCha20-Poly1305 AEAD; 24-byte nonce counter; MAC verified before inner packet re-injection |
+| **XChaCha20-Poly1305** | `chacha20.c` | From-scratch implementation; ChaCha20 20-round block, HChaCha20 sub-key derivation, Poly1305 RFC 8439 MAC; no libm/libc |
 
 ### Link Layer Extensions
 

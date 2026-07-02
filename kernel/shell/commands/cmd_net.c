@@ -129,6 +129,12 @@ void cmd_python(int argc, char **args)
 #include "bridge.h"
 #include "bonding.h"
 #include "ipx.h"
+#include "route.h"
+#include "fw.h"
+#include "gre.h"
+#include "ipip.h"
+#include "wgtun.h"
+#include "chacha20.h"
 
 void cmd_sctp_connect(int argc, char **args)
 {
@@ -464,5 +470,311 @@ void cmd_ipx(int argc, char **args)
             terminal_writestring("IPX: send failed\n");
     } else {
         terminal_writestring("ipx: unknown subcommand (try: send)\n");
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * Routing commands
+ * route show / route add <dst/prefix> <gw> [metric] [table]
+ * route del <dst/prefix> [table]
+ * policy add <src/pfx> <dst/pfx> <table> <prio>
+ * policy del <prio>
+ * policy show
+ * ----------------------------------------------------------------------- */
+static uint32_t parse_ip_cmd(const char *s)
+{
+    uint32_t ip = 0; int shift = 0, val = 0;
+    while (*s) {
+        if (*s == '.') { ip |= (val & 0xFF) << shift; shift += 8; val = 0; }
+        else if (*s >= '0' && *s <= '9') val = val * 10 + (*s - '0');
+        else break;
+        s++;
+    }
+    ip |= (val & 0xFF) << shift;
+    return ip;
+}
+
+static int parse_prefix(const char *s, uint32_t *dst, uint32_t *mask)
+{
+    /* format: a.b.c.d/prefix or a.b.c.d (no prefix = /32) */
+    char buf[20]; int i = 0;
+    while (s[i] && s[i] != '/' && i < 19) { buf[i] = s[i]; i++; }
+    buf[i] = '\0';
+    *dst = parse_ip_cmd(buf);
+    if (s[i] == '/') {
+        int p = 0;
+        const char *pp = s + i + 1;
+        while (*pp >= '0' && *pp <= '9') { p = p * 10 + (*pp - '0'); pp++; }
+        *mask = p == 0 ? 0 : (~0U << (32 - p));
+    } else {
+        *mask = 0xFFFFFFFFU;
+    }
+    return 0;
+}
+
+static int parse_int_arg(const char *s)
+{
+    int v = 0;
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; }
+    return v;
+}
+
+void cmd_route(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: route show | route add <dst/pfx> <gw> [metric] [table]\n");
+        terminal_writestring("       route del <dst/pfx> [table]\n");
+        return;
+    }
+    if (strcmp(args[1], "show") == 0 || strcmp(args[1], "list") == 0) {
+        route_list();
+    } else if (strcmp(args[1], "add") == 0) {
+        if (argc < 4) { terminal_writestring("usage: route add <dst/pfx> <gw> [metric] [table]\n"); return; }
+        uint32_t dst, mask;
+        parse_prefix(args[2], &dst, &mask);
+        uint32_t gw = parse_ip_cmd(args[3]);
+        int metric = (argc >= 5) ? parse_int_arg(args[4]) : 0;
+        int table  = (argc >= 6) ? parse_int_arg(args[5]) : 0;
+        if (route_add(dst, mask, gw, 0, metric, table) == 0)
+            terminal_writestring("route added\n");
+        else
+            terminal_writestring("route add: failed (table full?)\n");
+    } else if (strcmp(args[1], "del") == 0) {
+        if (argc < 3) { terminal_writestring("usage: route del <dst/pfx> [table]\n"); return; }
+        uint32_t dst, mask;
+        parse_prefix(args[2], &dst, &mask);
+        int table = (argc >= 4) ? parse_int_arg(args[3]) : 0;
+        if (route_del(dst, mask, table) == 0)
+            terminal_writestring("route deleted\n");
+        else
+            terminal_writestring("route del: not found\n");
+    } else {
+        terminal_writestring("route: unknown subcommand\n");
+    }
+}
+
+void cmd_policy(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: policy show | policy add <src/pfx> <dst/pfx> <table> <prio>\n");
+        terminal_writestring("       policy del <prio>\n");
+        return;
+    }
+    if (strcmp(args[1], "show") == 0 || strcmp(args[1], "list") == 0) {
+        policy_list();
+    } else if (strcmp(args[1], "add") == 0) {
+        if (argc < 6) { terminal_writestring("usage: policy add <src/pfx> <dst/pfx> <table> <prio>\n"); return; }
+        uint32_t s, sm, d, dm;
+        parse_prefix(args[2], &s, &sm);
+        parse_prefix(args[3], &d, &dm);
+        int table = parse_int_arg(args[4]);
+        int prio  = parse_int_arg(args[5]);
+        if (policy_add(s, sm, d, dm, table, prio) == 0)
+            terminal_writestring("policy rule added\n");
+        else
+            terminal_writestring("policy add: failed\n");
+    } else if (strcmp(args[1], "del") == 0) {
+        if (argc < 3) { terminal_writestring("usage: policy del <prio>\n"); return; }
+        if (policy_del(parse_int_arg(args[2])) == 0)
+            terminal_writestring("policy rule deleted\n");
+        else
+            terminal_writestring("policy del: not found\n");
+    } else {
+        terminal_writestring("policy: unknown subcommand\n");
+    }
+}
+
+/* -----------------------------------------------------------------------
+ * Firewall commands
+ * fw rule add <proto> <src/pfx> <dst/pfx> [dport] <ACCEPT|DROP|REJECT>
+ * fw rule del <index>
+ * fw rule list
+ * fw nat add SNAT|DNAT <match_ip/pfx> [port] <new_ip> [new_port]
+ * fw nat del <index>
+ * fw nat list
+ * fw ct
+ * ----------------------------------------------------------------------- */
+void cmd_fw(int argc, char **args)
+{
+    if (argc < 3) {
+        terminal_writestring("usage: fw rule add <proto> <src/pfx> <dst/pfx> [dport] <ACCEPT|DROP|REJECT>\n");
+        terminal_writestring("       fw rule del <idx> | fw rule list\n");
+        terminal_writestring("       fw nat add SNAT|DNAT <match/pfx> [port] <new_ip> [new_port]\n");
+        terminal_writestring("       fw nat del <idx> | fw nat list\n");
+        terminal_writestring("       fw ct\n");
+        return;
+    }
+    if (strcmp(args[1], "ct") == 0) {
+        ct_dump();
+        return;
+    }
+    if (strcmp(args[1], "rule") == 0) {
+        if (argc < 3) { terminal_writestring("fw rule: add|del|list\n"); return; }
+        if (strcmp(args[2], "list") == 0) { fw_rule_list(); return; }
+        if (strcmp(args[2], "del") == 0) {
+            if (argc < 4) { terminal_writestring("fw rule del <idx>\n"); return; }
+            fw_rule_del(parse_int_arg(args[3]));
+            terminal_writestring("rule deleted\n"); return;
+        }
+        if (strcmp(args[2], "add") == 0) {
+            /* fw rule add <proto> <src/pfx> <dst/pfx> [dport] <action> */
+            if (argc < 7) {
+                terminal_writestring("fw rule add <proto> <src/pfx> <dst/pfx> [dport] <ACCEPT|DROP|REJECT>\n");
+                return;
+            }
+            uint8_t proto = (uint8_t)parse_int_arg(args[3]);
+            uint32_t s, sm, d, dm;
+            parse_prefix(args[4], &s, &sm);
+            parse_prefix(args[5], &d, &dm);
+            uint16_t dport = 0; int action_idx = 6;
+            if (argc > 7) { dport = (uint16_t)parse_int_arg(args[6]); action_idx = 7; }
+            uint8_t action = FW_ACCEPT;
+            if (strcmp(args[action_idx], "DROP")   == 0) action = FW_DROP;
+            if (strcmp(args[action_idx], "REJECT") == 0) action = FW_REJECT;
+            int idx = fw_rule_add(proto, s, sm, d, dm, 0, dport, action);
+            if (idx >= 0) { terminal_writestring("rule added at index "); }
+            else terminal_writestring("fw rule add: failed\n");
+            return;
+        }
+    }
+    if (strcmp(args[1], "nat") == 0) {
+        if (strcmp(args[2], "list") == 0) { nat_rule_list(); return; }
+        if (strcmp(args[2], "del") == 0) {
+            if (argc < 4) { terminal_writestring("fw nat del <idx>\n"); return; }
+            nat_rule_del(parse_int_arg(args[3]));
+            terminal_writestring("NAT rule deleted\n"); return;
+        }
+        if (strcmp(args[2], "add") == 0) {
+            /* fw nat add SNAT|DNAT <match/pfx> [port] <new_ip> [new_port] */
+            if (argc < 6) {
+                terminal_writestring("fw nat add SNAT|DNAT <match/pfx> [port] <new_ip> [new_port]\n");
+                return;
+            }
+            nat_type_t type = NAT_SNAT;
+            if (strcmp(args[3], "DNAT") == 0) type = NAT_DNAT;
+            uint32_t match, mmask;
+            parse_prefix(args[4], &match, &mmask);
+            int next = 5;
+            uint16_t mport = 0;
+            /* heuristic: if next arg has no dots, treat as port */
+            int has_dot = 0;
+            for (const char *p = args[next]; *p; p++) if (*p == '.') { has_dot=1; break; }
+            if (!has_dot && argc > next + 1) { mport = (uint16_t)parse_int_arg(args[next]); next++; }
+            uint32_t new_ip = parse_ip_cmd(args[next]); next++;
+            uint16_t new_port = (argc > next) ? (uint16_t)parse_int_arg(args[next]) : 0;
+            int idx = nat_rule_add(type, match, mmask, mport, new_ip, new_port);
+            if (idx >= 0) terminal_writestring("NAT rule added\n");
+            else terminal_writestring("fw nat add: failed\n");
+            return;
+        }
+    }
+    terminal_writestring("fw: unknown subcommand\n");
+}
+
+/* -----------------------------------------------------------------------
+ * Tunnel commands
+ * gre add <local_ip> <remote_ip> [key]
+ * gre del <idx>
+ * gre list
+ * gre send <idx> (sends a test ICMP-in-GRE — minimal demo)
+ *
+ * ipip add <local_ip> <remote_ip>
+ * ipip del <idx>
+ * ipip list
+ *
+ * wg add <remote_ip> <remote_port> <local_port> <psk_hex64> <peer_id_hex>
+ * wg del <idx>
+ * wg list
+ * ----------------------------------------------------------------------- */
+void cmd_gre(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: gre add <local> <remote> [key_hex] | gre del <idx> | gre list\n");
+        return;
+    }
+    if (strcmp(args[1], "add") == 0) {
+        if (argc < 4) { terminal_writestring("gre add <local> <remote> [key_hex]\n"); return; }
+        uint32_t local  = parse_ip_cmd(args[2]);
+        uint32_t remote = parse_ip_cmd(args[3]);
+        uint32_t key = 0; int use_key = 0;
+        if (argc >= 5) {
+            use_key = 1;
+            for (const char *p = args[4]; *p; p++)
+                key = key * 16 + (*p>='a'?*p-'a'+10:*p>='A'?*p-'A'+10:*p-'0');
+        }
+        int idx = gre_tunnel_add(local, remote, key, use_key);
+        if (idx >= 0) { terminal_writestring("GRE tunnel added at index "); terminal_putchar('0'+idx); terminal_putchar('\n'); }
+        else terminal_writestring("gre add: failed\n");
+    } else if (strcmp(args[1], "del") == 0) {
+        if (argc < 3) { terminal_writestring("gre del <idx>\n"); return; }
+        gre_tunnel_del(parse_int_arg(args[2]));
+        terminal_writestring("GRE tunnel deleted\n");
+    } else if (strcmp(args[1], "list") == 0) {
+        gre_tunnel_list();
+    } else {
+        terminal_writestring("gre: unknown subcommand\n");
+    }
+}
+
+void cmd_ipip(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: ipip add <local> <remote> | ipip del <idx> | ipip list\n");
+        return;
+    }
+    if (strcmp(args[1], "add") == 0) {
+        if (argc < 4) { terminal_writestring("ipip add <local> <remote>\n"); return; }
+        int idx = ipip_tunnel_add(parse_ip_cmd(args[2]), parse_ip_cmd(args[3]));
+        if (idx >= 0) { terminal_writestring("IPIP tunnel added at index "); terminal_putchar('0'+idx); terminal_putchar('\n'); }
+        else terminal_writestring("ipip add: failed\n");
+    } else if (strcmp(args[1], "del") == 0) {
+        if (argc < 3) { terminal_writestring("ipip del <idx>\n"); return; }
+        ipip_tunnel_del(parse_int_arg(args[2]));
+        terminal_writestring("IPIP tunnel deleted\n");
+    } else if (strcmp(args[1], "list") == 0) {
+        ipip_tunnel_list();
+    } else {
+        terminal_writestring("ipip: unknown subcommand\n");
+    }
+}
+
+void cmd_wg(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: wg add <remote_ip> <rport> <lport> <psk64hex> <peer_id_hex>\n");
+        terminal_writestring("       wg del <idx> | wg list\n");
+        return;
+    }
+    if (strcmp(args[1], "add") == 0) {
+        if (argc < 7) {
+            terminal_writestring("wg add <remote_ip> <rport> <lport> <psk_hex64> <peer_id_hex>\n");
+            return;
+        }
+        uint32_t rip   = parse_ip_cmd(args[2]);
+        uint16_t rport = (uint16_t)parse_int_arg(args[3]);
+        uint16_t lport = (uint16_t)parse_int_arg(args[4]);
+        /* Parse 64 hex chars = 32 bytes PSK */
+        const char *phex = args[5];
+        if (strlen(phex) != 64) { terminal_writestring("wg: PSK must be 64 hex chars\n"); return; }
+        uint8_t psk[32];
+        for (int i = 0; i < 32; i++) {
+            int b = parse_hex_byte(phex + i*2);
+            if (b < 0) { terminal_writestring("wg: invalid PSK hex\n"); return; }
+            psk[i] = (uint8_t)b;
+        }
+        uint32_t peer_id = 0;
+        for (const char *p = args[6]; *p; p++)
+            peer_id = peer_id*16 + (*p>='a'?*p-'a'+10:*p>='A'?*p-'A'+10:*p-'0');
+        int idx = wgtun_add(rip, rport, lport, psk, peer_id);
+        if (idx >= 0) { terminal_writestring("WG tunnel added at index "); terminal_putchar('0'+idx); terminal_putchar('\n'); }
+        else terminal_writestring("wg add: failed\n");
+    } else if (strcmp(args[1], "del") == 0) {
+        if (argc < 3) { terminal_writestring("wg del <idx>\n"); return; }
+        wgtun_del(parse_int_arg(args[2]));
+        terminal_writestring("WG tunnel deleted\n");
+    } else if (strcmp(args[1], "list") == 0) {
+        wgtun_list();
+    } else {
+        terminal_writestring("wg: unknown subcommand\n");
     }
 }
