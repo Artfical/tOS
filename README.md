@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with preemptive multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, a graphical UI, and an embedded MicroPython interpreter.
 
-**Current version: v0.9.42**
+**Current version: v0.9.43**
 
 ## System Requirements
 
@@ -50,6 +50,14 @@ For networking (PCnet):
 
 ```bash
 qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev=net0
+```
+
+For audio (SB16):
+
+```bash
+make run-audio
+# or manually:
+qemu-system-x86_64 -cdrom tOS.iso -m 256M -soundhw sb16
 ```
 
 ## Boot Process
@@ -377,7 +385,52 @@ Several built-in GUI applications are launchable from the dock:
 - **Paint** (`paint.c`) — mouse-driven drawing app: pen, eraser, and line/rectangle/circle shape tools (click-drag previews the shape live, release to commit it), 3 brush sizes, a 16-color VGA palette, and a "Save" that exports the canvas as a real, standard PNG file (cell grid rasterized to RGB pixels through a from-scratch PNG/zlib encoder)
 - **Image Viewer** (`viewer.c`) — opens real PNG files (decoded through a from-scratch INFLATE/DEFLATE + PNG decoder in `png.c`, supporting stored/fixed/dynamic Huffman blocks and grayscale/RGB/palette/RGBA color types), downsampled and quantized to the nearest of the 16 VGA colors for display, with zoom in/out/fit and arrow-key panning.
 - **Task Manager** (`taskmgr.c`) — live process list (scheduler state, uptime, memory usage), select a task with the mouse or arrow keys and kill it with a confirm prompt; refuses to kill the idle task or itself
+- **Media Player** (`mediaplayer.c`) — WAV/MP3/AAC audio player with seek bar, volume control, playlist browser, and loop mode. Opens via the Special menu or `open mediaplayer`. Plays the built-in original demo melody automatically on first launch (no external files needed). See [Audio](#audio) section for hardware requirements.
 - **About** (`about.c`) — system information window
+
+## Audio
+
+tOS includes a full audio playback stack built on ISA Sound Blaster 16 (SB16) DMA output.
+
+### Hardware
+
+| Component | Details |
+|-----------|---------|
+| Driver | `kernel/audio/audio.c` — SB16 detection (base 0x220/0x210/0x230), IRQ5, DMA channel 1 |
+| Output | 8-bit unsigned PCM, mono, 22050 Hz via ISA DMA |
+| Volume | SB16 mixer register 0x22; range 0–100% |
+| QEMU | `-soundhw sb16` flag required (`make run-audio`) |
+
+### Supported Formats
+
+| Format | Module | Notes |
+|--------|--------|-------|
+| WAV | `wav_decoder.c` | PCM only (8-bit/16-bit, mono/stereo, any sample rate — resampled to 22050 Hz) |
+| MP3 | `mp3_decoder.c` | MPEG-1 Layer III, CBR, mono/stereo; from-scratch Huffman + IMDCT + requantizer |
+| AAC/M4A | `aac_decoder.c` | Format detection only; LC-AAC decode planned for v0.9.44 |
+
+### Demo Song
+
+`kernel/audio/demo_song.wav` — "tOS Jingle", an original ~40-second chiptune melody generated procedurally by `gen_demo_song.py`. Square-wave synthesis, 8-bit mono, 22050 Hz. No copyright, no external samples. Regenerate with:
+
+```bash
+python3 gen_demo_song.py
+```
+
+The WAV is linked directly into the kernel binary via `.incbin` (`demo_song_embed.s`), and is played automatically when the Media Player opens for the first time.
+
+### Media Player Controls
+
+| Action | Input |
+|--------|-------|
+| Play / Pause | Click `[ > Play ]` / `[II Pause]` toolbar button |
+| Stop | Click `[-- Stop]` |
+| Previous / Next track | Click `[<< Prev]` / `[>> Next]` |
+| Toggle loop | Click `[LOOP:OFF]` / `[LOOP:ON ]` |
+| Seek | Click on seek bar |
+| Volume | Click `[+]` / `[-]` in status row |
+| Arrow keys ←/→ | Seek ±5 seconds |
+| Arrow keys ↑/↓ | Scroll playlist |
 
 ## MicroPython Interpreter
 

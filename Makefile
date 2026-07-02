@@ -17,7 +17,8 @@ CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
           -Ikernel/drivers/net -Ikernel/drivers/usb -Ikernel/drivers/audio \
           -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
           -Ikernel/drivers/misc -Ikernel/micropython \
-         -Ikernel/micropython/ports/tos
+         -Ikernel/micropython/ports/tos \
+         -Ikernel/audio
 
 # Relaxed flags for MicroPython core (uses -isystem for 32-bit glibc compat)
 MPY_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
@@ -150,6 +151,12 @@ KERNEL_OBJS = \
     kernel/net/chacha20.o \
     kernel/net/wgtun.o \
     kernel/net/http.o \
+    kernel/audio/audio.o \
+    kernel/audio/wav_decoder.o \
+    kernel/audio/mp3_decoder.o \
+    kernel/audio/aac_decoder.o \
+        kernel/audio/demo_song_embed.o \
+    kernel/display/mediaplayer.o \
     kernel/micropython/ports/tos/tos_main.o \
     kernel/micropython/ports/tos/tos_hal.o \
     kernel/micropython/ports/tos/math_stubs.o \
@@ -195,6 +202,12 @@ kernel/micropython/ports/tos/%.o: kernel/micropython/ports/tos/%.c
 %.o: %.s
 	$(AS) $(ASFLAGS) $< -o $@
 
+kernel/audio/demo_song_embed.o: kernel/audio/demo_song_embed.s kernel/audio/demo_song.wav
+	$(AS) $(ASFLAGS) $< -o $@
+
+kernel/audio/demo_song.wav: gen_demo_song.py
+	python3 gen_demo_song.py || true
+
 kernel/boot/boot.o: kernel/boot/boot.s
 	$(CC) $(CFLAGS) -x assembler-with-cpp -c $< -o $@
 
@@ -224,6 +237,14 @@ run: tOS.iso
 		-serial stdio 2>/dev/null || \
 	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
 		-drive file=/tmp/tfs_test.img,if=ide,format=raw
+
+run-audio: tOS.iso
+	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
+		-drive file=/tmp/tfs_test.img,if=ide,format=raw \
+		-soundhw sb16 -serial stdio 2>/dev/null || \
+	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
+		-drive file=/tmp/tfs_test.img,if=ide,format=raw \
+		-soundhw sb16
 
 run-noinstall: tOS.iso
 	rm -f /tmp/tfs_test.img

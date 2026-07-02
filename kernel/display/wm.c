@@ -15,6 +15,7 @@
 #include "paint.h"
 #include "viewer.h"
 #include "taskmgr.h"
+#include "mediaplayer.h"
 #include "fsbridge.h"
 
 #define VGA_W 80
@@ -36,7 +37,8 @@
 #define WIN_KIND_PAINT 7
 #define WIN_KIND_VIEWER 8
 #define WIN_KIND_TASKMGR 9
-#define WIN_KIND_SCRIPT 10
+#define WIN_KIND_SCRIPT      10
+#define WIN_KIND_MEDIAPLAYER 11
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -282,6 +284,8 @@ static void window_task_entry(void)
         viewer_run();
     else if (w->kind == WIN_KIND_TASKMGR)
         taskmgr_run();
+    else if (w->kind == WIN_KIND_MEDIAPLAYER)
+        mediaplayer_run();
     else
         shell_run_windowed(w->initial_cmd);
 }
@@ -626,6 +630,29 @@ static void wm_open_taskmgr(void)
     wm_focused = w;
 }
 
+static void wm_open_mediaplayer(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 1;
+    w->z = next_z++;
+    w->kind = WIN_KIND_MEDIAPLAYER;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "Media Player");
+
+    window_geom_init(w);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
 /* Name-based app launcher for scripting APIs (T#, MicroPython) that
  * shouldn't need to know about every individual wm_open_*() function.
  * Returns 0 if the name was recognized (whether or not the window
@@ -641,6 +668,7 @@ int wm_open_app(const char *name)
     else if (strcmp(name, "paint") == 0) wm_open_paint();
     else if (strcmp(name, "viewer") == 0) wm_open_viewer();
     else if (strcmp(name, "taskmgr") == 0) wm_open_taskmgr();
+    else if (strcmp(name, "mediaplayer") == 0 || strcmp(name, "music") == 0) wm_open_mediaplayer();
     else if (strcmp(name, "terminal") == 0) wm_open_window("");
     else return -1;
     return 0;
@@ -760,6 +788,8 @@ static void build_menu_items(int which)
         menu_names[menu_count] = "Image Viewer"; menu_is_app[menu_count] = 9; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Task Manager"; menu_is_app[menu_count] = 10; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "Media Player"; menu_is_app[menu_count] = 11; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Calculator"; menu_is_app[menu_count] = 6; menu_disabled[menu_count] = 0;
         menu_count++;
@@ -963,7 +993,8 @@ static const char *get_icon_char(int kind)
         case WIN_KIND_PAINT:    return "\x0E";
         case WIN_KIND_VIEWER:   return "\x0C";
         case WIN_KIND_TASKMGR:  return "\x05";
-        case WIN_KIND_SCRIPT:   return "\x1E";
+        case WIN_KIND_SCRIPT:      return "\x1E";
+        case WIN_KIND_MEDIAPLAYER: return "\x0D"; /* ♪ */
         default:                return ".";
     }
 }
@@ -1100,6 +1131,8 @@ static void handle_menu_click(int idx)
             wm_open_viewer();
         } else if (menu_is_app[idx] == 10) {
             wm_open_taskmgr();
+        } else if (menu_is_app[idx] == 11) {
+            wm_open_mediaplayer();
         }
     } else if (active_menu == MENU_FILE) {
         if (menu_is_app[idx] == -3) {
