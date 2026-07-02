@@ -19,6 +19,17 @@
 #define MP_COLS   79
 #define MP_ROWS   22
 
+/*
+   Row layout:
+   0  ┌─ Toolbar: [►Play] [■Stop] [|◄Prev] [Next►|] [LOOP] [Audio]
+   1  ├─ ══ filename ══
+   2  │  Seek bar [████|░░░░] 01:23 / 03:45   [◄◄5s] [5s►►]
+   3  │  [WAV] filename.wav
+   4  │  >> PLAYING   status message
+   5  │  Vol: [▓▓▓▓░░] 080%  [-] [+]
+   6  ├─ ══ Playlist ══
+   7-20   playlist items (clickable)
+*/
 #define ROW_TOOLBAR  0
 #define ROW_DIVIDER  1
 #define ROW_SEEKBAR  2
@@ -43,8 +54,6 @@
 #define LGN VGA_LIGHT_GREEN
 #define YLW VGA_BROWN
 #define RED VGA_RED
-#define LRD VGA_LIGHT_RED
-#define MGN VGA_MAGENTA
 
 /* ── State ───────────────────────────────────────────────────────────────── */
 typedef enum { FMT_NONE=0, FMT_WAV, FMT_MP3, FMT_AAC } fmt_t;
@@ -62,26 +71,23 @@ static aac_ctx_t g_aac;
 
 static uint8_t  g_pcmbuf[AUDIO_DMA_SIZE];
 static uint32_t g_pcmfill  = 0;
-static uint32_t g_pcmpos   = 0;   /* for demo song: byte offset in PCM */
+static uint32_t g_pcmpos   = 0;
 
 static uint8_t  g_volume   = 80;
 static int      g_loop     = 0;
 static uint32_t g_dur_sec  = 0;
 
-/* Playlist */
 static char     g_plist[MAX_PLIST][64];
 static int      g_plist_n    = 0;
-static int      g_plist_sel  = -1;   /* currently playing index */
-static int      g_plist_cur  = 0;    /* keyboard cursor (highlight) */
-static int      g_plist_view = 0;    /* first visible row */
+static int      g_plist_sel  = -1;
+static int      g_plist_view = 0;
 
-static char g_status[MP_COLS+1] = "tOS Media Player - ready";
+static char g_status[MP_COLS+1] = "tOS Media Player";
 
-/* Pending open from wm_open_app */
 static char g_pending_path[64] = {0};
 static int  g_has_pending = 0;
 
-/* ── Redraw tracking — only repaint what changed ─────────────────────────── */
+/* Dirty flags */
 #define DIRTY_TOOLBAR  (1<<0)
 #define DIRTY_DIVIDER  (1<<1)
 #define DIRTY_SEEKBAR  (1<<2)
@@ -92,12 +98,10 @@ static int  g_has_pending = 0;
 #define DIRTY_ALL      0x7F
 
 static int      g_dirty        = DIRTY_ALL;
-static uint32_t g_last_pos_sec = 0xFFFFFFFFU; /* sentinel */
+static uint32_t g_last_pos_sec = 0xFFFFFFFFU;
 
-/* Software tick counter for no-audio-hw position advance */
-static uint32_t g_sw_tick      = 0;   /* loop iterations since last pos advance */
-/* Approx loop iters per second — tuned for ~1000 iters/s cooperative scheduler */
 #define SW_TICKS_PER_SEC  1000
+static uint32_t g_sw_tick = 0;
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 static void mp_put(int x, int y, const char *s, uint8_t color)
@@ -123,16 +127,11 @@ static void mp_fmt_time(char *buf, uint32_t sec)
     buf[5] = 0;
 }
 
-/* Current playback position in seconds */
 static uint32_t current_pos_sec(void)
 {
-    if (g_fmt == FMT_WAV && g_filebuf == NULL) {
-        return g_pcmpos / DEMO_SONG_RATE;
-    } else if (g_fmt == FMT_WAV && g_filebuf) {
-        return wav_pos_sec(&g_wav);
-    } else if (g_fmt == FMT_MP3) {
-        return mp3_pos_sec(&g_mp3);
-    }
+    if (g_fmt == FMT_WAV && !g_filebuf) return g_pcmpos / DEMO_SONG_RATE;
+    if (g_fmt == FMT_WAV &&  g_filebuf) return wav_pos_sec(&g_wav);
+    if (g_fmt == FMT_MP3)               return mp3_pos_sec(&g_mp3);
     return 0;
 }
 
@@ -140,12 +139,8 @@ static uint32_t current_pos_sec(void)
 static void mp_free_file(void)
 {
     if (g_filebuf) { free(g_filebuf); g_filebuf = NULL; }
-    g_filesz  = 0;
-    g_fmt     = FMT_NONE;
-    g_state   = ST_STOPPED;
-    g_pcmfill = 0;
-    g_pcmpos  = 0;
-    g_dur_sec = 0;
+    g_filesz = 0; g_fmt = FMT_NONE; g_state = ST_STOPPED;
+    g_pcmfill = 0; g_pcmpos = 0; g_dur_sec = 0;
     g_last_pos_sec = 0xFFFFFFFFU;
 }
 
@@ -154,104 +149,81 @@ static int mp_load(const char *path)
     mp_free_file();
     audio_stop();
 
-    int is_demo = (strcmp(path, "/demo/demo.wav") == 0 ||
-                   strcmp(path, "demo.wav") == 0);
-
-    if (is_demo) {
-        g_fmt     = FMT_WAV;
-        g_filebuf = NULL;
-        g_filesz  = DEMO_SONG_LEN;
+    if (strcmp(path, "/demo/demo.wav")==0 || strcmp(path,"demo.wav")==0) {
+        g_fmt = FMT_WAV; g_filebuf = NULL;
+        g_filesz = DEMO_SONG_LEN;
         g_dur_sec = DEMO_SONG_LEN / DEMO_SONG_RATE;
-        g_pcmfill = 0;
-        g_pcmpos  = 0;
         strncpy(g_path, path, 63);
         return 0;
     }
 
     if (!fsbridge_exists(path) || fsbridge_is_dir(path)) {
-        strncpy(g_status, "Error: file not found.", MP_COLS);
-        return -1;
+        strncpy(g_status, "Error: file not found.", MP_COLS); return -1;
     }
     uint32_t sz = fsbridge_size(path);
     if (!sz || sz > 32*1024*1024U) {
-        strncpy(g_status, "Error: file too large (>32MB).", MP_COLS);
-        return -1;
+        strncpy(g_status, "Error: file too large.", MP_COLS); return -1;
     }
     g_filebuf = (uint8_t*)malloc(sz);
-    if (!g_filebuf) {
-        strncpy(g_status, "Error: out of memory.", MP_COLS);
-        return -1;
-    }
+    if (!g_filebuf) { strncpy(g_status, "Error: out of memory.", MP_COLS); return -1; }
     fsbridge_read(path, g_filebuf, sz, 0);
     g_filesz = sz;
     strncpy(g_path, path, 63);
 
-    /* detect format */
-    if (sz >= 12 && g_filebuf[0]=='R' && g_filebuf[1]=='I' &&
+    if (sz>=12 && g_filebuf[0]=='R' && g_filebuf[1]=='I' &&
         g_filebuf[8]=='W' && g_filebuf[9]=='A') {
-        if (wav_open(&g_wav, g_filebuf, sz) == 0) {
-            g_fmt = FMT_WAV;
-            g_dur_sec = wav_duration_sec(&g_wav);
+        if (wav_open(&g_wav, g_filebuf, sz)==0) {
+            g_fmt = FMT_WAV; g_dur_sec = wav_duration_sec(&g_wav);
         }
-    } else if (sz >= 4 &&
-               ((g_filebuf[0]==0xFF && (g_filebuf[1]&0xE0)==0xE0 && (g_filebuf[1]&0x06)==0x02) ||
-                (g_filebuf[0]=='I' && g_filebuf[1]=='D' && g_filebuf[2]=='3'))) {
-        uint32_t mp3off = 0;
-        if (g_filebuf[0]=='I' && sz > 10)
-            mp3off = 10U + (uint32_t)((((uint32_t)g_filebuf[6]&0x7F)<<21) |
-                                       (((uint32_t)g_filebuf[7]&0x7F)<<14) |
-                                       (((uint32_t)g_filebuf[8]&0x7F)<<7)  |
-                                        ((uint32_t)g_filebuf[9]&0x7F));
-        if (mp3_open(&g_mp3, g_filebuf+mp3off, sz-mp3off) == 0) {
-            g_fmt = FMT_MP3;
-            g_dur_sec = mp3_duration_sec(&g_mp3);
+    } else if (sz>=4 &&
+        ((g_filebuf[0]==0xFF && (g_filebuf[1]&0xE0)==0xE0 && (g_filebuf[1]&0x06)==0x02) ||
+         (g_filebuf[0]=='I' && g_filebuf[1]=='D' && g_filebuf[2]=='3'))) {
+        uint32_t off = 0;
+        if (g_filebuf[0]=='I' && sz>10)
+            off = 10U + (uint32_t)((((uint32_t)g_filebuf[6]&0x7F)<<21)|
+                                    (((uint32_t)g_filebuf[7]&0x7F)<<14)|
+                                    (((uint32_t)g_filebuf[8]&0x7F)<<7) |
+                                     ((uint32_t)g_filebuf[9]&0x7F));
+        if (mp3_open(&g_mp3, g_filebuf+off, sz-off)==0) {
+            g_fmt = FMT_MP3; g_dur_sec = mp3_duration_sec(&g_mp3);
         }
     } else {
         int rc = aac_open(&g_aac, g_filebuf, sz);
-        if (rc == -2) {
-            g_fmt = FMT_AAC;
-            strncpy(g_status, "AAC: format detected - decoder coming soon.", MP_COLS);
-            return -1;
-        }
-        strncpy(g_status, "Unknown format (WAV/MP3/AAC supported).", MP_COLS);
-        mp_free_file();
-        return -1;
+        if (rc==-2) { strncpy(g_status,"AAC: not yet supported.",MP_COLS); return -1; }
+        strncpy(g_status,"Unknown format.",MP_COLS);
+        mp_free_file(); return -1;
     }
-    g_pcmfill = 0;
-    g_pcmpos  = 0;
     return 0;
 }
 
-/* Fill g_pcmbuf with decoded PCM */
 static void mp_fill_pcm(void)
 {
     uint32_t n = 0;
-    int is_demo = (g_filebuf == NULL && g_fmt == FMT_WAV);
-    if (is_demo) {
+    if (g_fmt==FMT_WAV && !g_filebuf) {
         while (n < AUDIO_DMA_SIZE && g_pcmpos < DEMO_SONG_LEN)
             g_pcmbuf[n++] = demo_song_pcm[g_pcmpos++];
         if (!n && g_loop) g_pcmpos = 0;
-    } else if (g_fmt == FMT_WAV) {
+    } else if (g_fmt==FMT_WAV && g_filebuf) {
         n = wav_read(&g_wav, g_pcmbuf, AUDIO_DMA_SIZE);
-        if (!n && g_loop) { wav_seek(&g_wav, 0); n = wav_read(&g_wav, g_pcmbuf, AUDIO_DMA_SIZE); }
-    } else if (g_fmt == FMT_MP3) {
+        if (!n && g_loop) { wav_seek(&g_wav,0); n=wav_read(&g_wav,g_pcmbuf,AUDIO_DMA_SIZE); }
+    } else if (g_fmt==FMT_MP3) {
         n = mp3_read(&g_mp3, g_pcmbuf, AUDIO_DMA_SIZE);
-        if (!n && g_loop) { mp3_seek_sec(&g_mp3, 0); n = mp3_read(&g_mp3, g_pcmbuf, AUDIO_DMA_SIZE); }
+        if (!n && g_loop) { mp3_seek_sec(&g_mp3,0); n=mp3_read(&g_mp3,g_pcmbuf,AUDIO_DMA_SIZE); }
     }
     g_pcmfill = n;
 }
 
-/* ── Playlist ──────────────────────────────────────────────────────────────── */
+/* ── Playlist ────────────────────────────────────────────────────────────── */
 static int is_audio_ext(const char *name)
 {
     int n = (int)strlen(name);
     if (n > 4) {
         const char *e = name + n - 4;
         if (e[0]=='.') {
-            if ((e[1]|32)=='w' && (e[2]|32)=='a' && (e[3]|32)=='v') return 1;
-            if ((e[1]|32)=='m' && (e[2]|32)=='p' && e[3]=='3') return 1;
-            if ((e[1]|32)=='m' && e[2]=='4' && (e[3]|32)=='a') return 1;
-            if ((e[1]|32)=='a' && (e[2]|32)=='a' && (e[3]|32)=='c') return 1;
+            if ((e[1]|32)=='w'&&(e[2]|32)=='a'&&(e[3]|32)=='v') return 1;
+            if ((e[1]|32)=='m'&&(e[2]|32)=='p'&&e[3]=='3') return 1;
+            if ((e[1]|32)=='m'&&e[2]=='4'&&(e[3]|32)=='a') return 1;
+            if ((e[1]|32)=='a'&&(e[2]|32)=='a'&&(e[3]|32)=='c') return 1;
         }
     }
     return 0;
@@ -262,42 +234,35 @@ static void playlist_scan(const char *dir)
     vfs_entry_t entries[64];
     int n = fsbridge_list(dir, entries, 64);
     for (int i = 0; i < n && g_plist_n < MAX_PLIST; i++) {
-        if (entries[i].is_dir) continue;
-        if (!is_audio_ext(entries[i].name)) continue;
-        int dl = (int)strlen(dir);
-        int nl = (int)strlen(entries[i].name);
-        if (dl + nl + 2 < 64) {
-            char *p = g_plist[g_plist_n];
-            int j = 0;
-            for (int k = 0; k < dl; k++) p[j++] = dir[k];
-            if (dir[dl-1] != '/') p[j++] = '/';
-            for (int k = 0; k < nl; k++) p[j++] = entries[i].name[k];
-            p[j] = 0;
-            g_plist_n++;
+        if (entries[i].is_dir || !is_audio_ext(entries[i].name)) continue;
+        int dl = (int)strlen(dir), nl = (int)strlen(entries[i].name);
+        if (dl+nl+2 < 64) {
+            char *p = g_plist[g_plist_n]; int j=0;
+            for (int k=0;k<dl;k++) p[j++]=dir[k];
+            if (dir[dl-1]!='/') p[j++]='/';
+            for (int k=0;k<nl;k++) p[j++]=entries[i].name[k];
+            p[j]=0; g_plist_n++;
         }
     }
 }
 
 static void playlist_add(const char *path)
 {
-    if (g_plist_n >= MAX_PLIST) return;
-    strncpy(g_plist[g_plist_n++], path, 63);
+    if (g_plist_n < MAX_PLIST)
+        strncpy(g_plist[g_plist_n++], path, 63);
 }
 
 static void playlist_play_idx(int idx)
 {
     if (idx < 0 || idx >= g_plist_n) return;
     g_plist_sel = idx;
-    g_plist_cur = idx;
-    /* scroll view so playing item is visible */
-    if (g_plist_cur < g_plist_view) g_plist_view = g_plist_cur;
-    if (g_plist_cur >= g_plist_view + PLIST_ROWS) g_plist_view = g_plist_cur - PLIST_ROWS + 1;
+    if (g_plist_sel < g_plist_view) g_plist_view = g_plist_sel;
+    if (g_plist_sel >= g_plist_view+PLIST_ROWS) g_plist_view = g_plist_sel-PLIST_ROWS+1;
     audio_stop();
     g_sw_tick = 0;
-    if (mp_load(g_plist[idx]) == 0) {
+    if (mp_load(g_plist[idx])==0) {
         g_state = ST_PLAYING;
-        const char *p = g_plist[idx];
-        const char *last = p;
+        const char *p=g_plist[idx], *last=p;
         while (*p) { if (*p=='/') last=p+1; p++; }
         snprintf(g_status, MP_COLS, "Playing: %s", last);
     } else {
@@ -306,149 +271,194 @@ static void playlist_play_idx(int idx)
     g_dirty = DIRTY_ALL;
 }
 
-/* ── Drawing (each section independent) ─────────────────────────────────── */
+static void do_seek_delta(int ds)
+{
+    if (g_fmt==FMT_WAV && g_filebuf) {
+        uint32_t p=wav_pos_sec(&g_wav);
+        uint32_t t=(ds<0&&(uint32_t)(-ds)>p)?0:p+(uint32_t)ds;
+        wav_seek(&g_wav, t*AUDIO_OUT_RATE);
+    } else if (g_fmt==FMT_MP3) {
+        uint32_t p=mp3_pos_sec(&g_mp3);
+        uint32_t t=(ds<0&&(uint32_t)(-ds)>p)?0:p+(uint32_t)ds;
+        mp3_seek_sec(&g_mp3, t);
+    } else if (g_fmt==FMT_WAV && !g_filebuf) {
+        if (ds<0) { uint32_t d=(uint32_t)(-ds)*DEMO_SONG_RATE;
+                    g_pcmpos=(g_pcmpos>d)?g_pcmpos-d:0; }
+        else      { g_pcmpos+=(uint32_t)ds*DEMO_SONG_RATE;
+                    if (g_pcmpos>DEMO_SONG_LEN) g_pcmpos=DEMO_SONG_LEN; }
+    }
+    g_pcmfill=0; g_dirty|=DIRTY_SEEKBAR;
+}
+
+/* ── Drawing ─────────────────────────────────────────────────────────────── */
+
+/*
+  Toolbar button map (columns, inclusive):
+   1-10   [►Play  ] / [||Pause]
+   12-19  [■ Stop ]
+   21-29  [|◄ Prev]
+   31-39  [Next ►|]
+   41-50  [LOOP:OFF] / [LOOP:ON ]
+   52-65  [Audio OK] / [No Audio]
+*/
 static void draw_toolbar(void)
 {
-    mp_fill(0, ROW_TOOLBAR, MP_COLS, ' ', C(BLK, LGY));
-    const char *play_lbl = (g_state == ST_PLAYING) ? "[II Pause]" : "[ > Play ]";
-    mp_put(1,  ROW_TOOLBAR, play_lbl,   C(BLK, BLU));
-    mp_put(12, ROW_TOOLBAR, "[-- Stop]", C(WHT, RED));
-    mp_put(22, ROW_TOOLBAR, "[<< Prev]", C(BLK, LGY));
-    mp_put(31, ROW_TOOLBAR, "[>> Next]", C(BLK, LGY));
-    const char *loop_lbl = g_loop ? "[LOOP:ON ]" : "[LOOP:OFF]";
-    mp_put(41, ROW_TOOLBAR, loop_lbl, C(BLK, g_loop ? GRN : DGY));
+    mp_fill(0, ROW_TOOLBAR, MP_COLS, ' ', C(BLK,LGY));
+
+    const char *play_lbl = (g_state==ST_PLAYING) ? "[|| Pause]" : "[ ► Play ]";
+    uint8_t play_col = (g_state==ST_PAUSED) ? C(YLW,BLU) : C(WHT,BLU);
+    mp_put(1,  ROW_TOOLBAR, play_lbl, play_col);
+    mp_put(12, ROW_TOOLBAR, "[■ Stop ]", C(WHT,RED));
+    mp_put(22, ROW_TOOLBAR, "[|◄ Prev]", C(BLK,LGY));
+    mp_put(32, ROW_TOOLBAR, "[Next ►|]", C(BLK,LGY));
+
+    const char *lp = g_loop ? "[LOOP: ON]" : "[LOOP:OFF]";
+    mp_put(42, ROW_TOOLBAR, lp, C(BLK, g_loop?GRN:DGY));
+
     if (!audio_available())
-        mp_put(53, ROW_TOOLBAR, "[No Audio HW]", C(YLW, DGY));
+        mp_put(53, ROW_TOOLBAR, "[No Audio HW]", C(YLW,DGY));
     else
-        mp_put(53, ROW_TOOLBAR, "[Audio OK]   ", C(LGN, DGY));
+        mp_put(53, ROW_TOOLBAR, "[Audio OK]   ", C(LGN,DGY));
 }
 
 static void draw_divider(int row, const char *label)
 {
-    mp_fill(0, row, MP_COLS, '\xC4', C(DGY, BLK));
+    mp_fill(0, row, MP_COLS, '\xC4', C(DGY,BLK));
     if (label) {
-        int llen = (int)strlen(label);
-        int lx   = (MP_COLS - llen - 2) / 2;
-        mp_put(lx,       row, " ",   C(DGY, BLK));
-        mp_put(lx+1,     row, label, C(CYN, BLK));
-        mp_put(lx+1+llen,row, " ",   C(DGY, BLK));
+        int llen=(int)strlen(label), lx=(MP_COLS-llen-2)/2;
+        mp_put(lx,      row, " ",   C(DGY,BLK));
+        mp_put(lx+1,    row, label, C(CYN,BLK));
+        mp_put(lx+1+llen,row," ",   C(DGY,BLK));
     }
 }
 
+/*
+  Seek bar row:
+   0      '['
+   1-48   bar
+   49     ']'
+   51-55  mm:ss
+   56-58  ' / '
+   59-63  mm:ss
+   65-71  [◄◄ 5s]
+   73-79  [5s ►►]
+*/
 static void draw_seekbar(void)
 {
-    uint32_t pos_s = current_pos_sec();
+    uint32_t pos = current_pos_sec();
     char tpos[8], tdur[8];
-    mp_fmt_time(tpos, pos_s);
-    mp_fmt_time(tdur, g_dur_sec ? g_dur_sec : 0);
+    mp_fmt_time(tpos, pos);
+    mp_fmt_time(tdur, g_dur_sec);
+
     int bar_w = 48;
-    int filled = (g_dur_sec > 0 && pos_s <= g_dur_sec)
-                 ? (int)((uint64_t)pos_s * (uint32_t)bar_w / g_dur_sec)
-                 : 0;
-    mp_put(0, ROW_SEEKBAR, "[", C(LGY, BLK));
-    terminal_setcolor(C(LGN, BLK));
+    int filled = (g_dur_sec>0 && pos<=g_dur_sec)
+                 ? (int)((uint64_t)pos*(uint32_t)bar_w/g_dur_sec) : 0;
+
+    mp_put(0, ROW_SEEKBAR, "[", C(LGY,BLK));
     terminal_setpos(1, ROW_SEEKBAR);
-    for (int i = 0; i < bar_w; i++) {
-        if (i < filled)       terminal_putchar('\xDB');
-        else if (i == filled) terminal_putchar('|');
-        else                  terminal_putchar('\xB0');
+    for (int i=0; i<bar_w; i++) {
+        terminal_setcolor((i<filled)?C(LGN,BLK):C(DGY,BLK));
+        if (i<filled)       terminal_putchar('\xDB');
+        else if (i==filled) terminal_putchar('|');
+        else                terminal_putchar('\xB0');
     }
-    mp_put(bar_w+1, ROW_SEEKBAR, "] ", C(LGY, BLK));
-    mp_put(bar_w+3, ROW_SEEKBAR, tpos, C(WHT, BLK));
-    mp_put(bar_w+8, ROW_SEEKBAR, " / ", C(DGY, BLK));
-    mp_put(bar_w+11,ROW_SEEKBAR, tdur, C(LGY, BLK));
+    mp_put(bar_w+1, ROW_SEEKBAR, "] ", C(LGY,BLK));
+    mp_put(bar_w+3, ROW_SEEKBAR, tpos,  C(WHT,BLK));
+    mp_put(bar_w+8, ROW_SEEKBAR, " / ", C(DGY,BLK));
+    mp_put(bar_w+11,ROW_SEEKBAR, tdur,  C(LGY,BLK));
+    mp_put(65, ROW_SEEKBAR, "[◄◄ 5s]", C(BLK,LGY));
+    mp_put(73, ROW_SEEKBAR, "[5s ►►]", C(BLK,LGY));
 }
 
 static void draw_info(void)
 {
-    mp_fill(0, ROW_INFO, MP_COLS, ' ', C(LGY, BLK));
-    const char *name = "(no file)";
-    const char *fmt_str = "";
+    mp_fill(0, ROW_INFO, MP_COLS, ' ', C(LGY,BLK));
+    const char *name="(no file)", *fmts="";
     if (g_path[0]) {
-        const char *p = g_path;
-        const char *last = p;
+        const char *p=g_path, *last=p;
         while (*p) { if (*p=='/') last=p+1; p++; }
-        name = last;
-        fmt_str = (g_fmt==FMT_WAV)?"[WAV]":
-                  (g_fmt==FMT_MP3)?"[MP3]":
-                  (g_fmt==FMT_AAC)?"[AAC]":"[???]";
+        name=last;
+        fmts=(g_fmt==FMT_WAV)?"[WAV]":(g_fmt==FMT_MP3)?"[MP3]":
+             (g_fmt==FMT_AAC)?"[AAC]":"[???]";
     }
+    mp_put(0, ROW_INFO, fmts, C(LBL,BLK));
     char buf[52]; int n=0;
-    while (name[n] && n < 50) { buf[n]=name[n]; n++; } buf[n]=0;
-    mp_put(0, ROW_INFO, fmt_str, C(LBL, BLK));
-    mp_put(6, ROW_INFO, buf,     C(WHT, BLK));
+    while (name[n]&&n<50){buf[n]=name[n];n++;} buf[n]=0;
+    mp_put(6, ROW_INFO, buf, C(WHT,BLK));
 }
 
 static void draw_status(void)
 {
-    mp_fill(0, ROW_STATUS, MP_COLS, ' ', C(DGY, BLK));
-    const char *ss = (g_state==ST_PLAYING)?">> PLAYING":
-                     (g_state==ST_PAUSED) ?"|| PAUSED ":"[] STOPPED";
-    uint8_t sc = (g_state==ST_PLAYING)?C(LGN,BLK):
-                 (g_state==ST_PAUSED) ?C(YLW,BLK):C(DGY,BLK);
-    mp_put(0,  ROW_STATUS, ss, sc);
-    mp_put(11, ROW_STATUS, "  ", C(DGY,BLK));
-    mp_put(13, ROW_STATUS, g_status, C(LGY,BLK));
+    mp_fill(0, ROW_STATUS, MP_COLS, ' ', C(DGY,BLK));
+    const char *ss=(g_state==ST_PLAYING)?"► PLAYING":
+                   (g_state==ST_PAUSED) ?"|| PAUSED":"■ STOPPED";
+    uint8_t sc=(g_state==ST_PLAYING)?C(LGN,BLK):
+               (g_state==ST_PAUSED) ?C(YLW,BLK):C(DGY,BLK);
+    mp_put(0, ROW_STATUS, ss, sc);
+    mp_put(10,ROW_STATUS, "  ", C(DGY,BLK));
+    mp_put(12,ROW_STATUS, g_status, C(LGY,BLK));
 }
 
+/*
+  Volume row:
+   0-5    "Vol: ["
+   6-25   bar (20 chars)
+   26-32  "] 080% "
+   34-37  "[- ]"   ← Vol-
+   39-42  "[+ ]"   ← Vol+
+   44     scroll hint "▲"
+   73     "▲" playlist scroll up
+   (playlist scroll handled by arrows in playlist area)
+*/
 static void draw_volbar(void)
 {
-    mp_fill(0, ROW_VOLBAR, MP_COLS, ' ', C(DGY, BLK));
-    mp_put(0, ROW_VOLBAR, "Vol: [", C(DGY, BLK));
+    mp_fill(0, ROW_VOLBAR, MP_COLS, ' ', C(DGY,BLK));
+    mp_put(0, ROW_VOLBAR, "Vol:[", C(DGY,BLK));
     int vw = (int)(g_volume * 20 / 100);
-    terminal_setpos(6, ROW_VOLBAR);
-    for (int i = 0; i < 20; i++) {
-        terminal_setcolor((i < vw) ? C(LGN,BLK) : C(DGY,BLK));
-        terminal_putchar(i < vw ? '\xDB' : '\xB0');
+    terminal_setpos(5, ROW_VOLBAR);
+    for (int i=0;i<20;i++) {
+        terminal_setcolor((i<vw)?C(LGN,BLK):C(DGY,BLK));
+        terminal_putchar(i<vw?'\xDB':'\xB0');
     }
-    char vbuf[8];
-    vbuf[0] = ']'; vbuf[1] = ' ';
-    vbuf[2] = '0' + g_volume/100;
-    vbuf[3] = '0' + (g_volume%100)/10;
-    vbuf[4] = '0' + g_volume%10;
-    vbuf[5] = '%'; vbuf[6] = 0;
-    mp_put(26, ROW_VOLBAR, vbuf, C(WHT,BLK));
-    mp_put(33, ROW_VOLBAR, " [Spc]Pause [Esc]Stop [+/-]Vol [<>]Seek [n/p]Track", C(DGY,BLK));
+    char vbuf[10];
+    vbuf[0]=']'; vbuf[1]=' ';
+    vbuf[2]=(char)('0'+g_volume/100);
+    vbuf[3]=(char)('0'+(g_volume%100)/10);
+    vbuf[4]=(char)('0'+g_volume%10);
+    vbuf[5]='%'; vbuf[6]=0;
+    mp_put(25, ROW_VOLBAR, vbuf, C(WHT,BLK));
+    mp_put(33, ROW_VOLBAR, "[Vol-]", C(WHT,DGY));
+    mp_put(40, ROW_VOLBAR, "[Vol+]", C(WHT,DGY));
+    mp_put(48, ROW_VOLBAR, "[▲ Scroll]", C(DGY,BLK));
+    mp_put(59, ROW_VOLBAR, "[▼ Scroll]", C(DGY,BLK));
 }
 
 static void draw_playlist(void)
 {
-    draw_divider(ROW_DIV2, "Playlist");
-    for (int r = 0; r < PLIST_ROWS; r++) {
+    draw_divider(ROW_DIV2, " Playlist (click to play) ");
+    for (int r=0; r<PLIST_ROWS; r++) {
         int idx = g_plist_view + r;
         if (idx >= g_plist_n) {
-            mp_fill(0, ROW_PLIST + r, MP_COLS, ' ', C(DGY, BLK));
+            mp_fill(0, ROW_PLIST+r, MP_COLS, ' ', C(DGY,BLK));
             continue;
         }
-        const char *p = g_plist[idx];
-        const char *last = p;
+        const char *p=g_plist[idx], *last=p;
         while (*p) { if (*p=='/') last=p+1; p++; }
 
-        uint8_t col;
-        if (idx == g_plist_sel && idx == g_plist_cur)
-            col = C(BLK, LGN);    /* playing + cursor */
-        else if (idx == g_plist_sel)
-            col = C(BLK, GRN);    /* playing, not cursor */
-        else if (idx == g_plist_cur)
-            col = C(BLK, LGY);    /* cursor highlight */
-        else
-            col = C(WHT, BLK);
+        uint8_t col = (idx==g_plist_sel) ? C(BLK,LGN) : C(WHT,BLK);
 
-        char line[MP_COLS+1];
-        int li = 0;
-        line[li++] = (idx == g_plist_sel) ? '\x10' : ' '; /* ► or space */
-        line[li++] = (char)('0' + (idx+1)/10);
-        line[li++] = (char)('0' + (idx+1)%10);
-        line[li++] = '.';
-        line[li++] = ' ';
-        while (*last && li < MP_COLS-1) line[li++] = *last++;
-        while (li < MP_COLS) line[li++] = ' ';
-        line[MP_COLS] = 0;
-        mp_put(0, ROW_PLIST + r, line, col);
+        char line[MP_COLS+1]; int li=0;
+        line[li++]=(idx==g_plist_sel)?'\x10':' '; /* ► or space */
+        line[li++]=(char)('0'+(idx+1)/10);
+        line[li++]=(char)('0'+(idx+1)%10);
+        line[li++]='.'; line[li++]=' ';
+        while (*last && li<MP_COLS-1) line[li++]=*last++;
+        while (li<MP_COLS) line[li++]=' ';
+        line[MP_COLS]=0;
+        mp_put(0, ROW_PLIST+r, line, col);
     }
 }
 
-/* Selective redraw — only repaint dirty sections */
 static void repaint(void)
 {
     if (!g_dirty) return;
@@ -463,146 +473,127 @@ static void repaint(void)
     g_dirty = 0;
 }
 
-/* ── Mouse click handlers ────────────────────────────────────────────────── */
-static void handle_toolbar_click(int cx)
+/* ── Click handlers ──────────────────────────────────────────────────────── */
+static void click_toolbar(int cx)
 {
-    if (cx >= 1  && cx <= 10) {
-        if (g_state == ST_PLAYING)      { audio_stop(); g_state = ST_PAUSED; }
-        else if (g_state == ST_PAUSED)  { g_state = ST_PLAYING; }
-        else if (g_plist_n > 0)         { playlist_play_idx(g_plist_sel>=0?g_plist_sel:0); }
-        g_dirty |= DIRTY_TOOLBAR | DIRTY_STATUS;
-    } else if (cx >= 12 && cx <= 20) {
-        audio_stop(); g_state = ST_STOPPED; mp_free_file();
-        strncpy(g_status, "Stopped.", MP_COLS);
+    /* [► Play]/[||Pause]: col 1-10 */
+    if (cx>=1 && cx<=10) {
+        if (g_state==ST_PLAYING)     { audio_stop(); g_state=ST_PAUSED; }
+        else if (g_state==ST_PAUSED) { g_state=ST_PLAYING; }
+        else if (g_plist_n>0) { playlist_play_idx(g_plist_sel>=0?g_plist_sel:0); return; }
+        g_dirty |= DIRTY_TOOLBAR|DIRTY_STATUS;
+    }
+    /* [■ Stop]: col 12-19 */
+    else if (cx>=12 && cx<=19) {
+        audio_stop(); g_state=ST_STOPPED; mp_free_file();
+        strncpy(g_status,"Stopped.",MP_COLS);
         g_dirty = DIRTY_ALL;
-    } else if (cx >= 22 && cx <= 30) {
-        if (g_plist_sel > 0) playlist_play_idx(g_plist_sel - 1);
-    } else if (cx >= 31 && cx <= 39) {
-        if (g_plist_sel < g_plist_n-1) playlist_play_idx(g_plist_sel + 1);
-    } else if (cx >= 41 && cx <= 50) {
-        g_loop = !g_loop;
+    }
+    /* [|◄ Prev]: col 22-29 */
+    else if (cx>=22 && cx<=29) {
+        if (g_plist_sel>0) playlist_play_idx(g_plist_sel-1);
+    }
+    /* [Next ►|]: col 32-39 */
+    else if (cx>=32 && cx<=39) {
+        if (g_plist_sel<g_plist_n-1) playlist_play_idx(g_plist_sel+1);
+    }
+    /* [LOOP]: col 42-51 */
+    else if (cx>=42 && cx<=51) {
+        g_loop=!g_loop;
         g_dirty |= DIRTY_TOOLBAR;
     }
 }
 
-static void handle_seekbar_click(int cx)
+static void click_seekbar(int cx)
 {
-    if (cx < 1 || cx > 48 || !g_dur_sec) return;
-    uint32_t target = (uint32_t)((uint64_t)(cx-1) * g_dur_sec / 47);
-    if (g_fmt == FMT_WAV && g_filebuf)
-        wav_seek(&g_wav, target * AUDIO_OUT_RATE);
-    else if (g_fmt == FMT_MP3)
-        mp3_seek_sec(&g_mp3, target);
-    else if (g_fmt == FMT_WAV && !g_filebuf) {
-        g_pcmpos = target * DEMO_SONG_RATE;
-        if (g_pcmpos > DEMO_SONG_LEN) g_pcmpos = DEMO_SONG_LEN;
-    }
-    g_pcmfill = 0;
-    g_dirty |= DIRTY_SEEKBAR;
-}
-
-/* ── Keyboard handler ────────────────────────────────────────────────────── */
-static void do_seek_delta(int delta_sec)
-{
-    if (g_fmt == FMT_WAV && g_filebuf) {
-        uint32_t p = wav_pos_sec(&g_wav);
-        uint32_t t = (delta_sec < 0 && (uint32_t)(-delta_sec) > p) ? 0 : p + (uint32_t)delta_sec;
-        wav_seek(&g_wav, t * AUDIO_OUT_RATE);
-    } else if (g_fmt == FMT_MP3) {
-        uint32_t p = mp3_pos_sec(&g_mp3);
-        uint32_t t = (delta_sec < 0 && (uint32_t)(-delta_sec) > p) ? 0 : p + (uint32_t)delta_sec;
-        mp3_seek_sec(&g_mp3, t);
-    } else if (g_fmt == FMT_WAV && !g_filebuf) {
-        if (delta_sec < 0) {
-            uint32_t d = (uint32_t)(-delta_sec) * DEMO_SONG_RATE;
-            g_pcmpos = (g_pcmpos > d) ? g_pcmpos - d : 0;
-        } else {
-            g_pcmpos += (uint32_t)delta_sec * DEMO_SONG_RATE;
-            if (g_pcmpos > DEMO_SONG_LEN) g_pcmpos = DEMO_SONG_LEN;
+    /* bar: col 1-48 */
+    if (cx>=1 && cx<=48 && g_dur_sec) {
+        uint32_t t=(uint32_t)((uint64_t)(cx-1)*g_dur_sec/47);
+        if (g_fmt==FMT_WAV && g_filebuf)  wav_seek(&g_wav, t*AUDIO_OUT_RATE);
+        else if (g_fmt==FMT_MP3)           mp3_seek_sec(&g_mp3, t);
+        else if (g_fmt==FMT_WAV && !g_filebuf) {
+            g_pcmpos=t*DEMO_SONG_RATE;
+            if (g_pcmpos>DEMO_SONG_LEN) g_pcmpos=DEMO_SONG_LEN;
         }
+        g_pcmfill=0; g_dirty|=DIRTY_SEEKBAR;
     }
-    g_pcmfill = 0;
-    g_dirty |= DIRTY_SEEKBAR;
+    /* [◄◄ 5s]: col 65-71 */
+    else if (cx>=65 && cx<=71) { do_seek_delta(-5); }
+    /* [5s ►►]: col 73-79 */
+    else if (cx>=73 && cx<=79) { do_seek_delta(5); }
 }
 
+static void click_volbar(int cx)
+{
+    /* [Vol-]: col 33-38 */
+    if (cx>=33 && cx<=38) {
+        if (g_volume>=5) g_volume-=5; else g_volume=0;
+        audio_set_volume(g_volume);
+        g_dirty|=DIRTY_VOLBAR;
+    }
+    /* [Vol+]: col 40-45 */
+    else if (cx>=40 && cx<=45) {
+        g_volume+=5; if (g_volume>100) g_volume=100;
+        audio_set_volume(g_volume);
+        g_dirty|=DIRTY_VOLBAR;
+    }
+    /* [▲ Scroll]: col 48-57 */
+    else if (cx>=48 && cx<=57) {
+        if (g_plist_view>0) { g_plist_view--; g_dirty|=DIRTY_PLIST; }
+    }
+    /* [▼ Scroll]: col 59-68 */
+    else if (cx>=59 && cx<=68) {
+        if (g_plist_view+PLIST_ROWS<g_plist_n) { g_plist_view++; g_dirty|=DIRTY_PLIST; }
+    }
+}
+
+/* ── Keyboard shortcuts (secondary, non-blocking) ────────────────────────── */
 static void handle_key(char k)
 {
-    switch (k) {
+    switch(k) {
     case ' ':
-        /* Space = toggle play/pause */
-        if (g_state == ST_PLAYING) {
-            audio_stop(); g_state = ST_PAUSED;
-            g_dirty |= DIRTY_TOOLBAR | DIRTY_STATUS;
-        } else if (g_state == ST_PAUSED) {
-            g_state = ST_PLAYING;
-            g_dirty |= DIRTY_TOOLBAR | DIRTY_STATUS;
-        } else {
-            /* stopped: play selected or first */
-            int idx = (g_plist_sel >= 0) ? g_plist_sel : g_plist_cur;
-            playlist_play_idx(idx < g_plist_n ? idx : 0);
-        }
+        if (g_state==ST_PLAYING)     { audio_stop(); g_state=ST_PAUSED; g_dirty|=DIRTY_TOOLBAR|DIRTY_STATUS; }
+        else if (g_state==ST_PAUSED) { g_state=ST_PLAYING; g_dirty|=DIRTY_TOOLBAR|DIRTY_STATUS; }
+        else if (g_plist_n>0) { playlist_play_idx(g_plist_sel>=0?g_plist_sel:0); }
         break;
-    case 27: /* Esc = stop */
-        audio_stop(); g_state = ST_STOPPED;
-        strncpy(g_status, "Stopped.", MP_COLS);
-        g_dirty = DIRTY_ALL;
-        break;
-    case '\r': case '\n':
-        /* Enter = play cursor item */
-        playlist_play_idx(g_plist_cur);
+    case 27:
+        audio_stop(); g_state=ST_STOPPED;
+        strncpy(g_status,"Stopped.",MP_COLS);
+        g_dirty=DIRTY_ALL;
         break;
     case '+': case '=':
-        if (g_volume < 100) { g_volume += 5; if (g_volume>100) g_volume=100; }
-        audio_set_volume(g_volume);
-        g_dirty |= DIRTY_VOLBAR;
+        g_volume+=5; if(g_volume>100) g_volume=100;
+        audio_set_volume(g_volume); g_dirty|=DIRTY_VOLBAR;
         break;
     case '-':
-        if (g_volume >= 5) g_volume -= 5; else g_volume = 0;
-        audio_set_volume(g_volume);
-        g_dirty |= DIRTY_VOLBAR;
-        break;
-    case 'l': case 'L':
-        g_loop = !g_loop;
-        g_dirty |= DIRTY_TOOLBAR;
+        if(g_volume>=5) g_volume-=5; else g_volume=0;
+        audio_set_volume(g_volume); g_dirty|=DIRTY_VOLBAR;
         break;
     case 'n': case 'N':
-        if (g_plist_sel < g_plist_n-1) playlist_play_idx(g_plist_sel+1);
+        if (g_plist_sel<g_plist_n-1) playlist_play_idx(g_plist_sel+1);
         break;
     case 'p': case 'P':
-        if (g_plist_sel > 0) playlist_play_idx(g_plist_sel-1);
+        if (g_plist_sel>0) playlist_play_idx(g_plist_sel-1);
+        break;
+    case 'l': case 'L':
+        g_loop=!g_loop; g_dirty|=DIRTY_TOOLBAR;
         break;
     }
 }
 
 static void handle_special_key(int spec)
 {
-    switch (spec) {
-    case 1: /* left  → seek -5s */
-        do_seek_delta(-5);
-        break;
-    case 2: /* right → seek +5s */
-        do_seek_delta(5);
-        break;
-    case 3: /* up    → move cursor up in playlist */
-        if (g_plist_cur > 0) {
-            g_plist_cur--;
-            if (g_plist_cur < g_plist_view)
-                g_plist_view = g_plist_cur;
-            g_dirty |= DIRTY_PLIST;
-        }
-        break;
-    case 4: /* down  → move cursor down in playlist */
-        if (g_plist_cur < g_plist_n-1) {
-            g_plist_cur++;
-            if (g_plist_cur >= g_plist_view + PLIST_ROWS)
-                g_plist_view = g_plist_cur - PLIST_ROWS + 1;
-            g_dirty |= DIRTY_PLIST;
-        }
-        break;
+    switch(spec) {
+    case 1: do_seek_delta(-5); break;  /* left  */
+    case 2: do_seek_delta(5);  break;  /* right */
+    case 3: /* up: scroll playlist */
+        if (g_plist_view>0) { g_plist_view--; g_dirty|=DIRTY_PLIST; } break;
+    case 4: /* down: scroll playlist */
+        if (g_plist_view+PLIST_ROWS<g_plist_n) { g_plist_view++; g_dirty|=DIRTY_PLIST; } break;
     }
 }
 
-/* ── Main entry point ─────────────────────────────────────────────────────── */
+/* ── Main entry point ────────────────────────────────────────────────────── */
 void mediaplayer_open_path(const char *path)
 {
     strncpy(g_pending_path, path, 63);
@@ -611,23 +602,11 @@ void mediaplayer_open_path(const char *path)
 
 void mediaplayer_run(void)
 {
-    g_state     = ST_STOPPED;
-    g_fmt       = FMT_NONE;
-    g_filebuf   = NULL;
-    g_filesz    = 0;
-    g_volume    = 80;
-    g_loop      = 0;
-    g_plist_n   = 0;
-    g_plist_sel = -1;
-    g_plist_cur = 0;
-    g_plist_view= 0;
-    g_pcmfill   = 0;
-    g_pcmpos    = 0;
-    g_path[0]   = 0;
-    g_dirty     = DIRTY_ALL;
-    g_last_pos_sec = 0xFFFFFFFFU;
-    g_sw_tick   = 0;
-    strncpy(g_status, "tOS Media Player - ready", MP_COLS);
+    g_state=ST_STOPPED; g_fmt=FMT_NONE; g_filebuf=NULL; g_filesz=0;
+    g_volume=80; g_loop=0; g_plist_n=0; g_plist_sel=-1; g_plist_view=0;
+    g_pcmfill=0; g_pcmpos=0; g_path[0]=0;
+    g_dirty=DIRTY_ALL; g_last_pos_sec=0xFFFFFFFFU; g_sw_tick=0;
+    strncpy(g_status,"tOS Media Player - ready",MP_COLS);
 
     audio_init();
     audio_set_volume(g_volume);
@@ -637,9 +616,9 @@ void mediaplayer_run(void)
     playlist_scan("/");
 
     if (g_has_pending) {
-        g_has_pending = 0;
+        g_has_pending=0;
         playlist_add(g_pending_path);
-        playlist_play_idx(g_plist_n - 1);
+        playlist_play_idx(g_plist_n-1);
     } else {
         playlist_play_idx(0);
     }
@@ -654,88 +633,74 @@ void mediaplayer_run(void)
         /* ── Audio pump ────────────────────────────────────────────────── */
         if (g_state == ST_PLAYING) {
             if (audio_available()) {
-                /* Hardware audio path */
                 if (!audio_busy()) {
-                    if (g_pcmfill == 0) {
+                    if (g_pcmfill==0) {
                         mp_fill_pcm();
-                        if (g_pcmfill == 0) {
-                            /* EOF */
-                            if (g_plist_sel >= 0 && g_plist_sel < g_plist_n-1) {
-                                playlist_play_idx(g_plist_sel + 1);
-                            } else if (g_loop) {
+                        if (g_pcmfill==0) {
+                            if (g_plist_sel>=0 && g_plist_sel<g_plist_n-1)
+                                playlist_play_idx(g_plist_sel+1);
+                            else if (g_loop)
                                 playlist_play_idx(g_plist_sel);
-                            } else {
-                                g_state = ST_STOPPED;
-                                strncpy(g_status, "Playback complete.", MP_COLS);
-                                g_dirty = DIRTY_ALL;
+                            else {
+                                g_state=ST_STOPPED;
+                                strncpy(g_status,"Playback complete.",MP_COLS);
+                                g_dirty=DIRTY_ALL;
                             }
                         }
                     }
-                    if (g_pcmfill > 0) {
+                    if (g_pcmfill>0) {
                         audio_submit(g_pcmbuf, g_pcmfill);
-                        g_pcmfill = 0;
+                        g_pcmfill=0;
                     }
                 }
             } else {
-                /* No audio HW: advance position by software timer so seek
-                   bar and time counter still move at roughly real speed.
-                   SW_TICKS_PER_SEC loop iterations ≈ 1 second. */
+                /* No audio HW: software timer so seek bar still moves */
                 g_sw_tick++;
                 if (g_sw_tick >= SW_TICKS_PER_SEC) {
-                    g_sw_tick = 0;
-                    /* advance demo pcmpos by 1 second worth of samples */
-                    if (g_fmt == FMT_WAV && !g_filebuf) {
+                    g_sw_tick=0;
+                    if (g_fmt==FMT_WAV && !g_filebuf) {
                         g_pcmpos += DEMO_SONG_RATE;
                         if (g_pcmpos >= DEMO_SONG_LEN) {
-                            if (g_loop) g_pcmpos = 0;
-                            else {
-                                g_state = ST_STOPPED;
-                                strncpy(g_status, "Playback complete.", MP_COLS);
-                                g_dirty = DIRTY_ALL;
-                            }
+                            if (g_loop) g_pcmpos=0;
+                            else { g_state=ST_STOPPED;
+                                   strncpy(g_status,"Playback complete.",MP_COLS);
+                                   g_dirty=DIRTY_ALL; }
                         }
                     }
                 }
             }
         }
 
-        /* ── Seek bar: redraw only when second ticks ──────────────────── */
-        if (g_state == ST_PLAYING) {
-            uint32_t pos = current_pos_sec();
-            if (pos != g_last_pos_sec) {
-                g_last_pos_sec = pos;
-                g_dirty |= DIRTY_SEEKBAR;
+        /* Seek bar ticks once per second */
+        if (g_state==ST_PLAYING) {
+            uint32_t pos=current_pos_sec();
+            if (pos!=g_last_pos_sec) {
+                g_last_pos_sec=pos;
+                g_dirty|=DIRTY_SEEKBAR;
             }
         }
 
         /* ── Mouse clicks ─────────────────────────────────────────────── */
-        int ccx, ccy;
-        if (wm_get_content_click(&ccx, &ccy)) {
-            if (ccy == ROW_TOOLBAR)
-                handle_toolbar_click(ccx);
-            else if (ccy == ROW_SEEKBAR)
-                handle_seekbar_click(ccx);
-            else if (ccy >= ROW_PLIST && ccy < ROW_PLIST + PLIST_ROWS) {
-                int idx = g_plist_view + (ccy - ROW_PLIST);
-                if (idx < g_plist_n) {
-                    g_plist_cur = idx;
-                    playlist_play_idx(idx);
-                }
+        int cx,cy;
+        if (wm_get_content_click(&cx,&cy)) {
+            if (cy==ROW_TOOLBAR)
+                click_toolbar(cx);
+            else if (cy==ROW_SEEKBAR)
+                click_seekbar(cx);
+            else if (cy==ROW_VOLBAR)
+                click_volbar(cx);
+            else if (cy>=ROW_PLIST && cy<ROW_PLIST+PLIST_ROWS) {
+                int idx=g_plist_view+(cy-ROW_PLIST);
+                if (idx<g_plist_n) playlist_play_idx(idx);
             }
         }
 
-        /* ── Keyboard ─────────────────────────────────────────────────── */
-        int spec = keyboard_get_special();
+        /* ── Keyboard (secondary) ─────────────────────────────────────── */
+        int spec=keyboard_get_special();
         if (spec) handle_special_key(spec);
+        if (keyboard_data_available()) handle_key(keyboard_getchar());
 
-        if (keyboard_data_available()) {
-            char k = keyboard_getchar();
-            handle_key(k);
-        }
-
-        /* ── Selective repaint ────────────────────────────────────────── */
         repaint();
-
         task_yield();
     }
 }
