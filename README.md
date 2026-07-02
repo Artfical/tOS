@@ -1,8 +1,8 @@
 # tOS — Linux Like Operating System
 
-tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with preemptive multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, a graphical UI, and an embedded MicroPython interpreter.
+tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC decoding, and an embedded MicroPython interpreter.
 
-**Current version: v0.9.46**
+**Current version: v0.9.56**
 
 ## System Requirements
 
@@ -75,7 +75,7 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 7. The PS/2 keyboard driver is initialized.
 8. An optional GUI prompt is shown; if declined, the system boots in CLI mode.
 9. System calls (int 0x80) are initialized.
-10. Networking subsystems are initialized: NIC detection, ARP, IPv4/IPv6, ICMP/ICMPv6, UDP, UDP-Lite, TCP, SCTP, DCCP, DNS, HTTP, IPsec. A link-local IPv6 address is derived from the MAC address (EUI-64).
+10. Networking subsystems are initialized: NIC detection, ARP, IPv4/IPv6, ICMP/ICMPv6, UDP, UDP-Lite, TCP (RFC 793, 16-socket multi-connection), SCTP, DCCP, DNS, HTTP, HTTPS (TLS 1.2), IPsec, WireGuard tunnel. A link-local IPv6 address is derived from the MAC address (EUI-64).
 11. The MicroPython runtime is initialized (128 KB GC heap, VM state, all modules registered).
 12. The shell starts.
 
@@ -163,7 +163,8 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `ping <host>` | ICMP ping (IPv4) — hostname or dotted-decimal IP |
 | `ping6 <addr>` | ICMPv6 Echo Request/Reply (IPv6) |
 | `ip6addr` | Show the kernel's link-local IPv6 address |
-| `wget <url>` | Download a file over HTTP/1.0 |
+| `wget <url>` | Download a file over HTTP/1.0 (port 80) |
+| `wget https://<url>` | Download a file over HTTPS (TLS 1.2, port 443) |
 | `sctp_connect <ip> <port>` | Open an SCTP association (blocking handshake) |
 | `sctp_send <data>` | Send a DATA chunk on the current SCTP association |
 | `sctp_close` | Close the current SCTP association (SHUTDOWN sequence) |
@@ -250,9 +251,13 @@ The network stack is implemented from scratch in `kernel/net/`. It supports both
 | **IP** | `ip.c` | Internet Protocol (no fragmentation), dispatches to all transport protocols |
 | **ICMP** | `icmp.c` | Echo Request/Reply (`ping`) |
 | **UDP** | `udp.c` | User Datagram Protocol; 4-socket receive table |
-| **TCP** | `tcp.c` | Transmission Control Protocol; single-connection blocking client |
+| **TCP** | `tcp.c` | Transmission Control Protocol — RFC 793 state machine, 16 concurrent sockets, retransmission, slow-start congestion control |
 | **DNS** | `dns.c` | A-record resolution |
-| **HTTP** | `http.c` | HTTP/1.0 client (`wget`) |
+| **HTTP** | `http.c` | HTTP/1.0 client (`http_get`) |
+| **HTTPS** | `https.c` | HTTPS client over TLS 1.2 — AES-128-CBC-SHA256, RSA-2048 key exchange, no cert verification |
+| **TLS 1.2** | `tls.c` | Minimal TLS 1.2 client — ClientHello/ServerHello, Certificate parse, ClientKeyExchange (RSA PKCS#1 v1.5), Finished verify, AES-128-CBC record encryption |
+| **SHA-256** | `sha256.c` | SHA-256 + HMAC-SHA256 (used by TLS PRF and record MAC) |
+| **AES-128** | `aes.c` | AES-128 encrypt/decrypt (used by TLS CBC mode) |
 | **SCTP** | `sctp.c` | Stream Control Transmission Protocol (RFC 4960) |
 | **DCCP** | `dccp.c` | Datagram Congestion Control Protocol (RFC 4340) |
 | **UDP-Lite** | `udplite.c` | Partial-checksum UDP (RFC 3828) |
@@ -414,7 +419,7 @@ tOS includes a full audio playback stack with automatic hardware detection. SB16
 |--------|--------|-------|
 | WAV | `wav_decoder.c` | PCM only (8-bit/16-bit, mono/stereo, any sample rate — resampled to 22050 Hz) |
 | MP3 | `mp3_decoder.c` | MPEG-1 Layer III, CBR, mono/stereo; from-scratch Huffman + IMDCT + requantizer |
-| AAC/M4A | `aac_decoder.c` | Format detection only; LC-AAC decode planned for v0.9.44 |
+| AAC-LC | `aac_decoder.c` | AAC Low Complexity — ADTS frame sync, canonical Huffman, inverse quantization (|q|^4/3), IMDCT-1024 with sine window, M/S stereo, resampled to 22050 Hz |
 
 ### Demo Song
 

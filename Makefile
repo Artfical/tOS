@@ -150,6 +150,11 @@ KERNEL_OBJS = \
     kernel/net/ipip.o \
     kernel/net/chacha20.o \
     kernel/net/wgtun.o \
+    kernel/net/sha256.o \
+    kernel/net/aes.o \
+    kernel/net/bignum.o \
+    kernel/net/tls.o \
+    kernel/net/https.o \
     kernel/net/http.o \
     kernel/audio/audio.o \
     kernel/audio/wav_decoder.o \
