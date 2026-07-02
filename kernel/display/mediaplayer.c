@@ -14,6 +14,7 @@
 #include "demo_song.h"
 #include "vfs.h"
 #include "stdio.h"
+#include "version.h"
 
 /* ── Layout ──────────────────────────────────────────────────────────────── */
 #define MP_COLS   79
@@ -100,8 +101,11 @@ static int  g_has_pending = 0;
 static int      g_dirty        = DIRTY_ALL;
 static uint32_t g_last_pos_sec = 0xFFFFFFFFU;
 
-#define SW_TICKS_PER_SEC  1000
-static uint32_t g_sw_tick = 0;
+/* SW timer: counts loop iterations. task_yield() ~10ms → ~100 iter/sec.
+   Use 80 so position advances a bit faster than real time (safe margin). */
+#define SW_TICKS_PER_SEC  80
+static uint32_t g_sw_tick    = 0;
+static uint32_t g_sw_pos_sec = 0;  /* software position counter (always used) */
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 static void mp_put(int x, int y, const char *s, uint8_t color)
@@ -129,10 +133,8 @@ static void mp_fmt_time(char *buf, uint32_t sec)
 
 static uint32_t current_pos_sec(void)
 {
-    if (g_fmt == FMT_WAV && !g_filebuf) return g_pcmpos / DEMO_SONG_RATE;
-    if (g_fmt == FMT_WAV &&  g_filebuf) return wav_pos_sec(&g_wav);
-    if (g_fmt == FMT_MP3)               return mp3_pos_sec(&g_mp3);
-    return 0;
+    /* Always return the SW position so the seek bar moves even if HW broken */
+    return g_sw_pos_sec;
 }
 
 /* ── Audio file loading ──────────────────────────────────────────────────── */
@@ -141,6 +143,7 @@ static void mp_free_file(void)
     if (g_filebuf) { free(g_filebuf); g_filebuf = NULL; }
     g_filesz = 0; g_fmt = FMT_NONE; g_state = ST_STOPPED;
     g_pcmfill = 0; g_pcmpos = 0; g_dur_sec = 0;
+    g_sw_pos_sec = 0; g_sw_tick = 0;
     g_last_pos_sec = 0xFFFFFFFFU;
 }
 
@@ -471,7 +474,7 @@ static void repaint(void)
     if (!g_dirty) return;
     if (g_dirty & DIRTY_TOOLBAR) draw_toolbar();
     if (g_dirty & DIRTY_DIVIDER) draw_divider(ROW_DIVIDER,
-        g_path[0] ? g_path : "tOS Media Player v0.9.44");
+        g_path[0] ? g_path : "tOS Media Player " TOS_VERSION);
     if (g_dirty & DIRTY_SEEKBAR) draw_seekbar();
     if (g_dirty & DIRTY_INFO)    draw_info();
     if (g_dirty & DIRTY_STATUS)  draw_status();
@@ -635,57 +638,71 @@ void mediaplayer_run(void)
 
     for (;;) {
         gui_poll();
-        if (!wm_current_task_has_focus()) { task_yield(); continue; }
 
-        /* ── Audio pump ────────────────────────────────────────────────── */
+        /* ══ Audio pump + SW timer — run ALWAYS, focus-independent ══════ */
         if (g_state == ST_PLAYING) {
-            if (audio_available()) {
-                if (!audio_busy()) {
-                    if (g_pcmfill==0) {
-                        mp_fill_pcm();
-                        if (g_pcmfill==0) {
-                            if (g_plist_sel>=0 && g_plist_sel<g_plist_n-1)
-                                playlist_play_idx(g_plist_sel+1);
-                            else if (g_loop)
-                                playlist_play_idx(g_plist_sel);
-                            else {
+
+            /* ── Hardware audio pump ───────────────────────────────────── */
+            if (audio_available() && !audio_busy()) {
+                if (g_pcmfill == 0) {
+                    mp_fill_pcm();
+                    if (g_pcmfill == 0) {
+                        /* EOF */
+                        if (g_plist_sel>=0 && g_plist_sel<g_plist_n-1)
+                            playlist_play_idx(g_plist_sel+1);
+                        else if (g_loop)
+                            playlist_play_idx(g_plist_sel);
+                        else {
+                            g_state=ST_STOPPED;
+                            strncpy(g_status,"Playback complete.",MP_COLS);
+                            g_dirty=DIRTY_ALL;
+                        }
+                    }
+                }
+                if (g_pcmfill > 0) {
+                    audio_submit(g_pcmbuf, g_pcmfill);
+                    g_pcmfill = 0;
+                }
+            }
+
+            /* ── Software timer: ALWAYS advances position display ──────── *
+             * Runs whether HW exists or not, whether HW is busy or not.   *
+             * task_yield() ≈ 10ms → ~100 iters/s → SW_TICKS_PER_SEC=80  */
+            g_sw_tick++;
+            if (g_sw_tick >= SW_TICKS_PER_SEC) {
+                g_sw_tick = 0;
+                if (g_sw_pos_sec < g_dur_sec)
+                    g_sw_pos_sec++;
+                /* sync pcmpos for demo song so HW pump reads right data */
+                if (g_fmt==FMT_WAV && !g_filebuf) {
+                    g_pcmpos = g_sw_pos_sec * DEMO_SONG_RATE;
+                    if (g_pcmpos >= DEMO_SONG_LEN) {
+                        if (g_loop) { g_pcmpos=0; g_sw_pos_sec=0; }
+                        else {
+                            if (!audio_available()) {
+                                /* no HW: EOF via SW timer */
                                 g_state=ST_STOPPED;
                                 strncpy(g_status,"Playback complete.",MP_COLS);
                                 g_dirty=DIRTY_ALL;
                             }
-                        }
-                    }
-                    if (g_pcmfill>0) {
-                        audio_submit(g_pcmbuf, g_pcmfill);
-                        g_pcmfill=0;
-                    }
-                }
-            } else {
-                /* No audio HW: software timer so seek bar still moves */
-                g_sw_tick++;
-                if (g_sw_tick >= SW_TICKS_PER_SEC) {
-                    g_sw_tick=0;
-                    if (g_fmt==FMT_WAV && !g_filebuf) {
-                        g_pcmpos += DEMO_SONG_RATE;
-                        if (g_pcmpos >= DEMO_SONG_LEN) {
-                            if (g_loop) g_pcmpos=0;
-                            else { g_state=ST_STOPPED;
-                                   strncpy(g_status,"Playback complete.",MP_COLS);
-                                   g_dirty=DIRTY_ALL; }
+                            /* with HW: pump handles EOF via mp_fill_pcm */
                         }
                     }
                 }
             }
         }
 
-        /* Seek bar ticks once per second */
-        if (g_state==ST_PLAYING) {
-            uint32_t pos=current_pos_sec();
-            if (pos!=g_last_pos_sec) {
-                g_last_pos_sec=pos;
-                g_dirty|=DIRTY_SEEKBAR;
+        /* ── Seek bar: redraw once per second ─────────────────────────── */
+        {
+            uint32_t pos = current_pos_sec();
+            if (pos != g_last_pos_sec) {
+                g_last_pos_sec = pos;
+                g_dirty |= DIRTY_SEEKBAR;
             }
         }
+
+        /* ══ UI — only when window has focus ════════════════════════════ */
+        if (!wm_current_task_has_focus()) { task_yield(); continue; }
 
         /* ── Mouse clicks ─────────────────────────────────────────────── */
         int cx,cy;
