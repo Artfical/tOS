@@ -115,3 +115,134 @@ void cmd_python(int argc, char **args)
     if (argc > 1) micropython_run_file(args[1]);
     else micropython_run_repl();
 }
+
+/* -----------------------------------------------------------------------
+ * New protocol test commands (v0.9.39)
+ * ----------------------------------------------------------------------- */
+#include "sctp.h"
+#include "dccp.h"
+#include "udplite.h"
+#include "icmpv6.h"
+#include "ipsec.h"
+#include "ip6.h"
+
+void cmd_sctp_connect(int argc, char **args)
+{
+    if (argc < 3) {
+        terminal_writestring("usage: sctp_connect <ip> <port>\n");
+        return;
+    }
+    uint32_t ip = parse_ip(args[1]);
+    int port = 0;
+    for (char *p = args[2]; *p; p++) port = port * 10 + (*p - '0');
+    terminal_writestring("SCTP: connecting to ");
+    terminal_writestring(args[1]);
+    terminal_writestring(":");
+    terminal_writestring(args[2]);
+    terminal_writestring(" ...\n");
+    if (sctp_connect(ip, (uint16_t)port) == 0)
+        terminal_writestring("SCTP: association established\n");
+    else
+        terminal_writestring("SCTP: connection failed\n");
+}
+
+void cmd_sctp_send(int argc, char **args)
+{
+    if (argc < 2) { terminal_writestring("usage: sctp_send <data>\n"); return; }
+    if (sctp_send(args[1], strlen(args[1])) == 0)
+        terminal_writestring("SCTP: data sent\n");
+    else
+        terminal_writestring("SCTP: send failed (not connected?)\n");
+}
+
+void cmd_sctp_close(int argc, char **args)
+{
+    (void)argc; (void)args;
+    sctp_close();
+    terminal_writestring("SCTP: association closed\n");
+}
+
+void cmd_dccp_connect(int argc, char **args)
+{
+    if (argc < 3) {
+        terminal_writestring("usage: dccp_connect <ip> <port>\n");
+        return;
+    }
+    uint32_t ip = parse_ip(args[1]);
+    int port = 0;
+    for (char *p = args[2]; *p; p++) port = port * 10 + (*p - '0');
+    terminal_writestring("DCCP: connecting to ");
+    terminal_writestring(args[1]);
+    terminal_writestring(":");
+    terminal_writestring(args[2]);
+    terminal_writestring(" ...\n");
+    if (dccp_connect(ip, (uint16_t)port) == 0)
+        terminal_writestring("DCCP: connection open\n");
+    else
+        terminal_writestring("DCCP: connection failed\n");
+}
+
+void cmd_dccp_send(int argc, char **args)
+{
+    if (argc < 2) { terminal_writestring("usage: dccp_send <data>\n"); return; }
+    if (dccp_send(args[1], strlen(args[1])) == 0)
+        terminal_writestring("DCCP: datagram sent\n");
+    else
+        terminal_writestring("DCCP: send failed\n");
+}
+
+void cmd_udplite_send(int argc, char **args)
+{
+    if (argc < 4) {
+        terminal_writestring("usage: udplite_send <ip> <port> <data> [coverage]\n");
+        return;
+    }
+    uint32_t ip = parse_ip(args[1]);
+    int port = 0;
+    for (char *p = args[2]; *p; p++) port = port * 10 + (*p - '0');
+    uint16_t coverage = 0;
+    if (argc >= 5)
+        for (char *p = args[4]; *p; p++) coverage = coverage * 10 + (*p - '0');
+    if (udplite_send(ip, (uint16_t)port, 49136, args[3], strlen(args[3]), coverage) == 0)
+        terminal_writestring("UDP-Lite: datagram sent\n");
+    else
+        terminal_writestring("UDP-Lite: send failed\n");
+}
+
+void cmd_ping6(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: ping6 <ipv6-address>\n");
+        terminal_writestring("  e.g. ping6 fe80::1\n");
+        return;
+    }
+    uint8_t addr[16];
+    if (ip6_parse(args[1], addr) != 0) {
+        terminal_writestring("ping6: invalid IPv6 address\n");
+        return;
+    }
+    terminal_writestring("ping6 ");
+    terminal_writestring(args[1]);
+    terminal_writestring(" ...\n");
+    if (icmpv6_ping6(addr) == 0)
+        terminal_writestring("Reply received\n");
+    else
+        terminal_writestring("No reply\n");
+}
+
+void cmd_ip6addr(int argc, char **args)
+{
+    (void)argc; (void)args;
+    extern uint8_t net_ip6[16];
+    char buf[42];
+    ip6_fmt(net_ip6, buf);
+    terminal_writestring("IPv6 link-local: ");
+    terminal_writestring(buf);
+    terminal_writestring("\n");
+}
+
+void cmd_ipsec_sa(int argc, char **args)
+{
+    (void)argc; (void)args;
+    ipsec_dump_sa();
+}

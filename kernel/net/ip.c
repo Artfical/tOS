@@ -7,6 +7,10 @@
 #include "icmp.h"
 #include "udp.h"
 #include "tcp.h"
+#include "sctp.h"
+#include "dccp.h"
+#include "udplite.h"
+#include "ipsec.h"
 
 static uint16_t ip_id = 0;
 
@@ -71,8 +75,13 @@ void ip_handle(uint8_t *data, int len)
     void *payload = (uint8_t *)data + ihl;
 
     switch (ip->protocol) {
-        case IPPROTO_ICMP: icmp_handle(ip, payload, payload_len); break;
-        case IPPROTO_UDP:  udp_handle(ip, payload, payload_len); break;
-        case IPPROTO_TCP:  tcp_handle(ip, payload, payload_len); break;
+        case IPPROTO_ICMP:    icmp_handle(ip, payload, payload_len);    break;
+        case IPPROTO_UDP:     udp_handle(ip, payload, payload_len);     break;
+        case IPPROTO_TCP:     tcp_handle(ip, payload, payload_len);     break;
+        case IPPROTO_SCTP:    sctp_handle(ip, payload, payload_len);    break;
+        case IPPROTO_DCCP:    dccp_handle(ip, payload, payload_len);    break;
+        case IPPROTO_UDPLITE: udplite_handle(ip, payload, payload_len); break;
+        case IPPROTO_AH:      ipsec_ah_handle(ip, payload, payload_len); break;
+        case IPPROTO_ESP:     ipsec_esp_handle(ip, payload, payload_len); break;
     }
 }

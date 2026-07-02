@@ -133,6 +133,12 @@ KERNEL_OBJS = \
     kernel/net/udp.o \
     kernel/net/dns.o \
     kernel/net/tcp.o \
+    kernel/net/sctp.o \
+    kernel/net/dccp.o \
+    kernel/net/udplite.o \
+    kernel/net/ip6.o \
+    kernel/net/icmpv6.o \
+    kernel/net/ipsec.o \
     kernel/net/http.o \
     kernel/micropython/ports/tos/tos_main.o \
     kernel/micropython/ports/tos/tos_hal.o \

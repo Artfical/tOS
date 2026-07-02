@@ -455,6 +455,24 @@ static void shell_exec_line(char *cmd_line)
             cmd_env(argc, args);
         } else if (strcmp(c, "ping") == 0) {
             cmd_ping(argc, args);
+        } else if (strcmp(c, "ping6") == 0) {
+            cmd_ping6(argc, args);
+        } else if (strcmp(c, "ip6addr") == 0) {
+            cmd_ip6addr(argc, args);
+        } else if (strcmp(c, "sctp_connect") == 0) {
+            cmd_sctp_connect(argc, args);
+        } else if (strcmp(c, "sctp_send") == 0) {
+            cmd_sctp_send(argc, args);
+        } else if (strcmp(c, "sctp_close") == 0) {
+            cmd_sctp_close(argc, args);
+        } else if (strcmp(c, "dccp_connect") == 0) {
+            cmd_dccp_connect(argc, args);
+        } else if (strcmp(c, "dccp_send") == 0) {
+            cmd_dccp_send(argc, args);
+        } else if (strcmp(c, "udplite_send") == 0) {
+            cmd_udplite_send(argc, args);
+        } else if (strcmp(c, "ipsec_sa") == 0) {
+            cmd_ipsec_sa(argc, args);
         } else if (strcmp(c, "wget") == 0) {
             cmd_wget(argc, args);
         } else if (strcmp(c, "uptime") == 0) {

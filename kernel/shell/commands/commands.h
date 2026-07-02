@@ -24,6 +24,15 @@ void cmd_about(int argc, char **args);
 void cmd_uname(int argc, char **args);
 void cmd_ping(int argc, char **args);
 void cmd_wget(int argc, char **args);
+void cmd_sctp_connect(int argc, char **args);
+void cmd_sctp_send(int argc, char **args);
+void cmd_sctp_close(int argc, char **args);
+void cmd_dccp_connect(int argc, char **args);
+void cmd_dccp_send(int argc, char **args);
+void cmd_udplite_send(int argc, char **args);
+void cmd_ping6(int argc, char **args);
+void cmd_ip6addr(int argc, char **args);
+void cmd_ipsec_sa(int argc, char **args);
 void cmd_tsharp(int argc, char **args);
 void cmd_python(int argc, char **args);
 

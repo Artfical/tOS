@@ -2,6 +2,7 @@
 #include "nic.h"
 #include "arp.h"
 #include "ip.h"
+#include "ip6.h"
 #include "string.h"
 #include "terminal.h"
 
@@ -18,6 +19,7 @@ void net_init(void)
         terminal_writestring("[WARN] No network card found\n");
         return;
     }
+    ip6_init(net_mac);
     terminal_writestring("[OK] Network stack ready\n");
 }
 
@@ -32,4 +34,6 @@ void net_poll(void)
         arp_handle(buf, len);
     else if (ntohs(eth->type) == ETHERTYPE_IP)
         ip_handle(buf + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
+    else if (ntohs(eth->type) == ETHERTYPE_IPV6)
+        ip6_handle(buf + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
 }

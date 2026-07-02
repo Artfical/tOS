@@ -6,9 +6,16 @@
 #define ETHERTYPE_IP   0x0800
 #define ETHERTYPE_ARP  0x0806
 
-#define IPPROTO_ICMP 1
-#define IPPROTO_TCP  6
-#define IPPROTO_UDP  17
+#define IPPROTO_ICMP    1
+#define IPPROTO_TCP     6
+#define IPPROTO_UDP     17
+#define IPPROTO_DCCP    33
+#define IPPROTO_IPV6    41
+#define IPPROTO_ESP     50
+#define IPPROTO_AH      51
+#define IPPROTO_ICMPV6  58
+#define IPPROTO_SCTP    132
+#define IPPROTO_UDPLITE 136
 
 extern uint8_t  net_mac[6];
 extern uint32_t net_ip;
