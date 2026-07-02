@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with preemptive multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, a graphical UI, and an embedded MicroPython interpreter.
 
-**Current version: v0.9.43**
+**Current version: v0.9.44**
 
 ## System Requirements
 
@@ -52,13 +52,17 @@ For networking (PCnet):
 qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev=net0
 ```
 
-For audio (SB16):
+For audio — QEMU SB16:
 
 ```bash
 make run-audio
 # or manually:
 qemu-system-x86_64 -cdrom tOS.iso -m 256M -soundhw sb16
 ```
+
+For audio — VirtualBox (ICH AC97, auto-detected):
+
+Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: ICH AC97. No extra flags needed; tOS auto-detects and uses ICH AC97 when SB16 is not present.
 
 ## Boot Process
 
@@ -390,16 +394,19 @@ Several built-in GUI applications are launchable from the dock:
 
 ## Audio
 
-tOS includes a full audio playback stack built on ISA Sound Blaster 16 (SB16) DMA output.
+tOS includes a full audio playback stack with automatic hardware detection. SB16 is tried first; ICH AC97 is used as a fallback (VirtualBox).
 
 ### Hardware
 
 | Component | Details |
 |-----------|---------|
-| Driver | `kernel/audio/audio.c` — SB16 detection (base 0x220/0x210/0x230), IRQ5, DMA channel 1 |
-| Output | 8-bit unsigned PCM, mono, 22050 Hz via ISA DMA |
-| Volume | SB16 mixer register 0x22; range 0–100% |
-| QEMU | `-soundhw sb16` flag required (`make run-audio`) |
+| Primary driver | SB16 — `kernel/audio/audio.c`, base 0x220/0x210/0x230, IRQ5, ISA DMA channel 1 |
+| Fallback driver | ICH AC97 — `kernel/drivers/audio/ich.c`, PCI class 04:01, 16-bit stereo 48 kHz DMA |
+| Output (SB16) | 8-bit unsigned PCM, mono, 22050 Hz via ISA DMA |
+| Output (ICH) | 8-bit mono 22050 Hz → converted to 16-bit signed stereo 48 kHz BDL DMA |
+| Volume | SB16: mixer reg 0x22; ICH AC97: Master Volume + PCM Out AC97 registers |
+| QEMU (SB16) | `-soundhw sb16` flag required (`make run-audio`) |
+| VirtualBox | Enable **ICH AC97** in VM Settings → Audio → Controller; auto-detected at boot |
 
 ### Supported Formats
 

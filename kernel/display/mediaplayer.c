@@ -309,7 +309,7 @@ static void draw_toolbar(void)
     if (!audio_available())
         mp_put(53, ROW_TOOLBAR, "[No Audio HW]", C(YLW, DGY));
     else
-        mp_put(53, ROW_TOOLBAR, "[SB16 OK]     ", C(LGN, DGY));
+        mp_put(53, ROW_TOOLBAR, "[Audio OK]    ", C(LGN, DGY));
 }
 
 static void draw_divider(int row, const char *label)
