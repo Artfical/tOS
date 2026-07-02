@@ -627,7 +627,6 @@ void mediaplayer_run(void)
     audio_set_volume(g_volume);
 
     playlist_add("/demo/demo.wav");
-    playlist_scan("/music");
     playlist_scan("/");
 
     if (g_has_pending) {
