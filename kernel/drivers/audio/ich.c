@@ -125,12 +125,13 @@ int ich_audio_init(ich_dev_t *dev)
     bm8w(nabmbar, ICH_PCO_CR, 0);
     bm16w(nabmbar, ICH_PCO_SR, 0x1C);   /* clear status bits */
 
-    /* ── Build BDL ──────────────────────────────────────────────────────── */
-    for (int i = 0; i < ICH_BDL_ENTRIES; i++) {
+    /* ── Build BDL (32 entries, rotating through ICH_BUF_SLOTS PCM buffers) ── */
+    for (int i = 0; i < ICH_BUF_SLOTS; i++)
         memset(dev->pcm_buf[i], 0, ICH_BUF_BYTES);
-        dev->bdl[i].addr    = (uint32_t)(unsigned long)dev->pcm_buf[i];
+    for (int i = 0; i < ICH_BDL_ENTRIES; i++) {
+        dev->bdl[i].addr    = (uint32_t)(unsigned long)dev->pcm_buf[i % ICH_BUF_SLOTS];
         dev->bdl[i].samples = ICH_BUF_SAMPLES;
-        dev->bdl[i].flags   = ICH_BDL_BUP; /* silence on underrun; no IOC */
+        dev->bdl[i].flags   = ICH_BDL_BUP;
     }
 
     /* Point BDBAR at BDL; LVI=0; do NOT start DMA yet */
@@ -139,7 +140,7 @@ int ich_audio_init(ich_dev_t *dev)
 
     dev->present  = 1;
     dev->volume   = 80;
-    dev->next_buf = 0;
+    dev->next_lvi = 0;
 
     klog_write("ich_ac97: init OK\n");
     return 0;
@@ -181,63 +182,54 @@ void ich_audio_stop(ich_dev_t *dev)
     delay_us(5000);
     bm8w(dev->nabmbar, ICH_PCO_CR, 0);
     bm16w(dev->nabmbar, ICH_PCO_SR, 0x1C);
-    /* RR wiped BDBAR — must restore it so DMA knows where our BDL is */
+    /* RR wiped BDBAR — restore it */
     bm32w(dev->nabmbar, ICH_PCO_BDBAR, (uint32_t)(unsigned long)dev->bdl);
-    for (int i = 0; i < ICH_BDL_ENTRIES; i++)
+    for (int i = 0; i < ICH_BUF_SLOTS; i++)
         memset(dev->pcm_buf[i], 0, ICH_BUF_BYTES);
-    dev->next_buf = 0;
+    dev->next_lvi = 0;
     bm8w(dev->nabmbar, ICH_PCO_LVI, 0);
 }
 
 /* ── Submit: 8-bit mono 22050 Hz → 16-bit stereo 48000 Hz ───────────────── *
- * Reads CIV, fills slot (CIV+1)%N, advances LVI, restarts DMA.            */
+ * Fills the next BDL entry (next_lvi, advancing mod 32), sets LVI,         *
+ * and restarts DMA. VirtualBox uses a 32-entry ring, so we maintain all    *
+ * 32 entries; PCM buffers rotate through ICH_BUF_SLOTS actual buffers.     */
 int ich_audio_submit(ich_dev_t *dev, const uint8_t *pcm8, uint32_t n8)
 {
     if (!dev->present) return -1;
 
-    uint8_t civ = bm8(dev->nabmbar, ICH_PCO_CIV);
-    uint8_t cr  = bm8(dev->nabmbar, ICH_PCO_CR);
-    int slot;
-    if (cr & ICH_CR_RPBM) {
-        /* DMA running: fill next slot after current */
-        slot = ((int)civ + 1) % ICH_BDL_ENTRIES;
-    } else {
-        /* DMA stopped: fill the current slot so audio starts immediately */
-        slot = (int)civ;
-    }
+    int     lvi  = dev->next_lvi;                /* BDL entry to fill */
+    int     slot = lvi % ICH_BUF_SLOTS;          /* PCM buffer to use */
     int16_t *dst = dev->pcm_buf[slot];
 
-    /* Nearest-neighbour resample 22050 → 48000 Hz (Q16 fixed-point step) */
-    const uint32_t STEP = (uint32_t)((uint64_t)22050U * 65536U / 48000U); /* ≈30109 */
+    /* Nearest-neighbour resample 22050 → 48000 Hz (Q16 fixed-point) */
+    const uint32_t STEP = (uint32_t)((uint64_t)22050U * 65536U / 48000U);
     uint32_t frac = 0, si = 0;
     int      out  = 0;
 
     while (out < ICH_BUF_SAMPLES && si < n8) {
         int16_t s = (int16_t)(((int32_t)pcm8[si] - 128) << 8);
-        dst[out * 2]     = s;   /* L */
-        dst[out * 2 + 1] = s;   /* R */
+        dst[out * 2]     = s;
+        dst[out * 2 + 1] = s;
         out++;
         frac += STEP;
         while (frac >= 65536U) { frac -= 65536U; si++; }
     }
-    /* zero-pad if input shorter than one full slot */
     while (out < ICH_BUF_SAMPLES) {
         dst[out * 2] = dst[out * 2 + 1] = 0;
         out++;
     }
 
-    /* Update BDL entry */
-    dev->bdl[slot].addr    = (uint32_t)(unsigned long)dst;
-    dev->bdl[slot].samples = (uint16_t)out;
-    dev->bdl[slot].flags   = ICH_BDL_BUP;
+    /* Update this BDL entry to point at the filled PCM buffer */
+    dev->bdl[lvi].addr    = (uint32_t)(unsigned long)dst;
+    dev->bdl[lvi].samples = (uint16_t)out;
+    dev->bdl[lvi].flags   = ICH_BDL_BUP;
 
-    /* Advance LVI to this slot so DMA will play it */
-    bm8w(dev->nabmbar, ICH_PCO_LVI, (uint8_t)slot);
-
-    /* Clear status and (re)start DMA */
+    /* Advance LVI to this entry and (re)start DMA */
+    bm8w(dev->nabmbar, ICH_PCO_LVI, (uint8_t)lvi);
     bm16w(dev->nabmbar, ICH_PCO_SR, 0x1C);
     bm8w(dev->nabmbar, ICH_PCO_CR, ICH_CR_RPBM);
 
-    dev->next_buf = slot;
+    dev->next_lvi = (lvi + 1) % ICH_BDL_ENTRIES;
     return 0;
 }

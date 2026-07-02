@@ -67,27 +67,29 @@ typedef struct __attribute__((packed)) {
 } ich_bdl_entry_t;
 
 /*
- * One DMA slot covers AUDIO_DMA_SIZE (4096) bytes of 8-bit 22050 Hz mono input.
- * Resampled to 48000 Hz stereo 16-bit:
- *   out_frames = 4096 * 48000 / 22050 ≈ 8921  → round up to 9216 (safe margin)
- * Each frame = 2 channels × 2 bytes = 4 bytes
- * → ICH_BUF_BYTES = 9216 * 4 = 36864 bytes per slot
+ * ICH AC97 uses a 32-entry circular BDL ring (VirtualBox/QEMU always use % 32).
+ * We keep 4 actual PCM buffers (rotating: BDL[i] → pcm_buf[i%4]).
+ * Memory: 32×8 = 256 bytes BDL + 4×36864 = 147456 bytes PCM = ~144 KB total.
+ *
+ * Resampled to 48000 Hz stereo 16-bit from 22050 Hz 8-bit mono:
+ *   out_frames = 4096 * 48000 / 22050 ≈ 8921  → 9216 (safe margin)
  */
-#define ICH_BDL_ENTRIES   4
-#define ICH_BUF_SAMPLES   9216   /* stereo frames per slot */
+#define ICH_BDL_ENTRIES   32   /* full ring — VirtualBox requires this */
+#define ICH_BUF_SLOTS      4   /* actual PCM buffer count (rotated) */
+#define ICH_BUF_SAMPLES   9216
 #define ICH_BUF_BYTES     (ICH_BUF_SAMPLES * 4)
 
 typedef struct {
     int      present;
-    uint32_t nambar;    /* NAMBAR I/O base */
-    uint32_t nabmbar;   /* NABMBAR I/O base */
+    uint32_t nambar;
+    uint32_t nabmbar;
     int      has_vra;
     uint32_t rate;
-    uint8_t  volume;    /* 0-100 */
+    uint8_t  volume;
 
     ich_bdl_entry_t bdl[ICH_BDL_ENTRIES] __attribute__((aligned(8)));
-    int16_t  pcm_buf[ICH_BDL_ENTRIES][ICH_BUF_SAMPLES * 2]; /* L,R interleaved */
-    int      next_buf;  /* last submitted slot index */
+    int16_t  pcm_buf[ICH_BUF_SLOTS][ICH_BUF_SAMPLES * 2]; /* L,R interleaved */
+    int      next_lvi;  /* next BDL entry index to fill (advances mod 32) */
 } ich_dev_t;
 
 int  ich_audio_init(ich_dev_t *dev);
