@@ -16,6 +16,10 @@ static char heap[128 * 1024];
 
 void tos_module_init(void);
 void tosgui_module_init(void);
+void os_module_init(void);
+void time_module_init(void);
+void json_module_init(void);
+void socket_module_init(void);
 
 int micropython_init(void) {
     serial_write("micropython: init\n");
@@ -25,6 +29,10 @@ int micropython_init(void) {
     mp_init();
     tos_module_init();
     tosgui_module_init();
+    os_module_init();
+    time_module_init();
+    json_module_init();
+    socket_module_init();
     interrupt_callback = mp_sched_keyboard_interrupt;
     serial_write("micropython: ready\n");
     return 0;

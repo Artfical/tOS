@@ -140,6 +140,10 @@ KERNEL_OBJS = \
     kernel/micropython/ports/tos/tos_stubs.o \
     kernel/micropython/ports/tos/modtos.o \
     kernel/micropython/ports/tos/modtosgui.o \
+    kernel/micropython/ports/tos/modos.o \
+    kernel/micropython/ports/tos/modtime.o \
+    kernel/micropython/ports/tos/modjson.o \
+    kernel/micropython/ports/tos/modsocket.o \
     kernel/micropython/ports/tos/runfile.o \
     kernel/micropython/shared/runtime/pyexec.o \
     kernel/micropython/shared/readline/readline.o

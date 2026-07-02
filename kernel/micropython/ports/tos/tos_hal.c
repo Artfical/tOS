@@ -28,9 +28,15 @@ int mp_hal_stdin_rx_chr(void) {
 }
 
 void mp_hal_delay_ms(mp_uint_t ms) {
-    // Use PIT-based delay
-    volatile int count = ms * 1000;
+    volatile int count = (int)(ms * 1000);
     while (count--) {
         for (volatile int i = 0; i < 100; i++);
+    }
+}
+
+void mp_hal_delay_us(mp_uint_t us) {
+    volatile int count = (int)us;
+    while (count--) {
+        for (volatile int i = 0; i < 10; i++);
     }
 }
