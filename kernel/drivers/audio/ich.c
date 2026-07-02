@@ -150,27 +150,26 @@ int ich_audio_init(ich_dev_t *dev)
         dev->rate = 48000;
     }
 
-    /* Stop PCM out DMA channel */
+    /* Reset PCM out DMA channel */
     bm_write8(dev->nabmbar, ICH_PCO_CR, 0);
-    bm_write8(dev->nabmbar, ICH_PCO_CR, ICH_CR_RR); /* reset */
+    bm_write8(dev->nabmbar, ICH_PCO_CR, ICH_CR_RR);
     for (volatile int i = 0; i < 10000; i++);
     bm_write8(dev->nabmbar, ICH_PCO_CR, 0);
+    bm_write16(dev->nabmbar, ICH_PCO_SR, 0x1C); /* clear status */
 
-    /* Build Buffer Descriptor List */
+    /* Build Buffer Descriptor List — all silence, DMA NOT started yet */
     for (int i = 0; i < ICH_BDL_ENTRIES; i++) {
         memset(dev->pcm_buf[i], 0, ICH_BUF_BYTES);
         dev->bdl[i].addr    = (uint32_t)(unsigned long)dev->pcm_buf[i];
         dev->bdl[i].samples = ICH_BUF_SAMPLES;
-        dev->bdl[i].flags   = ICH_BDL_IOC | ICH_BDL_BUP;
+        dev->bdl[i].flags   = ICH_BDL_BUP; /* no IOC — we poll DCH */
     }
 
-    /* Point BDBAR at our BDL */
+    /* Point BDBAR at our BDL; LVI=0 so DMA will halt after slot 0 */
     bm_write32(dev->nabmbar, ICH_PCO_BDBAR, (uint32_t)(unsigned long)dev->bdl);
-    /* LVI = last valid = ICH_BDL_ENTRIES - 1 (circular) */
-    bm_write8(dev->nabmbar, ICH_PCO_LVI, (uint8_t)(ICH_BDL_ENTRIES - 1));
+    bm_write8(dev->nabmbar, ICH_PCO_LVI, 0);
 
-    /* Start DMA */
-    bm_write8(dev->nabmbar, ICH_PCO_CR, ICH_CR_RPBM);
+    /* Do NOT start DMA yet — first submit() will start it */
 
     dev->present  = 1;
     dev->volume   = 80;
@@ -198,24 +197,25 @@ void ich_audio_set_volume(ich_dev_t *dev, uint8_t vol)
 int ich_audio_busy(ich_dev_t *dev)
 {
     if (!dev->present) return 0;
-    /* Check if current slot is still playing */
-    uint8_t civ = bm_read8(dev->nabmbar, ICH_PCO_CIV);
-    /* If CIV reached our next_buf index, the slot is free */
-    return (civ == (uint8_t)((dev->next_buf) % ICH_BDL_ENTRIES)) ? 0 : 1;
+    /* DCH (bit0 of SR) = DMA Controller Halted = not busy = ready for more */
+    uint8_t sr = bm_read8(dev->nabmbar, ICH_PCO_SR);
+    return (sr & ICH_SR_DCH) ? 0 : 1;
 }
 
 /* ── Stop ────────────────────────────────────────────────────────────── */
 void ich_audio_stop(ich_dev_t *dev)
 {
     if (!dev->present) return;
-    bm_write8(dev->nabmbar, ICH_PCO_CR, 0);     /* pause DMA */
-    bm_write16(dev->nabmbar, ICH_PCO_SR, 0x1C); /* clear status bits */
-    /* clear all PCM buffers */
+    bm_write8(dev->nabmbar, ICH_PCO_CR, 0);     /* stop DMA */
+    bm_write16(dev->nabmbar, ICH_PCO_SR, 0x1C); /* clear status */
     for (int i = 0; i < ICH_BDL_ENTRIES; i++)
         memset(dev->pcm_buf[i], 0, ICH_BUF_BYTES);
     dev->next_buf = 0;
-    /* restart DMA (keep running but with silence) */
-    bm_write8(dev->nabmbar, ICH_PCO_CR, ICH_CR_RPBM);
+    /* Reset to slot 0 so next submit starts fresh */
+    bm_write8(dev->nabmbar, ICH_PCO_CR, ICH_CR_RR);
+    for (volatile int i = 0; i < 5000; i++);
+    bm_write8(dev->nabmbar, ICH_PCO_CR, 0);
+    bm_write8(dev->nabmbar, ICH_PCO_LVI, 0);
 }
 
 /* ── Submit (8-bit mono 22050 Hz → 16-bit stereo 48000 Hz) ──────────── */
@@ -223,43 +223,43 @@ int ich_audio_submit(ich_dev_t *dev, const uint8_t *pcm8, uint32_t n8)
 {
     if (!dev->present) return -1;
 
-    /* Which BDL slot to fill next? */
-    int slot = dev->next_buf % ICH_BDL_ENTRIES;
+    /* Determine which slot to write.
+       After DMA halts at LVI, CIV == LVI.  We write the NEXT slot
+       (CIV+1) % N, then advance LVI to that slot and restart DMA. */
+    uint8_t civ  = bm_read8(dev->nabmbar, ICH_PCO_CIV);
+    int     slot = ((int)civ + 1) % ICH_BDL_ENTRIES;
     int16_t *dst = dev->pcm_buf[slot];
 
-    /* Resample: 22050 → 48000 (step = 22050/48000 in Q16) */
-    uint32_t step = (uint32_t)((uint64_t)22050 * 65536 / 48000); /* ≈ 30109 */
-    uint32_t frac = 0;
-    uint32_t src  = 0;
+    /* Resample: 22050 → 48000 (step = 22050/48000 in Q16 ≈ 30109) */
+    const uint32_t step = (uint32_t)((uint64_t)22050 * 65536U / 48000U);
+    uint32_t frac = 0, src = 0;
     int      out  = 0;
 
     while (out < ICH_BUF_SAMPLES && src < n8) {
-        /* 8-bit unsigned → signed 16-bit */
         int16_t s = (int16_t)(((int32_t)pcm8[src] - 128) << 8);
-        dst[out * 2]     = s; /* L */
-        dst[out * 2 + 1] = s; /* R */
+        dst[out * 2]     = s;
+        dst[out * 2 + 1] = s;
         out++;
         frac += step;
-        while (frac >= 65536U) {
-            frac -= 65536U;
-            src++;
-        }
+        while (frac >= 65536U) { frac -= 65536U; src++; }
     }
-    /* pad remainder with silence */
     while (out < ICH_BUF_SAMPLES) {
         dst[out * 2] = dst[out * 2 + 1] = 0;
         out++;
     }
 
-    /* advance LVI so this slot becomes "valid" */
-    dev->next_buf = (dev->next_buf + 1) % ICH_BDL_ENTRIES;
-    bm_write8(dev->nabmbar, ICH_PCO_LVI,
-              (uint8_t)((dev->next_buf + ICH_BDL_ENTRIES - 1) % ICH_BDL_ENTRIES));
+    /* Update BDL entry for this slot */
+    dev->bdl[slot].addr    = (uint32_t)(unsigned long)dst;
+    dev->bdl[slot].samples = (uint16_t)ICH_BUF_SAMPLES;
+    dev->bdl[slot].flags   = ICH_BDL_BUP;
 
-    /* make sure DMA is running */
-    uint8_t cr = bm_read8(dev->nabmbar, ICH_PCO_CR);
-    if (!(cr & ICH_CR_RPBM))
-        bm_write8(dev->nabmbar, ICH_PCO_CR, ICH_CR_RPBM);
+    /* Advance LVI to this slot — DMA will play up to here */
+    bm_write8(dev->nabmbar, ICH_PCO_LVI, (uint8_t)slot);
 
+    /* Clear status flags (LVBCI, BCIS, FIFOE) then start/resume DMA */
+    bm_write16(dev->nabmbar, ICH_PCO_SR, 0x1C);
+    bm_write8(dev->nabmbar, ICH_PCO_CR, ICH_CR_RPBM);
+
+    dev->next_buf = slot;
     return 0;
 }
