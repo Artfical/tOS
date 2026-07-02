@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with preemptive multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, a graphical UI, and an embedded MicroPython interpreter.
 
-**Current version: v0.9.45**
+**Current version: v0.9.46**
 
 ## System Requirements
 

@@ -74,6 +74,13 @@ int audio_available(void)
     return g_backend != BACKEND_NONE;
 }
 
+const char *audio_backend_name(void)
+{
+    if (g_backend == BACKEND_SB16) return "SB16";
+    if (g_backend == BACKEND_ICH)  return "AC97";
+    return "None";
+}
+
 void audio_set_volume(uint8_t vol)
 {
     if (g_backend == BACKEND_SB16) {

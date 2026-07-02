@@ -315,10 +315,17 @@ static void draw_toolbar(void)
     const char *lp = g_loop ? "[LOOP: ON]" : "[LOOP:OFF]";
     mp_put(42, ROW_TOOLBAR, lp, C(BLK, g_loop?GRN:DGY));
 
-    if (!audio_available())
+    if (!audio_available()) {
         mp_put(53, ROW_TOOLBAR, "[No Audio HW]", C(YLW,DGY));
-    else
-        mp_put(53, ROW_TOOLBAR, "[Audio OK]   ", C(LGN,DGY));
+    } else {
+        char abuf[16] = "[";
+        const char *bn = audio_backend_name();
+        int i = 1;
+        while (*bn && i < 13) abuf[i++] = *bn++;
+        abuf[i++] = ']'; abuf[i] = 0;
+        while (i < 14) { abuf[i++] = ' '; abuf[i] = 0; }
+        mp_put(53, ROW_TOOLBAR, abuf, C(LGN,DGY));
+    }
 }
 
 static void draw_divider(int row, const char *label)

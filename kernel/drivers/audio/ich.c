@@ -1,18 +1,10 @@
 /*
- * ich.c  –  Intel ICH AC97 audio output driver
+ * ich.c – Intel ICH AC97 audio output driver
  *
- * Supports:
- *   VirtualBox  : Intel ICH AC97  (PCI 8086:2415 / 8086:2445)
- *   QEMU        : -device AC97   (PCI 8086:2415)
- *   Real HW     : ICH, ICH2, ICH4 southbridges
+ * Supports VirtualBox ICH AC97, QEMU -device AC97, real ICH southbridges.
  *
- * Output path:
- *   8-bit unsigned mono 22050 Hz (from audio.c)
- *     → upsample to 48000 Hz (nearest-neighbour)
- *     → convert to signed 16-bit
- *     → duplicate to stereo
- *     → write to 16-bit stereo PCM DMA buffer
- *     → ICH AC97 plays via BDL (Buffer Descriptor List) DMA
+ * Key fix over original: GLOB_CNT bit 1 is the Cold Reset deassert bit,
+ * NOT bit 0 (which is GIE). Wrong bit was causing codec to never wake up.
  */
 
 #include "ich.h"
@@ -21,244 +13,219 @@
 #include "string.h"
 #include "klog.h"
 
-/* ── PCI IDs for ICH AC97 ─────────────────────────────────────────────── */
 #define ICH_VENDOR  0x8086
 static const uint16_t ich_devids[] = {
-    0x2415, /* ICH  AC97 */
-    0x2425, /* ICH0 AC97 */
-    0x2445, /* ICH2 AC97 */
-    0x2485, /* ICH3 AC97 */
-    0x24C5, /* ICH4 AC97 */
-    0x24D5, /* ICH5 AC97 */
-    0x25A6, /* ESB  AC97 */
-    0x266E, /* ICH6 AC97 */
-    0x27DE, /* ICH7 AC97 */
-    0x7195, /* 440MX AC97 */
-    0
+    0x2415, 0x2425, 0x2445, 0x2485, 0x24C5, 0x24D5,
+    0x25A6, 0x266E, 0x27DE, 0x7195, 0
 };
 
-/* ── NAMBAR helpers (AC97 codec, 16-bit I/O) ─────────────────────────── */
-static uint16_t nam_read(uint32_t base, uint8_t reg)
-{
-    return inw((uint16_t)(base + reg));
-}
-static void nam_write(uint32_t base, uint8_t reg, uint16_t val)
-{
-    outw((uint16_t)(base + reg), val);
-}
+/* ── I/O helpers ─────────────────────────────────────────────────────────── */
+static uint8_t  bm8 (uint32_t b, uint8_t o) { return inb ((uint16_t)(b+o)); }
+static void     bm8w(uint32_t b, uint8_t o, uint8_t  v){ outb((uint16_t)(b+o),v); }
+static void     bm16w(uint32_t b,uint8_t o, uint16_t v){ outw((uint16_t)(b+o),v); }
+static uint32_t bm32r(uint32_t b, uint8_t o){ return inl ((uint16_t)(b+o)); }
+static void     bm32w(uint32_t b, uint8_t o, uint32_t v){ outl((uint16_t)(b+o),v); }
 
-/* ── NABMBAR helpers (bus-master, 8/16/32-bit) ───────────────────────── */
-static uint8_t  bm_read8 (uint32_t base, uint8_t off) { return inb ((uint16_t)(base+off)); }
-static uint16_t bm_read16(uint32_t base, uint8_t off) __attribute__((unused));
-static uint16_t bm_read16(uint32_t base, uint8_t off) { return inw ((uint16_t)(base+off)); }
-static void bm_write8 (uint32_t base, uint8_t off, uint8_t  v) { outb((uint16_t)(base+off), v); }
-static void bm_write16(uint32_t base, uint8_t off, uint16_t v) { outw((uint16_t)(base+off), v); }
-static void bm_write32(uint32_t base, uint8_t off, uint32_t v) { outl((uint16_t)(base+off), v); }
+static uint16_t nam_r(uint32_t b, uint8_t r){ return inw((uint16_t)(b+r)); }
+static void     nam_w(uint32_t b, uint8_t r, uint16_t v){ outw((uint16_t)(b+r),v); }
 
-/* ── Busy-wait for codec ready ──────────────────────────────────────── */
-static int codec_ready(uint32_t nabmbar)
+static void delay_us(int n)
 {
-    for (int i = 0; i < 100000; i++) {
-        uint32_t sta = inl((uint16_t)(nabmbar + ICH_GLOB_STA));
-        if (sta & (1 << 8)) return 0; /* Primary codec ready */
-    }
-    return -1; /* timeout */
+    /* rough busy-wait: ~1 µs per iteration at ~1 GHz; n = microseconds */
+    for (volatile int i = 0; i < n * 100; i++);
 }
 
-/* ── PCI enable Bus Master + I/O ────────────────────────────────────── */
-static void pci_enable_bm(uint8_t bus, uint8_t dev, uint8_t fn)
+/* ── PCI bus master enable ───────────────────────────────────────────────── */
+static void pci_bm_enable(uint8_t bus, uint8_t dev, uint8_t fn)
 {
     uint32_t cmd = pci_read_config(bus, dev, fn, 0x04);
     cmd |= 0x05; /* I/O space + Bus Master */
     pci_write_config(bus, dev, fn, 0x04, cmd);
 }
 
-/* ── Init ─────────────────────────────────────────────────────────────── */
+/* ── Init ────────────────────────────────────────────────────────────────── */
 int ich_audio_init(ich_dev_t *dev)
 {
     memset(dev, 0, sizeof(*dev));
-    dev->present = 0;
 
-    /* Find ICH AC97 on PCI bus */
+    /* Find ICH AC97 on PCI */
     pci_device_t pdevs[4];
-    /* class 04 (multimedia), subclass 01 (audio) */
     int n = pci_find_devices(0x04, 0x01, pdevs, 4);
-    if (!n) {
-        klog_write("ich_ac97: no PCI multimedia audio device found\n");
-        return -1;
-    }
+    if (!n) { klog_write("ich_ac97: no class 04:01 device\n"); return -1; }
 
-    /* Check vendor + device ID for known ICH AC97 */
     pci_device_t *pd = NULL;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n && !pd; i++) {
         if (pdevs[i].vendor_id != ICH_VENDOR) continue;
-        for (int j = 0; ich_devids[j]; j++) {
-            if (pdevs[i].device_id == ich_devids[j]) {
-                pd = &pdevs[i]; break;
-            }
-        }
-        if (pd) break;
+        for (int j = 0; ich_devids[j] && !pd; j++)
+            if (pdevs[i].device_id == ich_devids[j]) pd = &pdevs[i];
     }
-    if (!pd) {
-        klog_write("ich_ac97: no ICH AC97 device found\n");
+    if (!pd) { klog_write("ich_ac97: no Intel AC97 device ID match\n"); return -1; }
+
+    pci_bm_enable(pd->bus, pd->device, pd->func);
+
+    uint32_t nambar  = pci_get_bar(pd->bus, pd->device, pd->func, 0) & ~3U;
+    uint32_t nabmbar = pci_get_bar(pd->bus, pd->device, pd->func, 1) & ~3U;
+    if (!nambar || !nabmbar) { klog_write("ich_ac97: bad BARs\n"); return -1; }
+    dev->nambar  = nambar;
+    dev->nabmbar = nabmbar;
+
+    /* ── AC link cold reset ──────────────────────────────────────────────── *
+     * GLOB_CNT bit 1 = Cold Reset deassert (0=assert/reset, 1=normal).
+     * Step 1: assert reset (bit1=0), Step 2: deassert (bit1=1), wait ready. */
+    uint32_t gcnt = bm32r(nabmbar, ICH_GLOB_CNT);
+    gcnt &= ~(ICH_GLOB_CNT_COLD | ICH_GLOB_CNT_WARM | ICH_GLOB_CNT_ACLOFF);
+    gcnt &= ~ICH_GLOB_CNT_GIE;          /* no interrupts */
+    bm32w(nabmbar, ICH_GLOB_CNT, gcnt); /* assert cold reset */
+    delay_us(10000);                     /* 10 ms */
+
+    gcnt |= ICH_GLOB_CNT_COLD;          /* deassert cold reset → normal */
+    bm32w(nabmbar, ICH_GLOB_CNT, gcnt);
+    delay_us(50000);                     /* 50 ms: codec needs time to wake */
+
+    /* Poll GLOB_STA bit 8 (Primary Codec Ready) up to ~500 ms */
+    int ready = 0;
+    for (int i = 0; i < 500 && !ready; i++) {
+        if (bm32r(nabmbar, ICH_GLOB_STA) & ICH_GLOB_STA_PCR) ready = 1;
+        else delay_us(1000);
+    }
+    if (!ready) {
+        /* Some implementations don't set bit 8; try probing codec anyway */
+        klog_write("ich_ac97: codec PCR timeout, continuing anyway\n");
+    }
+
+    /* ── Codec (AC97 mixer) reset and volume ────────────────────────────── */
+    nam_w(nambar, AC97_RESET, 0);        /* reset AC97 codec */
+    delay_us(10000);
+
+    /* check codec responds (if all 0xFFFF → not ready) */
+    uint16_t master = nam_r(nambar, AC97_MASTER_VOL);
+    if (master == 0xFFFF) {
+        klog_write("ich_ac97: codec not responding (0xFFFF)\n");
         return -1;
     }
 
-    pci_enable_bm(pd->bus, pd->device, pd->func);
+    nam_w(nambar, AC97_MASTER_VOL,    0x0000); /* max volume, no mute */
+    nam_w(nambar, AC97_HEADPHONE_VOL, 0x0000);
+    nam_w(nambar, AC97_PCM_OUT_VOL,   0x0000);
 
-    dev->nambar  = pci_get_bar(pd->bus, pd->device, pd->func, 0) & 0xFFFFFFFEU;
-    dev->nabmbar = pci_get_bar(pd->bus, pd->device, pd->func, 1) & 0xFFFFFFFEU;
-    if (!dev->nambar || !dev->nabmbar) {
-        klog_write("ich_ac97: invalid BARs\n");
-        return -1;
-    }
-
-    /* Cold reset AC link */
-    uint32_t gcnt = inl((uint16_t)(dev->nabmbar + ICH_GLOB_CNT));
-    gcnt &= ~ICH_GLOB_CNT_ACLOFF;
-    gcnt |=  ICH_GLOB_CNT_COLD;
-    outl((uint16_t)(dev->nabmbar + ICH_GLOB_CNT), gcnt);
-    for (volatile int i = 0; i < 200000; i++);
-
-    /* Wait for codec ready */
-    if (codec_ready(dev->nabmbar) != 0) {
-        klog_write("ich_ac97: codec not ready after reset\n");
-        return -1;
-    }
-
-    /* Reset codec */
-    nam_write(dev->nambar, AC97_RESET, 0);
-    for (volatile int i = 0; i < 50000; i++);
-
-    /* Volume: master 0dB, PCM out 0dB */
-    nam_write(dev->nambar, AC97_MASTER_VOL,  0x0000); /* max */
-    nam_write(dev->nambar, AC97_HEADPHONE_VOL, 0x0000);
-    nam_write(dev->nambar, AC97_PCM_OUT_VOL, 0x0000); /* max */
-
-    /* Check VRA (Variable Rate Audio) support */
-    uint16_t ext_id = nam_read(dev->nambar, AC97_EXT_AUDIO_ID);
+    /* ── VRA (Variable Rate Audio) ──────────────────────────────────────── */
+    uint16_t ext_id = nam_r(nambar, AC97_EXT_AUDIO_ID);
     if (ext_id & AC97_EXT_AUDIO_VRA) {
-        /* Enable VRA */
-        uint16_t ctl = nam_read(dev->nambar, AC97_EXT_AUDIO_CTL);
-        nam_write(dev->nambar, AC97_EXT_AUDIO_CTL, ctl | AC97_EXT_AUDIO_VRA);
-        /* Set 48000 Hz (safest, all ICH AC97 support it) */
-        nam_write(dev->nambar, AC97_FRONT_DAC_RATE, 48000);
+        uint16_t ctl = nam_r(nambar, AC97_EXT_AUDIO_CTL);
+        nam_w(nambar, AC97_EXT_AUDIO_CTL, ctl | AC97_EXT_AUDIO_VRA);
+        nam_w(nambar, AC97_FRONT_DAC_RATE, 48000);
         dev->has_vra = 1;
-        dev->rate = 48000;
-    } else {
-        /* No VRA: codec outputs at 48000 Hz always */
-        dev->rate = 48000;
     }
+    dev->rate = 48000;
 
-    /* Reset PCM out DMA channel */
-    bm_write8(dev->nabmbar, ICH_PCO_CR, 0);
-    bm_write8(dev->nabmbar, ICH_PCO_CR, ICH_CR_RR);
-    for (volatile int i = 0; i < 10000; i++);
-    bm_write8(dev->nabmbar, ICH_PCO_CR, 0);
-    bm_write16(dev->nabmbar, ICH_PCO_SR, 0x1C); /* clear status */
+    /* ── Reset PCM-out DMA channel ──────────────────────────────────────── */
+    bm8w(nabmbar, ICH_PCO_CR, 0);
+    bm8w(nabmbar, ICH_PCO_CR, ICH_CR_RR);
+    delay_us(10000);
+    bm8w(nabmbar, ICH_PCO_CR, 0);
+    bm16w(nabmbar, ICH_PCO_SR, 0x1C);   /* clear status bits */
 
-    /* Build Buffer Descriptor List — all silence, DMA NOT started yet */
+    /* ── Build BDL ──────────────────────────────────────────────────────── */
     for (int i = 0; i < ICH_BDL_ENTRIES; i++) {
         memset(dev->pcm_buf[i], 0, ICH_BUF_BYTES);
         dev->bdl[i].addr    = (uint32_t)(unsigned long)dev->pcm_buf[i];
         dev->bdl[i].samples = ICH_BUF_SAMPLES;
-        dev->bdl[i].flags   = ICH_BDL_BUP; /* no IOC — we poll DCH */
+        dev->bdl[i].flags   = ICH_BDL_BUP; /* silence on underrun; no IOC */
     }
 
-    /* Point BDBAR at our BDL; LVI=0 so DMA will halt after slot 0 */
-    bm_write32(dev->nabmbar, ICH_PCO_BDBAR, (uint32_t)(unsigned long)dev->bdl);
-    bm_write8(dev->nabmbar, ICH_PCO_LVI, 0);
-
-    /* Do NOT start DMA yet — first submit() will start it */
+    /* Point BDBAR at BDL; LVI=0; do NOT start DMA yet */
+    bm32w(nabmbar, ICH_PCO_BDBAR, (uint32_t)(unsigned long)dev->bdl);
+    bm8w(nabmbar, ICH_PCO_LVI, 0);
 
     dev->present  = 1;
     dev->volume   = 80;
     dev->next_buf = 0;
 
-    klog_write("ich_ac97: init OK, 48000 Hz 16-bit stereo DMA\n");
+    klog_write("ich_ac97: init OK\n");
     return 0;
 }
 
-/* ── Volume ──────────────────────────────────────────────────────────── */
+/* ── Volume ──────────────────────────────────────────────────────────────── */
 void ich_audio_set_volume(ich_dev_t *dev, uint8_t vol)
 {
     if (!dev->present) return;
     dev->volume = vol;
-    /* AC97 master volume: 6-bit attenuation per channel (0=0dB, 63=-94.5dB)
-       bits[14:8]=left, bits[6:0]=right, bit15=mute */
-    uint8_t att = (uint8_t)((100 - vol) * 63 / 100);
+    /* AC97 attenuation: 0=0 dB, 31=−46.5 dB (5-bit per channel) */
+    uint8_t att = (uint8_t)((100U - vol) * 31U / 100U);
     uint16_t reg = (uint16_t)(((uint16_t)att << 8) | att);
-    if (vol == 0) reg |= 0x8000; /* mute */
-    nam_write(dev->nambar, AC97_MASTER_VOL, reg);
-    nam_write(dev->nambar, AC97_PCM_OUT_VOL, reg);
+    if (vol == 0) reg |= 0x8000;
+    nam_w(dev->nambar, AC97_MASTER_VOL,  reg);
+    nam_w(dev->nambar, AC97_PCM_OUT_VOL, reg);
 }
 
-/* ── Busy check ─────────────────────────────────────────────────────── */
+/* ── Busy check ──────────────────────────────────────────────────────────── *
+ * DMA is busy while RPBM is set AND DCH is clear.
+ * DCH=1 means DMA halted (finished current batch) → not busy → ready.     */
 int ich_audio_busy(ich_dev_t *dev)
 {
     if (!dev->present) return 0;
-    /* DCH (bit0 of SR) = DMA Controller Halted = not busy = ready for more */
-    uint8_t sr = bm_read8(dev->nabmbar, ICH_PCO_SR);
-    return (sr & ICH_SR_DCH) ? 0 : 1;
+    uint8_t cr = bm8(dev->nabmbar, ICH_PCO_CR);
+    if (!(cr & ICH_CR_RPBM)) return 0;          /* DMA not even running */
+    uint8_t sr = bm8(dev->nabmbar, ICH_PCO_SR);
+    return (sr & ICH_SR_DCH) ? 0 : 1;           /* DCH=1 → done → not busy */
 }
 
-/* ── Stop ────────────────────────────────────────────────────────────── */
+/* ── Stop ────────────────────────────────────────────────────────────────── */
 void ich_audio_stop(ich_dev_t *dev)
 {
     if (!dev->present) return;
-    bm_write8(dev->nabmbar, ICH_PCO_CR, 0);     /* stop DMA */
-    bm_write16(dev->nabmbar, ICH_PCO_SR, 0x1C); /* clear status */
+    bm8w(dev->nabmbar, ICH_PCO_CR, 0);
+    bm8w(dev->nabmbar, ICH_PCO_CR, ICH_CR_RR);
+    delay_us(5000);
+    bm8w(dev->nabmbar, ICH_PCO_CR, 0);
+    bm16w(dev->nabmbar, ICH_PCO_SR, 0x1C);
     for (int i = 0; i < ICH_BDL_ENTRIES; i++)
         memset(dev->pcm_buf[i], 0, ICH_BUF_BYTES);
     dev->next_buf = 0;
-    /* Reset to slot 0 so next submit starts fresh */
-    bm_write8(dev->nabmbar, ICH_PCO_CR, ICH_CR_RR);
-    for (volatile int i = 0; i < 5000; i++);
-    bm_write8(dev->nabmbar, ICH_PCO_CR, 0);
-    bm_write8(dev->nabmbar, ICH_PCO_LVI, 0);
+    bm8w(dev->nabmbar, ICH_PCO_LVI, 0);
 }
 
-/* ── Submit (8-bit mono 22050 Hz → 16-bit stereo 48000 Hz) ──────────── */
+/* ── Submit: 8-bit mono 22050 Hz → 16-bit stereo 48000 Hz ───────────────── *
+ * Reads CIV, fills slot (CIV+1)%N, advances LVI, restarts DMA.            */
 int ich_audio_submit(ich_dev_t *dev, const uint8_t *pcm8, uint32_t n8)
 {
     if (!dev->present) return -1;
 
-    /* Determine which slot to write.
-       After DMA halts at LVI, CIV == LVI.  We write the NEXT slot
-       (CIV+1) % N, then advance LVI to that slot and restart DMA. */
-    uint8_t civ  = bm_read8(dev->nabmbar, ICH_PCO_CIV);
+    /* Next slot = (current index + 1) mod N */
+    uint8_t civ  = bm8(dev->nabmbar, ICH_PCO_CIV);
     int     slot = ((int)civ + 1) % ICH_BDL_ENTRIES;
     int16_t *dst = dev->pcm_buf[slot];
 
-    /* Resample: 22050 → 48000 (step = 22050/48000 in Q16 ≈ 30109) */
-    const uint32_t step = (uint32_t)((uint64_t)22050 * 65536U / 48000U);
-    uint32_t frac = 0, src = 0;
+    /* Nearest-neighbour resample 22050 → 48000 Hz (Q16 fixed-point step) */
+    const uint32_t STEP = (uint32_t)((uint64_t)22050U * 65536U / 48000U); /* ≈30109 */
+    uint32_t frac = 0, si = 0;
     int      out  = 0;
 
-    while (out < ICH_BUF_SAMPLES && src < n8) {
-        int16_t s = (int16_t)(((int32_t)pcm8[src] - 128) << 8);
-        dst[out * 2]     = s;
-        dst[out * 2 + 1] = s;
+    while (out < ICH_BUF_SAMPLES && si < n8) {
+        int16_t s = (int16_t)(((int32_t)pcm8[si] - 128) << 8);
+        dst[out * 2]     = s;   /* L */
+        dst[out * 2 + 1] = s;   /* R */
         out++;
-        frac += step;
-        while (frac >= 65536U) { frac -= 65536U; src++; }
+        frac += STEP;
+        while (frac >= 65536U) { frac -= 65536U; si++; }
     }
+    /* zero-pad if input shorter than one full slot */
     while (out < ICH_BUF_SAMPLES) {
         dst[out * 2] = dst[out * 2 + 1] = 0;
         out++;
     }
 
-    /* Update BDL entry for this slot */
+    /* Update BDL entry */
     dev->bdl[slot].addr    = (uint32_t)(unsigned long)dst;
-    dev->bdl[slot].samples = (uint16_t)ICH_BUF_SAMPLES;
+    dev->bdl[slot].samples = (uint16_t)out;
     dev->bdl[slot].flags   = ICH_BDL_BUP;
 
-    /* Advance LVI to this slot — DMA will play up to here */
-    bm_write8(dev->nabmbar, ICH_PCO_LVI, (uint8_t)slot);
+    /* Advance LVI to this slot so DMA will play it */
+    bm8w(dev->nabmbar, ICH_PCO_LVI, (uint8_t)slot);
 
-    /* Clear status flags (LVBCI, BCIS, FIFOE) then start/resume DMA */
-    bm_write16(dev->nabmbar, ICH_PCO_SR, 0x1C);
-    bm_write8(dev->nabmbar, ICH_PCO_CR, ICH_CR_RPBM);
+    /* Clear status and (re)start DMA */
+    bm16w(dev->nabmbar, ICH_PCO_SR, 0x1C);
+    bm8w(dev->nabmbar, ICH_PCO_CR, ICH_CR_RPBM);
 
     dev->next_buf = slot;
     return 0;
