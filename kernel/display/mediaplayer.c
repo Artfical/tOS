@@ -191,10 +191,9 @@ static int mp_load(const char *path)
             g_fmt = FMT_MP3; g_dur_sec = mp3_duration_sec(&g_mp3);
         }
     } else {
-        int rc = aac_open(&g_aac, g_filebuf, sz);
-        if (rc==-2) { strncpy(g_status,"AAC: not yet supported.",MP_COLS); return -1; }
-        strncpy(g_status,"Unknown format.",MP_COLS);
-        mp_free_file(); return -1;
+        if (aac_open(&g_aac, g_filebuf, sz)==0) {
+            g_fmt = FMT_AAC; g_dur_sec = aac_duration_sec(&g_aac);
+        } else { strncpy(g_status,"Unknown format.",MP_COLS); mp_free_file(); return -1; }
     }
     return 0;
 }
@@ -212,6 +211,12 @@ static void mp_fill_pcm(void)
     } else if (g_fmt==FMT_MP3) {
         n = mp3_read(&g_mp3, g_pcmbuf, AUDIO_DMA_SIZE);
         if (!n && g_loop) { mp3_seek_sec(&g_mp3,0); n=mp3_read(&g_mp3,g_pcmbuf,AUDIO_DMA_SIZE); }
+    } else if (g_fmt==FMT_AAC) {
+        n = aac_read(&g_aac, g_pcmbuf, AUDIO_DMA_SIZE);
+        if (!n && g_loop) {
+            aac_open(&g_aac, g_aac.data, g_aac.size);
+            n = aac_read(&g_aac, g_pcmbuf, AUDIO_DMA_SIZE);
+        }
     }
     g_pcmfill = n;
 }
