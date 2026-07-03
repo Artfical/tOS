@@ -19,6 +19,7 @@
 #include "netmon.h"
 #include "snake.h"
 #include "fsbridge.h"
+#include "sound.h"
 
 #define VGA_W 80
 #define VGA_H 25
@@ -240,6 +241,7 @@ static void window_geom_init(window_t *w)
     } else {
         w->x0 = w->rest_x0; w->y0 = w->rest_y0; w->w0 = w->rest_w0; w->h0 = w->rest_h0;
     }
+    sound_open();
 }
 
 static int fmt_uint(char *buf, unsigned int v)
@@ -317,6 +319,7 @@ static void wm_close_window(window_t *w)
     w->minimized = 0;
     w->maximized = 0;
     if (wm_focused == w) wm_focused = NULL;
+    sound_close();
 }
 
 /* Lets a script (MicroPython's tosgui module, or anything similar added
@@ -1170,6 +1173,7 @@ static void wm_shutdown(void)
 
 static void handle_menu_click(int idx)
 {
+    sound_click();
     if (active_menu == MENU_T) {
         if (menu_is_app[idx] == -2) {
             wm_shutdown();
@@ -1431,6 +1435,7 @@ static void wm_desktop_tick(void)
             for (int i = 0; i < MAX_WINDOWS; i++) {
                 window_t *w = &windows[i];
                 if (w->open && cx >= w->tb_x0 && cx <= w->tb_x1) {
+                    sound_click();
                     if (w == wm_focused && !w->minimized) {
                         w->minimized = 1;
                     } else {

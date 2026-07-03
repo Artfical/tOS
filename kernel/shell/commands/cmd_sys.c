@@ -9,6 +9,7 @@
 #include "ramfs.h"
 #include "scheduler.h"
 #include "vga_font.h"
+#include "sound.h"
 
 static void print_num(uint32_t n)
 {
@@ -148,6 +149,25 @@ void cmd_version(int argc, char **args)
     (void)argc; (void)args;
     terminal_writestring(TOS_VERSION_STRING "\n");
     terminal_writestring("Build: " __DATE__ " " __TIME__ "\n");
+}
+
+void cmd_beep(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring(sound_get_enabled() ? "beep: on\n" : "beep: off\n");
+        return;
+    }
+    if (strcmp(args[1], "on") == 0) {
+        sound_set_enabled(1);
+        terminal_writestring("beep: on\n");
+    } else if (strcmp(args[1], "off") == 0) {
+        sound_set_enabled(0);
+        terminal_writestring("beep: off\n");
+    } else if (strcmp(args[1], "test") == 0) {
+        sound_click();
+    } else {
+        terminal_writestring("usage: beep [on|off|test]\n");
+    }
 }
 
 void cmd_about(int argc, char **args)

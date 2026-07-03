@@ -75,6 +75,7 @@ KERNEL_OBJS = \
     kernel/fs/syscall.o \
     kernel/core/serial.o \
     kernel/core/debugmon.o \
+    kernel/core/sound.o \
     kernel/core/scheduler.o \
     kernel/core/paging.o \
     kernel/core/tss.o \

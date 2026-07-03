@@ -26,6 +26,7 @@
 #include "scheduler.h"
 #include "vga_font.h"
 #include "vfs.h"
+#include "pcspkr.h"
 #include "ramfs.h"
 #include "tfsk.h"
 #include "installer.h"
@@ -209,6 +210,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         terminal_writestring(line);
         klog_write(line);
     }
+
+    pcspkr_init();
 
     show_boot_intro();
 

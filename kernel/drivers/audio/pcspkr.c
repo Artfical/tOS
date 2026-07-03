@@ -1,5 +1,6 @@
 #include "pcspkr.h"
 #include "io.h"
+#include "debugmon.h"
 void pcspkr_init(void)
 {
     pcspkr_off();
@@ -25,6 +26,11 @@ void pcspkr_off(void)
 void pcspkr_beep(uint32_t freq, uint32_t duration_ms)
 {
     pcspkr_on(freq);
-    for (volatile uint32_t i = 0; i < duration_ms * 10000; i++);
+    /* Real wall-clock wait (TSC-backed, see debugmon.c) instead of a
+     * fixed spin count — an arbitrary iteration count has no defined
+     * relationship to real time and made every beep's actual duration
+     * depend on host/hypervisor CPU speed. */
+    uint32_t deadline = debugmon_uptime_ms() + duration_ms;
+    while (debugmon_uptime_ms() < deadline) { }
     pcspkr_off();
 }
