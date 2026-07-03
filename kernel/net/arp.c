@@ -2,6 +2,7 @@
 #include "net.h"
 #include "nic.h"
 #include "string.h"
+#include "scheduler.h"
 
 typedef struct {
     uint32_t ip;
@@ -79,7 +80,12 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
         }
     }
     arp_send_request(ip);
-    for (int retry = 0; retry < 200; retry++) {
+    /* 200 tight iterations with no yield can complete in well under a
+     * millisecond on real hardware/hypervisors, nowhere near enough time
+     * for a NAT'd VM's ARP proxy to answer (we've seen a ping succeed
+     * only on its second attempt — the first attempt's reply arrived
+     * just after this loop already gave up). */
+    for (int retry = 0; retry < 5000; retry++) {
         uint8_t pkt[1536];
         int len = nic_poll(pkt, sizeof(pkt));
         if (len > 0) {
@@ -93,6 +99,7 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
                 return 0;
             }
         }
+        task_yield();
     }
     return -1;
 }

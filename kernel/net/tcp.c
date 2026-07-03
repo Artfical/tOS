@@ -17,6 +17,7 @@
 #include "route.h"
 #include "string.h"
 #include "memory.h"
+#include "scheduler.h"
 
 /* -- TCP Control Block ---------------------------------------------------- */
 typedef struct {
@@ -217,8 +218,13 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
         return -1;
     }
 
+    /* 300 tight iterations with no yield could complete in well under a
+     * millisecond — nowhere near enough for a real round trip through a
+     * NAT gateway (as opposed to the sub-microsecond loopback-like
+     * latency of a local-subnet address). Matches the more patient
+     * budget already used by icmp_ping()/dns_resolve(). */
     int retry;
-    for (retry = 0; retry < 300; retry++) {
+    for (retry = 0; retry < 20000; retry++) {
         uint8_t buf[1536];
         int len = nic_poll(buf, sizeof(buf));
         if (len > 0) {
@@ -230,6 +236,7 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
         }
         if (s->state == TCP_ESTABLISHED) return 0;
         if (s->state == TCP_CLOSED)      return -1;
+        task_yield();
     }
     s->state = TCP_CLOSED;
     return -1;
