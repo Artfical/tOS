@@ -166,6 +166,7 @@ KERNEL_OBJS = \
     kernel/display/mediaplayer.o \
     kernel/display/netmon.o \
     kernel/display/snake.o \
+    kernel/display/game2048.o \
     kernel/micropython/ports/tos/tos_main.o \
     kernel/micropython/ports/tos/tos_hal.o \
     kernel/micropython/ports/tos/math_stubs.o \

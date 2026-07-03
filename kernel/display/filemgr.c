@@ -23,6 +23,7 @@
 #define NUM_BUTTONS 8
 #define MAX_MOUNTS_SHOWN 8
 #define DOUBLECLICK_TICKS 25
+#define TRASH_DIR "/trash"
 
 static const char *btn_labels[NUM_BUTTONS] = {
     "Up", "New", "Copy", "Cut", "Paste", "Del", "Rename", "Open"
@@ -129,6 +130,31 @@ static int count_multi_selected(void)
     int n = 0;
     for (int i = 0; i < entry_count; i++) if (multi_selected[i]) n++;
     return n;
+}
+
+static int in_trash(void)
+{
+    int len = (int)strlen(TRASH_DIR);
+    if (strncmp(cur_path, TRASH_DIR, (size_t)len) != 0) return 0;
+    return cur_path[len] == 0 || cur_path[len] == '/';
+}
+
+/* Builds a collision-free destination path for `name` inside dir, trying
+ * "name", then "name_1", "name_2", ... until one doesn't exist. */
+static void unique_dest(const char *dir, const char *name, char *out, int max)
+{
+    join_path(dir, name, out, max);
+    if (!fsbridge_exists(out)) return;
+    for (int n = 1; n < 1000; n++) {
+        char tagged[256];
+        int k = 0;
+        while (name[k] && k < 200) { tagged[k] = name[k]; k++; }
+        tagged[k++] = '_';
+        k += fmt_uint(tagged + k, (uint32_t)n);
+        tagged[k] = 0;
+        join_path(dir, tagged, out, max);
+        if (!fsbridge_exists(out)) return;
+    }
 }
 
 static int is_clipboard_cut_entry(const char *full)
@@ -359,10 +385,11 @@ static void do_delete(void)
 {
     int n = count_multi_selected();
     if (n == 0) return;
+    int permanent = in_trash();
 
     char confirm[200];
     int k = 0;
-    const char *p = "Delete ";
+    const char *p = permanent ? "Permanently delete " : "Move to Trash: ";
     while (*p) confirm[k++] = *p++;
     if (n == 1) {
         for (int i = 0; i < entry_count; i++) {
@@ -389,18 +416,32 @@ static void do_delete(void)
 
     if (!keyboard_yesno()) { status_msg[0] = 0; return; }
 
+    if (!permanent && !fsbridge_exists(TRASH_DIR)) fsbridge_mkdir(TRASH_DIR);
+
     int ok_count = 0, fail_count = 0;
     for (int i = 0; i < entry_count; i++) {
         if (!multi_selected[i]) continue;
         char full[256];
         join_path(cur_path, entries[i].name, full, sizeof(full));
-        if (delete_recursive(full) == 0) ok_count++; else fail_count++;
+        int ok;
+        if (permanent) {
+            ok = (delete_recursive(full) == 0);
+        } else {
+            char dst[256];
+            unique_dest(TRASH_DIR, entries[i].name, dst, sizeof(dst));
+            ok = (fsbridge_rename(full, dst) == 0);
+            if (!ok) {
+                ok = (copy_recursive(full, dst) == 0);
+                if (ok) delete_recursive(full);
+            }
+        }
+        if (ok) ok_count++; else fail_count++;
     }
 
     char msg[60];
     k = 0;
     k += fmt_uint(msg + k, (uint32_t)ok_count);
-    p = " deleted";
+    p = permanent ? " deleted" : " moved to Trash";
     while (*p) msg[k++] = *p++;
     if (fail_count > 0) {
         p = ", "; while (*p) msg[k++] = *p++;
@@ -693,5 +734,14 @@ void filemgr_run(void)
         else if (c == 'v' || c == 'V') { do_paste(); redraw(); }
         else if (c == 'd' || c == 'D') { do_delete(); redraw(); }
         else if (c == 'r' || c == 'R') { do_rename(); redraw(); }
+        else if (c == 't' || c == 'T') {
+            if (!fsbridge_exists(TRASH_DIR)) fsbridge_mkdir(TRASH_DIR);
+            strcpy(cur_path, TRASH_DIR);
+            selected = 0;
+            scroll_off = 0;
+            refresh_list();
+            set_status("Trash.");
+            redraw();
+        }
     }
 }
