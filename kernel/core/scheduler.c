@@ -116,16 +116,21 @@ int task_spawn(void (*entry)(void), const char *name)
 
 uint32_t timer_handler(uint32_t esp)
 {
-    outb(0x20, 0x20);
+    /* task_yield() fires this SAME handler via a software "int $32" —
+     * indistinguishable from a genuine PIT tick unless we check the
+     * PIC's In-Service Register (must be read before EOI, which clears
+     * it). A busy network wait loop calls task_yield() thousands of
+     * times per real millisecond, so counting every entry as a "tick"
+     * made debugmon_uptime_ms() run wildly fast, which made the v0.9.67
+     * wall-clock timeouts fire almost instantly — even a local gateway
+     * ping started failing, because the deadline was reached before a
+     * reply had any real time to arrive. Only real hardware IRQ0 should
+     * advance the clock. */
+    outb(0x20, 0x0B);            /* OCW3: next read returns the ISR */
+    int is_real_irq = inb(0x20) & 0x01;
+    outb(0x20, 0x20);            /* EOI */
     system_ticks++;
-    /* scheduler_init() overwrites IDT gate 32 with this handler,
-     * replacing kernel.c's original isr_stub_table[32] -> irq_handler
-     * wiring — which was the only thing that ever called
-     * debugmon_tick(). Without this, debugmon_uptime_ms() froze at
-     * whatever value it had at scheduler init and never moved again,
-     * silently turning every wall-clock network timeout (arp_resolve,
-     * dns_resolve, icmp_ping, tcp_connect2) into an infinite loop. */
-    debugmon_tick();
+    if (is_real_irq) debugmon_tick();
     current->cpu_ticks++;
     current->esp = esp;
     if (current->state == TASK_STATE_RUNNING)
