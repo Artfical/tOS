@@ -6,6 +6,13 @@
 #include "scheduler.h"
 #include "string.h"
 #include "http.h"
+#include "memory.h"
+#include "debugmon.h"
+#include "audio.h"
+#include "wav_decoder.h"
+#include "mp3_decoder.h"
+#include "aac_decoder.h"
+#include "m4a_demux.h"
 
 int tos_exec(const char *cmd, char *out, int out_max)
 {
@@ -175,3 +182,93 @@ int tos_http_get(const char *url, char *out, int out_max)
     out[blen] = 0;
     return blen;
 }
+
+/* ── Audio playback ─────────────────────────────────────────────────────── */
+
+typedef uint32_t (*decode_read_fn)(void *ctx, uint8_t *out, uint32_t out_len);
+
+/* Shared by every format: all three decoders' *_read() already produce
+ * 8-bit unsigned mono 22050 Hz PCM, i.e. exactly what audio_submit()
+ * wants, so one loop drives all of them via a common-shaped function
+ * pointer (same calling convention regardless of the ctx struct type
+ * each was actually declared to take). */
+static void submit_pcm_loop(decode_read_fn read_fn, void *ctx)
+{
+    static uint8_t buf[AUDIO_DMA_SIZE];
+    for (;;) {
+        uint32_t n = read_fn(ctx, buf, AUDIO_DMA_SIZE);
+        if (n == 0) break;
+        uint32_t deadline = debugmon_uptime_ms() + 2000;
+        while (audio_busy() && debugmon_uptime_ms() < deadline) { }
+        audio_submit(buf, n);
+    }
+    uint32_t deadline = debugmon_uptime_ms() + 2000;
+    while (audio_busy() && debugmon_uptime_ms() < deadline) { }
+}
+
+int tos_play_file(const char *path)
+{
+    if (!fsbridge_exists(path) || fsbridge_is_dir(path)) return -1;
+    uint32_t sz = fsbridge_size(path);
+    if (!sz || sz > 32U * 1024U * 1024U) return -1;
+
+    uint8_t *buf = (uint8_t *)malloc(sz);
+    if (!buf) return -1;
+    fsbridge_read(path, buf, sz, 0);
+
+    if (!audio_available()) audio_init();
+    if (!audio_available()) { free(buf); return -1; }
+
+    int rc = -1;
+
+    if (sz >= 12 && buf[0] == 'R' && buf[1] == 'I' && buf[8] == 'W' && buf[9] == 'A') {
+        wav_ctx_t wav;
+        if (wav_open(&wav, buf, sz) == 0) {
+            submit_pcm_loop((decode_read_fn)wav_read, &wav);
+            rc = 0;
+        }
+    } else if (sz >= 4 &&
+               ((buf[0] == 0xFF && (buf[1] & 0xE0) == 0xE0 && (buf[1] & 0x06) == 0x02) ||
+                (buf[0] == 'I' && buf[1] == 'D' && buf[2] == '3'))) {
+        uint32_t off = 0;
+        if (buf[0] == 'I' && sz > 10)
+            off = 10U + (((uint32_t)buf[6] & 0x7F) << 21 | ((uint32_t)buf[7] & 0x7F) << 14 |
+                          ((uint32_t)buf[8] & 0x7F) << 7  | ((uint32_t)buf[9] & 0x7F));
+        mp3_ctx_t mp3;
+        if (off < sz && mp3_open(&mp3, buf + off, sz - off) == 0) {
+            submit_pcm_loop((decode_read_fn)mp3_read, &mp3);
+            rc = 0;
+        }
+    } else {
+        /* Try as an M4A/MP4 container first (moov/mdat boxes wrapping
+         * headerless AAC-LC samples); fall back to a bare ADTS stream
+         * (a plain .aac file) if that fails. */
+        m4a_result_t m4a;
+        if (m4a_demux(buf, sz, &m4a) == 0) {
+            aac_ctx_t aac;
+            if (aac_open(&aac, m4a.adts_buf, m4a.adts_len) == 0) {
+                submit_pcm_loop((decode_read_fn)aac_read, &aac);
+                rc = 0;
+            }
+            m4a_free(&m4a);
+        } else {
+            aac_ctx_t aac;
+            if (aac_open(&aac, buf, sz) == 0) {
+                submit_pcm_loop((decode_read_fn)aac_read, &aac);
+                rc = 0;
+            }
+        }
+    }
+
+    free(buf);
+    return rc;
+}
+
+void tos_stop_audio(void) { audio_stop(); }
+void tos_set_volume(int vol)
+{
+    if (vol < 0) vol = 0;
+    if (vol > 100) vol = 100;
+    audio_set_volume((uint8_t)vol);
+}
+int tos_audio_playing(void) { return audio_busy(); }

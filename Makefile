@@ -161,6 +161,7 @@ KERNEL_OBJS = \
     kernel/audio/wav_decoder.o \
     kernel/audio/mp3_decoder.o \
     kernel/audio/aac_decoder.o \
+    kernel/audio/m4a_demux.o \
         kernel/audio/demo_song_embed.o \
     kernel/display/mediaplayer.o \
     kernel/display/netmon.o \

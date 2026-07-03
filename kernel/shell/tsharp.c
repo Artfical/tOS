@@ -461,6 +461,16 @@ static int ts_call_builtin(const char *norm_name, int argc, char **args, char *r
         ts_itoa((int)tos_uptime(), result);
     } else if (strcmp(norm_name, "agetir") == 0) {
         if (argc == 0 || tos_http_get(args[0], result, TS_VAR_VAL) < 0) result[0] = 0;
+    } else if (strcmp(norm_name, "sescal") == 0) {
+        strcpy(result, (argc > 0 && tos_play_file(args[0]) == 0) ? "1" : "0");
+    } else if (strcmp(norm_name, "sesdurdur") == 0) {
+        tos_stop_audio();
+        result[0] = 0;
+    } else if (strcmp(norm_name, "sesseviyesi") == 0) {
+        if (argc > 0) tos_set_volume(atoi(args[0]));
+        result[0] = 0;
+    } else if (strcmp(norm_name, "caliyormu") == 0) {
+        strcpy(result, tos_audio_playing() ? "1" : "0");
     } else {
         return 0;
     }

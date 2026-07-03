@@ -55,4 +55,27 @@ uint32_t tos_uptime(void);
  * length, or -1 on a DNS/connect/parse failure. */
 int tos_http_get(const char *url, char *out, int out_max);
 
+/* Audio playback — shared by T# and MicroPython, and by the file format
+ * auto-detection Media Player already uses (WAV RIFF header / MP3 frame
+ * sync or ID3 tag / M4A "moov" box vs. bare ADTS AAC). This call
+ * BLOCKS until the whole file has finished playing (same blocking
+ * model as tos_exec() — no background task involved), decoding and
+ * submitting PCM chunk by chunk through whatever backend Media Player
+ * uses (SB16/AC97), lazily initialized on first use if needed.
+ * Returns 0 on success, -1 if the file doesn't exist, isn't a
+ * recognized format, or no sound card is present. */
+int tos_play_file(const char *path);
+
+/* Immediately silences whatever is currently playing (Media Player or
+ * a tos_play_file() call from another task). */
+void tos_stop_audio(void);
+
+/* 0-100. */
+void tos_set_volume(int vol);
+
+/* Whether the audio backend is still draining a submitted PCM chunk —
+ * mostly useful right after a play call, or to poll Media Player's
+ * state from a script. */
+int tos_audio_playing(void);
+
 #endif

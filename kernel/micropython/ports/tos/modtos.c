@@ -120,6 +120,32 @@ static mp_obj_t mp_tos_http_get(mp_obj_t url_obj)
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mp_tos_http_get_obj, mp_tos_http_get);
 
+static mp_obj_t mp_tos_play(mp_obj_t path_obj)
+{
+    return mp_obj_new_bool(tos_play_file(mp_obj_str_get_str(path_obj)) == 0);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mp_tos_play_obj, mp_tos_play);
+
+static mp_obj_t mp_tos_stop_audio(void)
+{
+    tos_stop_audio();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(mp_tos_stop_audio_obj, mp_tos_stop_audio);
+
+static mp_obj_t mp_tos_set_volume(mp_obj_t vol_obj)
+{
+    tos_set_volume(mp_obj_get_int(vol_obj));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mp_tos_set_volume_obj, mp_tos_set_volume);
+
+static mp_obj_t mp_tos_audio_playing(void)
+{
+    return mp_obj_new_bool(tos_audio_playing() != 0);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(mp_tos_audio_playing_obj, mp_tos_audio_playing);
+
 static void tos_module_store(mp_obj_dict_t *globals, const char *name, const void *fun_obj)
 {
     mp_obj_dict_store(MP_OBJ_FROM_PTR(globals), MP_OBJ_NEW_QSTR(qstr_from_str(name)), MP_OBJ_FROM_PTR(fun_obj));
@@ -142,4 +168,8 @@ void tos_module_init(void)
     tos_module_store(g, "kill", &mp_tos_kill_obj);
     tos_module_store(g, "uptime", &mp_tos_uptime_obj);
     tos_module_store(g, "http_get", &mp_tos_http_get_obj);
+    tos_module_store(g, "play", &mp_tos_play_obj);
+    tos_module_store(g, "stop_audio", &mp_tos_stop_audio_obj);
+    tos_module_store(g, "set_volume", &mp_tos_set_volume_obj);
+    tos_module_store(g, "audio_playing", &mp_tos_audio_playing_obj);
 }

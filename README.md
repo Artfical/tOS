@@ -1,8 +1,8 @@
 # tOS — Linux Like Operating System
 
-tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC decoding, and an embedded MicroPython interpreter.
+tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
-**Current version: v0.9.73**
+**Current version: v0.9.74**
 
 ## System Requirements
 
@@ -402,7 +402,7 @@ Several built-in GUI applications are launchable from the dock:
 - **Paint** (`paint.c`) — mouse-driven drawing app: pen, eraser, and line/rectangle/circle shape tools (click-drag previews the shape live, release to commit it), 3 brush sizes, a 16-color VGA palette, and a "Save" that exports the canvas as a real, standard PNG file (cell grid rasterized to RGB pixels through a from-scratch PNG/zlib encoder)
 - **Image Viewer** (`viewer.c`) — opens real PNG files (decoded through a from-scratch INFLATE/DEFLATE + PNG decoder in `png.c`, supporting stored/fixed/dynamic Huffman blocks and grayscale/RGB/palette/RGBA color types), downsampled and quantized to the nearest of the 16 VGA colors for display, with zoom in/out/fit and arrow-key panning.
 - **Task Manager** (`taskmgr.c`) — live process list (scheduler state, uptime, memory usage), select a task with the mouse or arrow keys and kill it with a confirm prompt; refuses to kill the idle task or itself
-- **Media Player** (`mediaplayer.c`) — WAV/MP3/AAC audio player with seek bar, volume control, playlist browser, and loop mode. Opens via the Special menu or `open mediaplayer`. Plays the built-in original demo melody automatically on first launch (no external files needed). See [Audio](#audio) section for hardware requirements.
+- **Media Player** (`mediaplayer.c`) — WAV/MP3/AAC/M4A audio player with seek bar, volume control, playlist browser, and loop mode. Opens via the Special menu or `open mediaplayer`. Plays the built-in original demo melody automatically on first launch (no external files needed). See [Audio](#audio) section for hardware requirements.
 - **Network Monitor** (`netmon.c`) — live network stack inspector with four tabs (Interfaces, Connections, Routes, Firewall): NIC driver/stats, active TCP/UDP/SCTP sockets, the routing table, and firewall rules, plus a live RX/TX packets-per-second bar chart. Opens via the Special menu or `open netmon`.
 - **Snake** (`snake.c`) — classic arcade game: arrow keys to steer, speeds up as your score climbs, P to pause, Enter to restart after a game over. Tracks a best-score high watermark for the session. Opens via the Special menu or `open snake`.
 - **About** (`about.c`) — system information window
@@ -430,6 +430,7 @@ tOS includes a full audio playback stack with automatic hardware detection. SB16
 | WAV | `wav_decoder.c` | PCM only (8-bit/16-bit, mono/stereo, any sample rate — resampled to 22050 Hz) |
 | MP3 | `mp3_decoder.c` | MPEG-1 Layer III, CBR, mono/stereo; from-scratch Huffman + IMDCT + requantizer |
 | AAC-LC | `aac_decoder.c` | AAC Low Complexity — ADTS frame sync, canonical Huffman, inverse quantization (|q|^4/3), IMDCT-1024 with sine window, M/S stereo, resampled to 22050 Hz |
+| M4A / MP4 (AAC-LC) | `m4a_demux.c` + `aac_decoder.c` | Minimal ISO-BMFF box parser extracts raw AAC-LC samples from `moov`/`mdat`, re-wraps each as a synthetic ADTS frame, then decodes with the same `aac_decoder.c` as a `.aac` file. No SBR/PS (HE-AAC) support. |
 
 ### Demo Song
 
@@ -582,6 +583,35 @@ Both MicroPython (the `tos` module) and T# (built-in functions) share a single u
 | Kill a task | `tos.kill(pid)` | `sureldur(pid)` | Refuses the idle task and the caller's own task |
 | Uptime in seconds | `tos.uptime()` | `calismasuresi()` | |
 | Fetch a URL (HTTP only) | `tos.http_get(url)` | `agetir(url)` | Returns just the response body (headers stripped); MicroPython gets up to 8 KB, T# up to 256 bytes |
+| Play an audio file | `tos.play(path)` | `sescal(path)` | **Blocks** until the file finishes playing (same blocking model as `tos.exec()`/`calistir()`) — see [Scripted Audio Playback](#scripted-audio-playback) |
+| Stop playback | `tos.stop_audio()` | `sesdurdur()` | Silences whatever is currently playing (a `tos.play()`/`sescal()` call in progress, or Media Player) |
+| Set volume | `tos.set_volume(vol)` | `sesseviyesi(vol)` | `vol` is 0-100 |
+| Is audio currently playing | `tos.audio_playing()` | `caliyormu()` | Polls whether the backend is still draining a submitted PCM chunk |
+
+### Scripted Audio Playback
+
+`tos.play(path)` / `sescal(path)` (`kernel/shell/tos_api.c`'s `tos_play_file()`) auto-detects **WAV, MP3, and M4A/AAC** from the file's own bytes — the same sniffing Media Player uses (RIFF header, MP3 frame sync / ID3 tag, or else an M4A/MP4 container's `moov` box, falling back to a bare ADTS `.aac` stream) — decodes it chunk by chunk, and plays it through whatever backend is available (SB16/AC97 preferred, PC speaker as a last resort if no sound card is present), lazily calling `audio_init()` on first use exactly like Media Player does. M4A/MP4 containers are demuxed by `kernel/audio/m4a_demux.c` (a minimal ISO-BMFF box parser — `moov`/`trak`/`mdia`/`minf`/`stbl`, `esds` for the `AudioSpecificConfig`, `stsz`/`stsc`/`stco` for sample boundaries), which re-packages each raw AAC-LC sample as a synthetic ADTS frame so it can be handed to the existing `aac_decoder.c` unmodified (M4A/MP4 never stores ADTS framing itself — sample boundaries instead come from the container's sample tables).
+
+The call **blocks** the calling script until the whole file has finished (there's no background playback task in the scripting API — same model as `tos.exec()`), so a script that needs to do other things while music plays should use `tos.stop_audio()` from elsewhere (e.g. Media Player, or a second invocation) rather than expecting `tos.play()` to return early.
+
+```python
+>>> import tos
+>>> tos.set_volume(70)
+>>> tos.play("/mnt/song.mp3")   # blocks until the song ends
+True
+>>> tos.play("/mnt/clip.m4a")
+True
+```
+
+```
+/> tsharp
+>>> sesseviyesi(70)
+>>> sescal("/mnt/song.mp3")
+>>> yazdir(sescal)
+1
+```
+
+> **T# note:** like every other T# builtin, nested calls (`yazdir(sescal(...))`) don't work — T#'s expression evaluator has no function-call support inside expressions, only as a standalone statement. Call `sescal(path)` on its own line first (it stores its result in a variable named `sescal`, same convention every builtin follows), then read that variable separately, as shown above.
 
 ### tosgui
 

@@ -11,6 +11,7 @@
 #include "wav_decoder.h"
 #include "mp3_decoder.h"
 #include "aac_decoder.h"
+#include "m4a_demux.h"
 #include "demo_song.h"
 #include "vfs.h"
 #include "stdio.h"
@@ -64,6 +65,7 @@ static state_t  g_state    = ST_STOPPED;
 static fmt_t    g_fmt      = FMT_NONE;
 static char     g_path[64] = {0};
 static uint8_t *g_filebuf  = NULL;
+static uint8_t *g_m4a_buf  = NULL; /* demuxed ADTS buffer for FMT_AAC when the source was an M4A/MP4 container */
 static uint32_t g_filesz   = 0;
 
 static wav_ctx_t g_wav;
@@ -141,6 +143,7 @@ static uint32_t current_pos_sec(void)
 static void mp_free_file(void)
 {
     if (g_filebuf) { free(g_filebuf); g_filebuf = NULL; }
+    if (g_m4a_buf) { free(g_m4a_buf); g_m4a_buf = NULL; }
     g_filesz = 0; g_fmt = FMT_NONE; g_state = ST_STOPPED;
     g_pcmfill = 0; g_pcmpos = 0; g_dur_sec = 0;
     g_sw_pos_sec = 0; g_sw_tick = 0;
@@ -191,7 +194,13 @@ static int mp_load(const char *path)
             g_fmt = FMT_MP3; g_dur_sec = mp3_duration_sec(&g_mp3);
         }
     } else {
-        if (aac_open(&g_aac, g_filebuf, sz)==0) {
+        /* Try an M4A/MP4 container (moov/mdat boxes wrapping headerless
+         * AAC-LC samples) before assuming a bare ADTS .aac stream. */
+        m4a_result_t m4a;
+        if (m4a_demux(g_filebuf, sz, &m4a) == 0 && aac_open(&g_aac, m4a.adts_buf, m4a.adts_len) == 0) {
+            g_m4a_buf = m4a.adts_buf;
+            g_fmt = FMT_AAC; g_dur_sec = aac_duration_sec(&g_aac);
+        } else if (aac_open(&g_aac, g_filebuf, sz)==0) {
             g_fmt = FMT_AAC; g_dur_sec = aac_duration_sec(&g_aac);
         } else { strncpy(g_status,"Unknown format.",MP_COLS); mp_free_file(); return -1; }
     }
@@ -394,7 +403,7 @@ static void draw_info(void)
         while (*p) { if (*p=='/') last=p+1; p++; }
         name=last;
         fmts=(g_fmt==FMT_WAV)?"[WAV]":(g_fmt==FMT_MP3)?"[MP3]":
-             (g_fmt==FMT_AAC)?"[AAC]":"[???]";
+             (g_fmt==FMT_AAC)?(g_m4a_buf?"[M4A]":"[AAC]"):"[???]";
     }
     mp_put(0, ROW_INFO, fmts, C(LBL,BLK));
     char buf[52]; int n=0;
