@@ -79,10 +79,19 @@ void cmd_wget(int argc, char **args)
     for (const char *p = path; *p; p++) if (*p == '/') fname = p + 1;
     if (*fname == '\0') fname = "downloaded";
 
-    terminal_writestring("Resolving... ");
     uint32_t ip;
-    if (dns_resolve(host, &ip) != 0) { terminal_writestring("FAILED\n"); return; }
-    terminal_writestring("OK\nConnecting... ");
+    int host_is_ip = 1;
+    for (const char *p = host; *p; p++)
+        if ((*p < '0' || *p > '9') && *p != '.') { host_is_ip = 0; break; }
+
+    if (host_is_ip) {
+        ip = parse_ip(host);
+    } else {
+        terminal_writestring("Resolving... ");
+        if (dns_resolve(host, &ip) != 0) { terminal_writestring("FAILED\n"); return; }
+        terminal_writestring("OK\n");
+    }
+    terminal_writestring("Connecting... ");
 
     uint8_t resp[4096];
     int n = http_get(host, port, path, resp, sizeof(resp) - 1);

@@ -14,6 +14,7 @@
 #include "arp.h"
 #include "net.h"
 #include "nic.h"
+#include "route.h"
 #include "string.h"
 #include "memory.h"
 
@@ -89,8 +90,16 @@ static void rx_append(tcp_sock_t *s, const uint8_t *data, int len)
 /* -- Packet builder -------------------------------------------------------- */
 static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
 {
+    /* Resolve via the routing table, not the raw destination IP directly
+     * — arp_resolve(s->dst_ip, ...) only ever worked for hosts on the
+     * local subnet, since you can't ARP a host that isn't on your LAN.
+     * Any TCP connection to an address outside the local subnet needs
+     * to be sent to the *gateway's* MAC (with the IP header's dst_ip
+     * still the real, final destination). */
+    uint32_t nh = route_lookup(net_ip, s->dst_ip);
+    if (!nh) nh = s->dst_ip;
     uint8_t mac[6];
-    if (arp_resolve(s->dst_ip, mac) != 0) return -1;
+    if (arp_resolve(nh, mac) != 0) return -1;
 
     int tcp_len = 20 + plen;
     int total   = 14 + 20 + tcp_len;

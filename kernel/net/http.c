@@ -8,10 +8,29 @@
 #include "string.h"
 #include "memory.h"
 
+static uint32_t http_parse_ip(const char *s)
+{
+    uint32_t ip = 0;
+    int shift = 0, val = 0;
+    while (*s) {
+        if (*s == '.') { ip |= (val & 0xFF) << shift; shift += 8; val = 0; }
+        else if (*s >= '0' && *s <= '9') val = val * 10 + (*s - '0');
+        else return 0;
+        s++;
+    }
+    ip |= (val & 0xFF) << shift;
+    return ip;
+}
+
 int http_get(const char *host, uint16_t port, const char *path, uint8_t *response, int max_len)
 {
     uint32_t ip;
-    if (dns_resolve(host, &ip) != 0) return -1;
+    int host_is_ip = 1;
+    for (const char *p = host; *p; p++)
+        if ((*p < '0' || *p > '9') && *p != '.') { host_is_ip = 0; break; }
+
+    if (host_is_ip) ip = http_parse_ip(host);
+    else if (dns_resolve(host, &ip) != 0) return -1;
 
     if (tcp_connect(ip, port) != 0) return -1;
 
