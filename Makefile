@@ -217,6 +217,14 @@ kernel/audio/demo_song.wav: gen_demo_song.py
 kernel/boot/boot.o: kernel/boot/boot.s
 	$(CC) $(CFLAGS) -x assembler-with-cpp -c $< -o $@
 
+# No automatic header dependency tracking (no -MMD/.d files) — force every
+# kernel .c to recompile whenever version.h changes, so a version bump can
+# never leave a stale TOS_VERSION/TOS_BOOT_STRING baked into an old .o
+# (this bit us once: kernel.c's boot banner stayed on 0.9.52 for a dozen
+# releases because nothing forced it to rebuild).
+CORE_C_OBJS := $(patsubst %.c,%.o,$(wildcard kernel/core/*.c kernel/display/*.c kernel/shell/*.c kernel/shell/commands/*.c))
+$(CORE_C_OBJS): kernel/core/version.h
+
 kernel/tOS.elf: $(KERNEL_OBJS)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 
