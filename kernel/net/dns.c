@@ -6,6 +6,7 @@
 #include "nic.h"
 #include "string.h"
 #include "memory.h"
+#include "scheduler.h"
 
 #define DNS_PORT 53
 
@@ -47,7 +48,7 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
     if (udp_send(net_dns, DNS_PORT, rx_port, pkt, off) != 0)
         return -1;
 
-    for (int tries = 0; tries < 200; tries++) {
+    for (int tries = 0; tries < 1000; tries++) {
         uint8_t buf[1536];
         int len = nic_poll(buf, sizeof(buf));
         if (len > 0) {
@@ -78,6 +79,7 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
                 return 0;
             }
         }
+        task_yield();
     }
     return -1;
 }

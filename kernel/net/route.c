@@ -61,8 +61,12 @@ void route_init(void)
     if (net_gateway)
         route_add(0, 0, net_gateway, 0, 100, 0);
 
-    /* Direct route for local subnet: 10.0.2.0/24, table 0 */
-    route_add(IP4(10,0,2,0), 0xFFFFFF00U & 0xFFFFFFFF,
+    /* Direct route for local subnet: 10.0.2.0/24, table 0
+     * (IP4() packs octets in memory-byte order, matching wire format on
+     * this little-endian target — the mask must use the same convention,
+     * NOT a plain 0xFFFFFF00 host-order literal, or the prefix compare
+     * in route_lookup() silently never matches.) */
+    route_add(IP4(10,0,2,0), IP4(255,255,255,0),
               0, net_ip, 0, 0);
 }
 
