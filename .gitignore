@@ -1,7 +1,9 @@
 *.o
 *.elf
 *.iso
+*.so
 initrd.tar
 iso/
 tOS.img
 *.img
+lib/

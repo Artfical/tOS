@@ -10,8 +10,9 @@
 static uint32_t exit_esp;
 static uint32_t exit_eip;
 
-void sys_exit_set_jmp(uint32_t esp, uint32_t eip)
+void sys_exit_set_jmp(uint32_t esp, uint32_t ebp, uint32_t ebx, uint32_t esi, uint32_t edi, uint32_t eip)
 {
+    (void)ebp; (void)ebx; (void)esi; (void)edi;
     exit_esp = esp;
     exit_eip = eip;
 }
@@ -27,14 +28,18 @@ void __attribute__((noreturn)) sys_exit_longjmp(void)
     __builtin_unreachable();
 }
 
+#define USER_STACK_PAGES 16 /* 64 KB — enough headroom for nested libc calls */
+
 void usermode_init(void)
 {
-    uint32_t page = alloc_physical_page();
-    if (!page) {
-        terminal_writestring("usermode: failed to allocate stack page\n");
-        return;
+    for (int i = 1; i <= USER_STACK_PAGES; i++) {
+        uint32_t page = alloc_physical_page();
+        if (!page) {
+            terminal_writestring("usermode: failed to allocate stack page\n");
+            return;
+        }
+        paging_map(USER_STACK_TOP - i * 4096, page, PTE_USER | PTE_WRITABLE);
     }
-    paging_map(USER_STACK_TOP - 4096, page, PTE_USER | PTE_WRITABLE);
     terminal_writestring("[OK] User mode stack ready\n");
 }
 

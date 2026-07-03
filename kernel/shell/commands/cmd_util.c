@@ -91,16 +91,17 @@ void cmd_exec(int argc, char **args)
     terminal_putchar('\n');
 
     uint32_t entry = 0;
-    if (elf_load(prog, &entry) != 0) {
+    if (elf_load_dynamic(prog, sz, &entry) != 0) {
         terminal_writestring("exec: ELF load failed\n");
         free(prog);
         return;
     }
     free(prog);
 
-    uint32_t save_esp;
-    asm volatile("mov %%esp, %0" : "=r"(save_esp));
-    sys_exit_set_jmp(save_esp, (uint32_t)&&after_umode);
+    uint32_t save_esp, save_ebp, save_ebx, save_esi, save_edi;
+    asm volatile("mov %%esp, %0\n\tmov %%ebp, %1\n\tmov %%ebx, %2\n\tmov %%esi, %3\n\tmov %%edi, %4"
+                 : "=r"(save_esp), "=r"(save_ebp), "=r"(save_ebx), "=r"(save_esi), "=r"(save_edi));
+    sys_exit_set_jmp(save_esp, save_ebp, save_ebx, save_esi, save_edi, (uint32_t)&&after_umode);
 
     terminal_writestring("Running in user mode...\n");
     enter_user_mode(entry, 0xBFFFF000);

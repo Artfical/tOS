@@ -74,21 +74,30 @@ void isr_handler(registers_t *regs)
             terminal_writestring("\n");
         }
 
-        terminal_writestring("EIP: ");
         char buf[9];
-        uint32_t eip = regs->eip;
-        for (int i = 7; i >= 0; i--) {
-            buf[i] = "0123456789ABCDEF"[eip & 0xF];
-            eip >>= 4;
+        void print_field(const char *label, uint32_t val) {
+            terminal_writestring(label);
+            for (int i = 7; i >= 0; i--) {
+                buf[i] = "0123456789ABCDEF"[val & 0xF];
+                val >>= 4;
+            }
+            buf[8] = '\0';
+            terminal_writestring(buf);
+            terminal_writestring(" ");
         }
-        buf[8] = '\0';
-        terminal_writestring(buf);
-        terminal_writestring(" SS: ");
-        for (int i = 7; i >= 0; i--) {
-            uint32_t val = regs->ss;
-            buf[i] = "0123456789ABCDEF"[val & 0xF];
-        }
-        terminal_writestring(buf);
+        print_field("EIP=", regs->eip);
+        print_field("CS=", regs->cs);
+        print_field("EFL=", regs->eflags);
+        print_field("USP=", regs->useresp);
+        print_field("SS=", regs->ss);
+        print_field("ERR=", regs->err_code);
+        terminal_writestring("\n");
+        print_field("EAX=", regs->eax);
+        print_field("EBX=", regs->ebx);
+        print_field("ECX=", regs->ecx);
+        print_field("EDX=", regs->edx);
+        print_field("ESP=", regs->esp);
+        print_field("EBP=", regs->ebp);
         terminal_writestring("\nSystem halted.\n");
         for (;;) { asm volatile("hlt"); }
     }

@@ -125,14 +125,15 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             if (!prog) return -1;
             ramfs_read(path, prog, sz, 0);
             uint32_t entry = 0;
-            if (elf_load(prog, &entry) != 0) {
+            if (elf_load_dynamic(prog, sz, &entry) != 0) {
                 free(prog);
                 return -1;
             }
             free(prog);
-            uint32_t save_esp;
-            asm volatile("mov %%esp, %0" : "=r"(save_esp));
-            sys_exit_set_jmp(save_esp, (uint32_t)&&after_exec);
+            uint32_t save_esp, save_ebp, save_ebx, save_esi, save_edi;
+            asm volatile("mov %%esp, %0\n\tmov %%ebp, %1\n\tmov %%ebx, %2\n\tmov %%esi, %3\n\tmov %%edi, %4"
+                         : "=r"(save_esp), "=r"(save_ebp), "=r"(save_ebx), "=r"(save_esi), "=r"(save_edi));
+            sys_exit_set_jmp(save_esp, save_ebp, save_ebx, save_esi, save_edi, (uint32_t)&&after_exec);
             enter_user_mode(entry, 0xBFFFF000);
             after_exec:
             return 0;

@@ -106,7 +106,7 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `hexdump <path>` | Hex dump of a file |
 | `tee <path>` | Write stdin to both terminal and file |
 | `edit <path>` | Simple line-based text editor |
-| `exec <path>` | Execute an ELF binary |
+| `exec <path>` | Execute an ELF binary (static, or dynamically linked against `/lib/<soname>`) |
 | `chmod <mode> <path>` | Change file permissions |
 | `disk` | Manage disks (list/info/mount/umount/format) |
 | `tar c\|x\|t <archive> ...` | Create/extract/list a ustar archive |
@@ -611,6 +611,14 @@ tg.close()
 ## ELF Program Loading
 
 The kernel can load and execute ELF binaries from the ramfs. Programs are loaded into memory and executed in user context. The `exec` shell command loads and runs ELF files.
+
+### Dynamic Linking
+
+`kernel/fs/elf.c`'s `elf_load_dynamic()` is a from-scratch i386 ELF dynamic linker: it maps a non-PIE executable's `PT_LOAD` segments at their linked addresses, reads its `PT_DYNAMIC` section, and — if it has a `DT_NEEDED` entry — loads the named shared object from `/lib/<soname>` at a fixed base (`0x40000000`), relocating the library's own `R_386_RELATIVE`/`R_386_JMP_SLOT` entries (including intra-library PLT calls, since `-fPIC` code always calls through the GOT/PLT even for calls within the same object) before resolving the executable's imported symbols against the library's `.dynsym` (via a classic SysV `DT_HASH` table for the symbol count) and patching its `.rel.dyn` / `.rel.plt` (`R_386_32`, `R_386_PC32`, `R_386_GLOB_DAT`, `R_386_JMP_SLOT`).
+
+`userland/libc/tlibc.c` is a minimal freestanding shared C library (`write`/`read`/`open`/`close`/`malloc`/`puts`/`printf`/...) built as a real ELF shared object (`lib/libc.so`, linked with `--hash-style=sysv` for a resolvable symbol count) using tOS's `int 0x80` syscall numbers, which match the classic Linux i386 table. `userland/tests/hello_dyn.c` + `userland/tests/dyn_start.s` build into `programs/hello_dyn.elf`, a real dynamically-linked test binary — try `exec /programs/hello_dyn.elf`.
+
+> **Known limitation:** on some builds, a program that runs to completion and calls `exit()` can panic the kernel when unwinding back into the shell (`sys_exit_longjmp` in `kernel/core/usermode.c` only restores `ESP`/`EIP`, not full callee-saved register state) — this predates dynamic linking and affects static `exec` binaries too.
 
 ## System Calls
 
