@@ -163,6 +163,7 @@ KERNEL_OBJS = \
         kernel/audio/demo_song_embed.o \
     kernel/display/mediaplayer.o \
     kernel/display/netmon.o \
+    kernel/display/snake.o \
     kernel/micropython/ports/tos/tos_main.o \
     kernel/micropython/ports/tos/tos_hal.o \
     kernel/micropython/ports/tos/math_stubs.o \

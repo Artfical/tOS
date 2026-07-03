@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC decoding, and an embedded MicroPython interpreter.
 
-**Current version: v0.9.59**
+**Current version: v0.9.71**
 
 ## System Requirements
 
@@ -352,6 +352,12 @@ ICMPv6 (`kernel/net/icmpv6.c`) handles:
 
 NDP results are stored in an 8-entry NDP cache. Unknown targets fall back to the solicited-node multicast MAC `33:33:ff:xx:xx:xx`.
 
+### Timing & Reliability
+
+Every blocking network call (`arp_resolve`, `dns_resolve`, `icmp_ping`, `tcp_connect2`) waits against a **wall-clock deadline**, not a fixed retry-count loop — how long a single `nic_poll()` call takes varies enormously across NIC drivers and hypervisors, so a fixed iteration count is either too short on a slow one or a multi-minute hang on a very slow one. The clock backing these deadlines (`debugmon_uptime_ms()` in `kernel/core/debugmon.c`) is TSC-based: the CPU's free-running cycle counter is calibrated once at boot against ~200ms of genuine PIT ticks (while IDT gate 32 still only carries real hardware IRQ0, before `scheduler_init()` reinstalls that vector for `task_yield()`'s software self-yields), after which elapsed wall-clock time is pure arithmetic — immune to how many times a busy loop calls `task_yield()`.
+
+The UDP and ICMP checksum functions (`udp.c`, `icmp.c`) correctly fold a trailing odd byte into the *high* byte of the final 16-bit word per the standard Internet checksum algorithm (this silently corrupted almost every DNS query for a while, since hostnames almost always produce an odd-length UDP payload — even-length ICMP echo payloads never exercised the bug). `tcp.c`'s `send_seg()` resolves the next hop through the routing table (`route_lookup()`) rather than ARPing the connection's final destination IP directly, so TCP can actually reach hosts outside the local subnet — `ip.c`/`gre.c`/`ipip.c` already did this; TCP was the one path that didn't.
+
 ### NIC Drivers
 
 Five NIC drivers are available, all auto-detected via PCI bus scanning:
@@ -396,6 +402,7 @@ Several built-in GUI applications are launchable from the dock:
 - **Task Manager** (`taskmgr.c`) — live process list (scheduler state, uptime, memory usage), select a task with the mouse or arrow keys and kill it with a confirm prompt; refuses to kill the idle task or itself
 - **Media Player** (`mediaplayer.c`) — WAV/MP3/AAC audio player with seek bar, volume control, playlist browser, and loop mode. Opens via the Special menu or `open mediaplayer`. Plays the built-in original demo melody automatically on first launch (no external files needed). See [Audio](#audio) section for hardware requirements.
 - **Network Monitor** (`netmon.c`) — live network stack inspector with four tabs (Interfaces, Connections, Routes, Firewall): NIC driver/stats, active TCP/UDP/SCTP sockets, the routing table, and firewall rules, plus a live RX/TX packets-per-second bar chart. Opens via the Special menu or `open netmon`.
+- **Snake** (`snake.c`) — classic arcade game: arrow keys to steer, speeds up as your score climbs, P to pause, Enter to restart after a game over. Tracks a best-score high watermark for the session. Opens via the Special menu or `open snake`.
 - **About** (`about.c`) — system information window
 
 ## Audio
@@ -556,7 +563,7 @@ Both MicroPython (the `tos` module) and T# (built-in functions) share a single u
 | Delete a file/dir | `tos.delete(path)` | `dosyasil(path)` | |
 | Check a path exists | `tos.exists(path)` | `dosyavarmi(path)` | |
 | List a directory | `tos.list(path)` | `listele(path)` | MicroPython gets a real list; T# gets newline-joined string |
-| Open a GUI app | `tos.open_app(name)` | `uygulamaac(name)` | `name`: notepad, paint, files, viewer, calculator, clock, about, diskutil, taskmgr, terminal |
+| Open a GUI app | `tos.open_app(name)` | `uygulamaac(name)` | `name`: notepad, paint, files, viewer, calculator, clock, about, diskutil, taskmgr, mediaplayer, netmon, snake, terminal |
 | List running tasks | `tos.ps()` | `surecler()` | `"pid name state"` lines |
 | Kill a task | `tos.kill(pid)` | `sureldur(pid)` | Refuses the idle task and the caller's own task |
 | Uptime in seconds | `tos.uptime()` | `calismasuresi()` | |

@@ -17,6 +17,7 @@
 #include "taskmgr.h"
 #include "mediaplayer.h"
 #include "netmon.h"
+#include "snake.h"
 #include "fsbridge.h"
 
 #define VGA_W 80
@@ -41,6 +42,7 @@
 #define WIN_KIND_SCRIPT      10
 #define WIN_KIND_MEDIAPLAYER 11
 #define WIN_KIND_NETMON      12
+#define WIN_KIND_SNAKE       13
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -290,6 +292,8 @@ static void window_task_entry(void)
         mediaplayer_run();
     else if (w->kind == WIN_KIND_NETMON)
         netmon_run();
+    else if (w->kind == WIN_KIND_SNAKE)
+        snake_run();
     else
         shell_run_windowed(w->initial_cmd);
 }
@@ -680,6 +684,29 @@ static void wm_open_netmon(void)
     wm_focused = w;
 }
 
+static void wm_open_snake(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 1;
+    w->z = next_z++;
+    w->kind = WIN_KIND_SNAKE;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "Snake");
+
+    window_geom_init(w);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
 /* Name-based app launcher for scripting APIs (T#, MicroPython) that
  * shouldn't need to know about every individual wm_open_*() function.
  * Returns 0 if the name was recognized (whether or not the window
@@ -697,6 +724,7 @@ int wm_open_app(const char *name)
     else if (strcmp(name, "taskmgr") == 0) wm_open_taskmgr();
     else if (strcmp(name, "mediaplayer") == 0 || strcmp(name, "music") == 0) wm_open_mediaplayer();
     else if (strcmp(name, "netmon") == 0 || strcmp(name, "network") == 0) wm_open_netmon();
+    else if (strcmp(name, "snake") == 0) wm_open_snake();
     else if (strcmp(name, "terminal") == 0) wm_open_window("");
     else return -1;
     return 0;
@@ -820,6 +848,8 @@ static void build_menu_items(int which)
         menu_names[menu_count] = "Media Player"; menu_is_app[menu_count] = 11; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Network Monitor"; menu_is_app[menu_count] = 12; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "Snake"; menu_is_app[menu_count] = 13; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Calculator"; menu_is_app[menu_count] = 6; menu_disabled[menu_count] = 0;
         menu_count++;
@@ -1026,6 +1056,7 @@ static const char *get_icon_char(int kind)
         case WIN_KIND_SCRIPT:      return "\x1E";
         case WIN_KIND_MEDIAPLAYER: return "\x0D"; /* ♪ */
         case WIN_KIND_NETMON:      return "\x1E"; /* ▲ (network up-arrow) */
+        case WIN_KIND_SNAKE:       return "\x06"; /* ♠-ish blob, stands in for a snake glyph */
         default:                return ".";
     }
 }
@@ -1166,6 +1197,8 @@ static void handle_menu_click(int idx)
             wm_open_mediaplayer();
         } else if (menu_is_app[idx] == 12) {
             wm_open_netmon();
+        } else if (menu_is_app[idx] == 13) {
+            wm_open_snake();
         }
     } else if (active_menu == MENU_FILE) {
         if (menu_is_app[idx] == -3) {
