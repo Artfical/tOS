@@ -12,7 +12,7 @@ static uint16_t icmp_checksum(uint16_t *buf, int len)
 {
     uint32_t sum = 0;
     for (int i = 0; i < len / 2; i++) sum += ntohs(buf[i]);
-    if (len & 1) sum += ((uint8_t *)buf)[len - 1];
+    if (len & 1) sum += (uint32_t)((uint8_t *)buf)[len - 1] << 8;
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return htons(~sum & 0xFFFF);
 }

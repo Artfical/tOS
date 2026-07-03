@@ -67,7 +67,12 @@ static uint16_t udp_checksum(void *pseudo, int pseudo_len, void *udp_seg, int se
     for (int i = 0; i < pseudo_len / 2; i++) sum += ntohs(p[i]);
     p = (uint16_t *)udp_seg;
     for (int i = 0; i < seg_len / 2; i++) sum += ntohs(p[i]);
-    if (seg_len & 1) sum += ((uint8_t *)udp_seg)[seg_len - 1];
+    /* A trailing odd byte is padded with an implicit zero LOW byte, i.e.
+     * it occupies the HIGH byte of the final 16-bit word — not a plain
+     * byte value. DNS queries (variable-length hostnames) hit this path
+     * far more often than ICMP's fixed-size echo payloads, which is why
+     * this was silently corrupting almost every DNS query checksum. */
+    if (seg_len & 1) sum += (uint32_t)((uint8_t *)udp_seg)[seg_len - 1] << 8;
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return htons(sum == 0 ? 0xFFFF : ~sum & 0xFFFF);
 }
