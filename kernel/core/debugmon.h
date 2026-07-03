@@ -16,6 +16,14 @@ uint32_t debugmon_uptime_ms(void);
  * software self-yields through the same interrupt vector. */
 void debugmon_calibrate_tsc(void);
 
+/* Diagnostic accessor — TSC cycles per millisecond found by calibration
+ * (0 if calibration hasn't run / failed). */
+uint32_t debugmon_get_tsc_per_ms(void);
+
+/* Diagnostic accessor — raw hardware tick count (only meaningful before
+ * scheduler_init() reinstalls IDT gate 32). */
+uint32_t debugmon_get_tick_count(void);
+
 /* Formats msg as "[uptime_ms] [LEVEL] [KERNEL] msg" and writes it to the
  * serial port as a plain text line, matching tOS_monitor's .log format. */
 void debugmon_log_line(const char *msg);

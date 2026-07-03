@@ -63,6 +63,16 @@ uint32_t debugmon_uptime_ms(void)
     return (uint32_t)((rdtsc() - calib_tsc0) / tsc_per_ms);
 }
 
+uint32_t debugmon_get_tsc_per_ms(void)
+{
+    return (uint32_t)tsc_per_ms;
+}
+
+uint32_t debugmon_get_tick_count(void)
+{
+    return tick_count;
+}
+
 static int append_str(char *buf, int pos, int cap, const char *s)
 {
     while (*s && pos < cap)

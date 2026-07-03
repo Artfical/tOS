@@ -178,6 +178,38 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
      * count fake ticks too. See debugmon_calibrate_tsc(). */
     debugmon_calibrate_tsc();
 
+    {
+        /* Temporary boot-time self-check: print the calibrated TSC
+         * frequency, then busy-wait for 100 more *real* hardware ticks
+         * (ground truth, still unambiguous — scheduler hasn't taken
+         * over IDT gate 32 yet) and compare that ~1000ms against what
+         * debugmon_uptime_ms()'s TSC arithmetic reports over the same
+         * span. A silent calibration failure (falling back to the old
+         * yield-driven fast clock, or bad tsc_per_ms) is otherwise
+         * invisible except as network commands mysteriously failing
+         * fast. */
+        uint32_t tpm = debugmon_get_tsc_per_ms();
+        uint32_t t0_ground = debugmon_get_tick_count();
+        uint32_t t0_tsc = debugmon_uptime_ms();
+        while (debugmon_get_tick_count() - t0_ground < 100) { }
+        uint32_t t1_tsc = debugmon_uptime_ms();
+
+        char line[96]; int lp = 0;
+        char nb[12]; int ni;
+        const char *p1 = "[DBG] tsc_per_ms=";
+        while (*p1) line[lp++] = *p1++;
+        ni = 11; nb[11] = 0; { uint32_t v = tpm; if (v==0) nb[--ni]='0'; else while (v>0 && ni>0){nb[--ni]='0'+v%10; v/=10;} }
+        while (nb[ni]) line[lp++] = nb[ni++];
+        const char *p2 = " ground_truth_ms=1000 tsc_measured_ms=";
+        while (*p2) line[lp++] = *p2++;
+        ni = 11; nb[11] = 0; { uint32_t v = t1_tsc - t0_tsc; if (v==0) nb[--ni]='0'; else while (v>0 && ni>0){nb[--ni]='0'+v%10; v/=10;} }
+        while (nb[ni]) line[lp++] = nb[ni++];
+        line[lp++] = '\n';
+        line[lp] = '\0';
+        terminal_writestring(line);
+        klog_write(line);
+    }
+
     show_boot_intro();
 
     uint32_t mem_upper = 0;
