@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC decoding, and an embedded MicroPython interpreter.
 
-**Current version: v0.9.71**
+**Current version: v0.9.73**
 
 ## System Requirements
 
@@ -144,6 +144,7 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `history` | Show command history |
 | `font` | List/change the terminal font style |
 | `version` | Show kernel version |
+| `beep [on\|off\|test]` | Toggle system UI sounds (window open/close, clicks) or fire a one-off test tone |
 | `about` | About tOS |
 | `uname` | System information |
 | `reboot` | Reboot the system |
@@ -389,6 +390,7 @@ At boot, the user is prompted to enter GUI mode. When enabled, a window manager 
 - A mouse cursor is rendered and tracks PS/2 mouse movement (with IntelliMouse wheel support auto-detected at boot); windows can be dragged by their title bar, resized from the bottom-right corner, focused, and minimized.
 - The GUI polls mouse and keyboard events in the shell loop.
 - Right-clicking empty desktop space opens a context menu: New Folder, New File (opens straight into Notepad), Open Files, Open Terminal, About This Computer, Change Background (cycles through a few flat colors), and Refresh Desktop.
+- Opening/closing a window and clicking a menu item or dock icon each play a short UI sound — see [System Sounds](#system-sounds).
 
 Several built-in GUI applications are launchable from the dock:
 
@@ -451,6 +453,18 @@ The WAV is linked directly into the kernel binary via `.incbin` (`demo_song_embe
 | Volume | Click `[+]` / `[-]` in status row |
 | Arrow keys ←/→ | Seek ±5 seconds |
 | Arrow keys ↑/↓ | Scroll playlist |
+
+### System Sounds
+
+`kernel/core/sound.c` plays short UI cues — window opened (rising two-tone), window closed (falling two-tone), and menu/dock clicks (a short blip) — synthesized on the fly as square-wave PCM (the same chiptune-style synthesis approach as `gen_demo_song.py`) and played through `audio_submit()`, i.e. the same SB16/AC97 backend Media Player uses. This is deliberate: the PC speaker (port 0x61 + PIT channel 2, `kernel/drivers/audio/pcspkr.c`) is only *emulated* by most hypervisors and often isn't wired through to the host's real speakers at all (VirtualBox/VMware in particular) even though the emulation itself works — going through the real virtual sound card sidesteps that entirely. `sound.c` falls back to `pcspkr_beep()` only when `audio_available()` is false (no SB16/AC97 detected), so real hardware without a sound card still gets *something*.
+
+Toggle with the `beep` shell command:
+
+| Command | Effect |
+|---|---|
+| `beep` | Show whether UI sounds are currently on or off |
+| `beep on` / `beep off` | Enable / disable UI sounds |
+| `beep test` | Fire a one-off test click, useful for confirming audio output works at all |
 
 ## MicroPython Interpreter
 
