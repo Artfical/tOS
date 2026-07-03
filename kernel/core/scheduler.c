@@ -5,6 +5,7 @@
 #include "terminal.h"
 #include "memory.h"
 #include "string.h"
+#include "debugmon.h"
 
 static task_t tasks[MAX_TASKS];
 static task_t *current = 0;
@@ -117,6 +118,14 @@ uint32_t timer_handler(uint32_t esp)
 {
     outb(0x20, 0x20);
     system_ticks++;
+    /* scheduler_init() overwrites IDT gate 32 with this handler,
+     * replacing kernel.c's original isr_stub_table[32] -> irq_handler
+     * wiring — which was the only thing that ever called
+     * debugmon_tick(). Without this, debugmon_uptime_ms() froze at
+     * whatever value it had at scheduler init and never moved again,
+     * silently turning every wall-clock network timeout (arp_resolve,
+     * dns_resolve, icmp_ping, tcp_connect2) into an infinite loop. */
+    debugmon_tick();
     current->cpu_ticks++;
     current->esp = esp;
     if (current->state == TASK_STATE_RUNNING)

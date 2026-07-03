@@ -19,6 +19,7 @@
 #include "memory.h"
 #include "scheduler.h"
 #include "debugmon.h"
+#include "terminal.h"
 
 /* -- TCP Control Block ---------------------------------------------------- */
 typedef struct {
