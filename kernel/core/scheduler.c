@@ -116,21 +116,16 @@ int task_spawn(void (*entry)(void), const char *name)
 
 uint32_t timer_handler(uint32_t esp)
 {
-    /* task_yield() fires this SAME handler via a software "int $32" —
-     * indistinguishable from a genuine PIT tick unless we check the
-     * PIC's In-Service Register (must be read before EOI, which clears
-     * it). A busy network wait loop calls task_yield() thousands of
-     * times per real millisecond, so counting every entry as a "tick"
-     * made debugmon_uptime_ms() run wildly fast, which made the v0.9.67
-     * wall-clock timeouts fire almost instantly — even a local gateway
-     * ping started failing, because the deadline was reached before a
-     * reply had any real time to arrive. Only real hardware IRQ0 should
-     * advance the clock. */
-    outb(0x20, 0x0B);            /* OCW3: next read returns the ISR */
-    int is_real_irq = inb(0x20) & 0x01;
-    outb(0x20, 0x20);            /* EOI */
+    outb(0x20, 0x20);
     system_ticks++;
-    if (is_real_irq) debugmon_tick();
+    /* debugmon_uptime_ms() is TSC-based (calibrated once in kernel.c
+     * before this handler ever takes over IDT gate 32), so it no longer
+     * matters that task_yield()'s software "int $32" also lands here —
+     * tick_count itself isn't load-bearing for wall-clock timing
+     * anymore. (An earlier attempt distinguished real IRQ0 from a
+     * software self-yield via the PIC's In-Service Register, but that
+     * didn't hold up consistently across hypervisors.) */
+    debugmon_tick();
     current->cpu_ticks++;
     current->esp = esp;
     if (current->state == TASK_STATE_RUNNING)

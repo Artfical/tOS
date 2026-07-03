@@ -5,6 +5,7 @@
 #include "idt.h"
 #include "isr.h"
 #include "irq.h"
+#include "debugmon.h"
 #include "keyboard.h"
 #include "memory.h"
 #include "paging.h"
@@ -169,6 +170,13 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     klog_write("[OK] IRQ handlers set\n");
 
     asm volatile("sti");
+
+    /* Calibrate the TSC against real PIT ticks now, while IDT gate 32
+     * still only fires on genuine hardware IRQ0 — scheduler_init()
+     * later reinstalls that vector to also handle task_yield()'s
+     * software self-yields, which would otherwise make calibration
+     * count fake ticks too. See debugmon_calibrate_tsc(). */
+    debugmon_calibrate_tsc();
 
     show_boot_intro();
 

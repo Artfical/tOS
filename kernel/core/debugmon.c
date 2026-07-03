@@ -12,9 +12,55 @@ void debugmon_tick(void)
     tick_count++;
 }
 
+/* -----------------------------------------------------------------------
+ * TSC-based wall clock, used once calibrated.
+ *
+ * tick_count (above) is driven by IRQ0 through kernel.c's original
+ * wiring, but the scheduler later reinstalls its own IDT gate 32
+ * handler for task switching, and — because task_yield() re-enters the
+ * *same* vector via a software "int $32" — reliably telling a real PIT
+ * tick apart from a software self-yield turned out to be fragile across
+ * hypervisors (a PIC In-Service-Register check that worked under QEMU
+ * did not hold up under VirtualBox). The TSC doesn't have this problem
+ * at all: it's a free-running hardware cycle counter untouched by any
+ * software interrupt, so once we know its frequency, elapsed wall-clock
+ * time is just arithmetic — no interrupt-source ambiguity possible.
+ * ----------------------------------------------------------------------- */
+static uint64_t tsc_per_ms = 0;
+static uint64_t calib_tsc0 = 0;
+
+static inline uint64_t rdtsc(void)
+{
+    uint32_t lo, hi;
+    asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* Must be called after interrupts are enabled but before the scheduler
+ * takes over IDT gate 32, so tick_count is still being driven by a
+ * genuine, unambiguous hardware IRQ0. Busy-waits for ~200ms of real
+ * ticks to get a stable calibration. */
+void debugmon_calibrate_tsc(void)
+{
+    while (tick_count == 0) { }
+    uint32_t start_ticks = tick_count;
+    uint64_t start_tsc = rdtsc();
+
+    while (tick_count - start_ticks < 20) { } /* ~200ms at 100Hz */
+
+    uint32_t elapsed_ticks = tick_count - start_ticks;
+    uint64_t elapsed_tsc = rdtsc() - start_tsc;
+    uint32_t elapsed_ms = elapsed_ticks * MS_PER_TICK;
+
+    tsc_per_ms = elapsed_ms ? (elapsed_tsc / elapsed_ms) : 0;
+    calib_tsc0 = rdtsc();
+}
+
 uint32_t debugmon_uptime_ms(void)
 {
-    return tick_count * MS_PER_TICK;
+    if (tsc_per_ms == 0)
+        return tick_count * MS_PER_TICK; /* pre-calibration fallback */
+    return (uint32_t)((rdtsc() - calib_tsc0) / tsc_per_ms);
 }
 
 static int append_str(char *buf, int pos, int cap, const char *s)
