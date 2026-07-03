@@ -7,28 +7,32 @@
 #include "wm.h"
 #include "scheduler.h"
 #include "memory.h"
+#include "ctype.h"
 
-#define NP_ROWS 20
-#define NP_COLS 79
+#define NP_ROWS    20
+#define NP_COLS    79
+#define LINE_NUM_W 5          /* " 123|" gutter */
+#define CONTENT_W  (NP_COLS - LINE_NUM_W)   /* 74 */
 #define BUTTON_ROW 20
 #define STATUS_ROW 21
 #define SCROLLBAR_X NP_COLS
-#define MAX_LINES 1000
+#define MAX_LINES  1000
 
 #define NUM_BUTTONS 5
 static const char *btn_labels[NUM_BUTTONS] = { "New", "Open", "Save", "Find", "Replace" };
 static int btn_x0[NUM_BUTTONS], btn_x1[NUM_BUTTONS];
 
-static char lines[MAX_LINES][NP_COLS + 1];
-static int line_len[MAX_LINES];
-static int num_lines;
-static int cur_row, cur_col;
-static int view_top;
+static char lines[MAX_LINES][CONTENT_W + 1];
+static int  line_len[MAX_LINES];
+static int  num_lines;
+static int  cur_row, cur_col;
+static int  view_top;
 static char filename[64];
 static char last_search[64];
-static int modified;
+static int  modified;
 static char pending_path[64];
-static int has_pending;
+static int  has_pending;
+static int  syn_highlight;
 
 static int sel_active;
 static int sel_anchor_row, sel_anchor_col;
@@ -74,9 +78,120 @@ static void reset_buffer(void)
     view_top = 0;
     modified = 0;
     filename[0] = 0;
+    syn_highlight = 0;
     sel_active = 0;
     for (int i = 0; i < MAX_LINES; i++) { lines[i][0] = 0; line_len[i] = 0; }
 }
+
+static void update_syn_mode(void)
+{
+    int len = (int)strlen(filename);
+    syn_highlight = (len >= 2 &&
+        ((filename[len-2] == '.' && (filename[len-1] == 'c' || filename[len-1] == 'h')) ||
+         (len >= 4 && filename[len-4] == '.' &&
+          filename[len-3] == 'c' && filename[len-2] == 'p' && filename[len-1] == 'p')));
+}
+
+/* ── syntax highlighting ────────────────────────────────────────────────── */
+
+static const char *SYN_KW[] = {
+    "auto","break","case","char","const","continue","default","do","double",
+    "else","enum","extern","float","for","goto","if","inline","int","long",
+    "register","return","short","signed","sizeof","static","struct","switch",
+    "typedef","union","unsigned","void","volatile","while",
+    "uint8_t","uint16_t","uint32_t","uint64_t",
+    "int8_t","int16_t","int32_t","int64_t","size_t","NULL",
+    NULL
+};
+
+static void compute_line_colors(const char *line, int len, uint8_t *colors)
+{
+    uint8_t def = np_color(VGA_LIGHT_GREY, VGA_BLACK);
+    for (int i = 0; i < CONTENT_W; i++) colors[i] = def;
+    if (!syn_highlight || len == 0) return;
+
+    /* preprocessor lines */
+    if (line[0] == '#') {
+        for (int i = 0; i < len; i++) colors[i] = np_color(VGA_MAGENTA, VGA_BLACK);
+        return;
+    }
+
+    int i = 0;
+    while (i < len) {
+        /* line comment */
+        if (i < len - 1 && line[i] == '/' && line[i + 1] == '/') {
+            for (int j = i; j < len; j++) colors[j] = np_color(VGA_DARK_GREY, VGA_BLACK);
+            break;
+        }
+        /* block comment start */
+        if (i < len - 1 && line[i] == '/' && line[i + 1] == '*') {
+            int j = i;
+            colors[j++] = np_color(VGA_DARK_GREY, VGA_BLACK);
+            colors[j++] = np_color(VGA_DARK_GREY, VGA_BLACK);
+            while (j < len) {
+                colors[j] = np_color(VGA_DARK_GREY, VGA_BLACK);
+                if (j < len - 1 && line[j] == '*' && line[j + 1] == '/') {
+                    colors[++j] = np_color(VGA_DARK_GREY, VGA_BLACK);
+                    j++;
+                    break;
+                }
+                j++;
+            }
+            i = j;
+            continue;
+        }
+        /* string literal */
+        if (line[i] == '"') {
+            colors[i] = np_color(VGA_GREEN, VGA_BLACK);
+            int j = i + 1;
+            while (j < len) {
+                colors[j] = np_color(VGA_GREEN, VGA_BLACK);
+                if (line[j] == '\\') { j++; if (j < len) { colors[j] = np_color(VGA_GREEN, VGA_BLACK); j++; } }
+                else if (line[j] == '"') { j++; break; }
+                else j++;
+            }
+            i = j;
+            continue;
+        }
+        /* char literal */
+        if (line[i] == '\'') {
+            colors[i] = np_color(VGA_GREEN, VGA_BLACK);
+            int j = i + 1;
+            while (j < len) {
+                colors[j] = np_color(VGA_GREEN, VGA_BLACK);
+                if (line[j] == '\\') { j++; if (j < len) { colors[j] = np_color(VGA_GREEN, VGA_BLACK); j++; } }
+                else if (line[j] == '\'') { j++; break; }
+                else j++;
+            }
+            i = j;
+            continue;
+        }
+        /* keyword / identifier */
+        if (isalpha((unsigned char)line[i]) || line[i] == '_') {
+            int wend = i;
+            while (wend < len && (isalnum((unsigned char)line[wend]) || line[wend] == '_')) wend++;
+            int wlen = wend - i;
+            int is_kw = 0;
+            for (int k = 0; SYN_KW[k]; k++) {
+                int klen = (int)strlen(SYN_KW[k]);
+                if (klen == wlen && strncmp(line + i, SYN_KW[k], (size_t)wlen) == 0) { is_kw = 1; break; }
+            }
+            uint8_t col = is_kw ? np_color(VGA_CYAN, VGA_BLACK) : def;
+            for (int j = i; j < wend; j++) colors[j] = col;
+            i = wend;
+            continue;
+        }
+        /* number */
+        if (isdigit((unsigned char)line[i])) {
+            while (i < len && (isalnum((unsigned char)line[i]) || line[i] == '.' || line[i] == 'x'))
+                colors[i++] = np_color(VGA_LIGHT_BROWN, VGA_BLACK);
+            continue;
+        }
+        i++;
+    }
+}
+
+/* ── selection helpers ──────────────────────────────────────────────────── */
 
 static int selection_empty(void)
 {
@@ -107,10 +222,6 @@ static void copy_selection(void)
     clipboard[k] = 0;
 }
 
-/* Deletes the selected range, merging the start and end lines if it
- * spans more than one. The merged line is left alone (selection not
- * removed) if it wouldn't fit within NP_COLS, same policy as
- * replace_in_line() — no silent truncation. */
 static void delete_selection(void)
 {
     if (selection_empty()) return;
@@ -125,7 +236,7 @@ static void delete_selection(void)
     } else {
         int prefix_len = sc;
         int suffix_len = line_len[er] - ec;
-        if (prefix_len + suffix_len <= NP_COLS) {
+        if (prefix_len + suffix_len <= CONTENT_W) {
             memcpy(lines[sr] + prefix_len, lines[er] + ec, (size_t)suffix_len);
             line_len[sr] = prefix_len + suffix_len;
             lines[sr][line_len[sr]] = 0;
@@ -162,6 +273,8 @@ static void paste_clipboard(void)
     }
 }
 
+/* ── drawing ────────────────────────────────────────────────────────────── */
+
 static void status_line(const char *msg)
 {
     terminal_setpos(0, STATUS_ROW);
@@ -182,7 +295,7 @@ static void draw_buttons(void)
     for (int i = 0; i < NUM_BUTTONS; i++) {
         const char *lbl = btn_labels[i];
         int len = (int)strlen(lbl);
-        int w = len + 4; /* "[ " + label + " ]" */
+        int w = len + 4;
         btn_x0[i] = x;
         btn_x1[i] = x + w - 1;
 
@@ -220,6 +333,28 @@ static void draw_scrollbar(void)
     }
 }
 
+static void draw_line_number(int screen_row, int src_line)
+{
+    terminal_setpos(0, (size_t)screen_row);
+    terminal_setcolor(np_color(VGA_DARK_GREY, VGA_BLACK));
+    if (src_line >= 0 && src_line < num_lines) {
+        int n = src_line + 1;
+        char buf[5];
+        buf[4] = '|';
+        for (int d = 3; d >= 0; d--) {
+            buf[d] = (n > 0) ? (char)('0' + n % 10) : ' ';
+            n /= 10;
+        }
+        for (int d = 0; d < 5; d++) terminal_putchar(buf[d]);
+    } else {
+        terminal_putchar(' ');
+        terminal_putchar(' ');
+        terminal_putchar(' ');
+        terminal_putchar(' ');
+        terminal_putchar('|');
+    }
+}
+
 static void redraw(void)
 {
     ensure_visible();
@@ -228,10 +363,20 @@ static void redraw(void)
     int sr = 0, sc = 0, er = 0, ec = 0;
     if (has_sel) get_selection_range(&sr, &sc, &er, &ec);
 
+    uint8_t syn_colors[CONTENT_W];
+
     for (int r = 0; r < NP_ROWS; r++) {
         int src = view_top + r;
-        terminal_setpos(0, r);
-        for (int c = 0; c < NP_COLS; c++) {
+
+        /* line number gutter */
+        draw_line_number(r, src < num_lines ? src : -1);
+
+        /* content area */
+        if (src < num_lines)
+            compute_line_colors(lines[src], line_len[src], syn_colors);
+
+        terminal_setpos((size_t)LINE_NUM_W, (size_t)r);
+        for (int c = 0; c < CONTENT_W; c++) {
             char ch = (src < num_lines && c < line_len[src]) ? lines[src][c] : ' ';
             int selected = 0;
             if (has_sel) {
@@ -240,7 +385,10 @@ static void redraw(void)
                 else if (src == sr && src != er) selected = (c >= sc);
                 else if (src == er && src != sr) selected = (c < ec);
             }
-            terminal_setcolor(selected ? np_color(VGA_WHITE, VGA_BLUE) : np_color(VGA_LIGHT_GREY, VGA_BLACK));
+            if (selected)
+                terminal_setcolor(np_color(VGA_WHITE, VGA_BLUE));
+            else
+                terminal_setcolor((src < num_lines) ? syn_colors[c] : np_color(VGA_LIGHT_GREY, VGA_BLACK));
             terminal_putchar(ch);
         }
     }
@@ -253,8 +401,11 @@ static void redraw(void)
     const char *name = filename[0] ? filename : "Untitled";
     while (name[k] && k < 40) { status[k] = name[k]; k++; }
     if (modified) status[k++] = '*';
+    if (syn_highlight) { const char *tag = " [C]"; while (*tag) status[k++] = *tag++; }
     status[k++] = ' '; status[k++] = '(';
     k += fmt_uint(status + k, (uint32_t)(cur_row + 1));
+    status[k++] = ':';
+    k += fmt_uint(status + k, (uint32_t)(cur_col + 1));
     status[k++] = '/';
     k += fmt_uint(status + k, (uint32_t)num_lines);
     status[k++] = ')';
@@ -262,8 +413,10 @@ static void redraw(void)
     status_line(status);
 
     terminal_setcolor(np_color(VGA_LIGHT_GREY, VGA_BLACK));
-    terminal_setpos((size_t)cur_col, (size_t)(cur_row - view_top));
+    terminal_setpos((size_t)(cur_col + LINE_NUM_W), (size_t)(cur_row - view_top));
 }
+
+/* ── file ops ───────────────────────────────────────────────────────────── */
 
 static void ensure_txt_extension(char *name, int max)
 {
@@ -293,6 +446,7 @@ static void save_file(const char *fname)
     strncpy(filename, fname, sizeof(filename) - 1);
     filename[sizeof(filename) - 1] = 0;
     modified = 0;
+    update_syn_mode();
 }
 
 static void load_file(const char *fname)
@@ -300,6 +454,7 @@ static void load_file(const char *fname)
     reset_buffer();
     strncpy(filename, fname, sizeof(filename) - 1);
     filename[sizeof(filename) - 1] = 0;
+    update_syn_mode();
 
     if (!fsbridge_exists(fname)) return;
 
@@ -314,7 +469,7 @@ static void load_file(const char *fname)
             line_len[r] = c;
             lines[r][c] = 0;
             r++; c = 0;
-        } else if (c < NP_COLS) {
+        } else if (c < CONTENT_W) {
             lines[r][c++] = buf[i];
         }
     }
@@ -361,8 +516,6 @@ static void do_new(void)
     terminal_clear();
 }
 
-/* Searches forward from (start_row, start_col), wrapping around to the
- * top of the buffer if nothing matches before the end. */
 static int find_in_buffer(const char *needle, int start_row, int start_col, int *out_row, int *out_col)
 {
     int nlen = (int)strlen(needle);
@@ -407,10 +560,6 @@ static void do_find(void)
     }
 }
 
-/* Replaces every occurrence of term within a single line in place,
- * shifting the tail left/right as the replacement's length differs from
- * the search term's. Occurrences that wouldn't fit within NP_COLS after
- * substitution are left alone (skipped) rather than truncating the line. */
 static int replace_in_line(int row, const char *term, const char *repl)
 {
     int tlen = (int)strlen(term);
@@ -423,7 +572,7 @@ static int replace_in_line(int row, const char *term, const char *repl)
         if (strncmp(lines[row] + col, term, (size_t)tlen) != 0) { col++; continue; }
 
         int newlen = line_len[row] - tlen + rlen;
-        if (newlen > NP_COLS) { col++; continue; }
+        if (newlen > CONTENT_W) { col++; continue; }
 
         int tail_len = line_len[row] - (col + tlen);
         if (rlen != tlen) memmove(lines[row] + col + rlen, lines[row] + col + tlen, (size_t)tail_len);
@@ -466,9 +615,11 @@ static void do_replace_all(void)
     status_line(msg);
 }
 
+/* ── editing primitives ─────────────────────────────────────────────────── */
+
 static void insert_char(char c)
 {
-    if (line_len[cur_row] >= NP_COLS) return;
+    if (line_len[cur_row] >= CONTENT_W) return;
     for (int i = line_len[cur_row]; i > cur_col; i--) lines[cur_row][i] = lines[cur_row][i - 1];
     lines[cur_row][cur_col] = c;
     line_len[cur_row]++;
@@ -506,7 +657,7 @@ static void backspace(void)
     } else if (cur_row > 0) {
         int prev_len = line_len[cur_row - 1];
         int merged_len = prev_len + line_len[cur_row];
-        if (merged_len <= NP_COLS) {
+        if (merged_len <= CONTENT_W) {
             strcpy(lines[cur_row - 1] + prev_len, lines[cur_row]);
             line_len[cur_row - 1] = merged_len;
             for (int r = cur_row; r < num_lines - 1; r++) {
@@ -522,6 +673,24 @@ static void backspace(void)
         }
     }
 }
+
+/* ── go-to-line ─────────────────────────────────────────────────────────── */
+
+static void do_goto_line(void)
+{
+    char buf[12];
+    prompt_filename("Go to line: ", buf, sizeof(buf));
+    if (!buf[0]) { redraw(); return; }
+    int n = 0;
+    for (int i = 0; buf[i] >= '0' && buf[i] <= '9'; i++) n = n * 10 + (buf[i] - '0');
+    if (n < 1) n = 1;
+    if (n > num_lines) n = num_lines;
+    cur_row = n - 1;
+    if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row];
+    redraw();
+}
+
+/* ── main loop ──────────────────────────────────────────────────────────── */
 
 void notepad_run(void)
 {
@@ -568,17 +737,23 @@ void notepad_run(void)
                 if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row];
                 sel_active = 0;
                 redraw();
+            } else if (ccx >= LINE_NUM_W && ccy >= 0 && ccy < NP_ROWS) {
+                /* click in content area */
+                int clicked_row = view_top + ccy;
+                int clicked_col = ccx - LINE_NUM_W;
+                if (clicked_row < num_lines) {
+                    cur_row = clicked_row;
+                    if (clicked_col > line_len[cur_row]) clicked_col = line_len[cur_row];
+                    cur_col = clicked_col;
+                    sel_active = 0;
+                    redraw();
+                }
             }
             continue;
         }
 
         int wheel = wm_get_content_wheel();
         if (wheel) {
-            /* The wheel pans the viewport directly, independent of the
-             * cursor — the cursor only moves the minimum needed to stay
-             * within the new view (it doesn't get dragged all the way
-             * to wherever the view ends up, the way moving it and
-             * letting ensure_visible() follow would do). */
             int max_top = num_lines - NP_ROWS;
             if (max_top < 0) max_top = 0;
             view_top -= wheel * 3;
@@ -610,8 +785,11 @@ void notepad_run(void)
             } else if (spec == 2) {
                 if (cur_col < line_len[cur_row]) cur_col++;
                 else if (cur_row < num_lines - 1) { cur_row++; cur_col = 0; }
-            } else if (spec == 3) { if (cur_row > 0) { cur_row--; if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row]; } }
-            else if (spec == 4) { if (cur_row < num_lines - 1) { cur_row++; if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row]; } }
+            } else if (spec == 3) {
+                if (cur_row > 0) { cur_row--; if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row]; }
+            } else if (spec == 4) {
+                if (cur_row < num_lines - 1) { cur_row++; if (cur_col > line_len[cur_row]) cur_col = line_len[cur_row]; }
+            }
             redraw();
             continue;
         }
@@ -623,25 +801,27 @@ void notepad_run(void)
 
         char c = keyboard_getchar();
 
-        if (c == 0x13) {
+        if (c == 0x13) {          /* Ctrl+S */
             do_save();
             redraw();
-        } else if (c == 0x0F) {
+        } else if (c == 0x0F) {  /* Ctrl+O */
             do_open();
             redraw();
-        } else if (c == 0x0E) {
+        } else if (c == 0x0E) {  /* Ctrl+N */
             do_new();
             redraw();
-        } else if (c == 0x06) {
+        } else if (c == 0x06) {  /* Ctrl+F */
             do_find();
-        } else if (c == 0x12) {
+        } else if (c == 0x12) {  /* Ctrl+R */
             do_replace_all();
-        } else if (c == 0x03) {
+        } else if (c == 0x07) {  /* Ctrl+G */
+            do_goto_line();
+        } else if (c == 0x03) {  /* Ctrl+C */
             copy_selection();
-        } else if (c == 0x18) {
+        } else if (c == 0x18) {  /* Ctrl+X */
             cut_selection();
             redraw();
-        } else if (c == 0x16) {
+        } else if (c == 0x16) {  /* Ctrl+V */
             paste_clipboard();
             redraw();
         } else if (c == '\n') {
