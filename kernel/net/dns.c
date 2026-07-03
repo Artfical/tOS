@@ -7,6 +7,7 @@
 #include "string.h"
 #include "memory.h"
 #include "scheduler.h"
+#include "debugmon.h"
 
 #define DNS_PORT 53
 
@@ -48,7 +49,10 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
     if (udp_send(net_dns, DNS_PORT, rx_port, pkt, off) != 0)
         return -1;
 
-    for (int tries = 0; tries < 1000; tries++) {
+    /* Wall-clock timeout, not an iteration count — see arp_resolve()
+     * for why a fixed retry count is unreliable across drivers. */
+    uint32_t deadline = debugmon_uptime_ms() + 3000;
+    while (debugmon_uptime_ms() < deadline) {
         uint8_t buf[1536];
         int len = nic_poll(buf, sizeof(buf));
         if (len > 0) {

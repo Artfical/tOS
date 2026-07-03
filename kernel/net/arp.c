@@ -3,6 +3,7 @@
 #include "nic.h"
 #include "string.h"
 #include "scheduler.h"
+#include "debugmon.h"
 
 typedef struct {
     uint32_t ip;
@@ -80,12 +81,14 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
         }
     }
     arp_send_request(ip);
-    /* 200 tight iterations with no yield can complete in well under a
-     * millisecond on real hardware/hypervisors, nowhere near enough time
-     * for a NAT'd VM's ARP proxy to answer (we've seen a ping succeed
-     * only on its second attempt — the first attempt's reply arrived
-     * just after this loop already gave up). */
-    for (int retry = 0; retry < 5000; retry++) {
+    /* Wall-clock timeout, not an iteration count — how long a single
+     * nic_poll() call takes varies wildly by driver/hypervisor (a VM's
+     * emulated NIC can be far slower per call than QEMU's), so a fixed
+     * retry count is either too short (fails before a real NAT'd reply
+     * arrives) or, if set high enough to be safe, can turn into a
+     * multi-minute hang on a slow driver. 3 real seconds either way. */
+    uint32_t deadline = debugmon_uptime_ms() + 3000;
+    while (debugmon_uptime_ms() < deadline) {
         uint8_t pkt[1536];
         int len = nic_poll(pkt, sizeof(pkt));
         if (len > 0) {

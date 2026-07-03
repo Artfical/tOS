@@ -5,6 +5,8 @@
 #include "arp.h"
 #include "string.h"
 #include "terminal.h"
+#include "scheduler.h"
+#include "debugmon.h"
 
 static int ping_reply = 0;
 
@@ -52,7 +54,10 @@ int icmp_ping(uint32_t dst_ip)
     if (ip_send(dst_ip, IPPROTO_ICMP, pkt, sizeof(pkt)) != 0)
         return -1;
 
-    for (int i = 0; i < 50000; i++) {
+    /* Wall-clock timeout, not an iteration count — see arp_resolve()
+     * for why a fixed retry count is unreliable across drivers. */
+    uint32_t deadline = debugmon_uptime_ms() + 3000;
+    while (debugmon_uptime_ms() < deadline) {
         uint8_t buf[1536];
         int len = nic_poll(buf, sizeof(buf));
         if (len > 0) {
@@ -63,6 +68,7 @@ int icmp_ping(uint32_t dst_ip)
                 ip_handle(buf + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
         }
         if (ping_reply) return 0;
+        task_yield();
     }
     return -1;
 }

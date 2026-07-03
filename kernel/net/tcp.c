@@ -18,6 +18,7 @@
 #include "string.h"
 #include "memory.h"
 #include "scheduler.h"
+#include "debugmon.h"
 
 /* -- TCP Control Block ---------------------------------------------------- */
 typedef struct {
@@ -218,13 +219,13 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
         return -1;
     }
 
-    /* 300 tight iterations with no yield could complete in well under a
-     * millisecond — nowhere near enough for a real round trip through a
-     * NAT gateway (as opposed to the sub-microsecond loopback-like
-     * latency of a local-subnet address). Matches the more patient
-     * budget already used by icmp_ping()/dns_resolve(). */
-    int retry;
-    for (retry = 0; retry < 20000; retry++) {
+    /* Wall-clock timeout, not an iteration count — see arp_resolve() for
+     * why: how long nic_poll() takes per call varies enormously across
+     * drivers/hypervisors, so any fixed retry count is either too short
+     * on a slow one or a multi-minute hang on a very slow one. 5 real
+     * seconds either way. */
+    uint32_t deadline = debugmon_uptime_ms() + 5000;
+    while (debugmon_uptime_ms() < deadline) {
         uint8_t buf[1536];
         int len = nic_poll(buf, sizeof(buf));
         if (len > 0) {
