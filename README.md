@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC decoding, and an embedded MicroPython interpreter.
 
-**Current version: v0.9.56**
+**Current version: v0.9.59**
 
 ## System Requirements
 
@@ -386,7 +386,7 @@ At boot, the user is prompted to enter GUI mode. When enabled, a window manager 
 
 Several built-in GUI applications are launchable from the dock:
 
-- **Notepad** (`notepad.c`) — text editor window (up to 1000 lines, with a scrollbar), can open/save files on any mounted filesystem, with Find (Ctrl+F), Replace All (Ctrl+R), and text selection (Shift+arrows, including across lines) with Copy/Cut/Paste (Ctrl+C/X/V)
+- **Notepad** (`notepad.c`) — text editor window (up to 1000 lines, with a scrollbar), can open/save files on any mounted filesystem, with Find (Ctrl+F), Replace All (Ctrl+R), Go to Line (Ctrl+G), and text selection (Shift+arrows, including across lines) with Copy/Cut/Paste (Ctrl+C/X/V). Shows line numbers in a gutter, and applies syntax highlighting (keywords, strings, numbers, comments, preprocessor directives) when editing `.c`/`.h`/`.cpp` files.
 - **Clock** (`clock.c`) — analog/digital clock
 - **Calculator** (`calculator.c`) — basic operations plus scientific row: sin/cos/tan, sqrt, log/ln, x², and π, backed by from-scratch Newton's-method/Taylor-series math (no libm in this freestanding kernel)
 - **Disk Manager** (`diskmgr.c`) — view and manage attached disks; every mount/unmount/format goes through `diskops.c`, which logs a start line, a result line, and — for format — a hex dump of sector 0 read back from disk afterward, all readable with the `log` shell command
@@ -395,6 +395,7 @@ Several built-in GUI applications are launchable from the dock:
 - **Image Viewer** (`viewer.c`) — opens real PNG files (decoded through a from-scratch INFLATE/DEFLATE + PNG decoder in `png.c`, supporting stored/fixed/dynamic Huffman blocks and grayscale/RGB/palette/RGBA color types), downsampled and quantized to the nearest of the 16 VGA colors for display, with zoom in/out/fit and arrow-key panning.
 - **Task Manager** (`taskmgr.c`) — live process list (scheduler state, uptime, memory usage), select a task with the mouse or arrow keys and kill it with a confirm prompt; refuses to kill the idle task or itself
 - **Media Player** (`mediaplayer.c`) — WAV/MP3/AAC audio player with seek bar, volume control, playlist browser, and loop mode. Opens via the Special menu or `open mediaplayer`. Plays the built-in original demo melody automatically on first launch (no external files needed). See [Audio](#audio) section for hardware requirements.
+- **Network Monitor** (`netmon.c`) — live network stack inspector with four tabs (Interfaces, Connections, Routes, Firewall): NIC driver/stats, active TCP/UDP/SCTP sockets, the routing table, and firewall rules, plus a live RX/TX packets-per-second bar chart. Opens via the Special menu or `open netmon`.
 - **About** (`about.c`) — system information window
 
 ## Audio
