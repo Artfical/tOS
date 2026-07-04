@@ -27,6 +27,10 @@ tOS is a from-scratch x86 hobby operating system with a Linux-like command envir
 <td><img src="docs/screenshots/snake.png" width="360"><br>Snake</td>
 <td><img src="docs/screenshots/2048.png" width="360"><br>2048</td>
 </tr>
+<tr>
+<td><img src="docs/screenshots/notepad.png" width="360"><br>Note Pad (Mac OS 7 style)</td>
+<td></td>
+</tr>
 </table>
 
 ## System Requirements
