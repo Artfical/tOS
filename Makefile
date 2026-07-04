@@ -169,6 +169,7 @@ KERNEL_OBJS = \
     kernel/display/game2048.o \
     kernel/display/pdf_parse.o \
     kernel/display/pdfview.o \
+    kernel/display/stickynotes.o \
     kernel/micropython/ports/tos/tos_main.o \
     kernel/micropython/ports/tos/tos_hal.o \
     kernel/micropython/ports/tos/math_stubs.o \

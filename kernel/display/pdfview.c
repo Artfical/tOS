@@ -17,8 +17,8 @@
 #define CANVAS_H (STATUS_ROW - CANVAS_Y0)
 #define CANVAS_W PV_COLS
 
-#define NUM_BUTTONS 6
-static const char *btn_labels[NUM_BUTTONS] = { "Open", "Zoom In", "Zoom Out", "Fit", "Prev", "Next" };
+#define NUM_BUTTONS 7
+static const char *btn_labels[NUM_BUTTONS] = { "Open", "Zoom In", "Zoom Out", "Fit", "Prev", "Next", "Find" };
 static int btn_x0[NUM_BUTTONS], btn_x1[NUM_BUTTONS];
 
 static pdf_doc_t *doc;
@@ -29,6 +29,10 @@ static char filename[64];
 static char status_msg[PV_COLS + 1];
 static char pending_path[64];
 static int has_pending;
+
+static char last_search[64];
+static int search_match_page = -1;
+static int search_match_run = -1;
 
 static uint8_t pcolor(uint8_t fg, uint8_t bg) { return fg | (bg << 4); }
 
@@ -175,6 +179,7 @@ static void draw_canvas(void)
     if (!pg) return;
 
     uint8_t text_color = pcolor(VGA_WHITE, VGA_BLACK);
+    uint8_t match_color = pcolor(VGA_BLACK, VGA_LIGHT_BROWN);
     double pw = pg->mbx1 - pg->mbx0;
     double ph = pg->mby1 - pg->mby0;
 
@@ -190,12 +195,13 @@ static void draw_canvas(void)
         int row = (int)row0;
         if (row < 0 || row >= CANVAS_H) continue;
 
+        uint8_t color = (cur_page == search_match_page && i == search_match_run) ? match_color : text_color;
         for (int c = 0; c < r->len; c++) {
             int col = (int)(col0 + c);
             if (col < 0 || col >= CANVAS_W) continue;
             char ch = r->text[c];
             if (ch < 32 || ch > 126) ch = '.';
-            terminal_setcolor(text_color);
+            terminal_setcolor(color);
             terminal_setpos((size_t)col, (size_t)(CANVAS_Y0 + row));
             terminal_putchar(ch);
         }
@@ -219,7 +225,7 @@ static void draw_status(void)
         uint32_t pct = (uint32_t)((100.0 * 1.0) / scale + 0.5);
         k += fmt_uint(line + k, pct);
         line[k++] = '%';
-        const char *hint = "  [/] page  arrows pan";
+        const char *hint = "  [/] page  arrows pan  Ctrl+F find";
         const char *p = hint;
         while (*p && k < PV_COLS) line[k++] = *p++;
     } else {
@@ -247,6 +253,75 @@ static void goto_page(int delta)
     if (np != cur_page) { cur_page = np; view_x = view_y = 0; }
 }
 
+static int istr_contains(const char *hay, const char *needle)
+{
+    int hlen = (int)strlen(hay), nlen = (int)strlen(needle);
+    if (nlen == 0) return 0;
+    for (int i = 0; i + nlen <= hlen; i++) {
+        int ok = 1;
+        for (int j = 0; j < nlen; j++) {
+            char a = hay[i + j], b = needle[j];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) { ok = 0; break; }
+        }
+        if (ok) return 1;
+    }
+    return 0;
+}
+
+/* Jumps to the next run (across pages, wrapping around the whole
+ * document) whose extracted text contains the search term, picking up
+ * right after the previous match so repeated calls step through every
+ * occurrence instead of re-finding the first one. */
+static void do_search(int prompt_new)
+{
+    if (!doc) { set_status("No PDF open."); return; }
+    if (prompt_new || !last_search[0]) {
+        char term[64];
+        prompt_filename("Find: ", term, sizeof(term));
+        if (term[0]) {
+            strncpy(last_search, term, sizeof(last_search) - 1);
+            last_search[sizeof(last_search) - 1] = 0;
+            search_match_page = -1;
+            search_match_run = -1;
+        }
+    }
+    if (!last_search[0]) { redraw(); return; }
+
+    int start_page = cur_page;
+    int start_run = (search_match_page == cur_page) ? search_match_run + 1 : 0;
+
+    for (int offset = 0; offset < doc->page_count; offset++) {
+        int p = (start_page + offset) % doc->page_count;
+        int r0 = (offset == 0) ? start_run : 0;
+        pdf_page_t *pg = &doc->pages[p];
+        for (int r = r0; r < pg->run_count; r++) {
+            if (!istr_contains(pg->runs[r].text, last_search)) continue;
+
+            cur_page = p;
+            search_match_page = p;
+            search_match_run = r;
+
+            double ph = pg->mby1 - pg->mby0;
+            double px = pg->runs[r].x - pg->mbx0;
+            double py_top = ph - (pg->runs[r].y - pg->mby0);
+            view_x = px - (CANVAS_W * scale) * 0.1;
+            view_y = py_top - (CANVAS_H * scale) * 0.3;
+            if (view_x < 0) view_x = 0;
+            if (view_y < 0) view_y = 0;
+            clamp_view();
+            set_status("Found. Ctrl+F again for next.");
+            redraw();
+            return;
+        }
+    }
+    search_match_page = -1;
+    search_match_run = -1;
+    set_status("Not found.");
+    redraw();
+}
+
 static void handle_toolbar_click(int ccx)
 {
     for (int i = 0; i < NUM_BUTTONS; i++) {
@@ -265,6 +340,8 @@ static void handle_toolbar_click(int ccx)
                 goto_page(-1);
             } else if (i == 5) {
                 goto_page(1);
+            } else if (i == 6) {
+                do_search(1);
             }
             return;
         }
@@ -279,6 +356,9 @@ void pdfview_run(void)
     view_x = view_y = 0;
     filename[0] = 0;
     status_msg[0] = 0;
+    last_search[0] = 0;
+    search_match_page = -1;
+    search_match_run = -1;
 
     if (has_pending) {
         do_open(pending_path);
@@ -320,6 +400,8 @@ void pdfview_run(void)
             else if (c == ']') { goto_page(1); redraw(); }
             else if (c == '+' || c == '=') { if (doc) { scale *= 0.8; clamp_view(); redraw(); } }
             else if (c == '-' || c == '_') { if (doc) { scale *= 1.25; clamp_view(); redraw(); } }
+            else if (c == 0x06) { do_search(1); } /* Ctrl+F */
+            else if (c == 'n' || c == 'N') { do_search(0); }
         }
 
         task_yield();

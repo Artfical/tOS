@@ -20,6 +20,7 @@
 #include "snake.h"
 #include "game2048.h"
 #include "pdfview.h"
+#include "stickynotes.h"
 #include "fsbridge.h"
 #include "sound.h"
 #include "png.h"
@@ -50,6 +51,7 @@
 #define WIN_KIND_SNAKE       13
 #define WIN_KIND_2048        14
 #define WIN_KIND_PDFVIEWER   15
+#define WIN_KIND_STICKYNOTES 16
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -388,6 +390,8 @@ static void window_task_entry(void)
         game2048_run();
     else if (w->kind == WIN_KIND_PDFVIEWER)
         pdfview_run();
+    else if (w->kind == WIN_KIND_STICKYNOTES)
+        stickynotes_run();
     else
         shell_run_windowed(w->initial_cmd);
 }
@@ -739,6 +743,29 @@ void wm_open_pdfviewer_file(const char *path)
     wm_open_pdfviewer();
 }
 
+static void wm_open_stickynotes(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 1;
+    w->z = next_z++;
+    w->kind = WIN_KIND_STICKYNOTES;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "Note Pad");
+
+    window_geom_init(w);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
 static void wm_open_taskmgr(void)
 {
     int slot = wm_find_free_slot();
@@ -874,6 +901,7 @@ int wm_open_app(const char *name)
     else if (strcmp(name, "snake") == 0) wm_open_snake();
     else if (strcmp(name, "2048") == 0) wm_open_2048();
     else if (strcmp(name, "pdfviewer") == 0 || strcmp(name, "pdf") == 0) wm_open_pdfviewer();
+    else if (strcmp(name, "notes") == 0 || strcmp(name, "stickynotes") == 0) wm_open_stickynotes();
     else if (strcmp(name, "terminal") == 0) wm_open_window("");
     else return -1;
     return 0;
@@ -1003,6 +1031,8 @@ static void build_menu_items(int which)
         menu_names[menu_count] = "2048"; menu_is_app[menu_count] = 14; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "PDF Viewer"; menu_is_app[menu_count] = 15; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "Notes"; menu_is_app[menu_count] = 16; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Calculator"; menu_is_app[menu_count] = 6; menu_disabled[menu_count] = 0;
         menu_count++;
@@ -1212,6 +1242,7 @@ static const char *get_icon_char(int kind)
         case WIN_KIND_SNAKE:       return "\x06"; /* ♠-ish blob, stands in for a snake glyph */
         case WIN_KIND_2048:        return "2";
         case WIN_KIND_PDFVIEWER:   return "\x0F"; /* page-ish glyph */
+        case WIN_KIND_STICKYNOTES: return "\xB1"; /* dog-ear-ish shade block */
         default:                return ".";
     }
 }
@@ -1359,6 +1390,8 @@ static void handle_menu_click(int idx)
             wm_open_2048();
         } else if (menu_is_app[idx] == 15) {
             wm_open_pdfviewer();
+        } else if (menu_is_app[idx] == 16) {
+            wm_open_stickynotes();
         }
     } else if (active_menu == MENU_FILE) {
         if (menu_is_app[idx] == -3) {
