@@ -4,6 +4,31 @@ tOS is a from-scratch x86 hobby operating system with a Linux-like command envir
 
 **Current version: v0.9.76**
 
+## Screenshots
+
+<table>
+<tr>
+<td><img src="docs/screenshots/desktop.png" width="360"><br>Desktop &amp; dock</td>
+<td><img src="docs/screenshots/terminal.png" width="360"><br>Terminal window</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/special_menu.png" width="360"><br>Special menu (app launcher)</td>
+<td><img src="docs/screenshots/files.png" width="360"><br>Files (file manager)</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/paint.png" width="360"><br>Paint</td>
+<td><img src="docs/screenshots/calculator.png" width="360"><br>Calculator</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/pdfviewer.png" width="360"><br>PDF Viewer</td>
+<td><img src="docs/screenshots/taskmanager.png" width="360"><br>Task Manager</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/snake.png" width="360"><br>Snake</td>
+<td><img src="docs/screenshots/2048.png" width="360"><br>2048</td>
+</tr>
+</table>
+
 ## System Requirements
 
 - **CPU:** i586 compatible (32-bit x86)
