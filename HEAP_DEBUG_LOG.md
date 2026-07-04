@@ -202,3 +202,44 @@ and `ne2000.c`. It does, to varying degrees:
   SRAM) straight into the caller-provided, already-bounded buffer, and
   it already validates the reported packet length against a sane
   range before trusting it. No changes needed.
+
+## Follow-up 2: attempting to actually reproduce the PCnet/virtio-net cases
+
+The PCnet and virtio-net hardening above was applied on pattern-match
+alone, without ever seeing real corruption the way E1000 and RTL8139
+had. To hold them to the same standard, both drivers had their
+`RX_PAD` temporarily reverted to 0 (i.e. back to the original,
+unhardened allocation size) and a `heap_check()` call was added right
+after `nic_poll()` in `net.c`'s `net_poll()` — the single dispatch
+point every driver's RX path funnels through — so any overrun would be
+caught immediately after the DMA that caused it.
+
+Tested against both drivers via `-net nic,model=pcnet` and
+`-net nic,model=virtio-net-pci`:
+
+- CLI mode, 10x `ping 10.0.2.2` each: zero corruption detected for
+  either driver.
+- CLI mode, `wget http://10.0.2.2/` and `wget http://google.com/`:
+  no real HTTP response reachable in this sandboxed setup, but enough
+  packet exchange occurred to exercise the RX path; zero corruption
+  detected for either driver.
+- GUI mode, the standard `dosyayaz(...)` T# repro script (the one that
+  found the original E1000 bug) run 8 times in a row on PCnet: zero
+  corruption detected. Notably, `net_poll`'s `heap_check()` never even
+  fired during this run (no RX traffic happened to occur in that
+  window), so this particular result is inconclusive rather than a
+  clean negative.
+
+**Conclusion: corruption could not be reproduced in either PCnet or
+virtio-net**, despite applying the same instrumentation and a
+comparable amount of test traffic as what caught the E1000 bug. This
+is likely because QEMU's PCnet/virtio-net emulation doesn't have the
+same DMA-overrun quirk the E1000 emulation does (or it's timing/
+traffic-pattern-dependent in a way this testing didn't happen to hit).
+
+`RX_PAD` was restored to 128 in both drivers and the temporary
+`net_poll()` instrumentation was removed — i.e. both files are back to
+exactly their already-shipped v0.9.84 state. **The hardening in both
+drivers remains in place as a precaution, but should still be
+described as unconfirmed-via-reproduction**, in contrast to the
+confirmed, reproduced-and-fixed bugs in E1000 and RTL8139.
