@@ -42,6 +42,54 @@ __attribute__((naked)) void isr_common_stub(void)
     );
 }
 
+static void hex8(char *buf, uint32_t val)
+{
+    for (int i = 7; i >= 0; i--) {
+        buf[i] = "0123456789ABCDEF"[val & 0xF];
+        val >>= 4;
+    }
+    buf[8] = '\0';
+}
+
+void crash_screen_trigger(const char *exception_name, int exception_code,
+                           uint32_t cr2, uint32_t eip, uint32_t err_code, int fake)
+{
+    char buf[9];
+
+    terminal_set_force_direct(1);
+    terminal_fill_screen(0x4F);
+    terminal_setcolor(0x4F);
+    terminal_setpos(0, 0);
+
+    terminal_writestring("\n\n\n");
+    terminal_writestring("                                     :(\n\n");
+    terminal_writestring("        Your system ran into a problem and needs to restart.\n\n");
+    terminal_writestring("        KERNEL PANIC: ");
+    terminal_writestring(exception_name);
+    terminal_writestring(" (Exception ");
+    terminal_write("0123456789ABCDEF" + ((exception_code >> 4) & 0xF), 1);
+    terminal_write("0123456789ABCDEF" + (exception_code & 0xF), 1);
+    terminal_writestring(")\n\n");
+
+    terminal_writestring("        CR2: ");
+    hex8(buf, cr2);
+    terminal_writestring(buf);
+    terminal_writestring("   EIP: ");
+    hex8(buf, eip);
+    terminal_writestring(buf);
+    terminal_writestring("   ERR: ");
+    hex8(buf, err_code);
+    terminal_writestring(buf);
+    terminal_writestring("\n\n");
+
+    terminal_writestring("        Your system is halted.\n");
+    terminal_writestring("        Please contact us via mail in help@artfical.com\n");
+
+    if (!fake) {
+        for (;;) { asm volatile("hlt"); }
+    }
+}
+
 void isr_handler(registers_t *regs)
 {
     if (interrupt_handlers[regs->int_no]) {
@@ -52,54 +100,13 @@ void isr_handler(registers_t *regs)
     if (regs->int_no < 32) {
         debugmon_log_line(exception_messages[regs->int_no]);
 
-        terminal_setcolor(0x4F);
-        terminal_writestring("\nKERNEL PANIC: ");
-        terminal_writestring(exception_messages[regs->int_no]);
-        terminal_writestring(" (Exception ");
-        terminal_write("0123456789ABCDEF" + (regs->int_no >> 4), 1);
-        terminal_write("0123456789ABCDEF" + (regs->int_no & 0xF), 1);
-        terminal_writestring(")\n");
-
+        uint32_t cr2 = 0;
         if (regs->int_no == 14) {
-            uint32_t cr2;
             asm volatile("mov %%cr2, %0" : "=r"(cr2));
-            terminal_writestring("CR2 (fault address): ");
-            char buf[9];
-            for (int i = 7; i >= 0; i--) {
-                buf[i] = "0123456789ABCDEF"[cr2 & 0xF];
-                cr2 >>= 4;
-            }
-            buf[8] = '\0';
-            terminal_writestring(buf);
-            terminal_writestring("\n");
         }
 
-        char buf[9];
-        void print_field(const char *label, uint32_t val) {
-            terminal_writestring(label);
-            for (int i = 7; i >= 0; i--) {
-                buf[i] = "0123456789ABCDEF"[val & 0xF];
-                val >>= 4;
-            }
-            buf[8] = '\0';
-            terminal_writestring(buf);
-            terminal_writestring(" ");
-        }
-        print_field("EIP=", regs->eip);
-        print_field("CS=", regs->cs);
-        print_field("EFL=", regs->eflags);
-        print_field("USP=", regs->useresp);
-        print_field("SS=", regs->ss);
-        print_field("ERR=", regs->err_code);
-        terminal_writestring("\n");
-        print_field("EAX=", regs->eax);
-        print_field("EBX=", regs->ebx);
-        print_field("ECX=", regs->ecx);
-        print_field("EDX=", regs->edx);
-        print_field("ESP=", regs->esp);
-        print_field("EBP=", regs->ebp);
-        terminal_writestring("\nSystem halted.\n");
-        for (;;) { asm volatile("hlt"); }
+        crash_screen_trigger(exception_messages[regs->int_no], (int)regs->int_no,
+                              cr2, regs->eip, regs->err_code, 0);
     }
 }
 

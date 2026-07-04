@@ -10,6 +10,8 @@
 #include "scheduler.h"
 #include "vga_font.h"
 #include "sound.h"
+#include "isr.h"
+#include "keyboard.h"
 
 static void print_num(uint32_t n)
 {
@@ -168,6 +170,21 @@ void cmd_beep(int argc, char **args)
     } else {
         terminal_writestring("usage: beep [on|off|test]\n");
     }
+}
+
+/* Shows the exact same full-screen red panic display a real kernel
+ * panic uses, with a made-up exception, then waits for any key and
+ * returns to the shell instead of actually halting -- a demo/prank
+ * command, not a real crash. */
+void cmd_crash(int argc, char **args)
+{
+    (void)argc; (void)args;
+    crash_screen_trigger("General Protection Fault", 0x0D, 0x00000000, 0xDEADC0DE, 0x00000000, 1);
+    keyboard_getchar();
+    terminal_set_force_direct(0);
+    terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
+    terminal_clear();
+    terminal_writestring("(That was a fake crash from the `crash` command.)\n");
 }
 
 void cmd_about(int argc, char **args)

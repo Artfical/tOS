@@ -44,8 +44,25 @@ static uint16_t make_vgaentry(char c, uint8_t color)
     return (uint16_t)c | (uint16_t)color << 8;
 }
 
+static int terminal_force_direct = 0;
+
+void terminal_set_force_direct(int enable)
+{
+    terminal_force_direct = enable;
+}
+
+void terminal_fill_screen(uint8_t color)
+{
+    for (size_t y = 0; y < VGA_HEIGHT; y++) {
+        for (size_t x = 0; x < VGA_WIDTH; x++) {
+            VGA_MEMORY[y * VGA_WIDTH + x] = make_vgaentry(' ', color);
+        }
+    }
+}
+
 static term_surface_t *current_surface(void)
 {
+    if (terminal_force_direct) return NULL;
     return (term_surface_t *)task_get_userdata();
 }
 

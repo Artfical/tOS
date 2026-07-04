@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
-**Current version: v0.9.80**
+**Current version: v0.9.81**
 
 ## Screenshots
 
@@ -29,7 +29,7 @@ tOS is a from-scratch x86 hobby operating system with a Linux-like command envir
 </tr>
 <tr>
 <td><img src="docs/screenshots/notepad.png" width="360"><br>Note Pad (Mac OS 7 style)</td>
-<td></td>
+<td><img src="docs/screenshots/crash.png" width="360"><br>Crash screen (<code>crash</code> command)</td>
 </tr>
 </table>
 
@@ -174,6 +174,7 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `font` | List/change the terminal font style |
 | `version` | Show kernel version |
 | `beep [on\|off\|test]` | Toggle system UI sounds (window open/close, clicks) or fire a one-off test tone |
+| `crash` | Show the full-screen crash display with a made-up error, for demo purposes — press any key to return, nothing is actually wrong |
 | `about` | About tOS |
 | `uname` | System information |
 | `reboot` | Reboot the system |

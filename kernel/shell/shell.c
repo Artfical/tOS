@@ -423,6 +423,8 @@ static void shell_exec_line(char *cmd_line)
             cmd_version(argc, args);
         } else if (strcmp(c, "beep") == 0) {
             cmd_beep(argc, args);
+        } else if (strcmp(c, "crash") == 0) {
+            cmd_crash(argc, args);
         } else if (strcmp(c, "about") == 0) {
             cmd_about(argc, args);
         } else if (strcmp(c, "uname") == 0) {

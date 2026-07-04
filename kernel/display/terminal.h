@@ -66,4 +66,12 @@ int terminal_get_y_offset(void);
 void terminal_capture_start(char *buf, int max);
 void terminal_capture_stop(void);
 
+/* While enabled, every terminal_* call bypasses whatever window
+ * surface the current task has bound (if any) and writes straight to
+ * the physical VGA buffer -- used by the crash screen so it always
+ * takes over the real display, even if the fault happened while some
+ * GUI window's surface was the active render target. */
+void terminal_set_force_direct(int enable);
+void terminal_fill_screen(uint8_t color);
+
 #endif
