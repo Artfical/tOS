@@ -180,6 +180,12 @@ void cmd_crash(int argc, char **args)
 {
     (void)argc; (void)args;
     crash_screen_trigger("General Protection Fault", 0x0D, 0x00000000, 0xDEADC0DE, 0x00000000, 1);
+    /* Drain whatever's still buffered from typing "crash" and hitting
+     * Enter (scancode processing can leave a stray extra keystroke
+     * queued) before waiting -- otherwise keyboard_getchar() below
+     * returns instantly on that leftover input instead of a real key
+     * press made after the screen is actually up. */
+    while (keyboard_data_available()) keyboard_getchar();
     keyboard_getchar();
     terminal_set_force_direct(0);
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
