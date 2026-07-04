@@ -287,6 +287,9 @@ static void do_open_selected(void)
     } else if (has_suffix(e->name, ".png")) {
         wm_open_viewer_file(full);
         set_status("Opened in Image Viewer.");
+    } else if (has_suffix(e->name, ".pdf")) {
+        wm_open_pdfviewer_file(full);
+        set_status("Opened in PDF Viewer.");
     } else {
         wm_open_notepad_file(full);
         set_status("Opened in Notepad.");
