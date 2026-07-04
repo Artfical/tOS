@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
-**Current version: v0.9.82**
+**Current version: v0.9.83**
 
 ## Screenshots
 
@@ -419,6 +419,8 @@ The scheduler uses the PIT (Programmable Interval Timer) at approximately 100 Hz
 - A 4-byte canary word follows every allocated block's payload and is checked on `free()`: writing even one byte past what was requested now prints a "buffer overflow detected" diagnostic instead of silently corrupting the next block's header (which used to surface, if at all, as an unrelated crash far away from the actual bug).
 - `free()` also detects and reports double-frees and frees of non-heap pointers, rather than acting on whatever a garbage header field happens to contain.
 - A corrupted free-list is reported once and the allocator falls back to growing the heap rather than crashing, so a single corruption event degrades gracefully instead of taking the whole system down.
+
+The corruption this hardening was built to survive was root-caused, not just contained: it was the E1000 NIC driver's own DMA receive buffers (`kernel/net/e1000.c`) getting written past their 2048-byte allocation by the emulated NIC's DMA engine — confirmed with an A/B test (`-net none` reproduced it zero times across 6 runs of a script that reliably corrupted the heap with networking on). Since the overwrite happens below the C driver, `e1000.c` now over-allocates RX buffers with 128 bytes of unadvertised padding and clamps the hardware-reported receive length to the real buffer size before trusting it. Full write-up in `HEAP_DEBUG_LOG.md`.
 
 ## GUI Mode
 
