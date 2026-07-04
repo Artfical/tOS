@@ -10,15 +10,34 @@ static uint32_t heap_start = KERNEL_HEAP_START;
 static uint32_t heap_end = KERNEL_HEAP_START + KERNEL_HEAP_INITIAL_SIZE;
 static uint32_t heap_current = KERNEL_HEAP_START;
 
+/* size is the payload capacity handed to the caller; a 4-byte canary
+ * word immediately follows the payload (before the next block's own
+ * header), so a caller that writes even one byte past what it asked
+ * for corrupts a value the allocator itself checks on free() instead
+ * of silently clobbering the next block's header -- which is what
+ * used to happen, and free-list walks would eventually dereference
+ * whatever garbage that overwrite left in a `next` pointer and
+ * page-fault deep inside heap_alloc(), far from the actual bug. */
 typedef struct heap_header {
     uint32_t magic;
     uint32_t size;
+    uint32_t req_size;
     uint32_t used;
     struct heap_header *next;
 } heap_header_t;
 
+#define HEAP_MAGIC   0xDEADBEEF
+#define HEAP_CANARY  0xC0FFEEEE
+
+/* Total bytes a block with `size`-byte payload occupies, header
+ * through canary, i.e. the distance from this block's header to the
+ * next one -- every place that used to compute a "next block" address
+ * as sizeof(heap_header_t) + size now goes through this instead, so
+ * the canary reservation can't be forgotten in just one of the spots. */
+#define HEAP_SLOT(size) (sizeof(heap_header_t) + (size) + 4)
+
 static heap_header_t *heap_list = NULL;
-#define HEAP_MAGIC 0xDEADBEEF
+static int heap_corrupt_reported = 0;
 
 void memory_init(uint32_t mem_upper)
 {
@@ -48,6 +67,7 @@ void memory_init(uint32_t mem_upper)
     heap_list = (heap_header_t *)heap_start;
     heap_list->magic = HEAP_MAGIC;
     heap_list->size = KERNEL_HEAP_INITIAL_SIZE - sizeof(heap_header_t);
+    heap_list->req_size = 0;
     heap_list->used = 0;
     heap_list->next = NULL;
 
@@ -114,6 +134,27 @@ static inline void heap_irq_restore(uint32_t flags)
     asm volatile("pushl %0; popfl" : : "r"(flags));
 }
 
+static void heap_report(const char *msg)
+{
+    terminal_writestring("[heap] ");
+    terminal_writestring(msg);
+    terminal_writestring("\n");
+}
+
+/* A header pointer is only trustworthy if it falls inside the heap's
+ * current address range and is properly aligned -- every raw pointer
+ * this file follows (a `next` link, or the header implied by a
+ * pointer passed to free()) goes through this before being
+ * dereferenced, so a corrupted link becomes a reported, contained
+ * failure instead of an unchecked read that can fault anywhere. */
+static int heap_ptr_ok(heap_header_t *h)
+{
+    uint32_t addr = (uint32_t)h;
+    if (addr < heap_start || addr >= heap_end) return 0;
+    if (addr % 4 != 0) return 0;
+    return 1;
+}
+
 static void *heap_alloc(uint32_t size)
 {
     if (size == 0) return NULL;
@@ -123,17 +164,27 @@ static void *heap_alloc(uint32_t size)
 
     heap_header_t *curr = heap_list;
     while (curr) {
-        if (!curr->used && curr->size >= size) {
-            if (curr->size > size + sizeof(heap_header_t) + 16) {
-                heap_header_t *new_hdr = (heap_header_t *)((uint32_t)curr + sizeof(heap_header_t) + size);
+        if (!heap_ptr_ok(curr) || curr->magic != HEAP_MAGIC) {
+            if (!heap_corrupt_reported) {
+                heap_report("corrupted free-list node found during malloc, list walk aborted");
+                heap_corrupt_reported = 1;
+            }
+            break;
+        }
+        if (!curr->used && curr->size >= size + 4) {
+            if (curr->size > size + HEAP_SLOT(0) + 16) {
+                heap_header_t *new_hdr = (heap_header_t *)((uint32_t)curr + HEAP_SLOT(size));
                 new_hdr->magic = HEAP_MAGIC;
-                new_hdr->size = curr->size - size - sizeof(heap_header_t);
+                new_hdr->size = curr->size - size - HEAP_SLOT(0);
+                new_hdr->req_size = 0;
                 new_hdr->used = 0;
                 new_hdr->next = curr->next;
-                curr->size = size;
+                curr->size = size + 4;
                 curr->next = new_hdr;
             }
+            curr->req_size = size;
             curr->used = 1;
+            *(uint32_t *)((uint8_t *)curr + sizeof(heap_header_t) + curr->size - 4) = HEAP_CANARY;
             heap_irq_restore(flags);
             return (void *)((uint32_t)curr + sizeof(heap_header_t));
         }
@@ -145,27 +196,48 @@ static void *heap_alloc(uint32_t size)
     if (heap_end > KERNEL_HEAP_START + 0x400000)
         heap_end = KERNEL_HEAP_START + 0x400000;
 
+    if (old_heap_end + HEAP_SLOT(size) > heap_end) {
+        heap_irq_restore(flags);
+        return NULL;
+    }
+
     heap_header_t *new_hdr = (heap_header_t *)old_heap_end;
     new_hdr->magic = HEAP_MAGIC;
     new_hdr->size = heap_end - old_heap_end - sizeof(heap_header_t);
+    new_hdr->req_size = 0;
     new_hdr->used = 0;
     new_hdr->next = NULL;
 
     heap_header_t *last = heap_list;
-    while (last->next) last = last->next;
+    int hops = 0;
+    while (last->next) {
+        if (!heap_ptr_ok(last->next) || last->next->magic != HEAP_MAGIC) {
+            if (!heap_corrupt_reported) {
+                heap_report("corrupted free-list node found while appending new heap region");
+                heap_corrupt_reported = 1;
+            }
+            last->next = NULL;
+            break;
+        }
+        last = last->next;
+        if (++hops > 1000000) { heap_irq_restore(flags); return NULL; }
+    }
     last->next = new_hdr;
 
-    if (new_hdr->size >= size) {
-        if (new_hdr->size > size + sizeof(heap_header_t) + 16) {
-            heap_header_t *split = (heap_header_t *)((uint32_t)new_hdr + sizeof(heap_header_t) + size);
+    if (new_hdr->size >= size + 4) {
+        if (new_hdr->size > size + HEAP_SLOT(0) + 16) {
+            heap_header_t *split = (heap_header_t *)((uint32_t)new_hdr + HEAP_SLOT(size));
             split->magic = HEAP_MAGIC;
-            split->size = new_hdr->size - size - sizeof(heap_header_t);
+            split->size = new_hdr->size - size - HEAP_SLOT(0);
+            split->req_size = 0;
             split->used = 0;
             split->next = NULL;
-            new_hdr->size = size;
+            new_hdr->size = size + 4;
             new_hdr->next = split;
         }
+        new_hdr->req_size = size;
         new_hdr->used = 1;
+        *(uint32_t *)((uint8_t *)new_hdr + sizeof(heap_header_t) + new_hdr->size - 4) = HEAP_CANARY;
         heap_irq_restore(flags);
         return (void *)((uint32_t)new_hdr + sizeof(heap_header_t));
     }
@@ -186,7 +258,7 @@ void heap_check(const char *tag)
     heap_header_t *curr = heap_list;
     int i = 0;
     while (curr) {
-        if (curr->magic != HEAP_MAGIC) {
+        if (!heap_ptr_ok(curr) || curr->magic != HEAP_MAGIC) {
             terminal_writestring(" CORRUPT at node ");
             char buf[12]; int n = 0;
             uint32_t v = (uint32_t)i;
@@ -197,6 +269,13 @@ void heap_check(const char *tag)
             terminal_writestring(buf);
             terminal_writestring("\n");
             return;
+        }
+        if (curr->used) {
+            uint32_t canary = *(uint32_t *)((uint8_t *)curr + sizeof(heap_header_t) + curr->size - 4);
+            if (canary != HEAP_CANARY) {
+                terminal_writestring(" OVERFLOW detected past an allocated block\n");
+                return;
+            }
         }
         curr = curr->next;
         i++;
@@ -209,10 +288,32 @@ void free(void *ptr)
 {
     if (!ptr) return;
     heap_header_t *hdr = (heap_header_t *)((uint32_t)ptr - sizeof(heap_header_t));
+
     uint32_t flags = heap_irq_save();
-    if (hdr->magic != HEAP_MAGIC) { heap_irq_restore(flags); return; }
+
+    if (!heap_ptr_ok(hdr) || hdr->magic != HEAP_MAGIC) {
+        heap_irq_restore(flags);
+        heap_report("free() called with an invalid/non-heap pointer, ignored");
+        return;
+    }
+    if (!hdr->used) {
+        heap_irq_restore(flags);
+        heap_report("double free() detected, ignored");
+        return;
+    }
+
+    uint32_t canary = *(uint32_t *)((uint8_t *)hdr + sizeof(heap_header_t) + hdr->size - 4);
+    int overflowed = (canary != HEAP_CANARY);
+
+    /* Still marks it free either way -- refusing to free would leak
+     * forever, and the offending write already happened; the goal
+     * here is a loud diagnostic instead of a silent, much-later crash
+     * somewhere unrelated when a future malloc() walks into whatever
+     * this overflow clobbered. */
     hdr->used = 0;
     heap_irq_restore(flags);
+
+    if (overflowed) heap_report("buffer overflow detected: block wrote past its own end");
 }
 
 void *krealloc(void *ptr, size_t size)
@@ -220,11 +321,12 @@ void *krealloc(void *ptr, size_t size)
     if (!ptr) return malloc(size);
     if (size == 0) { free(ptr); return NULL; }
     heap_header_t *hdr = (heap_header_t *)((uint32_t)ptr - sizeof(heap_header_t));
-    if (hdr->magic != HEAP_MAGIC) return NULL;
-    if (hdr->size >= size) return ptr;
+    if (!heap_ptr_ok(hdr) || hdr->magic != HEAP_MAGIC) return NULL;
+    if (hdr->size >= size + 4) return ptr;
     void *new_ptr = malloc(size);
     if (new_ptr) {
-        memcpy(new_ptr, ptr, hdr->size < size ? hdr->size : size);
+        uint32_t old_data = hdr->req_size;
+        memcpy(new_ptr, ptr, old_data < size ? old_data : size);
         free(ptr);
     }
     return new_ptr;
