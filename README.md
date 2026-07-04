@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
-**Current version: v0.9.78**
+**Current version: v0.9.79**
 
 ## Screenshots
 
@@ -597,6 +597,8 @@ Module lookup uses `mp_import_stat()` which calls `fsbridge_exists()` / `fsbridg
 ## T# 4.1 Lite
 
 T# is a minimal scripting language implemented within the kernel. It supports basic arithmetic, conditionals, and loops. It is available via the `tsharp` command. T# also has access to the [Scripting API](#scripting-api) below through built-in functions (`calistir`, `dosyaoku`, ...).
+
+**Hardening note:** an internal normalization pass used to copy expression text into fixed-size buffers (some as small as 64 bytes) with no bounds check, so a long enough string literal in a function call could overrun a stack buffer and crash the kernel; every one of those buffers is now capacity-checked. Call-statement parsing also used to find its closing `)` by scanning for the first stray `)` character, which silently truncated (and corrupted) any string argument containing a literal `)` — it's now quote- and nesting-aware.
 
 ## Scripting API
 
