@@ -59,7 +59,29 @@ int ich_audio_init(ich_dev_t *dev)
         for (int j = 0; ich_devids[j] && !pd; j++)
             if (pdevs[i].device_id == ich_devids[j]) pd = &pdevs[i];
     }
-    if (!pd) { klog_write("ich_ac97: no Intel AC97 device ID match\n"); return -1; }
+    if (!pd) {
+        /* Only Intel ICH's AC97 register layout (NAM/NABM at BAR0/1) is
+         * supported here -- other class 04:01 audio controllers (e.g.
+         * the Ensoniq ES1371 some hypervisors, including VMware,
+         * default to) use a completely different programming interface
+         * and would need their own driver. Log every non-matching
+         * card's actual vendor/device ID so a future driver can target
+         * the right chip instead of guessing. */
+        for (int i = 0; i < n; i++) {
+            char line[64]; int lp = 0;
+            const char *p = "ich_ac97: unsupported audio dev vendor=0x";
+            while (*p) line[lp++] = *p++;
+            for (int k = 12; k >= 0; k -= 4) line[lp++] = "0123456789ABCDEF"[(pdevs[i].vendor_id >> k) & 0xF];
+            p = " device=0x";
+            while (*p) line[lp++] = *p++;
+            for (int k = 12; k >= 0; k -= 4) line[lp++] = "0123456789ABCDEF"[(pdevs[i].device_id >> k) & 0xF];
+            line[lp++] = '\n';
+            line[lp] = '\0';
+            klog_write(line);
+        }
+        klog_write("ich_ac97: no Intel AC97 device ID match\n");
+        return -1;
+    }
 
     pci_bm_enable(pd->bus, pd->device, pd->func);
 

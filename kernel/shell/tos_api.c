@@ -140,7 +140,12 @@ int tos_kill(uint32_t pid)
 
 uint32_t tos_uptime(void)
 {
-    return task_get_ticks() / 100;
+    /* debugmon_uptime_ms() (PIT-register-calibrated TSC, see
+     * debugmon.c) instead of task_get_ticks()/100 -- system_ticks
+     * advances on every task_yield() software self-yield as well as
+     * real IRQ0 ticks, so its rate depends on scheduling load rather
+     * than real wall-clock time. */
+    return debugmon_uptime_ms() / 1000;
 }
 
 int tos_http_get(const char *url, char *out, int out_max)

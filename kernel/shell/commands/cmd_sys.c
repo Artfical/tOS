@@ -12,6 +12,7 @@
 #include "sound.h"
 #include "isr.h"
 #include "keyboard.h"
+#include "debugmon.h"
 
 static void print_num(uint32_t n)
 {
@@ -416,8 +417,14 @@ void cmd_sleep(int argc, char **args)
 void cmd_uptime(int argc, char **args)
 {
     (void)argc; (void)args;
+    /* debugmon_uptime_ms() (PIT-register-calibrated TSC), not
+     * task_get_ticks()/100 -- system_ticks advances on every
+     * task_yield() software self-yield as well as real IRQ0 ticks, so
+     * its rate depends on scheduling load rather than real wall-clock
+     * time. */
     uint32_t ticks = task_get_ticks();
-    uint32_t sec = ticks / 100;
+    uint32_t ms = debugmon_uptime_ms();
+    uint32_t sec = ms / 1000;
     uint32_t min = sec / 60;
     uint32_t hr = min / 60;
     sec %= 60; min %= 60;
