@@ -187,6 +187,7 @@ void cmd_crash(int argc, char **args)
      * press made after the screen is actually up. */
     while (keyboard_data_available()) keyboard_getchar();
     keyboard_getchar();
+    crash_screen_clear();
     terminal_set_force_direct(0);
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
     terminal_clear();

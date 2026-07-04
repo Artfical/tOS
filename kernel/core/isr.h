@@ -25,6 +25,17 @@ void isr_handler(registers_t *regs);
 void crash_screen_trigger(const char *exception_name, int exception_code,
                            uint32_t cr2, uint32_t eip, uint32_t err_code, int fake);
 
+/* True while a (real or fake) crash screen is on-screen. The desktop's
+ * own task keeps running and repainting even while another task is
+ * blocked showing this screen (preemptive scheduling), so anything
+ * that flushes to real VGA memory must check this first or it will
+ * overwrite the crash screen on the very next timer tick. */
+int crash_screen_is_active(void);
+
+/* Called by the `crash` command once the fake screen has been
+ * dismissed, letting the desktop repaint again. */
+void crash_screen_clear(void);
+
 extern isr_handler_t interrupt_handlers[256];
 
 extern uint32_t isr_stub_table[];

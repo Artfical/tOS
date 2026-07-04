@@ -1,4 +1,5 @@
 #include "wm.h"
+#include "isr.h"
 #include "terminal.h"
 #include "mouse.h"
 #include "scheduler.h"
@@ -1519,6 +1520,15 @@ static int handle_context_click(int cx, int cy)
 
 static void wm_desktop_tick(void)
 {
+    /* Another task may be showing the `crash` fake-panic screen right
+     * now (drawn straight to real VGA memory). Don't repaint the
+     * desktop over it -- the desktop task keeps running and getting
+     * preempted back in via the timer tick regardless of what the
+     * other task is doing, so without this check it stomps the crash
+     * screen on the very next tick, making it look like `crash` does
+     * nothing. */
+    if (crash_screen_is_active()) return;
+
     mouse_poll();
 
     if (drag_window) {

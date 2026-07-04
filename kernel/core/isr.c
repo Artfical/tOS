@@ -51,11 +51,24 @@ static void hex8(char *buf, uint32_t val)
     buf[8] = '\0';
 }
 
+static int crash_active = 0;
+
+int crash_screen_is_active(void)
+{
+    return crash_active;
+}
+
+void crash_screen_clear(void)
+{
+    crash_active = 0;
+}
+
 void crash_screen_trigger(const char *exception_name, int exception_code,
                            uint32_t cr2, uint32_t eip, uint32_t err_code, int fake)
 {
     char buf[9];
 
+    crash_active = 1;
     terminal_set_force_direct(1);
     terminal_fill_screen(0x4F);
     terminal_setcolor(0x4F);
