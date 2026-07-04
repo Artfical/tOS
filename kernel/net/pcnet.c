@@ -12,6 +12,15 @@
 #define BUF_SZ 1536
 #define TMO 5000
 
+/* Same defense as the E1000/RTL8139 drivers (see HEAP_DEBUG_LOG.md):
+ * rxb[] is only ever written by the NIC's own DMA engine, and the
+ * receive descriptor's buffer-length field (below) is the only thing
+ * telling the chip how big each buffer is -- give it zero slack over
+ * that and a single stray byte of overrun lands directly in the next
+ * heap block's header. This padding costs nothing at runtime and
+ * isn't advertised to the chip. */
+#define RX_PAD 128
+
 typedef struct {
     uint16_t mode;
     uint16_t tlen_rlen;
@@ -151,7 +160,7 @@ int pcnet_init(void)
     ib->filter[1] = 0;
 
     for (int i = 0; i < RX_RING; i++) {
-        rxb[i] = malloc(BUF_SZ);
+        rxb[i] = malloc(BUF_SZ + RX_PAD);
         if (!rxb[i]) { free(ib); return -1; }
     }
     for (int i = 0; i < TX_RING; i++) {
@@ -269,6 +278,7 @@ int pcnet_poll(uint8_t *buf, int max)
     volatile pcnet_desc_t *d = &rxd[i];
     if (d->status & 0x8000) return 0;
     int l = d->misc & 0x0FFF;
+    if (l > BUF_SZ) l = BUF_SZ;
     if (l > max) l = max;
     if (l > 0) memcpy(buf, rxb[i], l);
     d->length = (int16_t)(-BUF_SZ);

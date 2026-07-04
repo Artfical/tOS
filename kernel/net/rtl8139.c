@@ -11,6 +11,21 @@
 #define TX_BUF_SIZE  1536
 #define NUM_TX_DESC  4
 
+/* The RTL8139's receive ring is a hardware circular buffer, but the
+ * chip does NOT split a packet across the wrap point -- if a frame
+ * starts near the end of the nominal RX_BUF_SIZE window, the chip
+ * writes it out *past* RX_BUF_SIZE in one contiguous run rather than
+ * wrapping mid-packet. The RTL8139 datasheet's own reference driver
+ * accounts for this by allocating extra room past the ring for
+ * exactly one max-size frame; this used to allocate only 16 bytes of
+ * padding here, nowhere near enough to hold a full ~1518-byte frame,
+ * so a packet landing in that last stretch of the ring would DMA
+ * straight past this buffer's allocation into whatever the heap
+ * placed next -- the same class of bug found in the E1000 driver
+ * (see HEAP_DEBUG_LOG.md), just directly reproducible here instead of
+ * needing to be inferred from a DMA quirk. */
+#define RX_PAD 1536
+
 static uint16_t io_base = 0;
 static uint8_t *rx_buf = 0;
 static int rx_ptr = 0;
@@ -99,9 +114,9 @@ int rtl8139_init(void)
     int timeout = 0;
     while ((inb(io_base + RTL_REG_CR) & 0x10) && timeout < 1000) { io_wait(); timeout++; }
 
-    rx_buf = (uint8_t *)malloc(RX_BUF_SIZE + 16);
+    rx_buf = (uint8_t *)malloc(RX_BUF_SIZE + RX_PAD);
     if (!rx_buf) return -1;
-    memset(rx_buf, 0, RX_BUF_SIZE + 16);
+    memset(rx_buf, 0, RX_BUF_SIZE + RX_PAD);
 
     for (int i = 0; i < NUM_TX_DESC; i++) {
         tx_bufs[i] = (uint8_t *)malloc(TX_BUF_SIZE);
@@ -160,6 +175,12 @@ int rtl8139_poll(uint8_t *buf, int max_len)
     if (rx_size < 4) { rx_ptr = 0; return 0; }
     int data_len = rx_size - 4;
     if (data_len > max_len) data_len = max_len;
+    /* Defensive clamp against a corrupted/implausible rx_size value,
+     * regardless of how much padding this buffer actually has -- never
+     * read past the real allocation (RX_BUF_SIZE + RX_PAD). */
+    if (rx_ptr + 4 + data_len > RX_BUF_SIZE + RX_PAD)
+        data_len = RX_BUF_SIZE + RX_PAD - rx_ptr - 4;
+    if (data_len < 0) data_len = 0;
     for (int i = 0; i < data_len; i++)
         buf[i] = rx_buf[rx_ptr + 4 + i];
 

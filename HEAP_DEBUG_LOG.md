@@ -152,3 +152,53 @@ removed; `heap_check()` itself (now reporting the corrupted node's
 index/size/address/canary value, not just OK/CORRUPT) remains in
 `kernel/lib/memory.c` as a permanent, unused-by-default debug utility
 for any future investigation like this one.
+
+## Follow-up: auditing the other NIC drivers
+
+Once the E1000 driver turned out to have this class of bug (a fixed
+heap buffer as a DMA target, with the hardware-reported length trusted
+without a margin), the natural next question was whether the same
+pattern exists in `kernel/net/rtl8139.c`, `pcnet.c`, `virtio_net.c`,
+and `ne2000.c`. It does, to varying degrees:
+
+- **`rtl8139.c` — a real, independently-reproducible bug, not just a
+  theoretical analog.** The RTL8139 uses a single large circular RX
+  buffer (`RX_BUF_SIZE` = 8192 bytes), but the chip does **not** split
+  a frame across the ring's wrap point — a well-documented hardware
+  behavior (the chip's own reference driver material calls for exactly
+  this): if a frame starts near the end of the nominal ring window,
+  the chip DMAs it out *past* `RX_BUF_SIZE` in one contiguous run
+  rather than wrapping mid-packet, and the driver is expected to
+  allocate extra padding to absorb that. This driver only padded the
+  allocation by **16 bytes** — nowhere near enough to hold a
+  max-size ~1518-byte frame landing in that last stretch. Fixed by
+  raising the padding to 1536 bytes (`RX_PAD`) and adding a defensive
+  clamp in `rtl8139_poll()` so the *read* side can never walk past the
+  real allocation either, independent of what the chip does. Verified
+  networking still works end-to-end (DHCP + `ping`) with
+  `-net nic,model=rtl8139` after the fix.
+- **`pcnet.c`** — same shape as E1000: per-descriptor buffers
+  (`BUF_SZ` = 1536) with the hardware-reported receive length
+  (`d->misc`) trusted directly, and zero padding past the exact size
+  told to the chip. No reproduction attempted here (QEMU's default NIC
+  in this project's test setup is E1000, not PCnet, so there's no
+  observed corruption to point at), but the risk shape is identical,
+  so it got the same treatment: 128 bytes of unadvertised RX padding,
+  plus clamping the reported length to `BUF_SZ` before trusting it.
+  Verified networking still works (DHCP + `ping`) with
+  `-net nic,model=pcnet`.
+- **`virtio_net.c`** — same shape again, plus one more thing: the
+  receive path also uses a device-reported descriptor index
+  (`elem.id`) to index `rx_bufs[]` **with no bounds check at all**.
+  A virtio host backend is expected to only ever return descriptor IDs
+  the driver itself put on the avail ring, so this isn't expected to
+  trigger under normal QEMU operation, but an out-of-range index would
+  have been an unchecked array read used as a pointer dereference —
+  worth guarding regardless. Added the same RX padding + length clamp
+  as the other drivers, plus a `desc_id` range check before it's used.
+- **`ne2000.c`** — architecturally different, and already safe. NE2000
+  doesn't DMA into a host-allocated heap buffer at all; it uses
+  "remote DMA" (I/O-port-mediated reads of the card's own onboard
+  SRAM) straight into the caller-provided, already-bounded buffer, and
+  it already validates the reported packet length against a sane
+  range before trusting it. No changes needed.

@@ -35,6 +35,13 @@
 #define NET_HDR_LEN   10
 #define BUF_SIZE      (NET_HDR_LEN + 1514)
 
+/* Same defense as the other NIC drivers (see HEAP_DEBUG_LOG.md): a
+ * virtio-net host backend is expected to never write past the
+ * descriptor length it was given, but this costs nothing and isn't
+ * advertised to the device, so it's cheap insurance against a
+ * misbehaving backend. */
+#define RX_PAD 128
+
 typedef struct {
     uint64_t addr;
     uint32_t len;
@@ -150,7 +157,7 @@ int virtio_net_init(void)
 
     int nrx = NUM_RX_BUFS < rxq.num ? NUM_RX_BUFS : rxq.num;
     for (int i = 0; i < nrx; i++) {
-        rx_bufs[i] = (uint8_t *)malloc(BUF_SIZE);
+        rx_bufs[i] = (uint8_t *)malloc(BUF_SIZE + RX_PAD);
         if (!rx_bufs[i]) return -1;
         rxq.desc[i].addr = (uint64_t)(uintptr_t)rx_bufs[i];
         rxq.desc[i].len = BUF_SIZE;
@@ -215,8 +222,12 @@ int virtio_net_poll(uint8_t *buf, int max_len)
     rxq.last_used++;
 
     int desc_id = (int)elem.id;
+    if (desc_id < 0 || desc_id >= NUM_RX_BUFS) return 0;
     int data_len = (int)elem.len - NET_HDR_LEN;
     if (data_len < 0) data_len = 0;
+    /* Never trust the device-reported length past what the buffer
+     * actually holds, regardless of how much padding it has. */
+    if (data_len > BUF_SIZE - NET_HDR_LEN) data_len = BUF_SIZE - NET_HDR_LEN;
     if (data_len > max_len) data_len = max_len;
     memcpy(buf, rx_bufs[desc_id] + NET_HDR_LEN, data_len);
 
