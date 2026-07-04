@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
-**Current version: v0.9.83**
+**Current version: v0.9.84**
 
 ## Screenshots
 
@@ -420,7 +420,9 @@ The scheduler uses the PIT (Programmable Interval Timer) at approximately 100 Hz
 - `free()` also detects and reports double-frees and frees of non-heap pointers, rather than acting on whatever a garbage header field happens to contain.
 - A corrupted free-list is reported once and the allocator falls back to growing the heap rather than crashing, so a single corruption event degrades gracefully instead of taking the whole system down.
 
-The corruption this hardening was built to survive was root-caused, not just contained: it was the E1000 NIC driver's own DMA receive buffers (`kernel/net/e1000.c`) getting written past their 2048-byte allocation by the emulated NIC's DMA engine — confirmed with an A/B test (`-net none` reproduced it zero times across 6 runs of a script that reliably corrupted the heap with networking on). Since the overwrite happens below the C driver, `e1000.c` now over-allocates RX buffers with 128 bytes of unadvertised padding and clamps the hardware-reported receive length to the real buffer size before trusting it. Full write-up in `HEAP_DEBUG_LOG.md`.
+The corruption this hardening was built to survive was root-caused, not just contained: it was the E1000 NIC driver's own DMA receive buffers (`kernel/net/e1000.c`) getting written past their 2048-byte allocation by the emulated NIC's DMA engine — confirmed with an A/B test (`-net none` reproduced it zero times across 6 runs of a script that reliably corrupted the heap with networking on). Since the overwrite happens below the C driver, `e1000.c` now over-allocates RX buffers with 128 bytes of unadvertised padding and clamps the hardware-reported receive length to the real buffer size before trusting it.
+
+The other NIC drivers with a heap-allocated DMA target got the same audit: **`rtl8139.c` had a real, independently reproducible instance of the same bug class** — its single circular RX buffer only padded 16 bytes past its nominal size, nowhere near enough for the RTL8139's documented behavior of writing a frame that starts near the ring's end out past that boundary in one contiguous run rather than wrapping mid-packet; raised to 1536 bytes of padding plus a read-side clamp. `pcnet.c` and `virtio_net.c` had the same risk shape (trusting a hardware/device-reported length with zero margin) and got the same padding+clamp treatment; `virtio_net.c` also gained a missing bounds check on the device-reported descriptor index. `ne2000.c` uses I/O-port-mediated reads straight into an already-bounded caller buffer rather than DMA-ing into a heap target, and was already safe. Full write-up in `HEAP_DEBUG_LOG.md`.
 
 ## GUI Mode
 
