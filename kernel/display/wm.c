@@ -22,6 +22,8 @@
 #include "pdfview.h"
 #include "fsbridge.h"
 #include "sound.h"
+#include "png.h"
+#include "memory.h"
 
 #define VGA_W 80
 #define VGA_H 25
@@ -133,6 +135,88 @@ static const uint8_t desktop_bg_palette[] = {
 };
 #define DESKTOP_BG_COUNT (int)(sizeof(desktop_bg_palette) / sizeof(desktop_bg_palette[0]))
 static int desktop_bg_idx = 0;
+
+/* Wallpaper: a per-desktop-cell VGA color index, precomputed once when
+ * set (from a decoded PNG's RGB pixels, or directly from another app's
+ * own VGA-indexed canvas, e.g. Paint's "set as wallpaper" shortcut) so
+ * the per-frame desktop redraw is just a cheap array lookup rather than
+ * re-sampling/re-quantizing an image every frame. */
+static uint8_t wallpaper_color[VGA_H][VGA_W];
+static int wallpaper_active = 0;
+
+static const uint8_t wallpaper_vga_palette[16][3] = {
+    {0, 0, 0}, {0, 0, 170}, {0, 170, 0}, {0, 170, 170},
+    {170, 0, 0}, {170, 0, 170}, {170, 85, 0}, {170, 170, 170},
+    {85, 85, 85}, {85, 85, 255}, {85, 255, 85}, {85, 255, 255},
+    {255, 85, 85}, {255, 85, 255}, {255, 255, 85}, {255, 255, 255},
+};
+
+static uint8_t wallpaper_nearest_color(uint8_t r, uint8_t g, uint8_t b)
+{
+    int best = 0, best_dist = -1;
+    for (int i = 0; i < 16; i++) {
+        int dr = r - wallpaper_vga_palette[i][0];
+        int dg = g - wallpaper_vga_palette[i][1];
+        int db = b - wallpaper_vga_palette[i][2];
+        int dist = dr * dr + dg * dg + db * db;
+        if (best_dist < 0 || dist < best_dist) { best_dist = dist; best = i; }
+    }
+    return (uint8_t)best;
+}
+
+/* Used by other apps (currently Paint) to set the desktop wallpaper
+ * directly from their own already-VGA-indexed canvas, without needing
+ * to save/reload a file. `cells` is a row-major rows*cols array of VGA
+ * color indices (0-15). */
+void wm_set_wallpaper_from_cells(const uint8_t *cells, int rows, int cols)
+{
+    if (rows <= 0 || cols <= 0) return;
+    int desktop_rows = DOCK_ROW - (MENU_ROW + 1);
+    for (int dy = 0; dy < desktop_rows; dy++) {
+        int sy = dy * rows / desktop_rows;
+        if (sy >= rows) sy = rows - 1;
+        for (int dx = 0; dx < VGA_W; dx++) {
+            int sx = dx * cols / VGA_W;
+            if (sx >= cols) sx = cols - 1;
+            wallpaper_color[MENU_ROW + 1 + dy][dx] = cells[sy * cols + sx] & 0x0F;
+        }
+    }
+    wallpaper_active = 1;
+}
+
+/* General wallpaper support: decodes a PNG file and quantizes it down
+ * to the desktop's per-cell VGA color grid. Returns 0 on success. */
+int wm_set_wallpaper_file(const char *path)
+{
+    if (!fsbridge_exists(path) || fsbridge_is_dir(path)) return -1;
+    uint32_t sz = fsbridge_size(path);
+    if (!sz) return -1;
+    uint8_t *buf = (uint8_t *)malloc(sz);
+    if (!buf) return -1;
+    fsbridge_read(path, buf, sz, 0);
+
+    uint8_t *rgb = NULL;
+    uint32_t iw = 0, ih = 0;
+    char err[80];
+    int rc = png_decode(buf, sz, &rgb, &iw, &ih, err, sizeof(err));
+    free(buf);
+    if (rc != 0 || !rgb || iw == 0 || ih == 0) { if (rgb) free(rgb); return -1; }
+
+    int desktop_rows = DOCK_ROW - (MENU_ROW + 1);
+    for (int dy = 0; dy < desktop_rows; dy++) {
+        uint32_t sy = (uint32_t)((uint64_t)dy * ih / (uint32_t)desktop_rows);
+        if (sy >= ih) sy = ih - 1;
+        for (int dx = 0; dx < VGA_W; dx++) {
+            uint32_t sx = (uint32_t)((uint64_t)dx * iw / (uint32_t)VGA_W);
+            if (sx >= iw) sx = iw - 1;
+            const uint8_t *px = rgb + ((uint64_t)sy * iw + sx) * 3;
+            wallpaper_color[MENU_ROW + 1 + dy][dx] = wallpaper_nearest_color(px[0], px[1], px[2]);
+        }
+    }
+    free(rgb);
+    wallpaper_active = 1;
+    return 0;
+}
 
 static int t_x0, t_x1;
 static int file_x0, file_x1;
@@ -1339,6 +1423,7 @@ static void desktop_new_file(void)
 
 static void desktop_change_background(void)
 {
+    if (wallpaper_active) { wallpaper_active = 0; return; }
     desktop_bg_idx = (desktop_bg_idx + 1) % DESKTOP_BG_COUNT;
 }
 
@@ -1595,10 +1680,13 @@ static void wm_desktop_tick(void)
             uint8_t bg = desktop_bg_palette[desktop_bg_idx];
             for (int y = MENU_ROW + 1; y < DOCK_ROW; y++) {
                 for (int x = 0; x < VGA_W; x++) {
-                    if (((x + y * 3) % 7) == 0)
+                    if (wallpaper_active) {
+                        vga_put(x, y, ' ', mk_color(VGA_DARK_GREY, wallpaper_color[y][x]));
+                    } else if (((x + y * 3) % 7) == 0) {
                         vga_put(x, y, 0xFA, mk_color(VGA_DARK_GREY, bg));
-                    else
+                    } else {
                         vga_put(x, y, ' ', mk_color(VGA_DARK_GREY, bg));
+                    }
                 }
             }
         }

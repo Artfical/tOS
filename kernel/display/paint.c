@@ -509,6 +509,15 @@ void paint_run(void)
             }
         }
 
+        if (keyboard_data_available()) {
+            char c = keyboard_getchar();
+            if (c == 'w' || c == 'W') {
+                wm_set_wallpaper_from_cells(&canvas[0][0], CANVAS_H, CANVAS_W);
+                set_status("Wallpaper set (not saved to a file).");
+                redraw();
+            }
+        }
+
         task_yield();
     }
 }

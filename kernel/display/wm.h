@@ -18,6 +18,8 @@ int wm_get_menu_action(void);
 void wm_open_notepad_file(const char *path);
 void wm_open_viewer_file(const char *path);
 void wm_open_pdfviewer_file(const char *path);
+void wm_set_wallpaper_from_cells(const uint8_t *cells, int rows, int cols);
+int wm_set_wallpaper_file(const char *path);
 int wm_kill_task_window(uint32_t pid);
 int wm_open_app(const char *name);
 void *wm_script_open(const char *title, void **out_prev_userdata);

@@ -737,6 +737,14 @@ void filemgr_run(void)
         else if (c == 'v' || c == 'V') { do_paste(); redraw(); }
         else if (c == 'd' || c == 'D') { do_delete(); redraw(); }
         else if (c == 'r' || c == 'R') { do_rename(); redraw(); }
+        else if (c == 'w' || c == 'W') {
+            if (entry_count > 0 && has_suffix(entries[selected].name, ".png")) {
+                char full[256];
+                join_path(cur_path, entries[selected].name, full, sizeof(full));
+                set_status(wm_set_wallpaper_file(full) == 0 ? "Wallpaper set." : "Wallpaper: failed (not a PNG?).");
+                redraw();
+            }
+        }
         else if (c == 't' || c == 'T') {
             if (!fsbridge_exists(TRASH_DIR)) fsbridge_mkdir(TRASH_DIR);
             strcpy(cur_path, TRASH_DIR);
