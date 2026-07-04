@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
-**Current version: v0.9.79**
+**Current version: v0.9.80**
 
 ## Screenshots
 
@@ -409,6 +409,15 @@ The scheduler uses the PIT (Programmable Interval Timer) at approximately 100 Hz
 - Task sleep (`task_sleep`)
 - Task exit (`task_exit`)
 - Dedicated timer interrupt handler with stack switching
+
+## Memory Allocator
+
+`kernel/lib/memory.c` implements a first-fit, singly-linked free-list `malloc`/`free`/`krealloc` over a growable heap region, hardened against corruption:
+
+- Every pointer the allocator follows — a `next` link in the free list, or the header implied by a pointer passed to `free()`/`krealloc()` — is bounds- and alignment-checked before being dereferenced, so a corrupted link produces a reported, contained failure instead of an unchecked read that can page-fault anywhere in the kernel.
+- A 4-byte canary word follows every allocated block's payload and is checked on `free()`: writing even one byte past what was requested now prints a "buffer overflow detected" diagnostic instead of silently corrupting the next block's header (which used to surface, if at all, as an unrelated crash far away from the actual bug).
+- `free()` also detects and reports double-frees and frees of non-heap pointers, rather than acting on whatever a garbage header field happens to contain.
+- A corrupted free-list is reported once and the allocator falls back to growing the heap rather than crashing, so a single corruption event degrades gracefully instead of taking the whole system down.
 
 ## GUI Mode
 
