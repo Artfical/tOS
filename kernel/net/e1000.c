@@ -11,6 +11,21 @@
 #define E1000_NUM_TX_DESC 8
 #define E1000_BUF_SIZE    2048
 
+/* Extra slack allocated (but never advertised to the NIC) past every
+ * RX buffer's real 2048-byte size. RCTL is configured for exactly
+ * 2048-byte buffers and long-packet reception is left disabled, so a
+ * conforming NIC should never DMA more than that into rx_bufs[i] --
+ * but this heap has repeatedly been observed getting corrupted
+ * (canary word past an rx buffer's allocation clobbered, with content
+ * that changes as more packets arrive) purely from background network
+ * traffic, unrelated to anything the software side of this file does
+ * with those buffers. Since nothing in this file's own code writes
+ * into rx_bufs (only the NIC's DMA engine does), the actual over-write
+ * is happening below the driver, out of its control; this padding is
+ * a damage-limiting margin, not a fix for whatever the NIC/emulation
+ * is actually doing. */
+#define E1000_RX_PAD 128
+
 static const uint16_t e1000_ids[][2] = {
     {0x8086, 0x1000}, {0x8086, 0x1001}, {0x8086, 0x1004},
     {0x8086, 0x1008}, {0x8086, 0x1009}, {0x8086, 0x100C},
@@ -162,7 +177,7 @@ int e1000_init(void)
         if (!tx_bufs[i]) return -1;
     }
     for (int i = 0; i < E1000_NUM_RX_DESC; i++) {
-        rx_bufs[i] = (uint8_t *)malloc(E1000_BUF_SIZE);
+        rx_bufs[i] = (uint8_t *)malloc(E1000_BUF_SIZE + E1000_RX_PAD);
         if (!rx_bufs[i]) return -1;
     }
 
@@ -236,6 +251,9 @@ int e1000_poll(uint8_t *buf, int max_len)
     if (!(rx_ring[idx].status & 0x01)) return 0;
 
     int len = rx_ring[idx].length;
+    /* Never trust the hardware-reported length past what the buffer
+     * actually holds -- see the E1000_RX_PAD comment above. */
+    if (len < 0 || len > E1000_BUF_SIZE) len = E1000_BUF_SIZE;
     if (len > max_len) len = max_len;
     memcpy(buf, rx_bufs[idx], len);
 

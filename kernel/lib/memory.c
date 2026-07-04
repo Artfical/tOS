@@ -273,7 +273,34 @@ void heap_check(const char *tag)
         if (curr->used) {
             uint32_t canary = *(uint32_t *)((uint8_t *)curr + sizeof(heap_header_t) + curr->size - 4);
             if (canary != HEAP_CANARY) {
-                terminal_writestring(" OVERFLOW detected past an allocated block\n");
+                char nb[12]; int nn = 0;
+                terminal_writestring(" OVERFLOW at node ");
+                uint32_t v = (uint32_t)i;
+                if (v == 0) nb[nn++] = '0';
+                while (v > 0) { nb[nn++] = '0' + (v % 10); v /= 10; }
+                for (int j = 0; j < nn / 2; j++) { char t = nb[j]; nb[j] = nb[nn-1-j]; nb[nn-1-j] = t; }
+                nb[nn] = 0;
+                terminal_writestring(nb);
+                terminal_writestring(" req_size=");
+                nn = 0;
+                v = curr->req_size;
+                if (v == 0) nb[nn++] = '0';
+                while (v > 0) { nb[nn++] = '0' + (v % 10); v /= 10; }
+                for (int j = 0; j < nn / 2; j++) { char t = nb[j]; nb[j] = nb[nn-1-j]; nb[nn-1-j] = t; }
+                nb[nn] = 0;
+                terminal_writestring(nb);
+                terminal_writestring(" addr=");
+                char ab[9];
+                uint32_t addr = (uint32_t)curr;
+                for (int k = 7; k >= 0; k--) { ab[k] = "0123456789ABCDEF"[addr & 0xF]; addr >>= 4; }
+                ab[8] = 0;
+                terminal_writestring(ab);
+                uint32_t canary_bytes = canary;
+                terminal_writestring(" canary_read=");
+                for (int k = 7; k >= 0; k--) { ab[k] = "0123456789ABCDEF"[canary_bytes & 0xF]; canary_bytes >>= 4; }
+                ab[8] = 0;
+                terminal_writestring(ab);
+                terminal_writestring("\n");
                 return;
             }
         }
