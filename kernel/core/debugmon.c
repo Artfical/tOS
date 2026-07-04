@@ -1,6 +1,7 @@
 #include "debugmon.h"
 #include "serial.h"
 #include "string.h"
+#include "io.h"
 
 /* PIT is programmed for ~100Hz, so each tick is ~10ms. */
 #define MS_PER_TICK 10
@@ -36,21 +37,40 @@ static inline uint64_t rdtsc(void)
     return ((uint64_t)hi << 32) | lo;
 }
 
-/* Must be called after interrupts are enabled but before the scheduler
- * takes over IDT gate 32, so tick_count is still being driven by a
- * genuine, unambiguous hardware IRQ0. Busy-waits for ~200ms of real
- * ticks to get a stable calibration. */
+/* Polls the PIT's raw countdown register (channel 0) directly instead
+ * of counting delivered IRQ0 ticks. Some hypervisors (VMware in
+ * particular) coalesce or delay timer interrupt delivery under load
+ * ("lost ticks"), which would make tick-counting-based calibration
+ * think less real time had passed than actually had -- silently
+ * making tsc_per_ms too large, and every later millisecond-based wait
+ * (e.g. the UI click/open sound's busy-wait in pcspkr_beep()) run for
+ * far longer than intended in real wall-clock time. The PIT's
+ * internal counter keeps decrementing at its fixed 1.193182MHz
+ * oscillator rate regardless of whether the CPU is ever interrupted
+ * about it, so reading it back directly (same technique as
+ * kernel.c's busy_delay_ms()) sidesteps interrupt-coalescing
+ * entirely. Safe to call regardless of which mode/divisor channel 0
+ * is currently programmed with, since this only reads decrements. */
 void debugmon_calibrate_tsc(void)
 {
-    while (tick_count == 0) { }
-    uint32_t start_ticks = tick_count;
+    outb(0x43, 0x00); /* latch channel 0's current count */
+    uint16_t prev = (uint16_t)inb(0x40);
+    prev |= (uint16_t)inb(0x40) << 8;
+
+    uint32_t elapsed_counts = 0;
     uint64_t start_tsc = rdtsc();
+    const uint32_t target_counts = 1193182u / 5; /* ~200ms of real PIT oscillator time */
 
-    while (tick_count - start_ticks < 20) { } /* ~200ms at 100Hz */
+    while (elapsed_counts < target_counts) {
+        outb(0x43, 0x00);
+        uint16_t curr = (uint16_t)inb(0x40);
+        curr |= (uint16_t)inb(0x40) << 8;
+        elapsed_counts += (uint16_t)(prev - curr);
+        prev = curr;
+    }
 
-    uint32_t elapsed_ticks = tick_count - start_ticks;
     uint64_t elapsed_tsc = rdtsc() - start_tsc;
-    uint32_t elapsed_ms = elapsed_ticks * MS_PER_TICK;
+    uint32_t elapsed_ms = elapsed_counts / 1193; /* 1193182 counts/sec */
 
     tsc_per_ms = elapsed_ms ? (elapsed_tsc / elapsed_ms) : 0;
     calib_tsc0 = rdtsc();
