@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
-**Current version: v0.9.76**
+**Current version: v0.9.77**
 
 ## Screenshots
 
@@ -414,7 +414,8 @@ At boot, the user is prompted to enter GUI mode. When enabled, a window manager 
 - The terminal runs in its own movable, focusable window below the title bar.
 - A mouse cursor is rendered and tracks PS/2 mouse movement (with IntelliMouse wheel support auto-detected at boot); windows can be dragged by their title bar, resized from the bottom-right corner, focused, and minimized.
 - The GUI polls mouse and keyboard events in the shell loop.
-- Right-clicking empty desktop space opens a context menu: New Folder, New File (opens straight into Notepad), Open Files, Open Terminal, About This Computer, Change Background (cycles through a few flat colors), and Refresh Desktop.
+- Right-clicking empty desktop space opens a context menu: New Folder, New File (opens straight into Notepad), Open Files, Open Terminal, About This Computer, Change Background (cycles through a few flat colors, or clears an active wallpaper back to them), and Refresh Desktop.
+- **Wallpaper**: pick a `.png` in Files and press `W` to set it as the desktop wallpaper (the image is quantized down to one of the 16 VGA colors per desktop cell, same as the Image Viewer). In Paint, pressing `W` sets the *current canvas* as the wallpaper directly — no need to save it to a file first.
 - Opening/closing a window and clicking a menu item or dock icon each play a short UI sound — see [System Sounds](#system-sounds).
 
 Several built-in GUI applications are launchable from the dock:
