@@ -20,4 +20,10 @@ void free_physical_page(uint32_t addr);
 uint32_t get_total_pages(void);
 uint32_t get_used_pages(void);
 
+/* Debug-only: walks the free list checking every header's magic
+ * number, printing a marker via terminal_writestring if it finds one
+ * that's corrupted. Prints tag so callers can bracket where in their
+ * own code the corruption first appears. */
+void heap_check(const char *tag);
+
 #endif

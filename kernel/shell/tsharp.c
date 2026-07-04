@@ -33,11 +33,19 @@ static char *ts_strdup(const char *s)
     return d;
 }
 
-static void ts_normalize(char *dst, const char *src)
+/* cap is the *destination* buffer's total size (including the null
+ * terminator) -- every call site passes sizeof(dst) so a source longer
+ * than the buffer gets safely truncated instead of overrunning it (a
+ * stack buffer overflow here used to be reachable from ordinary T#
+ * script text, e.g. a long string literal, and would corrupt the
+ * stack badly enough to page-fault the kernel). */
+static void ts_normalize(char *dst, const char *src, size_t cap)
 {
-    while (*src) {
+    if (cap == 0) return;
+    char *end = dst + cap - 1;
+    while (*src && dst < end) {
         unsigned char c = (unsigned char)*src;
-        if (c >= 0x80) {
+        if (c >= 0x80 && dst + 1 < end) {
             unsigned char c2 = (unsigned char)*(src+1);
                  if (c == 0xC4 && c2 == 0xB1) { *dst++ = 'i'; src += 2; }
             else if (c == 0xC4 && c2 == 0xB0) { *dst++ = 'I'; src += 2; }
@@ -59,6 +67,21 @@ static void ts_normalize(char *dst, const char *src)
     *dst = '\0';
 }
 
+/* Unlike strncpy(dst, src, n), always null-terminates dst (within a
+ * cap-byte buffer) even when src is >= cap bytes long -- strncpy only
+ * pads with a NUL if src is *shorter* than n, so every call site in
+ * this file that used it with a src of unbounded/attacker-controlled
+ * length (a T# variable/function name or value) risked leaving dst
+ * without a terminator and reading garbage stack memory as if it were
+ * still part of the string. */
+static void ts_strlcpy(char *dst, const char *src, size_t cap)
+{
+    if (cap == 0) return;
+    size_t i = 0;
+    for (; i < cap - 1 && src[i]; i++) dst[i] = src[i];
+    dst[i] = '\0';
+}
+
 static void ts_trim(char *s)
 {
     char *p = s;
@@ -73,13 +96,13 @@ static void ts_var_set(const char *name, const char *val)
 {
     for (int i = 0; i < ts_var_count; i++) {
         if (strcmp(ts_vars[i].name, name) == 0) {
-            strncpy(ts_vars[i].val, val, TS_VAR_VAL - 1);
+            ts_strlcpy(ts_vars[i].val, val, TS_VAR_VAL);
             return;
         }
     }
     if (ts_var_count < TS_MAX_VARS) {
-        strncpy(ts_vars[ts_var_count].name, name, TS_VAR_NAME - 1);
-        strncpy(ts_vars[ts_var_count].val, val, TS_VAR_VAL - 1);
+        ts_strlcpy(ts_vars[ts_var_count].name, name, TS_VAR_NAME);
+        ts_strlcpy(ts_vars[ts_var_count].val, val, TS_VAR_VAL);
         ts_var_count++;
     }
 }
@@ -187,6 +210,7 @@ static int ts_tokenize_expr(const char *expr, char **tokens, int max)
             if (i < len) i++;
             int tlen = i - start;
             tokens[n] = malloc(tlen + 1);
+            if (!tokens[n]) break;
             memcpy(tokens[n], expr + start, tlen);
             tokens[n][tlen] = '\0';
             n++;
@@ -200,6 +224,7 @@ static int ts_tokenize_expr(const char *expr, char **tokens, int max)
             i++;
             int tlen = i - start;
             tokens[n] = malloc(tlen + 1);
+            if (!tokens[n]) break;
             memcpy(tokens[n], expr + start, tlen);
             tokens[n][tlen] = '\0';
             n++;
@@ -208,12 +233,35 @@ static int ts_tokenize_expr(const char *expr, char **tokens, int max)
             while (i < len && expr[i] != ' ' && !strchr("+-*/%()=<>!&|^,", expr[i])) i++;
             int tlen = i - start;
             tokens[n] = malloc(tlen + 1);
+            if (!tokens[n]) break;
             memcpy(tokens[n], expr + start, tlen);
             tokens[n][tlen] = '\0';
             n++;
         }
     }
     return n;
+}
+
+/* Finds the ')' that closes the '(' just before s, ignoring parens
+ * inside quoted strings and tracking nesting depth -- a plain "scan
+ * for the next ')'" (which this replaces) breaks the instant a string
+ * argument contains a literal ')', e.g. dosyayaz("f", "(hi)") would
+ * truncate the call right after "(hi", silently corrupting the second
+ * argument instead of erroring out. */
+static char *ts_find_close_paren(char *s)
+{
+    int depth = 1;
+    char q = 0;
+    for (; *s; s++) {
+        if (q) {
+            if (*s == q) q = 0;
+            continue;
+        }
+        if (*s == '"' || *s == '\'') { q = *s; continue; }
+        if (*s == '(') depth++;
+        else if (*s == ')') { depth--; if (depth == 0) return s; }
+    }
+    return NULL;
 }
 
 static void ts_free_tokens(char **tokens, int n)
@@ -371,7 +419,7 @@ static char *ts_eval_rpn(char **rpn, int n)
 static char *ts_eval_expr(const char *expr)
 {
     char buf[TS_LINE_LEN];
-    ts_normalize(buf, expr);
+    ts_normalize(buf, expr, sizeof(buf));
     ts_trim(buf);
     
     if (!buf[0]) return ts_strdup("");
@@ -480,14 +528,14 @@ static int ts_call_builtin(const char *norm_name, int argc, char **args, char *r
 static void ts_call_func(const char *name, int argc, char **args, char *result)
 {
     char norm_name[TS_VAR_NAME];
-    ts_normalize(norm_name, name);
+    ts_normalize(norm_name, name, sizeof(norm_name));
 
     if (ts_call_builtin(norm_name, argc, args, result)) return;
 
     for (int i = 0; i < ts_func_count; i++) {
         if (!ts_functions[i].defined) continue;
         char fn[TS_VAR_NAME];
-        ts_normalize(fn, ts_functions[i].name);
+        ts_normalize(fn, ts_functions[i].name, sizeof(fn));
         if (strcmp(norm_name, fn) != 0) continue;
 
         ts_var_t saved_vars[TS_MAX_VARS];
@@ -504,7 +552,7 @@ static void ts_call_func(const char *name, int argc, char **args, char *result)
         ts_exec_lines(ts_functions[i].body, 0, ts_functions[i].body_count, NULL);
 
         if (ts_return_flag && result) {
-            strncpy(result, ts_return_val, TS_VAR_VAL - 1);
+            ts_strlcpy(result, ts_return_val, TS_VAR_VAL);
         }
         ts_return_flag = old_return;
 
@@ -528,7 +576,7 @@ static int ts_find_block_end(char **lines, int start, int total)
     int depth = 1;
     for (int i = start; i < total; i++) {
         char buf[TS_LINE_LEN];
-        ts_normalize(buf, lines[i]);
+        ts_normalize(buf, lines[i], sizeof(buf));
         ts_trim(buf);
         if (strncmp(buf, "eger ", 5) == 0 || strncmp(buf, "dongu ", 6) == 0 || 
             strncmp(buf, "her ", 4) == 0 || strncmp(buf, "fonksiyon ", 10) == 0) {
@@ -548,7 +596,7 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
         if (ts_continue_flag) break;
 
         char raw[TS_LINE_LEN];
-        ts_normalize(raw, lines[i]);
+        ts_normalize(raw, lines[i], sizeof(raw));
         ts_trim(raw);
 
         if (!raw[0] || raw[0] == '/' || raw[0] == '#') { i++; continue; }
@@ -558,11 +606,11 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
 
         if (strncmp(raw, "dondur", 6) == 0) {
             char tmp[TS_LINE_LEN];
-            ts_normalize(tmp, lines[i] + 6);
+            ts_normalize(tmp, lines[i] + 6, sizeof(tmp));
             ts_trim(tmp);
             if (tmp[0]) {
                 char *val = ts_eval_expr(tmp);
-                strncpy(ts_return_val, val ? val : "", TS_VAR_VAL - 1);
+                ts_strlcpy(ts_return_val, val ? val : "", TS_VAR_VAL);
                 free(val);
             } else {
                 ts_return_val[0] = '\0';
@@ -572,10 +620,10 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
         }
         if (strncmp(raw, "don ", 4) == 0) {
             char tmp[TS_LINE_LEN];
-            ts_normalize(tmp, lines[i] + 3);
+            ts_normalize(tmp, lines[i] + 3, sizeof(tmp));
             ts_trim(tmp);
             char *val = ts_eval_expr(tmp);
-            strncpy(ts_return_val, val ? val : "", TS_VAR_VAL - 1);
+            ts_strlcpy(ts_return_val, val ? val : "", TS_VAR_VAL);
             free(val);
             ts_return_flag = 1;
             i++; break;
@@ -597,7 +645,7 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
             int depth = 1;
             for (int j = i + 1; j < be; j++) {
                 char sbuf[TS_LINE_LEN];
-                ts_normalize(sbuf, lines[j]);
+                ts_normalize(sbuf, lines[j], sizeof(sbuf));
                 ts_trim(sbuf);
                 if (strncmp(sbuf, "eger ", 5) == 0 || strncmp(sbuf, "dongu ", 6) == 0 || 
                     strncmp(sbuf, "her ", 4) == 0 || strncmp(sbuf, "fonksiyon ", 10) == 0) {
@@ -649,7 +697,7 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
         if (strncmp(raw, "her ", 4) == 0) {
             int be = ts_find_block_end(lines, i + 1, end);
             char body[TS_LINE_LEN];
-            ts_normalize(body, lines[i]);
+            ts_normalize(body, lines[i], sizeof(body));
             int ci;
             for (ci = 4; body[ci] && body[ci] != ':'; ci++);
             body[ci] = '\0';
@@ -664,7 +712,7 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
             if (!inc) { i++; continue; }
             *inc = '\0';
             char var_name[TS_VAR_NAME];
-            strncpy(var_name, body + 3, TS_VAR_NAME - 1);
+            ts_strlcpy(var_name, body + 3, TS_VAR_NAME);
             ts_trim(var_name);
             char *inc_body = inc;
             while (*inc_body == ' ') inc_body++;
@@ -711,7 +759,7 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
         if (strncmp(raw, "fonksiyon ", 10) == 0) {
             int be = ts_find_block_end(lines, i + 1, end);
             char fb[TS_LINE_LEN];
-            ts_normalize(fb, lines[i]);
+            ts_normalize(fb, lines[i], sizeof(fb));
             char *p = fb + 10;
             ts_trim(p);
             if (ts_func_count >= TS_MAX_VARS) { i++; continue; }
@@ -721,12 +769,11 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
             char *lp = strchr(p, '(');
             if (!lp) { i++; continue; }
             *lp = '\0';
-            strncpy(f->name, p, TS_VAR_NAME - 1);
+            ts_strlcpy(f->name, p, TS_VAR_NAME);
             ts_trim(f->name);
             lp++;
-            char *rp = lp;
-            for (; *rp && *rp != ')'; rp++);
-            if (*rp) *rp = '\0';
+            char *rp = ts_find_close_paren(lp);
+            if (rp) *rp = '\0';
             char *param = lp;
             char *next_param;
             while (param && *param && f->param_count < TS_MAX_ARGS) {
@@ -737,7 +784,7 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
                 }
                 ts_trim(param);
                 if (*param) {
-                    strncpy(f->params[f->param_count], param, TS_VAR_NAME - 1);
+                    ts_strlcpy(f->params[f->param_count], param, TS_VAR_NAME);
                     f->param_count++;
                 }
                 param = next_param;
@@ -762,7 +809,7 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
             if (!*body) { terminal_putchar('\n'); i++; continue; }
 
             char buf[TS_LINE_LEN];
-            ts_normalize(buf, body);
+            ts_normalize(buf, body, sizeof(buf));
             
             char *final = ts_eval_expr(buf);
             
@@ -779,7 +826,7 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
 
         if (strncmp(raw, "degisken ", 9) == 0) {
             char buf[TS_LINE_LEN];
-            ts_normalize(buf, lines[i] + 9);
+            ts_normalize(buf, lines[i] + 9, sizeof(buf));
             ts_trim(buf);
             if (!*buf) { i++; continue; }
 
@@ -790,20 +837,20 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
             if (eq) {
                 *eq = '\0';
                 ts_trim(buf);
-                strncpy(name, buf, TS_VAR_NAME - 1);
+                ts_strlcpy(name, buf, TS_VAR_NAME);
                 eq++;
                 ts_trim(eq);
-                strncpy(val_str, eq, TS_VAR_VAL - 1);
+                ts_strlcpy(val_str, eq, TS_VAR_VAL);
             } else {
                 char *sp = strchr(buf, ' ');
                 if (sp) {
                     *sp = '\0';
-                    strncpy(name, buf, TS_VAR_NAME - 1);
+                    ts_strlcpy(name, buf, TS_VAR_NAME);
                     sp++;
                     ts_trim(sp);
-                    strncpy(val_str, sp, TS_VAR_VAL - 1);
+                    ts_strlcpy(val_str, sp, TS_VAR_VAL);
                 } else {
-                    strncpy(name, buf, TS_VAR_NAME - 1);
+                    ts_strlcpy(name, buf, TS_VAR_NAME);
                 }
             }
 
@@ -819,7 +866,7 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
 
         if (strncmp(raw, "girdi ", 6) == 0) {
             char buf[TS_LINE_LEN];
-            ts_normalize(buf, lines[i] + 6);
+            ts_normalize(buf, lines[i] + 6, sizeof(buf));
             ts_trim(buf);
 
             char name[TS_VAR_NAME];
@@ -828,14 +875,14 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
             char *sp = strchr(buf, ' ');
             if (sp) {
                 *sp = '\0';
-                strncpy(name, buf, TS_VAR_NAME - 1);
+                ts_strlcpy(name, buf, TS_VAR_NAME);
                 sp++;
                 ts_trim(sp);
                 char *evaled = ts_eval_expr(sp);
-                strncpy(prompt, evaled, TS_LINE_LEN - 1);
+                ts_strlcpy(prompt, evaled, TS_LINE_LEN);
                 free(evaled);
             } else {
-                strncpy(name, buf, TS_VAR_NAME - 1);
+                ts_strlcpy(name, buf, TS_VAR_NAME);
             }
 
             terminal_writestring(prompt);
@@ -847,7 +894,7 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
 
         if (strncmp(raw, "bekle ", 6) == 0) {
             char buf[TS_LINE_LEN];
-            ts_normalize(buf, lines[i] + 6);
+            ts_normalize(buf, lines[i] + 6, sizeof(buf));
             ts_trim(buf);
             char *val = ts_eval_expr(buf);
             if (val) {
@@ -905,18 +952,17 @@ static void ts_exec_lines(char **lines, int start, int end, int *next_line)
         }
 
         char cline[TS_LINE_LEN];
-        strncpy(cline, raw, TS_LINE_LEN - 1);
+        ts_strlcpy(cline, raw, TS_LINE_LEN);
         ts_trim(cline);
         char *lp = strchr(cline, '(');
         if (lp) {
             *lp = '\0';
             char fname[TS_VAR_NAME];
-            strncpy(fname, cline, TS_VAR_NAME - 1);
+            ts_strlcpy(fname, cline, TS_VAR_NAME);
             ts_trim(fname);
             lp++;
-            char *rp = lp;
-            for (; *rp && *rp != ')'; rp++);
-            if (*rp) {
+            char *rp = ts_find_close_paren(lp);
+            if (rp) {
                 *rp = '\0';
                 char *toks[64]; int tn;
                 tn = ts_tokenize_expr(lp, toks, 64);
@@ -1009,7 +1055,7 @@ void tsharp_run_interactive(void)
 
         if (!in_block) {
             char buf[TS_LINE_LEN];
-            ts_normalize(buf, line);
+            ts_normalize(buf, line, sizeof(buf));
             ts_trim(buf);
             if (strcmp(buf, "cik") == 0 || strcmp(buf, "exit") == 0 || strcmp(buf, "quit") == 0) {
                 terminal_writestring("TSharp closed.\n");
@@ -1019,7 +1065,7 @@ void tsharp_run_interactive(void)
 
         if (!in_block) {
             char buf[TS_LINE_LEN];
-            ts_normalize(buf, line);
+            ts_normalize(buf, line, sizeof(buf));
             ts_trim(buf);
             if (strncmp(buf, "eger ", 5) == 0 || strncmp(buf, "dongu ", 6) == 0 || 
                 strncmp(buf, "her ", 4) == 0 || strncmp(buf, "fonksiyon ", 10) == 0) {
@@ -1036,7 +1082,7 @@ void tsharp_run_interactive(void)
             if (block_count < TS_MAX_LINES)
                 block_lines[block_count++] = ts_strdup(line);
             char buf[TS_LINE_LEN];
-            ts_normalize(buf, line);
+            ts_normalize(buf, line, sizeof(buf));
             ts_trim(buf);
             if (strncmp(buf, "eger ", 5) == 0 || strncmp(buf, "dongu ", 6) == 0 || 
                 strncmp(buf, "her ", 4) == 0 || strncmp(buf, "fonksiyon ", 10) == 0) {
@@ -1056,7 +1102,7 @@ void tsharp_run_interactive(void)
         }
 
         char buf[TS_LINE_LEN];
-        ts_normalize(buf, line);
+        ts_normalize(buf, line, sizeof(buf));
         ts_trim(buf);
         if (!buf[0] || buf[0] == '/' || buf[0] == '#') continue;
         if (strcmp(buf, "son") == 0) continue;

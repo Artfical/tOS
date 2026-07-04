@@ -179,6 +179,32 @@ void *malloc(size_t size)
     return heap_alloc((uint32_t)size);
 }
 
+void heap_check(const char *tag)
+{
+    terminal_writestring("[heap_check] ");
+    terminal_writestring(tag);
+    heap_header_t *curr = heap_list;
+    int i = 0;
+    while (curr) {
+        if (curr->magic != HEAP_MAGIC) {
+            terminal_writestring(" CORRUPT at node ");
+            char buf[12]; int n = 0;
+            uint32_t v = (uint32_t)i;
+            if (v == 0) buf[n++] = '0';
+            while (v > 0) { buf[n++] = '0' + (v % 10); v /= 10; }
+            for (int j = 0; j < n / 2; j++) { char t = buf[j]; buf[j] = buf[n-1-j]; buf[n-1-j] = t; }
+            buf[n] = 0;
+            terminal_writestring(buf);
+            terminal_writestring("\n");
+            return;
+        }
+        curr = curr->next;
+        i++;
+        if (i > 100000) { terminal_writestring(" (giving up after 100000 nodes)\n"); return; }
+    }
+    terminal_writestring(" OK\n");
+}
+
 void free(void *ptr)
 {
     if (!ptr) return;
