@@ -26,15 +26,17 @@
  * via a shared header since kernel/display/ isn't on DOOM_CFLAGS's
  * include path (and doesn't need to be, for one function). */
 void doom_window_run(void);
+#include "bochs.h"
+#include "vga.h"
 #include "fsbridge.h"
 #include "sound.h"
 #include "png.h"
 #include "memory.h"
 
-#define VGA_W 80
-#define VGA_H 25
+#define WM_SCREEN_W 80
+#define WM_SCREEN_H 25
 #define MENU_ROW 0
-#define DOCK_ROW (VGA_H - 1)
+#define DOCK_ROW (WM_SCREEN_H - 1)
 
 #define MAX_WINDOWS 6
 #define NORMAL_W 60
@@ -60,7 +62,7 @@ void doom_window_run(void);
 #define WIN_KIND_DOOM        17
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
-static uint16_t backbuffer[VGA_W * VGA_H];
+static uint16_t backbuffer[WM_SCREEN_W * WM_SCREEN_H];
 
 typedef struct {
     term_surface_t surface;
@@ -149,7 +151,7 @@ static int desktop_bg_idx = 0;
  * own VGA-indexed canvas, e.g. Paint's "set as wallpaper" shortcut) so
  * the per-frame desktop redraw is just a cheap array lookup rather than
  * re-sampling/re-quantizing an image every frame. */
-static uint8_t wallpaper_color[VGA_H][VGA_W];
+static uint8_t wallpaper_color[WM_SCREEN_H][WM_SCREEN_W];
 static int wallpaper_active = 0;
 
 static const uint8_t wallpaper_vga_palette[16][3] = {
@@ -183,8 +185,8 @@ void wm_set_wallpaper_from_cells(const uint8_t *cells, int rows, int cols)
     for (int dy = 0; dy < desktop_rows; dy++) {
         int sy = dy * rows / desktop_rows;
         if (sy >= rows) sy = rows - 1;
-        for (int dx = 0; dx < VGA_W; dx++) {
-            int sx = dx * cols / VGA_W;
+        for (int dx = 0; dx < WM_SCREEN_W; dx++) {
+            int sx = dx * cols / WM_SCREEN_W;
             if (sx >= cols) sx = cols - 1;
             wallpaper_color[MENU_ROW + 1 + dy][dx] = cells[sy * cols + sx] & 0x0F;
         }
@@ -214,8 +216,8 @@ int wm_set_wallpaper_file(const char *path)
     for (int dy = 0; dy < desktop_rows; dy++) {
         uint32_t sy = (uint32_t)((uint64_t)dy * ih / (uint32_t)desktop_rows);
         if (sy >= ih) sy = ih - 1;
-        for (int dx = 0; dx < VGA_W; dx++) {
-            uint32_t sx = (uint32_t)((uint64_t)dx * iw / (uint32_t)VGA_W);
+        for (int dx = 0; dx < WM_SCREEN_W; dx++) {
+            uint32_t sx = (uint32_t)((uint64_t)dx * iw / (uint32_t)WM_SCREEN_W);
             if (sx >= iw) sx = iw - 1;
             const uint8_t *px = rgb + ((uint64_t)sy * iw + sx) * 3;
             wallpaper_color[MENU_ROW + 1 + dy][dx] = wallpaper_nearest_color(px[0], px[1], px[2]);
@@ -247,8 +249,8 @@ static uint16_t mk_cell(char c, uint8_t color) { return (uint16_t)(unsigned char
 
 static void vga_put(int x, int y, char c, uint8_t color)
 {
-    if (x < 0 || x >= VGA_W || y < 0 || y >= VGA_H) return;
-    backbuffer[y * VGA_W + x] = mk_cell(c, color);
+    if (x < 0 || x >= WM_SCREEN_W || y < 0 || y >= WM_SCREEN_H) return;
+    backbuffer[y * WM_SCREEN_W + x] = mk_cell(c, color);
 }
 
 static void vga_fill_rect(int x0, int y0, int w, int h, char c, uint8_t color)
@@ -333,7 +335,7 @@ static void window_geom_init(window_t *w)
     w->rest_w0 = NORMAL_W;
     w->rest_h0 = NORMAL_H;
     if (w->maximized) {
-        w->x0 = 0; w->y0 = MENU_ROW + 1; w->w0 = VGA_W; w->h0 = VGA_H - 2;
+        w->x0 = 0; w->y0 = MENU_ROW + 1; w->w0 = WM_SCREEN_W; w->h0 = WM_SCREEN_H - 2;
     } else {
         w->x0 = w->rest_x0; w->y0 = w->rest_y0; w->w0 = w->rest_w0; w->h0 = w->rest_h0;
     }
@@ -413,6 +415,21 @@ static void wm_focus_window(window_t *w)
 
 static void wm_close_window(window_t *w)
 {
+    /* DOOM's window runs in real VBE/Bochs pixel graphics (see
+     * doomgeneric_tos.c's DG_Init()/DG_DrawFrame()) instead of the
+     * desktop's normal VGA text mode, and task_kill() below is an
+     * abrupt kill -- it doesn't let doom_window_run() return and hit
+     * any cleanup of its own. Without switching back here first, the
+     * hardware would be left stuck in graphics mode showing DOOM's
+     * last frame forever after the window "closes". This mirrors what
+     * cmd_vgatest already does to leave graphics mode. */
+    if (w->kind == WIN_KIND_DOOM) {
+        bochs_disable();
+        vga_set_mode(VGA_MODE_TEXT);
+        terminal_set_force_direct(0);
+        terminal_clear();
+    }
+
     /* A script window's "task" is whatever task called wm_script_open()
      * (no dedicated task is spawned for it — see wm_script_open()) — that
      * could be the same task running, say, the GUI terminal underneath
@@ -998,8 +1015,8 @@ static void draw_window(window_t *w)
                 cell = mk_cell(' ', mk_color(VGA_LIGHT_GREY, VGA_BLACK));
             }
             int vx = x0 + col, vy = y0 + 1 + row;
-            if (vx >= 0 && vx < VGA_W && vy >= 0 && vy < VGA_H - 1)
-                backbuffer[vy * VGA_W + vx] = cell;
+            if (vx >= 0 && vx < WM_SCREEN_W && vy >= 0 && vy < WM_SCREEN_H - 1)
+                backbuffer[vy * WM_SCREEN_W + vx] = cell;
         }
     }
 
@@ -1010,11 +1027,11 @@ static void draw_window(window_t *w)
         int thumb_row = content_h - 1 - (content_h > 1 ? ((content_h - 1) * vo) / max_off : 0);
         for (int row = 0; row < content_h; row++) {
             int vx = x0 + w0 - 1, vy = y0 + 1 + row;
-            if (vx < 0 || vx >= VGA_W || vy < 0 || vy >= VGA_H - 1) continue;
+            if (vx < 0 || vx >= WM_SCREEN_W || vy < 0 || vy >= WM_SCREEN_H - 1) continue;
             if (row == thumb_row)
-                backbuffer[vy * VGA_W + vx] = mk_cell(0xDB, mk_color(VGA_WHITE, VGA_BLUE));
+                backbuffer[vy * WM_SCREEN_W + vx] = mk_cell(0xDB, mk_color(VGA_WHITE, VGA_BLUE));
             else
-                backbuffer[vy * VGA_W + vx] = mk_cell(0xB1, mk_color(VGA_DARK_GREY, VGA_BLACK));
+                backbuffer[vy * WM_SCREEN_W + vx] = mk_cell(0xB1, mk_color(VGA_DARK_GREY, VGA_BLACK));
         }
     }
 
@@ -1022,8 +1039,8 @@ static void draw_window(window_t *w)
      * window; dragging it is handled in wm_desktop_tick(). */
     if (!w->maximized) {
         int rx = x0 + w0 - 1, ry = y0 + h0 - 1;
-        if (rx >= 0 && rx < VGA_W && ry >= 0 && ry < VGA_H - 1)
-            backbuffer[ry * VGA_W + rx] = mk_cell(0xD8, mk_color(VGA_DARK_GREY, VGA_LIGHT_GREY));
+        if (rx >= 0 && rx < WM_SCREEN_W && ry >= 0 && ry < WM_SCREEN_H - 1)
+            backbuffer[ry * WM_SCREEN_W + rx] = mk_cell(0xD8, mk_color(VGA_DARK_GREY, VGA_LIGHT_GREY));
     }
 
     w->x0 = x0; w->y0 = y0; w->w0 = w0; w->h0 = h0;
@@ -1125,7 +1142,7 @@ static void draw_t_menu(int anchor_x0)
     if (shutdown_w > total_w) total_w = shutdown_w;
 
     int mx0 = anchor_x0;
-    if (mx0 + total_w >= VGA_W) mx0 = VGA_W - total_w;
+    if (mx0 + total_w >= WM_SCREEN_W) mx0 = WM_SCREEN_W - total_w;
     if (mx0 < 0) mx0 = 0;
     int my0 = MENU_ROW + 1;
     int menu_h = 1 + 1 + rows + 1 + 1;
@@ -1170,7 +1187,7 @@ static void draw_simple_menu(int which, int anchor_x0)
     if (item_w < 14) item_w = 14;
 
     int mx0 = anchor_x0;
-    if (mx0 + item_w >= VGA_W) mx0 = VGA_W - item_w;
+    if (mx0 + item_w >= WM_SCREEN_W) mx0 = WM_SCREEN_W - item_w;
     if (mx0 < 0) mx0 = 0;
     int my0 = MENU_ROW + 1;
     int menu_h = menu_count + 1;
@@ -1197,7 +1214,7 @@ static void draw_dropdown_menu(int which, int anchor_x0, int anchor_x1)
 
 static void draw_menu_bar(void)
 {
-    vga_fill_rect(0, MENU_ROW, VGA_W, 1, ' ', mk_color(VGA_BLACK, VGA_WHITE));
+    vga_fill_rect(0, MENU_ROW, WM_SCREEN_W, 1, ' ', mk_color(VGA_BLACK, VGA_WHITE));
 
     t_x0 = 1; t_x1 = 2;
     vga_put(t_x0, MENU_ROW, 'T', mk_color(VGA_RED, VGA_WHITE));
@@ -1254,7 +1271,7 @@ static void draw_menu_bar(void)
     right[rk] = 0;
 
     int rlen = (int)strlen(right);
-    vga_text(VGA_W - rlen - 1, MENU_ROW, right, mk_color(VGA_BLACK, VGA_WHITE));
+    vga_text(WM_SCREEN_W - rlen - 1, MENU_ROW, right, mk_color(VGA_BLACK, VGA_WHITE));
 }
 
 static const char *get_icon_char(int kind)
@@ -1284,7 +1301,7 @@ static const char *get_icon_char(int kind)
 
 static void draw_dock(void)
 {
-    vga_fill_rect(0, DOCK_ROW, VGA_W, 1, ' ', mk_color(VGA_BLACK, VGA_LIGHT_GREY));
+    vga_fill_rect(0, DOCK_ROW, WM_SCREEN_W, 1, ' ', mk_color(VGA_BLACK, VGA_LIGHT_GREY));
 
     int x = 1;
     for (int i = 0; i < MAX_WINDOWS; i++) {
@@ -1300,7 +1317,7 @@ static void draw_dock(void)
         while (w->title[j] && k < 12) { buf[k++] = w->title[j++]; }
         buf[k] = 0;
         int len = k + 2;
-        if (x + len >= VGA_W - 8) break;
+        if (x + len >= WM_SCREEN_W - 8) break;
         uint8_t c = (w == wm_focused && !w->minimized) ? mk_color(VGA_WHITE, VGA_BLUE) : mk_color(VGA_BLACK, VGA_LIGHT_GREY);
         uint8_t icon_c = (w == wm_focused && !w->minimized) ? mk_color(VGA_LIGHT_CYAN, VGA_BLUE) : mk_color(VGA_DARK_GREY, VGA_LIGHT_GREY);
         vga_put(x, DOCK_ROW, '[', c);
@@ -1316,7 +1333,7 @@ static void draw_dock(void)
 
 static void draw_trash(void)
 {
-    int x = VGA_W - 7;
+    int x = WM_SCREEN_W - 7;
     int y = DOCK_ROW - 6;
     uint8_t line = mk_color(VGA_BLACK, VGA_WHITE);
 
@@ -1354,11 +1371,11 @@ static void draw_cursor(void)
     int mx, my; uint8_t btns;
     mouse_get_state(&mx, &my, &btns);
     (void)btns;
-    if (mx < 0 || mx >= VGA_W || my < 0 || my >= VGA_H) return;
-    uint16_t cell = backbuffer[my * VGA_W + mx];
+    if (mx < 0 || mx >= WM_SCREEN_W || my < 0 || my >= WM_SCREEN_H) return;
+    uint16_t cell = backbuffer[my * WM_SCREEN_W + mx];
     uint8_t bg = (cell >> 12) & 0x0F;
     uint8_t cursor_fg = (bg == VGA_BLACK) ? VGA_WHITE : VGA_BLACK;
-    backbuffer[my * VGA_W + mx] = mk_cell(0x10, mk_color(cursor_fg, bg));
+    backbuffer[my * WM_SCREEN_W + mx] = mk_cell(0x10, mk_color(cursor_fg, bg));
 }
 
 #define FRAME_INTERVAL_TICKS 1
@@ -1367,24 +1384,24 @@ static uint32_t last_draw_tick = 0;
 static void wm_shutdown(void)
 {
     uint8_t color = mk_color(VGA_WHITE, VGA_BLACK);
-    for (int y = 0; y < VGA_H; y++)
-        for (int x = 0; x < VGA_W; x++)
-            backbuffer[y * VGA_W + x] = mk_cell(' ', color);
+    for (int y = 0; y < WM_SCREEN_H; y++)
+        for (int x = 0; x < WM_SCREEN_W; x++)
+            backbuffer[y * WM_SCREEN_W + x] = mk_cell(' ', color);
 
     const char *lines[] = {
         "tOS",
         "",
         "It is now safe to turn off your computer.",
     };
-    int start_y = VGA_H / 2 - 1;
+    int start_y = WM_SCREEN_H / 2 - 1;
     for (int i = 0; i < 3; i++) {
         const char *s = lines[i];
         int len = (int)strlen(s);
-        int x = (VGA_W - len) / 2;
+        int x = (WM_SCREEN_W - len) / 2;
         vga_text(x, start_y + i, s, color);
     }
 
-    for (int i = 0; i < VGA_W * VGA_H; i++) VGA_MEM[i] = backbuffer[i];
+    for (int i = 0; i < WM_SCREEN_W * WM_SCREEN_H; i++) VGA_MEM[i] = backbuffer[i];
 
     for (;;) asm volatile("hlt");
 }
@@ -1507,7 +1524,7 @@ static void draw_context_menu(void)
     ctx_w = item_w;
 
     int mx0 = ctx_x0;
-    if (mx0 + item_w >= VGA_W) mx0 = VGA_W - item_w;
+    if (mx0 + item_w >= WM_SCREEN_W) mx0 = WM_SCREEN_W - item_w;
     if (mx0 < 0) mx0 = 0;
     int menu_h = CTX_NUM_ITEMS + 1;
     int my0 = ctx_y0;
@@ -1576,7 +1593,7 @@ static void wm_desktop_tick(void)
             int ny = my - drag_offset_y;
             if (nx < 0) nx = 0;
             if (ny < MENU_ROW + 1) ny = MENU_ROW + 1;
-            if (nx > VGA_W - drag_window->w0) nx = VGA_W - drag_window->w0;
+            if (nx > WM_SCREEN_W - drag_window->w0) nx = WM_SCREEN_W - drag_window->w0;
             if (ny > DOCK_ROW - 1) ny = DOCK_ROW - 1;
             drag_window->x0 = nx;
             drag_window->y0 = ny;
@@ -1594,7 +1611,7 @@ static void wm_desktop_tick(void)
             int newh = resize_start_h + (my - resize_start_my);
             if (neww < MIN_WIN_W) neww = MIN_WIN_W;
             if (newh < MIN_WIN_H) newh = MIN_WIN_H;
-            if (resize_window->x0 + neww > VGA_W) neww = VGA_W - resize_window->x0;
+            if (resize_window->x0 + neww > WM_SCREEN_W) neww = WM_SCREEN_W - resize_window->x0;
             if (resize_window->y0 + newh > DOCK_ROW) newh = DOCK_ROW - resize_window->y0;
             resize_window->w0 = neww;
             resize_window->h0 = newh;
@@ -1700,7 +1717,7 @@ static void wm_desktop_tick(void)
                             hit->rest_x0 = hit->x0; hit->rest_y0 = hit->y0;
                             hit->rest_w0 = hit->w0; hit->rest_h0 = hit->h0;
                             hit->maximized = 1;
-                            hit->x0 = 0; hit->y0 = MENU_ROW + 1; hit->w0 = VGA_W; hit->h0 = VGA_H - 2;
+                            hit->x0 = 0; hit->y0 = MENU_ROW + 1; hit->w0 = WM_SCREEN_W; hit->h0 = WM_SCREEN_H - 2;
                         } else {
                             hit->maximized = 0;
                             hit->x0 = hit->rest_x0; hit->y0 = hit->rest_y0;
@@ -1758,7 +1775,7 @@ static void wm_desktop_tick(void)
         {
             uint8_t bg = desktop_bg_palette[desktop_bg_idx];
             for (int y = MENU_ROW + 1; y < DOCK_ROW; y++) {
-                for (int x = 0; x < VGA_W; x++) {
+                for (int x = 0; x < WM_SCREEN_W; x++) {
                     if (wallpaper_active) {
                         vga_put(x, y, ' ', mk_color(VGA_DARK_GREY, wallpaper_color[y][x]));
                     } else if (((x + y * 3) % 7) == 0) {
@@ -1805,7 +1822,7 @@ static void wm_desktop_tick(void)
 
         draw_cursor();
 
-        for (int i = 0; i < VGA_W * VGA_H; i++) VGA_MEM[i] = backbuffer[i];
+        for (int i = 0; i < WM_SCREEN_W * WM_SCREEN_H; i++) VGA_MEM[i] = backbuffer[i];
     }
 
     task_yield();

@@ -12,54 +12,8 @@
 #include "keyboard.h"
 #include "debugmon.h"
 #include "terminal.h"
-#include "gui.h"
-#include "wm.h"
-#include "scheduler.h"
 
 static bochs_device_t g_bochs;
-
-/* Set by doom_window_run() (kernel/doom/port/doom_main.c) before
- * doomgeneric_tos_run() -- when running as a normal desktop window
- * instead of the CLI `doom` command's fullscreen takeover, there's no
- * real hardware mode switch at all (DG_Init()/DG_DrawFrame() render
- * into the window's own text-cell surface instead, the same
- * downsample-to-16-VGA-colors technique kernel/display/viewer.c
- * already uses for PNGs), which sidesteps the framebuffer
- * one-way-trip-to-reboot limitation entirely for this mode. */
-static int g_windowed = 0;
-
-void doomgeneric_tos_set_windowed(int windowed)
-{
-    g_windowed = windowed;
-}
-
-/* Same 16-color VGA palette and nearest-color search as
- * kernel/display/viewer.c uses for downsampling PNGs -- duplicated
- * rather than shared since viewer.c's version is static/internal and
- * pulling in a whole extra header for one small helper isn't worth
- * it. */
-static const uint8_t vga_palette[16][3] = {
-    {0, 0, 0}, {0, 0, 170}, {0, 170, 0}, {0, 170, 170},
-    {170, 0, 0}, {170, 0, 170}, {170, 85, 0}, {170, 170, 170},
-    {85, 85, 85}, {85, 85, 255}, {85, 255, 85}, {85, 255, 255},
-    {255, 85, 85}, {255, 85, 255}, {255, 255, 85}, {255, 255, 255},
-};
-
-static int nearest_vga_color(uint8_t r, uint8_t g, uint8_t b)
-{
-    int best = 0, best_dist = -1;
-    for (int i = 0; i < 16; i++) {
-        int dr = r - vga_palette[i][0];
-        int dg = g - vga_palette[i][1];
-        int db = b - vga_palette[i][2];
-        int dist = dr * dr + dg * dg + db * db;
-        if (best_dist < 0 || dist < best_dist) { best_dist = dist; best = i; }
-    }
-    return best;
-}
-
-#define WIN_CANVAS_W 78
-#define WIN_CANVAS_H 20
 
 #define KEYQUEUE_SIZE 32
 static unsigned short s_KeyQueue[KEYQUEUE_SIZE];
@@ -102,8 +56,6 @@ static void pump_keys(void)
 
 void DG_Init(void)
 {
-    if (g_windowed) return; /* no hardware mode switch needed at all */
-
     if (bochs_init(&g_bochs) != 0 || !g_bochs.lfb) {
         terminal_writestring("doom: no Bochs/VBE-capable display adapter found\n");
         return;
@@ -111,37 +63,8 @@ void DG_Init(void)
     bochs_set_mode(&g_bochs, DOOMGENERIC_RESX, DOOMGENERIC_RESY, 32);
 }
 
-static void draw_frame_windowed(void)
-{
-    uint32_t *src = (uint32_t *)DG_ScreenBuffer;
-    for (int cy = 0; cy < WIN_CANVAS_H; cy++) {
-        terminal_setpos(1, (size_t)(cy + 2));
-        for (int cx = 0; cx < WIN_CANVAS_W; cx++) {
-            uint32_t sx = (uint32_t)((uint64_t)cx * DOOMGENERIC_RESX / WIN_CANVAS_W);
-            uint32_t sy = (uint32_t)((uint64_t)cy * DOOMGENERIC_RESY / WIN_CANVAS_H);
-            uint32_t px = src[sy * DOOMGENERIC_RESX + sx];
-            /* DG_ScreenBuffer is RGBA8888 per doomgeneric_tos.h/bochs
-             * mode (red_off=16, green_off=8, blue_off=0 -- see the
-             * I_InitGraphics log line). */
-            uint8_t r = (uint8_t)(px >> 16);
-            uint8_t g = (uint8_t)(px >> 8);
-            uint8_t b = (uint8_t)px;
-            int vc = nearest_vga_color(r, g, b);
-            terminal_setcolor((uint8_t)(vc | (vc << 4)));
-            terminal_putchar(' ');
-        }
-    }
-}
-
 void DG_DrawFrame(void)
 {
-    if (g_windowed) {
-        if (!wm_current_task_has_focus()) { pump_keys(); return; }
-        draw_frame_windowed();
-        pump_keys();
-        return;
-    }
-
     if (!g_bochs.lfb) return;
     /* DOOMGENERIC_RESX/RESY are defined to exactly match the mode set
      * in DG_Init(), so this is a single flat copy -- no stride/offset
@@ -221,25 +144,18 @@ void DG_SetWindowTitle(const char *title)
     (void)title;
 }
 
-/* Called by cmd_doom (kernel/doom/port/doom_main.c) once the WAD has
- * been staged where d_iwad.c's search path can find it. Doesn't
- * return until the player quits (I_Quit() -> exits the process, which
- * for us just returns to the caller after bochs_disable() -- see the
- * README's linear framebuffer section for the current one-way-trip
- * caveat on going back to text mode). Windowed mode (g_windowed) never
- * touches hardware graphics mode at all, so that caveat doesn't apply
- * there -- closing the window is a normal return, same as any other
- * app. */
+/* Called by cmd_doom / doom_window_run() (kernel/doom/port/doom_main.c)
+ * once the WAD has been staged where d_iwad.c's search path can find
+ * it. Runs in real VBE/Bochs pixel graphics either way -- when opened
+ * as a desktop window, the actual restore back to VGA text mode on
+ * close is handled by kernel/display/wm.c's wm_close_window() (see its
+ * WIN_KIND_DOOM special case), not by this loop returning; the CLI
+ * `doom` command has no such hook, hence the README's one-way-trip
+ * caveat still applying there. */
 void doomgeneric_tos_run(int argc, char **argv)
 {
-    if (g_windowed) terminal_clear();
     doomgeneric_Create(argc, argv);
     for (;;) {
-        if (g_windowed) {
-            gui_poll();
-            if (!wm_current_task_has_focus()) { task_yield(); continue; }
-        }
         doomgeneric_Tick();
-        if (g_windowed) task_yield();
     }
 }
