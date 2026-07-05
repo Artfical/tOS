@@ -536,17 +536,34 @@ itself:
 limitation above) no way back to the desktop without `reboot`.
 
 **If DOOM appears to hang right after the "Auto-scaling factor" line**
-(never reaching the title screen), it's almost certainly the same
-class of environment-dependent clock bug documented in the TSC
-calibration fix a few versions back — DOOM's frame pacing depends on
-`debugmon_uptime_ms()` actually advancing, and on some
-machines/hypervisors it apparently doesn't reliably. `kernel/doom/port/doomgeneric_tos.c`'s
-`DG_SleepMs()`/`DG_GetTicksMs()` now have a defensive fallback (a
-plain call-counter substitutes for the clock if it looks stuck for
-too long) so the game can't hang forever waiting on it, but this was
-fixed defensively rather than by reproducing the actual hang directly
-— if it still doesn't reach the title screen after a few seconds on
-your machine, that's a real remaining bug worth reporting.
+(never reaching the title screen) — this turned out to have a real,
+confirmed cause on VirtualBox specifically: `kernel/drivers/video/bochs.c`
+only recognized QEMU's video adapter (PCI vendor `0x1234` device
+`0x1111`) when looking for the Bochs/VBE linear framebuffer's PCI BAR.
+VirtualBox's classic "VBoxVGA" adapter implements the same Bochs VBE
+register interface (deliberately, for exactly this kind of guest
+compatibility) but reports a different PCI ID (`0x80EE`:`0xBEEF`), so
+it went unrecognized — the mode-set calls all silently succeeded, but
+`bochs_put_pixel()` had nowhere to write to, so DOOM ran completely
+normally but **invisibly** (not actually hung). Now recognizes both.
+
+If you're on VirtualBox and it's still not showing anything, check
+your VM's Settings → Display → Graphics Controller is set to
+**VBoxVGA**, not VMSVGA (VMware's SVGA protocol is unrelated to Bochs
+VBE and isn't supported here) — and if it's already VBoxVGA and still
+doesn't work, run `dmesg` after trying `doom`/`vgatest`: unmatched
+video adapters now log their actual vendor/device ID
+(`bochs: unmatched class 03:00 dev vendor=... device=...`) so a third
+hypervisor's adapter can be added quickly instead of guessing.
+
+Separately (and this part is unconfirmed either way): DOOM's frame
+pacing depends on `debugmon_uptime_ms()` actually advancing, which the
+TSC calibration fix a few versions back found can be unreliable on
+some environments. `kernel/doom/port/doomgeneric_tos.c`'s
+`DG_SleepMs()`/`DG_GetTicksMs()` have a defensive fallback (a plain
+call-counter substitutes for the clock if it looks stuck for too
+long) so the game can't hang forever waiting on it even if this
+happens.
 
 ## Audio
 

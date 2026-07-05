@@ -2,6 +2,7 @@
 #include "io.h"
 #include "pci.h"
 #include "paging.h"
+#include "klog.h"
 
 static void bochs_write_reg(uint16_t index, uint16_t val)
 {
@@ -26,16 +27,26 @@ int bochs_init(bochs_device_t *dev)
     dev->bpp = 0;
     dev->lfb = 0;
 
-    /* The linear framebuffer lives behind the VGA-compatible PCI
-     * device's BAR0 (QEMU's std/bochs-display adapter: vendor 0x1234,
-     * device 0x1111, class 03:00). Without this, dev->lfb stays 0 and
-     * bochs_put_pixel() silently no-ops -- the VBE index/data ports
-     * alone are enough to *set* a mode, but not to know where its
-     * memory is mapped. */
+    /* The linear framebuffer lives behind a PCI device's BAR0 -- the
+     * VBE index/data ports alone are enough to *set* a mode, but not
+     * to know where its memory is mapped. Different hypervisors
+     * expose the same Bochs DISPI register interface through
+     * differently-identified PCI video devices, so this needs a
+     * vendor/device pair per hypervisor, not just QEMU's:
+     *   - QEMU std-vga/bochs-display: vendor 0x1234, device 0x1111
+     *   - VirtualBox VBoxVGA:         vendor 0x80EE, device 0xBEEF
+     * (VirtualBox's VBoxVGA deliberately implements the same Bochs
+     * VBE interface for exactly this kind of guest compatibility, so
+     * everything else here works unchanged once the BAR is found --
+     * this was the actual reason DOOM ran fully "headless" and looked
+     * hung on VirtualBox: dev->lfb never got set, so bochs_put_pixel()
+     * silently no-op'd every frame and the game ran invisibly.) */
     pci_device_t pdevs[4];
     int n = pci_find_devices(0x03, 0x00, pdevs, 4);
     for (int i = 0; i < n; i++) {
-        if (pdevs[i].vendor_id == 0x1234 && pdevs[i].device_id == 0x1111) {
+        int is_qemu_std = (pdevs[i].vendor_id == 0x1234 && pdevs[i].device_id == 0x1111);
+        int is_vbox_vga = (pdevs[i].vendor_id == 0x80EE && pdevs[i].device_id == 0xBEEF);
+        if (is_qemu_std || is_vbox_vga) {
             uint32_t bar0 = pci_get_bar(pdevs[i].bus, pdevs[i].device, pdevs[i].func, 0);
             dev->lfb = bar0 & ~0xFU; /* mask off the low BAR type/flag bits */
             /* This BAR usually sits well above the kernel's normal
@@ -46,6 +57,25 @@ int bochs_init(bochs_device_t *dev)
              * frame is ~3MB). */
             paging_map_range(dev->lfb, dev->lfb, 0x400000, PTE_PRESENT | PTE_WRITABLE);
             break;
+        }
+    }
+
+    if (!dev->lfb) {
+        /* Log every class 03:00 device's actual vendor/device ID so a
+         * third hypervisor's video adapter can be recognized quickly
+         * next time instead of guessing -- this is exactly how the
+         * VirtualBox VBoxVGA gap above was found. */
+        for (int i = 0; i < n; i++) {
+            char line[64]; int lp = 0;
+            const char *p = "bochs: unmatched class 03:00 dev vendor=0x";
+            while (*p) line[lp++] = *p++;
+            for (int k = 12; k >= 0; k -= 4) line[lp++] = "0123456789ABCDEF"[(pdevs[i].vendor_id >> k) & 0xF];
+            p = " device=0x";
+            while (*p) line[lp++] = *p++;
+            for (int k = 12; k >= 0; k -= 4) line[lp++] = "0123456789ABCDEF"[(pdevs[i].device_id >> k) & 0xF];
+            line[lp++] = '\n';
+            line[lp] = '\0';
+            klog_write(line);
         }
     }
 
