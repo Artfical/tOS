@@ -545,16 +545,22 @@ register interface (deliberately, for exactly this kind of guest
 compatibility) but reports a different PCI ID (`0x80EE`:`0xBEEF`), so
 it went unrecognized — the mode-set calls all silently succeeded, but
 `bochs_put_pixel()` had nowhere to write to, so DOOM ran completely
-normally but **invisibly** (not actually hung). Now recognizes both.
+normally but **invisibly** (not actually hung). Now recognizes both,
+plus VMware SVGA II (vendor `0x15AD` device `0x0405`) — **this third
+one is unverified**, added on the strength of VMware SVGA II's
+documented legacy Bochs-VBE compatibility mode but never actually
+tested against real VMware. The Bochs DISPI ID check still gates
+everything, so if VMware's adapter doesn't really answer on those
+ports, this just won't match rather than doing anything harmful.
 
 If you're on VirtualBox and it's still not showing anything, check
 your VM's Settings → Display → Graphics Controller is set to
-**VBoxVGA**, not VMSVGA (VMware's SVGA protocol is unrelated to Bochs
-VBE and isn't supported here) — and if it's already VBoxVGA and still
-doesn't work, run `dmesg` after trying `doom`/`vgatest`: unmatched
-video adapters now log their actual vendor/device ID
-(`bochs: unmatched class 03:00 dev vendor=... device=...`) so a third
-hypervisor's adapter can be added quickly instead of guessing.
+**VBoxVGA**, not VMSVGA. If you're on VMware and it doesn't work, or
+on VirtualBox with VMSVGA selected, run `dmesg` after trying
+`doom`/`vgatest`: it now logs every class 03:00 video device's actual
+vendor/device ID either way (whether the DISPI check failed outright
+or passed but no PCI match was found), so a real fix can target the
+right chip instead of guessing.
 
 Separately (and this part is unconfirmed either way): DOOM's frame
 pacing depends on `debugmon_uptime_ms()` actually advancing, which the
