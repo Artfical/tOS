@@ -38,6 +38,30 @@ void doomgeneric_tos_set_windowed(int windowed)
     g_windowed = windowed;
 }
 
+/* Set as keyboard.c's interrupt_callback while DOOM runs (see below) --
+ * this fires synchronously from inside the keyboard IRQ handler itself
+ * (process_scancode(), called with interrupts briefly disabled), the
+ * instant Ctrl+C is pressed, regardless of what doomgeneric_Tick() is
+ * doing at that moment or whether this window currently has focus.
+ * The previous approach polled keyboard_data_available()/
+ * keyboard_getchar() once per outer-loop iteration instead -- besides
+ * being gated by keyboard_getchar()'s own focus check (which can block
+ * entirely if it's ever called while unfocused), that meant Ctrl+C
+ * could only ever be noticed between doomgeneric_Tick() calls, so if a
+ * hypervisor's timing quirks (the same general class of bug already
+ * documented elsewhere in this project) ever made a single Tick() call
+ * run unexpectedly long, Ctrl+C would appear to do nothing until it
+ * finally returned. Only setting a flag here (not restoring video mode
+ * or touching the window/task directly) keeps this handler safe to run
+ * with interrupts disabled -- the actual cleanup still happens from
+ * normal task context in the main loop below. */
+static volatile int g_ctrlc_requested = 0;
+
+static void doom_ctrlc_handler(void)
+{
+    g_ctrlc_requested = 1;
+}
+
 #define KEYQUEUE_SIZE 32
 static unsigned short s_KeyQueue[KEYQUEUE_SIZE];
 static unsigned int s_KeyQueueWriteIndex = 0;
@@ -180,37 +204,44 @@ void DG_SetWindowTitle(const char *title)
  * task can't just return the way the CLI command's can. */
 void doomgeneric_tos_run(int argc, char **argv)
 {
+    int old_interrupt_char = interrupt_char;
+    void (*old_interrupt_callback)(void) = interrupt_callback;
+    g_ctrlc_requested = 0;
+    interrupt_char = 3;
+    interrupt_callback = doom_ctrlc_handler;
+
     doomgeneric_Create(argc, argv);
     for (;;) {
-        if (keyboard_data_available()) {
-            char c = keyboard_getchar();
-            if (c == 3) { /* Ctrl+C */
-                if (g_windowed) {
-                    /* Can't just restore-and-return here the way the
-                     * CLI path below does -- this task was spawned via
-                     * kernel/display/wm.c's task_spawn(), whose stack
-                     * (see scheduler.c's setup_task_stack()) has no
-                     * valid return address for the entry function to
-                     * `ret` into. wm_kill_task_window() does the exact
-                     * same WIN_KIND_DOOM restore-then-task_kill()
-                     * wm_close_window() already does for the window's
-                     * close button, just triggered from inside the
-                     * window's own task instead of from wm's click
-                     * handler. task_kill() only marks this task a
-                     * zombie and unlinks it -- it doesn't stop it
-                     * running -- so this must never fall through back
-                     * into DOOM's own code afterward; spin on
-                     * task_yield() forever, same as task_exit() does. */
-                    wm_kill_task_window(task_get_pid());
-                    for (;;) task_yield();
-                }
-                bochs_disable();
-                vga_set_mode(VGA_MODE_TEXT);
-                terminal_set_force_direct(0);
-                terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
-                terminal_clear();
-                return;
+        if (g_ctrlc_requested) {
+            if (g_windowed) {
+                /* Can't just restore-and-return here the way the CLI
+                 * path below does -- this task was spawned via
+                 * kernel/display/wm.c's task_spawn(), whose stack (see
+                 * scheduler.c's setup_task_stack()) has no valid return
+                 * address for the entry function to `ret` into.
+                 * wm_kill_task_window() does the exact same
+                 * WIN_KIND_DOOM restore-then-task_kill()
+                 * wm_close_window() already does for the window's
+                 * close button, just triggered from inside the
+                 * window's own task instead of from wm's click
+                 * handler. task_kill() only marks this task a zombie
+                 * and unlinks it -- it doesn't stop it running -- so
+                 * this must never fall through back into DOOM's own
+                 * code afterward; spin on task_yield() forever, same
+                 * as task_exit() does. */
+                interrupt_char = old_interrupt_char;
+                interrupt_callback = old_interrupt_callback;
+                wm_kill_task_window(task_get_pid());
+                for (;;) task_yield();
             }
+            interrupt_char = old_interrupt_char;
+            interrupt_callback = old_interrupt_callback;
+            bochs_disable();
+            vga_set_mode(VGA_MODE_TEXT);
+            terminal_set_force_direct(0);
+            terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
+            terminal_clear();
+            return;
         }
         doomgeneric_Tick();
     }

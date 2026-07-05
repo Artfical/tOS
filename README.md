@@ -527,6 +527,25 @@ tOS's own platform glue (framebuffer blit, keyboard input, timing).
   normally here (the way the CLI `doom` command's Ctrl+C does) would
   crash. Either way, no `reboot` is needed.
 
+Ctrl+C detection originally polled `keyboard_data_available()` /
+`keyboard_getchar()` once per outer-loop iteration, but that turned out
+unreliable in practice (confirmed not working even in the CLI `doom`
+command, which has no windowing/focus concept at all) — likely because
+`keyboard_getchar()` only ever returns a buffered character while
+`wm_current_task_has_focus()` is true, so a single unlucky timing
+window (or another hypervisor-dependent timing quirk, the same general
+class already documented elsewhere in this project) could leave it
+polling long after the key was actually pressed. Switched to
+`kernel/drivers/input/keyboard.c`'s existing `interrupt_char`/
+`interrupt_callback` hook instead (already used by MicroPython's REPL
+for its own Ctrl+C) — it fires synchronously from inside the keyboard
+IRQ handler itself the instant Ctrl+C is pressed, independent of
+whatever `doomgeneric_Tick()`/the render loop happens to be doing at
+that moment. The handler only sets a flag; the actual video-mode
+restore and task cleanup still happens from normal task context in the
+main loop, since that's not necessarily safe to do directly from
+inside an IRQ.
+
 Getting this running surfaced and fixed several real, previously
 unnoticed bugs elsewhere in the kernel, all independent of DOOM
 itself:

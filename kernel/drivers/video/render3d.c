@@ -21,6 +21,21 @@
 #define R3D_W 320
 #define R3D_H 200
 
+/* Set as keyboard.c's interrupt_callback while this runs (see
+ * render3d_run() below) -- fires synchronously from inside the
+ * keyboard IRQ handler itself the instant Ctrl+C is pressed, rather
+ * than depending on this loop happening to poll
+ * keyboard_data_available()/keyboard_getchar() at the right moment
+ * (keyboard_getchar() also has its own focus-check that can block
+ * entirely if ever called while unfocused -- see doomgeneric_tos.c's
+ * identical fix for the same reasoning). */
+static volatile int g_r3d_ctrlc_requested = 0;
+
+static void r3d_ctrlc_handler(void)
+{
+    g_r3d_ctrlc_requested = 1;
+}
+
 typedef struct { float x, y, z; } vec3;
 
 static float r3d_fabs(float x) { return x < 0.0f ? -x : x; }
@@ -114,6 +129,12 @@ void render3d_run(void)
         return;
     }
 
+    int old_interrupt_char = interrupt_char;
+    void (*old_interrupt_callback)(void) = interrupt_callback;
+    g_r3d_ctrlc_requested = 0;
+    interrupt_char = 3;
+    interrupt_callback = r3d_ctrlc_handler;
+
     vec3 light_dir = vnorm((vec3){0.4f, 0.6f, -1.0f});
     uint32_t start_ms = debugmon_uptime_ms();
 
@@ -128,11 +149,12 @@ void render3d_run(void)
         while (keyboard_get_raw_event(&rk, &pressed)) {
             if (rk == 27 && pressed) quit = 1;
         }
-        /* Ctrl+C, same as DOOM's fullscreen exit -- comes through the
-         * regular ASCII queue (ctrl_pressed folds 'c' down to 0x03),
-         * not the raw one above. */
-        if (keyboard_data_available() && keyboard_getchar() == 3) quit = 1;
-        if (quit) break;
+        if (g_r3d_ctrlc_requested) quit = 1;
+        if (quit) {
+            interrupt_char = old_interrupt_char;
+            interrupt_callback = old_interrupt_callback;
+            break;
+        }
 
         float t = (float)(debugmon_uptime_ms() - start_ms) / 1000.0f;
         float ax = t * 0.9f, ay = t * 1.3f;
