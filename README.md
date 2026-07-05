@@ -31,6 +31,10 @@ tOS is a from-scratch x86 hobby operating system with a Linux-like command envir
 <td><img src="docs/screenshots/notepad.png" width="360"><br>Note Pad (Mac OS 7 style)</td>
 <td><img src="docs/screenshots/crash.png" width="360"><br>Crash screen (<code>crash</code> command)</td>
 </tr>
+<tr>
+<td><img src="docs/screenshots/doom.png" width="360"><br>DOOM (shareware, <code>doom</code> command)</td>
+<td><img src="docs/screenshots/vgatest.png" width="360"><br>Bochs/VBE linear framebuffer test (<code>vgatest</code> command)</td>
+</tr>
 </table>
 
 ## System Requirements
@@ -471,11 +475,15 @@ draws a gradient with a crosshair, waits for a key, then attempts to
 return to the desktop.
 
 **Known limitation:** cleanly returning to VGA text mode after using
-graphics mode doesn't work reliably yet (the screen comes back
-garbled) — legacy VGA CRTC/Sequencer/Graphics Controller/Attribute
-Controller register restoration turned out to be considerably more
-fragile than the mode-set itself. Until that's solved, treat `vgatest`
-(and DOOM, below) as a one-way trip for this session — reboot
+graphics mode still doesn't fully work. `vgatest` now restores the
+legacy CRTC/Sequencer/Graphics Controller registers it snapshotted
+before ever touching Bochs/VBE (fixing the screen *geometry* — it
+used to stay stuck at the graphics resolution, now it correctly comes
+back to 80x25 text dimensions), but character/attribute rendering
+itself still comes back as static-like noise instead of readable
+text, and that part remains unsolved after another dedicated attempt.
+Until it's fully fixed, treat `vgatest` (and DOOM, below) as a
+one-way trip for this session — reboot
 (`reboot`) to get a clean desktop back afterward.
 
 ## DOOM

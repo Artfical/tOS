@@ -16,6 +16,7 @@
 #include "audio.h"
 #include "ich.h"
 #include "bochs.h"
+#include "vga.h"
 
 static void print_num(uint32_t n)
 {
@@ -224,6 +225,15 @@ void cmd_vgatest(int argc, char **args)
 {
     (void)argc; (void)args;
 
+    /* Snapshot the current (real, valid) text-mode VGA registers
+     * before anything touches VBE -- Bochs/VBE reprograms the legacy
+     * CRTC/Sequencer/Graphics Controller registers to expose its
+     * linear framebuffer, and disabling it later does not appear to
+     * put those back, leaving the screen in a garbled in-between
+     * state. Restoring this snapshot afterward is a second cleanup
+     * step on top of bochs_disable(), not a replacement for it. */
+    vga_init();
+
     bochs_device_t bochs;
     if (bochs_init(&bochs) != 0 || !bochs.lfb) {
         terminal_writestring("vgatest: no Bochs/VBE-capable display adapter found\n");
@@ -246,6 +256,7 @@ void cmd_vgatest(int argc, char **args)
     keyboard_getchar();
 
     bochs_disable();
+    vga_set_mode(VGA_MODE_TEXT);
     terminal_set_force_direct(0);
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
     terminal_clear();
