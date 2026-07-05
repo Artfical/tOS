@@ -429,6 +429,8 @@ static void shell_exec_line(char *cmd_line)
             cmd_vgatest(argc, args);
         } else if (strcmp(c, "doom") == 0) {
             cmd_doom(argc, args);
+        } else if (strcmp(c, "3d") == 0) {
+            cmd_3d(argc, args);
         } else if (strcmp(c, "crash") == 0) {
             cmd_crash(argc, args);
         } else if (strcmp(c, "about") == 0) {

@@ -17,6 +17,7 @@
 #include "ich.h"
 #include "bochs.h"
 #include "vga.h"
+#include "render3d.h"
 
 static void print_num(uint32_t n)
 {
@@ -282,6 +283,16 @@ void cmd_crash(int argc, char **args)
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
     terminal_clear();
     terminal_writestring("(That was a fake crash from the `crash` command.)\n");
+}
+
+/* Rotating, flat-shaded, z-buffered cube -- see render3d.c for the
+ * actual rasterizer. Same real Bochs/VBE pixel path as `vgatest` and
+ * `doom`, same one-way-trip-to-text-mode caveat if it doesn't shut
+ * down cleanly (it does, via Escape). */
+void cmd_3d(int argc, char **args)
+{
+    (void)argc; (void)args;
+    render3d_run();
 }
 
 void cmd_about(int argc, char **args)

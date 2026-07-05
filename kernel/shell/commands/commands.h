@@ -24,6 +24,7 @@ void cmd_beep(int argc, char **args);
 void cmd_soundinfo(int argc, char **args);
 void cmd_vgatest(int argc, char **args);
 void cmd_doom(int argc, char **args);
+void cmd_3d(int argc, char **args);
 void cmd_crash(int argc, char **args);
 void cmd_about(int argc, char **args);
 void cmd_uname(int argc, char **args);

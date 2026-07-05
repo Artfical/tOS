@@ -181,6 +181,7 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `soundinfo` | Show which audio backend is active (or the vendor/device ID of an unsupported sound card, if any) |
 | `vgatest` | Switch to a real pixel graphics mode via Bochs/VBE and draw a test pattern — see [Linear framebuffer graphics](#linear-framebuffer-graphics-work-in-progress) (currently a one-way trip; `reboot` afterward) |
 | `doom` | Play the DOOM shareware episode — see [DOOM](#doom) (currently a one-way trip; `reboot` afterward) |
+| `3d` | Rotating filled/shaded/z-buffered cube — see [3D rasterizer](#3d-rasterizer-3d) (Escape returns to the desktop) |
 | `crash` | Show the full-screen crash display with a made-up error, for demo purposes — press any key to return, nothing is actually wrong |
 | `about` | About tOS |
 | `uname` | System information |
@@ -592,6 +593,65 @@ some environments. `kernel/doom/port/doomgeneric_tos.c`'s
 call-counter substitutes for the clock if it looks stuck for too
 long) so the game can't hang forever waiting on it even if this
 happens.
+
+## 3D rasterizer (`3d`)
+
+`kernel/drivers/video/render3d.c` is a from-scratch software 3D
+renderer: a rotating cube, filled (not wireframe), flat-shaded per
+face against a fixed light direction, with a real per-pixel z-buffer
+for hidden-surface removal, drawn through the same real Bochs/VBE
+linear framebuffer `vgatest` and DOOM use (320x200x32, one direct
+pixel write per pixel — no text-cell approximation).
+
+Pipeline, roughly: object-space cube vertices → rotated each frame
+(two independent sine/cosine-driven angles, using tiny self-contained
+`r3d_sin`/`r3d_cos`/`r3d_sqrt` approximations rather than pulling in
+any of the existing float-math code, which all lives behind either
+`kernel/doom/port`'s compat headers or MicroPython's own internal
+`math_stubs.c` — neither meant to be a general kernel-wide
+`<math.h>`) → each face's normal recomputed post-rotation and
+backface-culled against the view direction → perspective-projected
+to screen space → rasterized triangle-by-triangle into an offscreen
+buffer with barycentric coordinates, testing/updating a float
+z-buffer per pixel → Lambertian shading (`dot(normal, light)`,
+clamped with a small ambient floor so unlit faces aren't pure black)
+picks each face's color intensity → the whole offscreen buffer is
+blitted to the real framebuffer once per frame.
+
+Run it with the `3d` shell command; Escape returns to the desktop
+(same `bochs_disable()` + `vga_set_mode(VGA_MODE_TEXT)` restore
+`vgatest` uses, with the same known text-content-restore caveat
+documented above — geometry comes back correctly, cosmetic content
+does not, yet).
+
+Building this surfaced one real bug worth calling out: the first
+version used two ~250KB static buffers (z-buffer + offscreen color
+buffer) instead of heap allocation. That extra ~500KB of BSS pushed
+the kernel image's in-memory footprint far enough to collide with
+where GRUB had already placed the initrd module, corrupting it during
+boot — the machine triple-faulted and rebooted in a loop during
+"ramfs: importing initrd", every time, before the `3d` command could
+ever even run. Switched to heap allocation (`malloc()`, which only
+happens long after boot has finished) instead. A second, smaller bug:
+`keyboard_getchar()`'s ASCII table maps the Escape scancode to `0`
+(it isn't a printable character), so it can never actually return 27
+— the exit check needs the raw press/release event queue
+(`keyboard_get_raw_event()`, the same one DOOM's platform layer uses)
+instead, which explicitly special-cases Escape.
+
+**Verification note:** this was verified by confirming, via serial
+log, that mode-setting/buffer-allocation/the render loop all execute
+without crashing (each traced with a temporary log line, since
+removed) and that Escape cleanly returns control to a still-responsive
+shell (`help` runs normally right afterward) — rather than a visual
+screenshot. Automated screendump capture of this session's QEMU
+instance produced a "Guest has not initialized the display (yet)"
+placeholder specifically while in 320x200x32 VBE graphics mode
+(both with `-display none` and with a VNC backend attached), despite
+DOOM's screendump capturing correctly in the same mode earlier in
+the same environment -- most likely a capture-tooling quirk in that
+test session rather than anything code-side, but flagging it plainly
+rather than claiming a screenshot that wasn't actually taken.
 
 ## Audio
 
