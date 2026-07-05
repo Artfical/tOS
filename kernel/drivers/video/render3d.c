@@ -128,6 +128,10 @@ void render3d_run(void)
         while (keyboard_get_raw_event(&rk, &pressed)) {
             if (rk == 27 && pressed) quit = 1;
         }
+        /* Ctrl+C, same as DOOM's fullscreen exit -- comes through the
+         * regular ASCII queue (ctrl_pressed folds 'c' down to 0x03),
+         * not the raw one above. */
+        if (keyboard_data_available() && keyboard_getchar() == 3) quit = 1;
         if (quit) break;
 
         float t = (float)(debugmon_uptime_ms() - start_ms) / 1000.0f;

@@ -9,11 +9,32 @@
 #include "doomgeneric.h"
 #include "doomkeys.h"
 #include "bochs.h"
+#include "vga.h"
 #include "keyboard.h"
 #include "debugmon.h"
 #include "terminal.h"
 
 static bochs_device_t g_bochs;
+
+/* Set by doom_window_run()/cmd_doom() (kernel/doom/port/doom_main.c)
+ * before doomgeneric_tos_run() -- only used to decide whether
+ * Ctrl+C-in-the-loop is allowed to restore video mode and return on
+ * its own (see the Ctrl+C check in doomgeneric_tos_run() below). A
+ * windowed instance's task is spawned via kernel/display/wm.c's
+ * task_spawn(window_task_entry, ...), whose stack is only ever set up
+ * to be torn down by task_kill() (see scheduler.c's
+ * setup_task_stack() -- there's no valid return address on it for the
+ * entry function to `ret` into), so doomgeneric_tos_run() returning
+ * normally there would crash. Closing the window (wm_close_window()'s
+ * WIN_KIND_DOOM case) already does the same restore before killing
+ * the task, so windowed mode just leaves Ctrl+C to do nothing and
+ * relies on that instead. */
+static int g_windowed = 0;
+
+void doomgeneric_tos_set_windowed(int windowed)
+{
+    g_windowed = windowed;
+}
 
 #define KEYQUEUE_SIZE 32
 static unsigned short s_KeyQueue[KEYQUEUE_SIZE];
@@ -150,12 +171,24 @@ void DG_SetWindowTitle(const char *title)
  * as a desktop window, the actual restore back to VGA text mode on
  * close is handled by kernel/display/wm.c's wm_close_window() (see its
  * WIN_KIND_DOOM special case), not by this loop returning; the CLI
- * `doom` command has no such hook, hence the README's one-way-trip
- * caveat still applying there. */
+ * `doom` command (g_windowed == 0) instead watches for Ctrl+C itself
+ * below and does the same restore before returning to the shell, so
+ * it no longer needs a `reboot` to get the desktop back either. */
 void doomgeneric_tos_run(int argc, char **argv)
 {
     doomgeneric_Create(argc, argv);
     for (;;) {
+        if (!g_windowed && keyboard_data_available()) {
+            char c = keyboard_getchar();
+            if (c == 3) { /* Ctrl+C */
+                bochs_disable();
+                vga_set_mode(VGA_MODE_TEXT);
+                terminal_set_force_direct(0);
+                terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
+                terminal_clear();
+                return;
+            }
+        }
         doomgeneric_Tick();
     }
 }

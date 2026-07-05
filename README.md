@@ -180,8 +180,8 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `beep [on\|off\|test]` | Toggle system UI sounds (window open/close, clicks) or fire a one-off test tone |
 | `soundinfo` | Show which audio backend is active (or the vendor/device ID of an unsupported sound card, if any) |
 | `vgatest` | Switch to a real pixel graphics mode via Bochs/VBE and draw a test pattern — see [Linear framebuffer graphics](#linear-framebuffer-graphics-work-in-progress) (currently a one-way trip; `reboot` afterward) |
-| `doom` | Play the DOOM shareware episode — see [DOOM](#doom) (currently a one-way trip; `reboot` afterward) |
-| `3d` | Rotating filled/shaded/z-buffered cube — see [3D rasterizer](#3d-rasterizer-3d) (Escape returns to the desktop) |
+| `doom` | Play the DOOM shareware episode — see [DOOM](#doom) (Ctrl+C returns to the desktop) |
+| `3d` | Rotating filled/shaded/z-buffered cube — see [3D rasterizer](#3d-rasterizer-3d) (Escape or Ctrl+C returns to the desktop) |
 | `crash` | Show the full-screen crash display with a made-up error, for demo purposes — press any key to return, nothing is actually wrong |
 | `about` | About tOS |
 | `uname` | System information |
@@ -483,9 +483,10 @@ used to stay stuck at the graphics resolution, now it correctly comes
 back to 80x25 text dimensions), but character/attribute rendering
 itself still comes back as static-like noise instead of readable
 text, and that part remains unsolved after another dedicated attempt.
-Until it's fully fixed, treat `vgatest` (and DOOM, below) as a
-one-way trip for this session — reboot
-(`reboot`) to get a clean desktop back afterward.
+Until it's fully fixed, treat `vgatest` as a one-way trip for this
+session — reboot (`reboot`) to get a clean desktop back afterward.
+(DOOM and the 3D rasterizer below both have their own clean way back
+via Ctrl+C, so this caveat doesn't apply to them.)
 
 ## DOOM
 
@@ -498,8 +499,11 @@ tOS's own platform glue (framebuffer blit, keyboard input, timing).
 
 - **`doom` shell command** — fullscreen, using the real Bochs/VBE
   linear framebuffer above as its display (actual pixel graphics, the
-  same resolution DOOM renders internally). This is the one with the
-  reboot-to-return caveat described above.
+  same resolution DOOM renders internally). Press Ctrl+C to return to
+  the desktop: `doomgeneric_tos_run()`'s loop watches for it and does
+  the same `bochs_disable()` + `vga_set_mode(VGA_MODE_TEXT)` restore
+  `cmd_vgatest` uses before returning to the shell, so `reboot` is no
+  longer needed here either.
 - **"DOOM" from the T menu, or `uygulamaac("doom")`/`open("doom")`
   from a script** — opens from the desktop like any other app, but
   renders through the exact same real Bochs/VBE pixel path as the
@@ -550,13 +554,11 @@ itself:
   (`keyboard_get_raw_event()`) alongside the existing press-only one,
   without touching any existing caller's behavior.
 
-**Known gaps:** no sound yet, no save/load, and the `doom` shell
-command specifically has no way back to the desktop without `reboot`
-(the T-menu/windowed launch doesn't have this problem — see above).
-Since DOOM's graphics mode fully replaces the desktop's text mode
-while running, there's no compositing with other windows behind it
-either way — "windowed" here means how it's launched and closed, not
-that it shares the screen with other apps while playing.
+**Known gaps:** no sound yet, no save/load. Since DOOM's graphics mode
+fully replaces the desktop's text mode while running, there's no
+compositing with other windows behind it either way — "windowed" here
+means how it's launched and closed, not that it shares the screen with
+other apps while playing.
 
 **If DOOM appears to hang right after the "Auto-scaling factor" line**
 (never reaching the title screen) — this turned out to have a real,
@@ -618,8 +620,8 @@ clamped with a small ambient floor so unlit faces aren't pure black)
 picks each face's color intensity → the whole offscreen buffer is
 blitted to the real framebuffer once per frame.
 
-Run it with the `3d` shell command; Escape returns to the desktop
-(same `bochs_disable()` + `vga_set_mode(VGA_MODE_TEXT)` restore
+Run it with the `3d` shell command; Escape or Ctrl+C returns to the
+desktop (same `bochs_disable()` + `vga_set_mode(VGA_MODE_TEXT)` restore
 `vgatest` uses, with the same known text-content-restore caveat
 documented above — geometry comes back correctly, cosmetic content
 does not, yet).
