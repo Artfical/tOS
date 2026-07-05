@@ -20,4 +20,15 @@ void vga_init(void);
 void vga_set_mode(uint8_t mode);
 void vga_set_palette(uint8_t index, uint8_t r, uint8_t g, uint8_t b);
 void vga_write_pixel(int x, int y, uint8_t color);
+
+/* Mode 13h (320x200x256, chained) framebuffer, mapped straight at
+ * physical 0xA0000 -- direct pointer for callers (e.g. DOOM's
+ * platform layer) that need to blit a whole frame at once instead of
+ * one vga_write_pixel() call per pixel. */
+uint8_t *vga_get_framebuffer(void);
+#define VGA_GFX_WIDTH  320
+#define VGA_GFX_HEIGHT 200
+
+void vga_debug_dump_regs(void);
+
 #endif

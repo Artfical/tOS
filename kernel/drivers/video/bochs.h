@@ -31,4 +31,13 @@ typedef struct {
 int bochs_init(bochs_device_t *dev);
 int bochs_set_mode(bochs_device_t *dev, int width, int height, int bpp);
 void bochs_put_pixel(bochs_device_t *dev, int x, int y, uint32_t color);
+
+/* Turns VBE back off. Unlike hand-rolled legacy VGA mode switching
+ * (CRTC/Sequencer/Graphics Controller/Attribute Controller register
+ * gymnastics -- fragile enough that a from-scratch mode 13h attempt
+ * here left the screen corrupted on the way back to text mode), VBE
+ * is a strict overlay on top of the legacy VGA state: disabling it
+ * cleanly falls back to whatever text mode was already active
+ * underneath, no manual register restore needed. */
+void bochs_disable(void);
 #endif

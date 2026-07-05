@@ -425,6 +425,8 @@ static void shell_exec_line(char *cmd_line)
             cmd_beep(argc, args);
         } else if (strcmp(c, "soundinfo") == 0) {
             cmd_soundinfo(argc, args);
+        } else if (strcmp(c, "vgatest") == 0) {
+            cmd_vgatest(argc, args);
         } else if (strcmp(c, "crash") == 0) {
             cmd_crash(argc, args);
         } else if (strcmp(c, "about") == 0) {

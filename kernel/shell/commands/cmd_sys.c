@@ -15,6 +15,7 @@
 #include "debugmon.h"
 #include "audio.h"
 #include "ich.h"
+#include "bochs.h"
 
 static void print_num(uint32_t n)
 {
@@ -210,6 +211,44 @@ void cmd_soundinfo(int argc, char **args)
     } else {
         terminal_writestring("No PCI audio device found at all.\n");
     }
+}
+
+/* Temporary test command for the mode 13h VGA driver work: switches
+ * to 320x200x256 graphics, draws a palette gradient bar plus a
+ * crosshair so both pixel addressing and the DAC palette can be
+ * checked visually, waits for a key, then switches back to text
+ * mode. Not meant to ship long-term -- exists to verify vga_set_mode()
+ * actually produces a correct picture before building anything on
+ * top of it (e.g. a DOOM port). */
+void cmd_vgatest(int argc, char **args)
+{
+    (void)argc; (void)args;
+
+    bochs_device_t bochs;
+    if (bochs_init(&bochs) != 0 || !bochs.lfb) {
+        terminal_writestring("vgatest: no Bochs/VBE-capable display adapter found\n");
+        return;
+    }
+
+    bochs_set_mode(&bochs, 320, 200, 32);
+
+    for (int y = 0; y < 200; y++) {
+        for (int x = 0; x < 320; x++) {
+            uint32_t r = (uint32_t)(x * 255 / 320);
+            uint32_t b = 255 - r;
+            bochs_put_pixel(&bochs, x, y, (r << 16) | (0 << 8) | b);
+        }
+    }
+    for (int x = 0; x < 320; x++) bochs_put_pixel(&bochs, x, 100, 0x000000);
+    for (int y = 0; y < 200; y++) bochs_put_pixel(&bochs, 160, y, 0x000000);
+
+    while (keyboard_data_available()) keyboard_getchar();
+    keyboard_getchar();
+
+    bochs_disable();
+    terminal_set_force_direct(0);
+    terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
+    terminal_clear();
 }
 
 /* Shows the exact same full-screen red panic display a real kernel

@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
-**Current version: v0.9.88**
+**Current version: v0.9.89**
 
 ## Screenshots
 
@@ -175,6 +175,7 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `version` | Show kernel version |
 | `beep [on\|off\|test]` | Toggle system UI sounds (window open/close, clicks) or fire a one-off test tone |
 | `soundinfo` | Show which audio backend is active (or the vendor/device ID of an unsupported sound card, if any) |
+| `vgatest` | Switch to a real pixel graphics mode via Bochs/VBE and draw a test pattern — see [Linear framebuffer graphics](#linear-framebuffer-graphics-work-in-progress) (currently a one-way trip; `reboot` afterward) |
 | `crash` | Show the full-screen crash display with a made-up error, for demo purposes — press any key to return, nothing is actually wrong |
 | `about` | About tOS |
 | `uname` | System information |
@@ -454,6 +455,28 @@ Several built-in GUI applications are launchable from the dock:
 - **PDF Viewer** (`pdfview.c`, backed by a from-scratch reader in `pdf_parse.c`) — opens real PDF files: page text is rendered to the canvas with pan (arrow keys or click-drag toolbar), Zoom In/Out, Fit, Prev/Next page (`[`/`]`), and text search (`Ctrl+F` prompts for a term; `Ctrl+F`/`N` again jumps to the next match, highlighted and wrapping across pages). The reader finds objects by scanning for `N G obj`/`endobj` pairs rather than parsing the xref table, decompresses `FlateDecode` content streams (reusing the same DEFLATE inflater as the PNG decoder), and interprets the text-showing subset of content-stream operators (`Tf`, `Td`/`TD`/`Tm`/`T*`, `Tj`/`TJ` and the quote-mark show operators) to place text. It does not render vector graphics/images or map embedded font glyph encodings, so pages are shown as extracted text at approximately their real position/size rather than a pixel-perfect rasterization. Opens via the Special menu, `open pdf`, or double-clicking a `.pdf` in Files.
 - **Note Pad** (`stickynotes.c`) — a homage to the classic Mac OS 7 Note Pad desk accessory: a fixed 8-page yellow pad (one page visible at a time), with the same folded-corner "dog-ear" in the bottom-right corner to click through to the next page — no keyboard shortcut for that, just like the original. Autosaves every keystroke to `/.stickynotes`, so notes are always there next boot with no explicit save step. Opens via the Special menu or `open notes`.
 - **About** (`about.c`) — system information window
+
+## Linear framebuffer graphics (work in progress)
+
+The GUI above is entirely VGA text mode (80x25 character cells) —
+tOS has no real pixel graphics yet, which is a hard requirement for
+things like a DOOM port. First step towards that: `kernel/drivers/video/bochs.c`
+now drives the Bochs/QEMU VBE display interface (the `bochs-display`/`std-vga`
+PCI device, vendor `0x1234` device `0x1111`) to switch into a real linear
+framebuffer mode (e.g. 320x200x32bpp) and plot pixels directly.
+
+Try it with the `vgatest` shell command: switches into graphics mode,
+draws a gradient with a crosshair, waits for a key, then attempts to
+return to the desktop.
+
+**Known limitation:** cleanly returning to VGA text mode after using
+graphics mode doesn't work reliably yet (the screen comes back
+garbled) — legacy VGA CRTC/Sequencer/Graphics Controller/Attribute
+Controller register restoration turned out to be considerably more
+fragile than the mode-set itself. Until that's solved, treat `vgatest`
+(and anything built on top of it, like an eventual DOOM port) as a
+one-way trip for this session — reboot (`reboot`) to get a clean
+desktop back afterward.
 
 ## Audio
 
