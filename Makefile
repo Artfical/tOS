@@ -42,6 +42,32 @@ MPY_PORT_CFLAGS = $(MPY_CFLAGS) \
               -Ikernel/drivers/net -Ikernel/drivers/usb -Ikernel/drivers/audio \
               -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
               -Ikernel/drivers/misc
+
+# 1990s vendored C (id Software/doomgeneric) trips plenty of things
+# -Wall/-Wextra/-Werror rightly reject in tOS's own code, same reason
+# MicroPython gets its own relaxed MPY_CFLAGS above. -Ikernel/doom/port
+# comes first so <string.h>/<stdlib.h>/<math.h>/etc resolve to that
+# directory's wrapper headers (which #include_next through to the real
+# kernel/lib ones, adding only the handful of extra declarations DOOM
+# needs -- see kernel/doom/port/doom_compat.c) instead of kernel/lib's
+# directly.
+DOOM_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+             -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
+             -mno-mmx -mno-sse -mno-sse2 \
+             -O2 -Wall -Wno-unused-variable -Wno-unused-function \
+             -Wno-unused-parameter -Wno-sign-compare -Wno-unused-but-set-variable \
+             -Wno-missing-field-initializers -Wno-implicit-fallthrough \
+             -Wno-missing-braces -Wno-parentheses -Wno-format \
+             -Wno-type-limits -Wno-unused-value \
+             -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200 \
+             -Ikernel/doom/port -Ikernel/doom \
+             -I. -Ikernel/core -Ikernel/display \
+             -Ikernel/fs -Ikernel/shell -Ikernel/shell/commands -Ikernel/lib -Ikernel/net \
+             -Ikernel/drivers/include -Ikernel/drivers/bus -Ikernel/drivers/storage \
+             -Ikernel/drivers/net -Ikernel/drivers/usb -Ikernel/drivers/audio \
+             -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
+             -Ikernel/drivers/misc
+
 LDFLAGS = -m elf_i386 -T kernel/boot/linker.ld
 ASFLAGS = --32
 
@@ -193,7 +219,14 @@ MPY_PY_SRCS := $(filter-out %/asmarm.c %/asmthumb.c %/asmxtensa.c %/asmrv32.c \
 MPY_PY_OBJS := $(MPY_PY_SRCS:.c=.o)
 KERNEL_OBJS += $(MPY_PY_OBJS)
 
-PROGRAMS = programs/hello.elf programs/tosgui_demo.py lib/libc.so programs/hello_dyn.elf
+# Vendored id Software/doomgeneric source (kernel/doom/LICENSE, GPLv2)
+# plus tOS's own platform glue (kernel/doom/port/) -- see README's
+# "Linear framebuffer graphics" section.
+DOOM_SRCS := $(wildcard kernel/doom/*.c) $(wildcard kernel/doom/port/*.c)
+DOOM_OBJS := $(DOOM_SRCS:.c=.o)
+KERNEL_OBJS += $(DOOM_OBJS)
+
+PROGRAMS = programs/hello.elf programs/tosgui_demo.py lib/libc.so programs/hello_dyn.elf assets/doom1.wad
 
 .PHONY: all clean run iso
 
@@ -208,6 +241,12 @@ kernel/micropython/shared/%.o: kernel/micropython/shared/%.c
 
 kernel/micropython/ports/tos/%.o: kernel/micropython/ports/tos/%.c
 	$(CC) $(MPY_PORT_CFLAGS) -c $< -o $@
+
+kernel/doom/port/%.o: kernel/doom/port/%.c
+	$(CC) $(DOOM_CFLAGS) -c $< -o $@
+
+kernel/doom/%.o: kernel/doom/%.c
+	$(CC) $(DOOM_CFLAGS) -c $< -o $@
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@

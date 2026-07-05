@@ -39,7 +39,7 @@ typedef struct heap_header {
 static heap_header_t *heap_list = NULL;
 static int heap_corrupt_reported = 0;
 
-void memory_init(uint32_t mem_upper)
+void memory_init(uint32_t mem_upper, uint32_t reserved_end)
 {
     total_pages = (mem_upper * 1024) / PAGE_SIZE;
     if (total_pages > 0x100000) total_pages = 0x100000;
@@ -51,6 +51,7 @@ void memory_init(uint32_t mem_upper)
     uint32_t kernel_end = 0;
     extern uint32_t end;
     kernel_end = (uint32_t)&end;
+    if (reserved_end > kernel_end) kernel_end = reserved_end;
 
     for (uint32_t i = 0; i < kernel_end / PAGE_SIZE + 1; i++) {
         page_bitmap[i / 32] |= (1 << (i % 32));
@@ -191,10 +192,20 @@ static void *heap_alloc(uint32_t size)
         curr = curr->next;
     }
 
+    /* Grow by whole 1MB steps, but always by *enough* steps to fit
+     * this request in one go -- growing by a fixed single 0x100000
+     * regardless of how big `size` is meant any single allocation
+     * bigger than about 1MB could never succeed no matter how high
+     * KERNEL_HEAP_MAX_SIZE is raised (the very next check below would
+     * always fail it). Found via DOOM's zone allocator, which wants a
+     * single 5-6MB block up front. */
     uint32_t old_heap_end = heap_end;
-    heap_end += 0x100000;
-    if (heap_end > KERNEL_HEAP_START + 0x400000)
-        heap_end = KERNEL_HEAP_START + 0x400000;
+    uint32_t needed = HEAP_SLOT(size);
+    uint32_t grow = ((needed + 0xFFFFF) / 0x100000) * 0x100000;
+    if (grow < 0x100000) grow = 0x100000;
+    heap_end += grow;
+    if (heap_end > KERNEL_HEAP_START + KERNEL_HEAP_MAX_SIZE)
+        heap_end = KERNEL_HEAP_START + KERNEL_HEAP_MAX_SIZE;
 
     if (old_heap_end + HEAP_SLOT(size) > heap_end) {
         heap_irq_restore(flags);

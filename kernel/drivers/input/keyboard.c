@@ -15,6 +15,40 @@ static volatile int key_buffer_tail = 0;
 static volatile int special_buf[16];
 static volatile int special_head = 0;
 static volatile int special_tail = 0;
+
+/* Raw press/release event queue: everything above (key_buffer,
+ * special_buf) only ever tracks key *presses* -- fine for line-
+ * editing/menus, but games (DOOM's platform layer wants both a press
+ * and a matching release per key, e.g. to know when to stop moving)
+ * need real key-up events too, which nothing here previously
+ * recorded at all (`if (scancode & 0x80) return;` silently dropped
+ * every break code). This queue is populated for every event
+ * regardless of what else consumes it, so it doesn't disturb any
+ * existing caller. */
+typedef struct { uint8_t key; uint8_t pressed; } kbd_raw_event_t;
+static volatile kbd_raw_event_t raw_queue[64];
+static volatile int raw_head = 0;
+static volatile int raw_tail = 0;
+
+static void push_raw_event(uint8_t key, int pressed)
+{
+    int next = (raw_head + 1) % 64;
+    if (next != raw_tail) {
+        raw_queue[raw_head].key = key;
+        raw_queue[raw_head].pressed = (uint8_t)pressed;
+        raw_head = next;
+    }
+}
+
+int keyboard_get_raw_event(uint8_t *key, int *pressed)
+{
+    if (raw_head == raw_tail) return 0;
+    *key = raw_queue[raw_tail].key;
+    *pressed = raw_queue[raw_tail].pressed;
+    raw_tail = (raw_tail + 1) % 64;
+    return 1;
+}
+
 static int caps_lock = 0;
 static int shift_pressed = 0;
 static int ctrl_pressed = 0;
@@ -100,6 +134,14 @@ static void push_special(uint8_t scancode)
     }
 }
 
+/* Raw-event key codes for non-ASCII keys (arrows), matching
+ * push_special()'s existing 1=left/2=right/3=up/4=down convention so
+ * both queues agree on what these numbers mean. */
+#define RAWKEY_LEFT  1
+#define RAWKEY_RIGHT 2
+#define RAWKEY_UP    3
+#define RAWKEY_DOWN  4
+
 static void process_scancode(uint8_t scancode)
 {
     if (scancode == 0xE0) { extended = 1; return; }
@@ -107,8 +149,16 @@ static void process_scancode(uint8_t scancode)
     if (extended) {
         extended = 0;
         if (scancode == 0x53) { keyboard_push_char(127); return; }
-        if (scancode == 0x48 || scancode == 0x50 || scancode == 0x4B || scancode == 0x4D) {
-            push_special(scancode);
+        uint8_t base = scancode & 0x7F;
+        int is_release = (scancode & 0x80) != 0;
+        int rawkey = 0;
+        if (base == 0x4B) rawkey = RAWKEY_LEFT;
+        else if (base == 0x4D) rawkey = RAWKEY_RIGHT;
+        else if (base == 0x48) rawkey = RAWKEY_UP;
+        else if (base == 0x50) rawkey = RAWKEY_DOWN;
+        if (rawkey) push_raw_event((uint8_t)rawkey, !is_release);
+        if (!is_release && (base == 0x48 || base == 0x50 || base == 0x4B || base == 0x4D)) {
+            push_special(base);
         }
         return;
     }
@@ -118,6 +168,21 @@ static void process_scancode(uint8_t scancode)
     if (scancode == 0x1D) { ctrl_pressed = 1; return; }
     if (scancode == 0x9D) { ctrl_pressed = 0; return; }
     if (scancode == 0x3A) { caps_lock = !caps_lock; return; }
+
+    /* Raw press/release for every plain key, independent of the
+     * shift/caps/ctrl-aware ASCII translation below -- a game wants
+     * to know "the physical key bound to move-forward went up", not
+     * "an uppercase W was typed". Uses the unshifted lowercase table
+     * purely as a stable per-scancode identifier. */
+    {
+        uint8_t base = scancode & 0x7F;
+        int is_release = (scancode & 0x80) != 0;
+        uint8_t rawkey = 0;
+        if (base == 0x01) rawkey = 27; /* Escape isn't in scancode_lower */
+        else if (base < 0x53) rawkey = (uint8_t)scancode_lower[base];
+        if (rawkey) push_raw_event(rawkey, !is_release);
+    }
+
     if (scancode & 0x80) return;
 
     if (scancode == 0x48 || scancode == 0x50 || scancode == 0x4B || scancode == 0x4D) {

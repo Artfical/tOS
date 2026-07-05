@@ -616,7 +616,7 @@ void ramfs_import_initrd(uint32_t addr, uint32_t size)
                 ramfs_inode_t *fn = iget(f_ino);
                 fn->data = malloc(fsize);
                 if (fn->data) {
-                    for (uint32_t j = 0; j < fsize; j++) fn->data[j] = p[512 + j];
+                    memcpy(fn->data, p + 512, fsize);
                     fn->size = fsize;
                 }
             }

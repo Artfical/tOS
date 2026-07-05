@@ -242,7 +242,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     }
 
     if (mem_upper == 0) mem_upper = 32768;
-    memory_init(mem_upper);
+    memory_init(mem_upper, have_initrd ? initrd_end : 0);
 
     paging_init();
     tss_init();

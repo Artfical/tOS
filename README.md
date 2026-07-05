@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
-**Current version: v0.9.89**
+**Current version: v0.9.90**
 
 ## Screenshots
 
@@ -176,6 +176,7 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `beep [on\|off\|test]` | Toggle system UI sounds (window open/close, clicks) or fire a one-off test tone |
 | `soundinfo` | Show which audio backend is active (or the vendor/device ID of an unsupported sound card, if any) |
 | `vgatest` | Switch to a real pixel graphics mode via Bochs/VBE and draw a test pattern — see [Linear framebuffer graphics](#linear-framebuffer-graphics-work-in-progress) (currently a one-way trip; `reboot` afterward) |
+| `doom` | Play the DOOM shareware episode — see [DOOM](#doom) (currently a one-way trip; `reboot` afterward) |
 | `crash` | Show the full-screen crash display with a made-up error, for demo purposes — press any key to return, nothing is actually wrong |
 | `about` | About tOS |
 | `uname` | System information |
@@ -474,9 +475,57 @@ graphics mode doesn't work reliably yet (the screen comes back
 garbled) — legacy VGA CRTC/Sequencer/Graphics Controller/Attribute
 Controller register restoration turned out to be considerably more
 fragile than the mode-set itself. Until that's solved, treat `vgatest`
-(and anything built on top of it, like an eventual DOOM port) as a
-one-way trip for this session — reboot (`reboot`) to get a clean
-desktop back afterward.
+(and DOOM, below) as a one-way trip for this session — reboot
+(`reboot`) to get a clean desktop back afterward.
+
+## DOOM
+
+tOS can run the DOOM shareware episode, using the Bochs/VBE
+framebuffer above as its display. Run it with the `doom` shell
+command. `kernel/doom/` vendors
+[doomgeneric](https://github.com/ozkl/doomgeneric)'s engine source
+(GPLv2 — see `kernel/doom/LICENSE` and `kernel/doom/README.md` for
+full licensing details, including the freely-distributable shareware
+`assets/doom1.wad` bundled in the disk image); `kernel/doom/port/` is
+tOS's own platform glue (framebuffer blit, keyboard input, timing).
+
+Getting this running surfaced and fixed several real, previously
+unnoticed bugs elsewhere in the kernel, all independent of DOOM
+itself:
+- `printf()`/`vsnprintf()` didn't support precision on `%d` (e.g.
+  `%.3d` for zero-padding) or `%s` (max-length truncation) — silently
+  printed the literal format text instead. Now implemented in
+  `kernel/lib/stdio.c`.
+- `printf()` double-wrote every character to the serial log (both
+  directly and via `terminal_putchar()`, which already mirrors to
+  serial itself) — never noticed since almost nothing else in this
+  codebase uses `printf()` for output.
+- The kernel heap could never grow to satisfy a single allocation
+  larger than ~1MB, no matter how high its configured maximum was —
+  each failed `malloc()` only grew the heap by one fixed 1MB step
+  before immediately re-checking whether that was enough. Fixed to
+  grow by as many steps as the request actually needs.
+- **The most serious one:** `memory_init()` picked where the heap
+  starts based only on the kernel binary's own end address, with no
+  idea that the initrd module (loaded separately by GRUB, holding
+  every bundled file including the WAD) occupies its own chunk of
+  physical memory nearby. Once a single allocation was both large
+  enough and early enough (DOOM's ~4MB WAD, imported at boot), the
+  heap grew straight into the initrd's own memory and silently
+  corrupted the *not-yet-imported* tail of the exact file being
+  imported, while `ramfs_import_initrd()` was still reading from that
+  same physical memory. Fixed by having the heap start after
+  whichever is later: the kernel's own end, or the initrd module's end.
+- tOS's keyboard driver only ever tracked key *presses*, never
+  releases (`if (scancode & 0x80) return;` silently dropped every
+  break code) — fine for line-editing and menus, but DOOM's platform
+  layer needs to know when a key is released too (to stop moving,
+  stop firing, etc). Added a small raw press/release event queue
+  (`keyboard_get_raw_event()`) alongside the existing press-only one,
+  without touching any existing caller's behavior.
+
+**Known gaps:** no sound yet, no save/load, and (per the framebuffer
+limitation above) no way back to the desktop without `reboot`.
 
 ## Audio
 

@@ -23,22 +23,13 @@ static void print_char(char **out, size_t *n, char c)
     }
 }
 
-static void print_str(char **out, size_t *n, const char *s)
-{
-    if (!s) s = "(null)";
-    while (*s) {
-        print_char(out, n, *s);
-        s++;
-    }
-}
-
 static void print_pad(char **out, size_t *n, char pad, int count)
 {
     while (count-- > 0)
         print_char(out, n, pad);
 }
 
-static void print_num(char **out, size_t *n, uint32_t val, int base, int sign, int width, int zero, int left)
+static void print_num(char **out, size_t *n, uint32_t val, int base, int sign, int width, int zero, int left, int prec)
 {
     char buf[36];
     char *p = buf + sizeof(buf);
@@ -53,6 +44,15 @@ static void print_num(char **out, size_t *n, uint32_t val, int base, int sign, i
         int d = val % base;
         *--p = d < 10 ? '0' + d : 'a' + d - 10;
         val /= base;
+    }
+    /* A precision on an integer conversion (e.g. "%.3d") means "at
+     * least this many digits, zero-padded", independent of (and
+     * overriding) the width/'0' flag -- used for e.g. DOOM's
+     * "STCFN%.3d" lump-name formatting. */
+    if (prec >= 0) {
+        int digits = (buf + sizeof(buf) - 1) - p;
+        while (digits < prec && p > buf + 1) { *--p = '0'; digits++; }
+        zero = 0;
     }
     int len = (buf + sizeof(buf) - 1) - p + neg;
     if (left) {
@@ -71,12 +71,15 @@ static void print_num(char **out, size_t *n, uint32_t val, int base, int sign, i
     while (*p) print_char(out, n, *p++);
 }
 
-static void print_str_padded(char **out, size_t *n, const char *s, int width, int left)
+static void print_str_padded(char **out, size_t *n, const char *s, int width, int left, int prec)
 {
     if (!s) s = "(null)";
     int len = (int)strlen(s);
+    /* A precision on %s (e.g. "%.8s") caps how many characters are
+     * printed, unlike every other flag/width here which only pads. */
+    if (prec >= 0 && len > prec) len = prec;
     if (!left) print_pad(out, n, ' ', width - len);
-    print_str(out, n, s);
+    for (int i = 0; i < len; i++) print_char(out, n, s[i]);
     if (left) print_pad(out, n, ' ', width - len);
 }
 
@@ -91,7 +94,7 @@ int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap)
             continue;
         }
         fmt++;
-        int width = 0, zero = 0, left = 0;
+        int width = 0, zero = 0, left = 0, prec = -1;
         while (*fmt == '-' || *fmt == '0') {
             if (*fmt == '-') left = 1;
             else zero = 1;
@@ -101,23 +104,31 @@ int vsnprintf(char *buf, size_t n, const char *fmt, va_list ap)
             width = width * 10 + (*fmt - '0');
             fmt++;
         }
+        if (*fmt == '.') {
+            fmt++;
+            prec = 0;
+            while (*fmt >= '0' && *fmt <= '9') {
+                prec = prec * 10 + (*fmt - '0');
+                fmt++;
+            }
+        }
         switch (*fmt) {
             case 'd':
             case 'i':
             case 'u': {
                 int s = (*fmt == 'd' || *fmt == 'i') ? 1 : 0;
-                print_num(&buf, &n, va_arg(ap, uint32_t), 10, s, width, zero, left);
+                print_num(&buf, &n, va_arg(ap, uint32_t), 10, s, width, zero, left, prec);
                 break;
             }
             case 'x':
-            case 'p': print_num(&buf, &n, va_arg(ap, uint32_t), 16, 0, width, zero, left); break;
+            case 'p': print_num(&buf, &n, va_arg(ap, uint32_t), 16, 0, width, zero, left, prec); break;
             case 'X': {
                 char *p = buf;
-                print_num(&buf, &n, va_arg(ap, uint32_t), 16, 0, width, zero, left);
+                print_num(&buf, &n, va_arg(ap, uint32_t), 16, 0, width, zero, left, prec);
                 while (p < buf) { if (*p >= 'a' && *p <= 'f') *p -= 32; p++; }
                 break;
             }
-            case 's': print_str_padded(&buf, &n, va_arg(ap, const char *), width, left); break;
+            case 's': print_str_padded(&buf, &n, va_arg(ap, const char *), width, left, prec); break;
             case 'c': print_char(&buf, &n, va_arg(ap, int)); break;
             case '%': print_char(&buf, &n, '%'); break;
             default: print_char(&buf, &n, '%'); print_char(&buf, &n, *fmt); break;
@@ -151,9 +162,15 @@ int sprintf(char *buf, const char *fmt, ...)
 
 int putchar(int c)
 {
+    /* terminal_putchar() already mirrors to serial_putchar() itself
+     * (see terminal.c) -- calling it again here duplicated every
+     * character printf() ever wrote to the serial log. Never noticed
+     * before since almost everything else in this codebase writes via
+     * terminal_writestring() directly instead of printf(); DOOM's
+     * DEH_printf (#define'd straight to printf) is what first made it
+     * visible. */
     if (c == '\n') terminal_putchar('\r');
     terminal_putchar(c);
-    serial_putchar(c);
     return c;
 }
 
