@@ -512,12 +512,20 @@ tOS's own platform glue (framebuffer blit, keyboard input, timing).
   two at all — no blocky text-cell downsampling). Since the hardware
   can only be in one video mode at a time, the desktop's own VGA text
   mode is unavoidably replaced by DOOM's graphics mode while it's
-  running — closing the window (rather than quitting DOOM itself) is
-  what brings the desktop back: `kernel/display/wm.c`'s
-  `wm_close_window()` calls `bochs_disable()` +
-  `vga_set_mode(VGA_MODE_TEXT)` for a `WIN_KIND_DOOM` window before
-  killing its task, the same restore `cmd_vgatest` already uses, so no
-  `reboot` is needed afterward.
+  running. Two ways back: closing the window from the dock/taskbar
+  (`kernel/display/wm.c`'s `wm_close_window()` calls `bochs_disable()`
+  + `vga_set_mode(VGA_MODE_TEXT)` for a `WIN_KIND_DOOM` window before
+  killing its task), or pressing Ctrl+C from inside DOOM itself, which
+  now does the exact same thing from the other direction: it calls
+  `wm_kill_task_window(task_get_pid())` (the same helper
+  `wm_close_window()` uses internally, and the one Task Manager already
+  uses to kill an arbitrary window's task from outside) on itself, then
+  spins on `task_yield()` forever rather than returning -- a window
+  task is spawned via `task_spawn()`, whose stack (see scheduler.c's
+  `setup_task_stack()`) has no valid return address for the entry
+  function to `ret` into, so letting `doomgeneric_tos_run()` return
+  normally here (the way the CLI `doom` command's Ctrl+C does) would
+  crash. Either way, no `reboot` is needed.
 
 Getting this running surfaced and fixed several real, previously
 unnoticed bugs elsewhere in the kernel, all independent of DOOM

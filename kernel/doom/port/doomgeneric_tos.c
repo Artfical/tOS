@@ -13,6 +13,8 @@
 #include "keyboard.h"
 #include "debugmon.h"
 #include "terminal.h"
+#include "wm.h"
+#include "scheduler.h"
 
 static bochs_device_t g_bochs;
 
@@ -173,14 +175,35 @@ void DG_SetWindowTitle(const char *title)
  * WIN_KIND_DOOM special case), not by this loop returning; the CLI
  * `doom` command (g_windowed == 0) instead watches for Ctrl+C itself
  * below and does the same restore before returning to the shell, so
- * it no longer needs a `reboot` to get the desktop back either. */
+ * it no longer needs a `reboot` to get the desktop back either. A
+ * windowed instance handles Ctrl+C differently (see below) since its
+ * task can't just return the way the CLI command's can. */
 void doomgeneric_tos_run(int argc, char **argv)
 {
     doomgeneric_Create(argc, argv);
     for (;;) {
-        if (!g_windowed && keyboard_data_available()) {
+        if (keyboard_data_available()) {
             char c = keyboard_getchar();
             if (c == 3) { /* Ctrl+C */
+                if (g_windowed) {
+                    /* Can't just restore-and-return here the way the
+                     * CLI path below does -- this task was spawned via
+                     * kernel/display/wm.c's task_spawn(), whose stack
+                     * (see scheduler.c's setup_task_stack()) has no
+                     * valid return address for the entry function to
+                     * `ret` into. wm_kill_task_window() does the exact
+                     * same WIN_KIND_DOOM restore-then-task_kill()
+                     * wm_close_window() already does for the window's
+                     * close button, just triggered from inside the
+                     * window's own task instead of from wm's click
+                     * handler. task_kill() only marks this task a
+                     * zombie and unlinks it -- it doesn't stop it
+                     * running -- so this must never fall through back
+                     * into DOOM's own code afterward; spin on
+                     * task_yield() forever, same as task_exit() does. */
+                    wm_kill_task_window(task_get_pid());
+                    for (;;) task_yield();
+                }
                 bochs_disable();
                 vga_set_mode(VGA_MODE_TEXT);
                 terminal_set_force_direct(0);
