@@ -179,7 +179,7 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `version` | Show kernel version |
 | `beep [on\|off\|test]` | Toggle system UI sounds (window open/close, clicks) or fire a one-off test tone |
 | `soundinfo` | Show which audio backend is active (or the vendor/device ID of an unsupported sound card, if any) |
-| `vgatest` | Switch to a real pixel graphics mode via Bochs/VBE and draw a test pattern — see [Linear framebuffer graphics](#linear-framebuffer-graphics-work-in-progress) (currently a one-way trip; `reboot` afterward) |
+| `vgatest` | Switch to a real pixel graphics mode via Bochs/VBE and draw a test pattern — see [Linear framebuffer graphics](#linear-framebuffer-graphics-work-in-progress) (returns to a working desktop on its own) |
 | `doom` | Play the DOOM shareware episode — see [DOOM](#doom) (Ctrl+C returns to the desktop) |
 | `3d` | Rotating filled/shaded/z-buffered cube — see [3D rasterizer](#3d-rasterizer-3d) (Escape or Ctrl+C returns to the desktop) |
 | `crash` | Show the full-screen crash display with a made-up error, for demo purposes — press any key to return, nothing is actually wrong |
@@ -472,21 +472,45 @@ PCI device, vendor `0x1234` device `0x1111`) to switch into a real linear
 framebuffer mode (e.g. 320x200x32bpp) and plot pixels directly.
 
 Try it with the `vgatest` shell command: switches into graphics mode,
-draws a gradient with a crosshair, waits for a key, then attempts to
-return to the desktop.
+draws a gradient with a crosshair, waits for a key, then returns to
+the desktop.
 
-**Known limitation:** cleanly returning to VGA text mode after using
-graphics mode still doesn't fully work. `vgatest` now restores the
-legacy CRTC/Sequencer/Graphics Controller registers it snapshotted
-before ever touching Bochs/VBE (fixing the screen *geometry* — it
-used to stay stuck at the graphics resolution, now it correctly comes
-back to 80x25 text dimensions), but character/attribute rendering
-itself still comes back as static-like noise instead of readable
-text, and that part remains unsolved after another dedicated attempt.
-Until it's fully fixed, treat `vgatest` as a one-way trip for this
-session — reboot (`reboot`) to get a clean desktop back afterward.
-(DOOM and the 3D rasterizer below both have their own clean way back
-via Ctrl+C, so this caveat doesn't apply to them.)
+Cleanly returning to VGA text mode after using graphics mode used to
+be a long-standing, previously-unsolved problem here (documented for a
+while as "geometry restores fine, but characters come back as
+static-like noise"). Three separate, compounding bugs turned out to be
+involved, all in `kernel/drivers/video/vga.c`/`vga_font.c`:
+- The text-mode CRTC/Sequencer/Graphics Controller register *capture*
+  taken before ever touching Bochs/VBE was itself unreliable to round-
+  trip on both QEMU and VirtualBox (not just the Attribute Controller
+  block, which was already known and worked around). Replaced with a
+  fully hardcoded, standard mode 0x03 (80x25 text) register table
+  instead of trusting any live capture -- the same approach already
+  used for mode 0x13 (320x200x256) on the graphics side.
+- The DAC's 256-entry RGB color table (ports 0x3C7/0x3C8/0x3C9) was
+  never restored at all -- it's separate hardware state from every
+  register block above (the Attribute Controller only *selects* a DAC
+  entry, it doesn't hold RGB values), and Bochs/VBE's 32bpp linear
+  framebuffer modes evidently leave it in some non-standard state.
+  Fixed by writing the standard, well-known 16-color VGA palette
+  values directly (same "use fixed values, not a live capture"
+  approach as above).
+- The character glyph bitmaps in VGA plane 2 don't survive a Bochs/VBE
+  session intact either -- and reloading them turned up a real,
+  previously-unnoticed bug in `vga_font.c` (used for Turkish keyboard
+  layout glyph patches and the `font` command's styles): its plane-2
+  read/write helper only cleared the Graphics Controller's "Read Mode"
+  bit, not its "Host Odd/Even" bit, so Odd/Even addressing stayed
+  active and silently overrode the plane selection -- every "font
+  capture" was actually reading back ordinary interleaved character+
+  attribute bytes from whatever was on screen at the time, not real
+  glyph data. Once both bits are cleared, capturing the real
+  BIOS/GRUB-loaded font once at boot (before anything can touch VBE)
+  and reloading it after every text-mode restore fixes the actual
+  displayed content, not just the registers around it.
+
+With all three fixed, `vgatest` now returns to a fully working,
+readable desktop -- no more `reboot` needed.
 
 ## DOOM
 
@@ -649,9 +673,9 @@ blitted to the real framebuffer once per frame.
 
 Run it with the `3d` shell command; Escape or Ctrl+C returns to the
 desktop (same `bochs_disable()` + `vga_set_mode(VGA_MODE_TEXT)` restore
-`vgatest` uses, with the same known text-content-restore caveat
-documented above — geometry comes back correctly, cosmetic content
-does not, yet).
+`vgatest` uses, now fully fixed -- see the [Linear framebuffer
+graphics](#linear-framebuffer-graphics-work-in-progress) section
+above).
 
 Building this surfaced one real bug worth calling out: the first
 version used two ~250KB static buffers (z-buffer + offscreen color

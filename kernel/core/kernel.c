@@ -391,6 +391,15 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     terminal_writestring("[OK] Keyboard initialized\n");
     klog_write("[OK] Keyboard initialized\n");
 
+    /* Must happen before anything ever touches Bochs/VBE (DOOM/vgatest/
+     * the 3d rasterizer) -- their text-mode restore afterward needs a
+     * known-good copy of the character glyph bitmaps to reload into
+     * VGA plane 2, since that VRAM region doesn't survive a VBE
+     * session intact. vga_font_load_turkish() below already captures
+     * this as a side effect for the TR-Q layout, but the US layout
+     * (the more common choice) skipped it entirely until now. */
+    vga_font_capture_base();
+
     terminal_writestring("\nKeyboard layout: [US] (1) or [TR-Q] (2) ? ");
     for (;;) {
         char c = keyboard_getchar();

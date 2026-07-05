@@ -13,6 +13,23 @@ static uint8_t base_font[FONT_BYTES];
 static int base_captured = 0;
 static int current_style = 0;
 
+/* Selecting VGA plane 2 (where the character generator's glyph
+ * bitmaps live) requires clearing GC5's "Host Odd/Even" bit (0x10) as
+ * well as its "Read Mode" bit (0x08) -- masking off only the latter
+ * (an earlier version of this function did) leaves Odd/Even active,
+ * which overrides Read Map Select/Map Mask entirely and makes a
+ * "plane 2" read/write actually go through the normal interleaved
+ * text-mode character+attribute addressing instead. That bug meant
+ * font_read() was capturing literal on-screen character+attribute
+ * byte pairs (e.g. 0x20 0x07 for a blank space cell) instead of real
+ * glyph bitmaps, silently, since it never gets compared against
+ * anything -- only noticed once vga.c started relying on this cache
+ * to restore glyphs after a DOOM/vgatest/3d session (see its
+ * vga_font_set_style() call), where the wrong cached "glyphs" made
+ * every character on screen render as visual noise. GC5 is fully
+ * zeroed below (Write Mode 0, Read Mode 0, no Odd/Even) rather than
+ * masking a single bit, matching the standard, widely-published VGA
+ * font access technique. */
 static void font_read(void)
 {
     uint8_t seq0, seq2, seq4, gc4, gc5, gc6;
@@ -26,9 +43,9 @@ static void font_read(void)
 
     outb(0x3C4, 0x00); outb(0x3C5, 0x01);
     outb(0x3C4, 0x02); outb(0x3C5, 0x04);
-    outb(0x3C4, 0x04); outb(0x3C5, 0x09);
+    outb(0x3C4, 0x04); outb(0x3C5, 0x07);
     outb(0x3CE, 0x04); outb(0x3CF, 0x02);
-    outb(0x3CE, 0x05); outb(0x3CF, gc5 & ~0x08);
+    outb(0x3CE, 0x05); outb(0x3CF, 0x00);
     outb(0x3CE, 0x06); outb(0x3CF, 0x04);
 
     for (int i = 0; i < FONT_BYTES; i++)
@@ -54,8 +71,8 @@ static void font_write(void)
 
     outb(0x3C4, 0x00); outb(0x3C5, 0x01);
     outb(0x3C4, 0x02); outb(0x3C5, 0x04);
-    outb(0x3C4, 0x04); outb(0x3C5, 0x09);
-    outb(0x3CE, 0x05); outb(0x3CF, gc5 & ~0x08);
+    outb(0x3C4, 0x04); outb(0x3C5, 0x07);
+    outb(0x3CE, 0x05); outb(0x3CF, 0x00);
     outb(0x3CE, 0x06); outb(0x3CF, 0x04);
 
     for (int i = 0; i < FONT_BYTES; i++)
@@ -195,6 +212,11 @@ static void apply_style(int style, uint8_t *dst)
             }
         }
     }
+}
+
+void vga_font_capture_base(void)
+{
+    ensure_base_captured();
 }
 
 void vga_font_set_style(int style)

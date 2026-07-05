@@ -1,6 +1,7 @@
 #include "vga.h"
 #include "io.h"
 #include "serial.h"
+#include "vga_font.h"
 
 /* Mode set is done by programming the VGA controller's registers
  * directly (Misc Output, Sequencer, CRTC, Graphics Controller,
@@ -48,8 +49,61 @@ static const uint8_t g_ac_text[21] = {
     0x0C, 0x00, 0x0F, 0x08, 0x00
 };
 
+/* Restoring text mode from a *captured* boot-time register snapshot
+ * (below) still left the screen garbled after a DOOM/vgatest/3d
+ * session on both QEMU and VirtualBox, even after also fixing the DAC
+ * palette (see restore_dac_text() below) -- suggesting the capture
+ * itself isn't trustworthy either (matching the AC block's already-
+ * documented readback problems above), not just the write-back. This
+ * is the same standard, fully-specified mode 0x03 (80x25 text)
+ * register table every VGA BIOS uses, fully hardcoded like
+ * g_320x200x256 above, instead of trusting any live capture. */
+static const uint8_t g_80x25_text[] = {
+    /* MISC */
+    0x67,
+    /* SEQ index 0-4 */
+    0x03, 0x00, 0x03, 0x00, 0x02,
+    /* CRTC index 0-0x18 */
+    0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F,
+    0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00, 0x00, 0x00,
+    0x9C, 0x8E, 0x8F, 0x28, 0x1F, 0x96, 0xB9, 0xA3, 0xFF,
+    /* GC index 0-8 */
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x00, 0xFF,
+    /* AC index 0-0x14 */
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+    0x0C, 0x00, 0x0F, 0x08, 0x00
+};
+
 static uint8_t g_boot_text_regs[VGA_REGSET_LEN];
 static int g_boot_text_saved = 0;
+
+/* The DAC's 256-entry RGB color table (ports 0x3C7 read-index/0x3C8
+ * write-index, 0x3C9 data) is a *separate* piece of hardware state
+ * from anything above -- the Attribute Controller only maps a 4-bit
+ * attribute nibble to one of the DAC's first 64 entries, it doesn't
+ * hold actual RGB values itself. Bochs/VBE's higher-bpp linear
+ * framebuffer modes (DOOM/vgatest use 32bpp) address pixels directly
+ * by RGB and have no reason to touch the legacy indexed-color DAC at
+ * all, but evidently leave it in some other, non-standard state
+ * anyway (observed as text rendering with correct glyphs/positions --
+ * i.e. correct geometry -- but essentially random per-character
+ * colors after returning to text mode, on both QEMU and VirtualBox).
+ * A first attempt captured and restored the DAC live, the same way
+ * the register blocks above do -- didn't fix it, meaning DAC readback
+ * is apparently just as unreliable under emulation as the Attribute
+ * Controller's already-documented readback problem above (the reason
+ * g_ac_text is a fixed table instead of a live capture). Only DAC
+ * indices 0-15 actually matter for text mode (that's all g_ac_text's
+ * palette entries ever select), so this uses the same fix: skip
+ * readback entirely and write the standard, well-known VGA 16-color
+ * values every VGA BIOS uses for text mode. */
+static const uint8_t g_dac_text[16 * 3] = {
+     0,  0,  0,   0,  0, 42,   0, 42,  0,   0, 42, 42,
+    42,  0,  0,  42,  0, 42,  42, 21,  0,  42, 42, 42,
+    21, 21, 21,  21, 21, 63,  21, 63, 21,  21, 63, 63,
+    63, 21, 21,  63, 21, 63,  63, 63, 21,  63, 63, 63,
+};
 
 static uint8_t g_current_mode = VGA_MODE_TEXT;
 
@@ -122,6 +176,12 @@ static void capture_current_regs(uint8_t *out)
     }
 }
 
+static void restore_dac_text(void)
+{
+    outb(0x3C8, 0); /* DAC write index */
+    for (int i = 0; i < 16 * 3; i++) outb(0x3C9, g_dac_text[i]);
+}
+
 void vga_init(void)
 {
     if (!g_boot_text_saved) {
@@ -143,7 +203,22 @@ void vga_set_mode(uint8_t mode)
         write_regs(g_320x200x256);
         g_current_mode = VGA_MODE_320x200;
     } else {
-        write_regs(g_boot_text_regs);
+        write_regs(g_80x25_text);
+        restore_dac_text();
+        /* The character glyph bitmaps in VGA plane 2 are VRAM
+         * *content*, not a register -- nothing above touches them, and
+         * they don't survive a Bochs/VBE session intact (observed as
+         * every character rendering as the same garbled/repeating
+         * glyph shape afterward, despite geometry, register state, and
+         * the DAC palette all being correctly restored above).
+         * vga_font_set_style() unconditionally rewrites plane 2 from
+         * its own cached copy of the real, BIOS/GRUB-loaded font
+         * (captured once, well before this could ever run -- see
+         * kernel.c's vga_font_capture_base() call during boot), so
+         * calling it with whatever style is already active both fixes
+         * this and preserves the user's chosen font style/Turkish
+         * glyph patches across the switch. */
+        vga_font_set_style(vga_font_get_style());
         g_current_mode = VGA_MODE_TEXT;
     }
 }
