@@ -42,6 +42,12 @@ static void push_raw_event(uint8_t key, int pressed)
 
 int keyboard_get_raw_event(uint8_t *key, int *pressed)
 {
+    /* Same focus gate every other input accessor here uses (see
+     * keyboard_get_special()) -- without it, a windowed app using
+     * this queue (e.g. DOOM opened as a desktop window rather than
+     * the CLI `doom` command's fullscreen takeover) would keep
+     * draining key events even while some other window has focus. */
+    if (!wm_current_task_has_focus()) return 0;
     if (raw_head == raw_tail) return 0;
     *key = raw_queue[raw_tail].key;
     *pressed = raw_queue[raw_tail].pressed;

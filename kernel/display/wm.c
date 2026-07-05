@@ -22,6 +22,10 @@
 #include "game2048.h"
 #include "pdfview.h"
 #include "stickynotes.h"
+/* kernel/doom/port/doom_main.c -- declared here instead of pulled in
+ * via a shared header since kernel/display/ isn't on DOOM_CFLAGS's
+ * include path (and doesn't need to be, for one function). */
+void doom_window_run(void);
 #include "fsbridge.h"
 #include "sound.h"
 #include "png.h"
@@ -53,6 +57,7 @@
 #define WIN_KIND_2048        14
 #define WIN_KIND_PDFVIEWER   15
 #define WIN_KIND_STICKYNOTES 16
+#define WIN_KIND_DOOM        17
 
 static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
 static uint16_t backbuffer[VGA_W * VGA_H];
@@ -393,6 +398,8 @@ static void window_task_entry(void)
         pdfview_run();
     else if (w->kind == WIN_KIND_STICKYNOTES)
         stickynotes_run();
+    else if (w->kind == WIN_KIND_DOOM)
+        doom_window_run();
     else
         shell_run_windowed(w->initial_cmd);
 }
@@ -767,6 +774,29 @@ static void wm_open_stickynotes(void)
     wm_focused = w;
 }
 
+static void wm_open_doom(void)
+{
+    int slot = wm_find_free_slot();
+    if (slot < 0) return;
+    window_t *w = &windows[slot];
+    terminal_surface_init(&w->surface);
+    w->open = 1;
+    w->minimized = 0;
+    w->maximized = 1;
+    w->z = next_z++;
+    w->kind = WIN_KIND_DOOM;
+    w->initial_cmd[0] = 0;
+    strcpy(w->title, "DOOM");
+
+    window_geom_init(w);
+
+    pending_window = w;
+    int pid = task_spawn(window_task_entry, w->title);
+    if (pid < 0) { w->open = 0; return; }
+    w->pid = pid;
+    wm_focused = w;
+}
+
 static void wm_open_taskmgr(void)
 {
     int slot = wm_find_free_slot();
@@ -903,6 +933,7 @@ int wm_open_app(const char *name)
     else if (strcmp(name, "2048") == 0) wm_open_2048();
     else if (strcmp(name, "pdfviewer") == 0 || strcmp(name, "pdf") == 0) wm_open_pdfviewer();
     else if (strcmp(name, "notes") == 0 || strcmp(name, "stickynotes") == 0) wm_open_stickynotes();
+    else if (strcmp(name, "doom") == 0) wm_open_doom();
     else if (strcmp(name, "terminal") == 0) wm_open_window("");
     else return -1;
     return 0;
@@ -1034,6 +1065,8 @@ static void build_menu_items(int which)
         menu_names[menu_count] = "PDF Viewer"; menu_is_app[menu_count] = 15; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Notes"; menu_is_app[menu_count] = 16; menu_disabled[menu_count] = 0;
+        menu_count++;
+        menu_names[menu_count] = "DOOM"; menu_is_app[menu_count] = 17; menu_disabled[menu_count] = 0;
         menu_count++;
         menu_names[menu_count] = "Calculator"; menu_is_app[menu_count] = 6; menu_disabled[menu_count] = 0;
         menu_count++;
@@ -1244,6 +1277,7 @@ static const char *get_icon_char(int kind)
         case WIN_KIND_2048:        return "2";
         case WIN_KIND_PDFVIEWER:   return "\x0F"; /* page-ish glyph */
         case WIN_KIND_STICKYNOTES: return "\xB1"; /* dog-ear-ish shade block */
+        case WIN_KIND_DOOM:        return "\x02"; /* skull-ish smiley glyph */
         default:                return ".";
     }
 }
@@ -1393,6 +1427,8 @@ static void handle_menu_click(int idx)
             wm_open_pdfviewer();
         } else if (menu_is_app[idx] == 16) {
             wm_open_stickynotes();
+        } else if (menu_is_app[idx] == 17) {
+            wm_open_doom();
         }
     } else if (active_menu == MENU_FILE) {
         if (menu_is_app[idx] == -3) {

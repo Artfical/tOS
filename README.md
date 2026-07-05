@@ -488,14 +488,28 @@ one-way trip for this session — reboot
 
 ## DOOM
 
-tOS can run the DOOM shareware episode, using the Bochs/VBE
-framebuffer above as its display. Run it with the `doom` shell
-command. `kernel/doom/` vendors
+tOS can run the DOOM shareware episode two ways. `kernel/doom/` vendors
 [doomgeneric](https://github.com/ozkl/doomgeneric)'s engine source
 (GPLv2 — see `kernel/doom/LICENSE` and `kernel/doom/README.md` for
 full licensing details, including the freely-distributable shareware
 `assets/doom1.wad` bundled in the disk image); `kernel/doom/port/` is
 tOS's own platform glue (framebuffer blit, keyboard input, timing).
+
+- **`doom` shell command** — fullscreen, using the real Bochs/VBE
+  linear framebuffer above as its display (actual pixel graphics, the
+  same resolution DOOM renders internally). This is the one with the
+  reboot-to-return caveat described above.
+- **"DOOM" from the T menu, or `uygulamaac("doom")`/`open("doom")`
+  from a script** — opens as a normal desktop window, coexisting with
+  every other app, closable like any other window, no `reboot` needed.
+  Since the desktop itself is entirely VGA text mode (see the section
+  above), this doesn't use real pixel graphics at all: each frame is
+  downsampled from DOOM's 320x200 render and each ~4x10 pixel block is
+  approximated as one text cell in the nearest of the 16 VGA colors —
+  the same technique `kernel/display/viewer.c` already uses to show
+  PNGs. It looks blocky compared to the fullscreen mode (78x20 "pixels"
+  instead of 320x200), but it's a real window: focus, keyboard input,
+  and the rest of the desktop all keep working normally around it.
 
 Getting this running surfaced and fixed several real, previously
 unnoticed bugs elsewhere in the kernel, all independent of DOOM
@@ -532,8 +546,13 @@ itself:
   (`keyboard_get_raw_event()`) alongside the existing press-only one,
   without touching any existing caller's behavior.
 
-**Known gaps:** no sound yet, no save/load, and (per the framebuffer
-limitation above) no way back to the desktop without `reboot`.
+**Known gaps:** no sound yet, no save/load, and (fullscreen mode only,
+per the framebuffer limitation above) no way back to the desktop
+without `reboot`. Windowed mode's per-frame redraw also spams the
+serial log heavily (`terminal_putchar()` mirrors every character to
+serial unconditionally, including every "pixel" of every frame) —
+harmless, but worth knowing if you're watching `dmesg`/the serial
+console while it's open.
 
 **If DOOM appears to hang right after the "Auto-scaling factor" line**
 (never reaching the title screen) — this turned out to have a real,
