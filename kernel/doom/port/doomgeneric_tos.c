@@ -79,13 +79,53 @@ void DG_DrawFrame(void)
 
 void DG_SleepMs(uint32_t ms)
 {
+    /* DOOM's own frame-pacing loop (i_timer.c's I_GetTime(), used by
+     * D_DoomLoop's TryRunTics()) depends on debugmon_uptime_ms()
+     * actually advancing -- if that clock is stuck on some particular
+     * machine/hypervisor (the exact class of environment-dependent
+     * TSC/PIT timing bug already found and partially fixed elsewhere
+     * this session, e.g. the beep-sound hang), this busy-wait would
+     * never see its deadline arrive and DOOM would hang forever right
+     * after startup with no error message. The spin-count fallback
+     * below is not a timing source (its real-world duration varies
+     * with CPU speed) -- it exists purely as a "give up waiting on the
+     * clock and move on anyway" escape hatch, generous enough that it
+     * never fires during normal operation. */
     uint32_t deadline = debugmon_uptime_ms() + ms;
-    while (debugmon_uptime_ms() < deadline) { }
+    uint32_t spins = 0;
+    const uint32_t max_spins = 200000000u;
+    while (debugmon_uptime_ms() < deadline) {
+        if (++spins > max_spins) break;
+    }
 }
 
 uint32_t DG_GetTicksMs(void)
 {
-    return debugmon_uptime_ms();
+    /* DOOM's frame-pacing (i_timer.c's I_GetTime()) needs this value
+     * to keep increasing, or the game loop freezes on its very first
+     * frame forever (TryRunTics() never sees a new tic). If
+     * debugmon_uptime_ms() is stuck on some machine (the same class of
+     * environment-dependent clock bug already found elsewhere this
+     * session), fall back to a plain call counter so time keeps moving
+     * even if it is not accurately paced -- a game that runs too fast
+     * or slow is a far smaller problem than one that never starts. */
+    static uint32_t last_real = 0;
+    static uint32_t stuck_calls = 0;
+    static uint32_t fallback_ms = 0;
+    static int using_fallback = 0;
+
+    uint32_t real = debugmon_uptime_ms();
+    if (!using_fallback) {
+        if (real == last_real) {
+            if (++stuck_calls > 2000000) using_fallback = 1;
+        } else {
+            stuck_calls = 0;
+        }
+        last_real = real;
+        if (!using_fallback) return real;
+    }
+    fallback_ms++;
+    return real + fallback_ms;
 }
 
 int DG_GetKey(int *pressed, unsigned char *doomKey)

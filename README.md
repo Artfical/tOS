@@ -535,6 +535,19 @@ itself:
 **Known gaps:** no sound yet, no save/load, and (per the framebuffer
 limitation above) no way back to the desktop without `reboot`.
 
+**If DOOM appears to hang right after the "Auto-scaling factor" line**
+(never reaching the title screen), it's almost certainly the same
+class of environment-dependent clock bug documented in the TSC
+calibration fix a few versions back — DOOM's frame pacing depends on
+`debugmon_uptime_ms()` actually advancing, and on some
+machines/hypervisors it apparently doesn't reliably. `kernel/doom/port/doomgeneric_tos.c`'s
+`DG_SleepMs()`/`DG_GetTicksMs()` now have a defensive fallback (a
+plain call-counter substitutes for the clock if it looks stuck for
+too long) so the game can't hang forever waiting on it, but this was
+fixed defensively rather than by reproducing the actual hang directly
+— if it still doesn't reach the title screen after a few seconds on
+your machine, that's a real remaining bug worth reporting.
+
 ## Audio
 
 tOS includes a full audio playback stack with automatic hardware detection. SB16 is tried first; ICH AC97 is used as a fallback (VirtualBox).
