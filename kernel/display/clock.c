@@ -6,6 +6,7 @@
 #include "gui.h"
 #include "wm.h"
 #include "string.h"
+#include "debugmon.h"
 
 #define CLK_COLS 60
 #define CLK_ROWS 15
@@ -15,8 +16,8 @@
 #define VIEW_STOPWATCH 2
 
 static int sw_running = 0;
-static uint32_t sw_start_tick = 0;
-static uint32_t sw_accum_ticks = 0;
+static uint32_t sw_start_ms = 0;
+static uint32_t sw_accum_ms = 0;
 
 static uint8_t clk_color(uint8_t fg, uint8_t bg) { return fg | (bg << 4); }
 
@@ -199,10 +200,10 @@ static int sw_btn_x0[2], sw_btn_x1[2];
 static void sw_toggle(void)
 {
     if (sw_running) {
-        sw_accum_ticks += task_get_ticks() - sw_start_tick;
+        sw_accum_ms += debugmon_uptime_ms() - sw_start_ms;
         sw_running = 0;
     } else {
-        sw_start_tick = task_get_ticks();
+        sw_start_ms = debugmon_uptime_ms();
         sw_running = 1;
     }
 }
@@ -210,15 +211,21 @@ static void sw_toggle(void)
 static void sw_reset(void)
 {
     sw_running = 0;
-    sw_accum_ticks = 0;
+    sw_accum_ms = 0;
 }
 
 static void draw_stopwatch(void)
 {
-    uint32_t elapsed = sw_accum_ticks;
-    if (sw_running) elapsed += task_get_ticks() - sw_start_tick;
+    /* debugmon_uptime_ms() (PIT-register-calibrated TSC), not
+     * task_get_ticks() -- the scheduler's tick counter advances on
+     * every task_yield() software self-yield as well as real IRQ0
+     * ticks, so a stopwatch built on it would drift from real elapsed
+     * time depending on system load (same bug as the `uptime` command
+     * had). */
+    uint32_t elapsed_ms = sw_accum_ms;
+    if (sw_running) elapsed_ms += debugmon_uptime_ms() - sw_start_ms;
 
-    uint32_t total_cs = elapsed;
+    uint32_t total_cs = elapsed_ms / 10;
     uint32_t minutes = (total_cs / 100) / 60;
     uint32_t seconds = (total_cs / 100) % 60;
     uint32_t centis = total_cs % 100;
@@ -255,8 +262,8 @@ void clock_run(void)
 {
     int view = VIEW_DIGITAL;
     sw_running = 0;
-    sw_start_tick = 0;
-    sw_accum_ticks = 0;
+    sw_start_ms = 0;
+    sw_accum_ms = 0;
 
     terminal_clear();
     clear_area();

@@ -19,6 +19,18 @@ static const uint16_t ich_devids[] = {
     0x25A6, 0x266E, 0x27DE, 0x7195, 0
 };
 
+static int      g_unsupported_found = 0;
+static uint16_t g_unsupported_vendor = 0;
+static uint16_t g_unsupported_device = 0;
+
+int ich_audio_get_unsupported(uint16_t *vendor_id, uint16_t *device_id)
+{
+    if (!g_unsupported_found) return 0;
+    if (vendor_id) *vendor_id = g_unsupported_vendor;
+    if (device_id) *device_id = g_unsupported_device;
+    return 1;
+}
+
 /* ── I/O helpers ─────────────────────────────────────────────────────────── */
 static uint8_t  bm8 (uint32_t b, uint8_t o) { return inb ((uint16_t)(b+o)); }
 static void     bm8w(uint32_t b, uint8_t o, uint8_t  v){ outb((uint16_t)(b+o),v); }
@@ -68,6 +80,11 @@ int ich_audio_init(ich_dev_t *dev)
          * card's actual vendor/device ID so a future driver can target
          * the right chip instead of guessing. */
         for (int i = 0; i < n; i++) {
+            if (!g_unsupported_found) {
+                g_unsupported_found = 1;
+                g_unsupported_vendor = pdevs[i].vendor_id;
+                g_unsupported_device = pdevs[i].device_id;
+            }
             char line[64]; int lp = 0;
             const char *p = "ich_ac97: unsupported audio dev vendor=0x";
             while (*p) line[lp++] = *p++;

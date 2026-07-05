@@ -21,6 +21,7 @@ void cmd_reboot(int argc, char **args);
 void cmd_shutdown(int argc, char **args);
 void cmd_version(int argc, char **args);
 void cmd_beep(int argc, char **args);
+void cmd_soundinfo(int argc, char **args);
 void cmd_crash(int argc, char **args);
 void cmd_about(int argc, char **args);
 void cmd_uname(int argc, char **args);

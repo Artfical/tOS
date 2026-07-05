@@ -98,4 +98,12 @@ int  ich_audio_submit(ich_dev_t *dev, const uint8_t *pcm8_mono22, uint32_t n);
 int  ich_audio_busy(ich_dev_t *dev);
 void ich_audio_stop(ich_dev_t *dev);
 
+/* Returns 1 and fills vendor_id/device_id with the first class 04:01
+ * PCI audio device found that wasn't a recognized Intel AC97 ID (e.g.
+ * an Ensoniq ES1371, which some hypervisors including VMware default
+ * to), or 0 if ich_audio_init() hasn't run yet or every class 04:01
+ * device it saw was already a match. Lets `soundinfo` report which
+ * chip is actually present without needing to grep the kernel log. */
+int ich_audio_get_unsupported(uint16_t *vendor_id, uint16_t *device_id);
+
 #endif

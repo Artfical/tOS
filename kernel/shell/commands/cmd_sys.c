@@ -13,6 +13,8 @@
 #include "isr.h"
 #include "keyboard.h"
 #include "debugmon.h"
+#include "audio.h"
+#include "ich.h"
 
 static void print_num(uint32_t n)
 {
@@ -170,6 +172,43 @@ void cmd_beep(int argc, char **args)
         sound_click();
     } else {
         terminal_writestring("usage: beep [on|off|test]\n");
+    }
+}
+
+static void print_hex16(uint16_t v)
+{
+    terminal_writestring("0x");
+    for (int k = 12; k >= 0; k -= 4) terminal_putchar("0123456789ABCDEF"[(v >> k) & 0xF]);
+}
+
+/* Reports which audio backend (if any) is actually driving system
+ * sounds, without needing to grep the kernel log -- forces detection
+ * to run (audio_init() is otherwise only tried lazily on the first
+ * beep) so this works even before any sound has played yet. */
+void cmd_soundinfo(int argc, char **args)
+{
+    (void)argc; (void)args;
+    audio_init();
+
+    if (audio_available()) {
+        terminal_writestring("Audio backend: ");
+        terminal_writestring(audio_backend_name());
+        terminal_writestring("\n");
+        return;
+    }
+
+    terminal_writestring("Audio backend: none (falling back to PC speaker)\n");
+
+    uint16_t vendor, device;
+    if (ich_audio_get_unsupported(&vendor, &device)) {
+        terminal_writestring("Found an unsupported audio device: vendor=");
+        print_hex16(vendor);
+        terminal_writestring(" device=");
+        print_hex16(device);
+        terminal_writestring("\n");
+        terminal_writestring("(only Intel ICH AC97 is currently supported -- report this ID to add a driver for it)\n");
+    } else {
+        terminal_writestring("No PCI audio device found at all.\n");
     }
 }
 
