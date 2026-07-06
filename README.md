@@ -534,6 +534,20 @@ copy), but real once `vga_font_load_turkish()`'s Turkish glyph patches
 character while keeping the in-RAM cache buffers a compact 16-bytes-
 per-glyph array internally.
 
+**Known remaining issue, low priority:** `font 7` (the "outline"
+style) renders as barely-visible scattered dots instead of readable
+text. This is unrelated to the stride bug above (every other style,
+including ones that transform the base glyph just as heavily like
+"bold" or "shadow", renders correctly with the same, now-verified-
+correct base font data) — it's specifically `apply_style()`'s case 7
+bit-logic (`row & ~(row << 1) & ~(row >> 1)`, meant to keep only each
+row's edge pixels) being too aggressive: most glyph rows in an 8x16
+font are thick enough that nearly every set bit has a same-row
+neighbor, so nearly everything gets zeroed out. Not fixed here —
+cosmetic, opt-in only (nobody hits this without deliberately running
+`font 7`/`font outline`), and orthogonal to everything else in this
+section.
+
 A fourth issue only showed up in GUI mode: closing windowed DOOM (or
 returning from `vgatest`/`3d` while the desktop is running) could
 flicker between correct and garbled, worse than the plain CLI shell
@@ -645,11 +659,57 @@ itself:
   (`keyboard_get_raw_event()`) alongside the existing press-only one,
   without touching any existing caller's behavior.
 
-**Known gaps:** no sound yet, no save/load. Since DOOM's graphics mode
-fully replaces the desktop's text mode while running, there's no
-compositing with other windows behind it either way — "windowed" here
-means how it's launched and closed, not that it shares the screen with
-other apps while playing.
+### Sound
+
+`kernel/doom/port/i_sound_tos.c` implements the `sound_module_t`
+interface `kernel/doom/i_sound.c` expects from a platform backend
+(`DG_sound_module`, gated behind `FEATURE_SOUND`, now defined in the
+Makefile's `DOOM_CFLAGS`) by driving tOS's own `kernel/audio/audio.c`
+mixer directly — the same one the media player and demo song already
+use — instead of SDL_mixer. `kernel/doom/port/SDL_mixer.h` is an empty
+stub header: the vendored `i_sound.c` unconditionally `#include`s
+`<SDL_mixer.h>` whenever `FEATURE_SOUND` is defined, but (checked
+before enabling it) never actually calls any `Mix_*()` function in
+that file, so the include just needs to resolve to *something*.
+
+DOOM's own sound effect lumps are already in the exact 8-bit
+unsigned mono PCM format `audio.c`'s `audio_submit()` expects (the
+DMX sound format's 8-byte header is `format:u16, sample_rate:u16,
+sample_count:u32`, followed by that many raw samples) — the only
+real work is a nearest-neighbor resample from the lump's native rate
+(usually 11025Hz for DOOM's stock sounds) to `audio.c`'s fixed
+22050Hz output rate.
+
+**Known limitations**, all a direct consequence of `audio.c` only
+ever having one active buffer at a time:
+- No real multichannel mixing — DOOM plays several sound effects at
+  once (footsteps, gunfire, monster noises); here, starting a new one
+  always cuts off whatever was already playing.
+- `audio_submit()` briefly busy-waits for a previous sound to finish
+  before starting a new one if called while already playing, so
+  trigger-happy scenes can introduce a short stall rather than
+  overlapping cleanly.
+- `audio_submit()` truncates anything over `AUDIO_DMA_SIZE` (4096)
+  bytes, so only roughly the first ~185ms of a longer sound effect
+  plays.
+- No music. That needs MUS-to-something-playable synthesis, a
+  separate job from digitized sound effects entirely — `i_sound_tos.c`'s
+  `DG_music_module` always reports init failure, so DOOM just runs
+  silently on the music side, the same way it already did before any
+  of this.
+- Verified via QEMU that DOOM still runs and exits cleanly with a
+  `-device sb16` attached, but this test environment never actually
+  detected any audio hardware (`soundinfo` reported none found either
+  way) — sound-hardware detection itself is unrelated, pre-existing
+  code (already used successfully elsewhere, like the media player),
+  so this is trusted to work the same way there, but wasn't
+  end-to-end audibly verified in this session.
+
+**Known gaps:** no save/load. Since DOOM's graphics mode fully
+replaces the desktop's text mode while running, there's no compositing
+with other windows behind it either way — "windowed" here means how
+it's launched and closed, not that it shares the screen with other
+apps while playing.
 
 **If DOOM appears to hang right after the "Auto-scaling factor" line**
 (never reaching the title screen) — this turned out to have a real,

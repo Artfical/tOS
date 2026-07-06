@@ -59,14 +59,14 @@ DOOM_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -Wno-missing-field-initializers -Wno-implicit-fallthrough \
              -Wno-missing-braces -Wno-parentheses -Wno-format \
              -Wno-type-limits -Wno-unused-value \
-             -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200 \
+             -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200 -DFEATURE_SOUND \
              -Ikernel/doom/port -Ikernel/doom \
              -I. -Ikernel/core -Ikernel/display \
              -Ikernel/fs -Ikernel/shell -Ikernel/shell/commands -Ikernel/lib -Ikernel/net \
              -Ikernel/drivers/include -Ikernel/drivers/bus -Ikernel/drivers/storage \
              -Ikernel/drivers/net -Ikernel/drivers/usb -Ikernel/drivers/audio \
              -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
-             -Ikernel/drivers/misc
+             -Ikernel/drivers/misc -Ikernel/audio
 
 LDFLAGS = -m elf_i386 -T kernel/boot/linker.ld
 ASFLAGS = --32
