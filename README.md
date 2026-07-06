@@ -510,7 +510,25 @@ involved, all in `kernel/drivers/video/vga.c`/`vga_font.c`:
   displayed content, not just the registers around it.
 
 With all three fixed, `vgatest` now returns to a fully working,
-readable desktop -- no more `reboot` needed.
+readable desktop from the CLI shell -- no more `reboot` needed.
+
+A fourth issue only showed up in GUI mode: closing windowed DOOM (or
+returning from `vgatest`/`3d` while the desktop is running) could
+flicker between correct and garbled, worse than the plain CLI shell
+ever showed. GUI mode's desktop task keeps repainting `0xB8000` on
+every preemptive timer tick regardless of what any other task is
+doing, and none of the VGA register writes above -- nor
+`vga_font.c`'s plane-2 font read/write, which briefly reprograms the
+same registers to address plane 2 instead -- disabled interrupts
+around themselves. A timer interrupt landing mid-sequence could switch
+to the desktop repaint task, whose writes would land in the wrong
+place (font memory instead of the text plane, or vice versa) since the
+hardware was mid-reconfiguration at that exact moment. Both
+`vga_set_mode()` and `vga_font.c`'s `font_read()`/`font_write()` now
+hold interrupts off across their entire register-reprogram/copy/
+restore sequence, using `pushfl`/`popfl` rather than a bare `cli`/`sti`
+pair so they nest safely (`vga_set_mode()` calls into the font reload,
+which does its own interrupt-disable internally).
 
 ## DOOM
 

@@ -193,6 +193,23 @@ void vga_init(void)
 
 void vga_set_mode(uint8_t mode)
 {
+    /* Holds interrupts off across the entire mode switch, not just the
+     * register writes here -- GUI mode's desktop task keeps repainting
+     * 0xB8000 on every preemptive timer tick regardless of what this
+     * function is doing, and a timer interrupt landing mid-sequence
+     * (mode-register writes are individually meaningless until they're
+     * all applied together, and vga_font_set_style() below has its own
+     * brief plane-2 addressing window) could switch to that repaint
+     * task and corrupt the screen/font depending on exactly when it
+     * landed -- observed as the desktop flickering between garbled and
+     * correct after a DOOM/vgatest/3d session. Uses pushfl/popfl
+     * (nests safely with vga_font_set_style()'s own interrupt-disable,
+     * unlike a bare cli/sti pair, whose inner sti would re-enable
+     * interrupts early and reopen the same race for the rest of this
+     * function). */
+    uint32_t flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+
     if (!g_boot_text_saved) {
         capture_current_regs(g_boot_text_regs);
         for (int k = 0; k < 21; k++) g_boot_text_regs[VGA_AC_OFFSET + k] = g_ac_text[k];
@@ -221,6 +238,8 @@ void vga_set_mode(uint8_t mode)
         vga_font_set_style(vga_font_get_style());
         g_current_mode = VGA_MODE_TEXT;
     }
+
+    asm volatile("pushl %0; popfl" :: "r"(flags));
 }
 
 void vga_set_palette(uint8_t index, uint8_t r, uint8_t g, uint8_t b)

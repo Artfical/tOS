@@ -29,10 +29,32 @@ static int current_style = 0;
  * every character on screen render as visual noise. GC5 is fully
  * zeroed below (Write Mode 0, Read Mode 0, no Odd/Even) rather than
  * masking a single bit, matching the standard, widely-published VGA
- * font access technique. */
+ * font access technique.
+ *
+ * Both functions run with interrupts disabled for their entire
+ * register-reprogram/copy/restore sequence: the VGA registers they
+ * touch are shared machine-global state, not per-task. GUI mode's
+ * desktop task keeps repainting via the normal preemptive timer tick
+ * regardless of what any other task is doing, so without this, a
+ * timer interrupt landing mid-sequence (while plane 2 is temporarily
+ * selected) could switch to that repaint task, which writes to
+ * 0xB8000 assuming ordinary interleaved text-mode addressing -- those
+ * writes would actually land in font memory instead, corrupting the
+ * glyph table and/or the screen, and differently depending on exactly
+ * when the interrupt landed (observed as the desktop flickering
+ * between garbled and correct after a DOOM/vgatest/3d session, worse
+ * than the plain CLI shell -- which has no other task competing for
+ * these registers -- ever showed). Uses pushfl/popfl rather than a
+ * bare cli/sti pair so this nests safely: vga.c's vga_set_mode() also
+ * needs to hold interrupts off across its own register writes plus
+ * this call, and a plain inner sti would re-enable them early and
+ * reopen the same race for the rest of vga_set_mode()'s work. */
 static void font_read(void)
 {
     uint8_t seq0, seq2, seq4, gc4, gc5, gc6;
+    uint32_t flags;
+
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
 
     outb(0x3C4, 0x00); seq0 = inb(0x3C5);
     outb(0x3C4, 0x02); seq2 = inb(0x3C5);
@@ -57,11 +79,16 @@ static void font_read(void)
     outb(0x3CE, 0x04); outb(0x3CF, gc4);
     outb(0x3CE, 0x05); outb(0x3CF, gc5);
     outb(0x3CE, 0x06); outb(0x3CF, gc6);
+
+    asm volatile("pushl %0; popfl" :: "r"(flags));
 }
 
 static void font_write(void)
 {
     uint8_t seq0, seq2, seq4, gc5, gc6;
+    uint32_t flags;
+
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
 
     outb(0x3C4, 0x00); seq0 = inb(0x3C5);
     outb(0x3C4, 0x02); seq2 = inb(0x3C5);
@@ -83,6 +110,8 @@ static void font_write(void)
     outb(0x3C4, 0x04); outb(0x3C5, seq4);
     outb(0x3CE, 0x05); outb(0x3CF, gc5);
     outb(0x3CE, 0x06); outb(0x3CF, gc6);
+
+    asm volatile("pushl %0; popfl" :: "r"(flags));
 }
 
 static void add_cedilla_below(uint8_t *glyph)
