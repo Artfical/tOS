@@ -512,6 +512,28 @@ involved, all in `kernel/drivers/video/vga.c`/`vga_font.c`:
 With all three fixed, `vgatest` now returns to a fully working,
 readable desktop from the CLI shell -- no more `reboot` needed.
 
+Fixing the plane-2 addressing above surfaced a second, unrelated
+`vga_font.c` bug -- one that had nothing to do with DOOM/vgatest/3d at
+all, and instead affected the TR-Q keyboard layout on every single
+boot, corrupting seemingly-random letters everywhere (confirmed via
+serial log that the underlying text itself was always correct --
+purely a font rendering problem). Captured several consecutive
+letters' glyph bitmaps and found every *other* one came back all
+zero, in a perfectly alternating pattern by character code (`k`/`m`/
+`o`/`q` blank, `l`/`n`/`p`/`r` fine) -- each character's slot in the
+VGA character generator's plane-2 memory is actually 32 bytes wide,
+even though an 8x16 font only uses the first 16 of them, and
+`font_read()`/`font_write()`'s copy loop had always assumed a flat
+16-byte stride. Harmless for the US layout (which never calls
+`font_write()` unless something explicitly changes font style) and
+invisible before this session's fixes (reading *and* writing with the
+same wrong assumption round-trips losslessly for a plain unmodified
+copy), but real once `vga_font_load_turkish()`'s Turkish glyph patches
+-- or a real style change -- get involved. Fixed by making the
+`FONT_ADDR`-facing copy loops address memory at a 32-byte stride per
+character while keeping the in-RAM cache buffers a compact 16-bytes-
+per-glyph array internally.
+
 A fourth issue only showed up in GUI mode: closing windowed DOOM (or
 returning from `vgatest`/`3d` while the desktop is running) could
 flicker between correct and garbled, worse than the plain CLI shell

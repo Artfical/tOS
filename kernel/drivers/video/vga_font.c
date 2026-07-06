@@ -7,6 +7,18 @@
 #define FONT_ADDR ((volatile uint8_t *)0xA0000)
 #define FONT_BYTES (256 * 16)
 #define GLYPH_ROWS 16
+/* Each character's slot in the VGA character generator's plane-2
+ * memory is 32 bytes wide, even for an 8x16 font that only uses the
+ * first 16 of them -- confirmed by capturing several consecutive
+ * glyphs and finding every *other* one (the ones landing in what
+ * would be the second half of the real 32-byte slot, if accessed at
+ * a flat 16-byte stride) came back all zero, in a perfectly
+ * alternating odd/even pattern by character code. font_buf/base_font
+ * themselves stay a compact 256*16 array (GLYPH_ROWS apart per
+ * glyph); only the FONT_ADDR-facing copy loops in font_read()/
+ * font_write() need to know about the real 32-byte hardware
+ * spacing. */
+#define FONT_HW_STRIDE 32
 
 static uint8_t font_buf[FONT_BYTES];
 static uint8_t base_font[FONT_BYTES];
@@ -70,8 +82,9 @@ static void font_read(void)
     outb(0x3CE, 0x05); outb(0x3CF, 0x00);
     outb(0x3CE, 0x06); outb(0x3CF, 0x04);
 
-    for (int i = 0; i < FONT_BYTES; i++)
-        font_buf[i] = FONT_ADDR[i];
+    for (int g = 0; g < 256; g++)
+        for (int r = 0; r < GLYPH_ROWS; r++)
+            font_buf[g * GLYPH_ROWS + r] = FONT_ADDR[g * FONT_HW_STRIDE + r];
 
     outb(0x3C4, 0x00); outb(0x3C5, seq0);
     outb(0x3C4, 0x02); outb(0x3C5, seq2);
@@ -102,8 +115,9 @@ static void font_write(void)
     outb(0x3CE, 0x05); outb(0x3CF, 0x00);
     outb(0x3CE, 0x06); outb(0x3CF, 0x04);
 
-    for (int i = 0; i < FONT_BYTES; i++)
-        FONT_ADDR[i] = font_buf[i];
+    for (int g = 0; g < 256; g++)
+        for (int r = 0; r < GLYPH_ROWS; r++)
+            FONT_ADDR[g * FONT_HW_STRIDE + r] = font_buf[g * GLYPH_ROWS + r];
 
     outb(0x3C4, 0x00); outb(0x3C5, seq0);
     outb(0x3C4, 0x02); outb(0x3C5, seq2);
