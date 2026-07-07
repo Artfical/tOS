@@ -747,6 +747,130 @@ call-counter substitutes for the clock if it looks stuck for too
 long) so the game can't hang forever waiting on it even if this
 happens.
 
+## Wolfenstein 3D (`wolf3d`)
+
+tOS can run the Wolfenstein 3D shareware episode. `kernel/wolf3d/`
+vendors [fabiangreffrath/wolf4sdl](https://github.com/fabiangreffrath/wolf4sdl)'s
+engine source (GPLv2 — see `kernel/wolf3d/LICENSE` and
+`kernel/wolf3d/LICENSE-id.txt` for full licensing details, including id
+Software's original license covering the freely-distributable
+shareware episode data bundled in the disk image at
+`assets/wolf3d/*.wl1`); `kernel/wolf3d/port/` is tOS's own platform
+glue, following the same split DOOM's `kernel/doom/port/` already
+established.
+
+Unlike DOOM (ported via [doomgeneric](https://github.com/ozkl/doomgeneric),
+which exposes a small, tOS-friendly `DG_Init()`/`DG_DrawFrame()`
+per-frame callback API), Wolf4SDL calls real SDL2 directly throughout
+— around 150 distinct `SDL_*`/`Mix_*` symbols across the whole engine.
+There is no real SDL2 anywhere in this kernel, so `kernel/wolf3d/port/`
+implements a from-scratch, tOS-backed SDL2-compatible shim instead of
+porting the engine's call sites:
+
+- **`SDL.h`/`SDL_mixer.h`/`SDL_syswm.h`** (new headers) declare only
+  the subset of the real SDL2 API this engine actually calls — real
+  SDL2 constant values are reproduced exactly where the engine
+  compares against them numerically (SDLK_* keycodes, KMOD_* modifier
+  bits, SDL_WindowEventID values), not invented.
+- **`sdl_shim.cpp`** (new) is the actual implementation: window/
+  renderer/texture calls resolve to one fixed real Bochs/VBE pixel mode
+  (`bochs_set_mode()`, same as DOOM/vgatest), `SDL_UpdateTexture()` is
+  where a frame actually reaches the linear framebuffer,
+  `SDL_PollEvent()` drains tOS's own keyboard/mouse queues and maps
+  them back to SDL keysym values, and `SDL_BuildAudioCVT()`/
+  `SDL_ConvertAudio()` do a real nearest-neighbor resample + 8-to-16-bit
+  widening for the one exact audio conversion path this engine uses.
+- **C++ freestanding support**: this is the first C++ (not C) engine
+  vendored into this kernel. `Makefile` gained a `g++`-based
+  `WOLF_CXXFLAGS` (`-fno-exceptions -fno-rtti
+  -fno-use-cxa-atexit -fno-threadsafe-statics`, same freestanding
+  family as the rest of the kernel), and `kernel/wolf3d/port/
+  cxx_runtime.cpp` implements bare `operator new`/`delete` (via
+  `malloc`/`free`) and `__cxa_pure_virtual()`. No STL is available
+  freestanding either — the two `std::unordered_map` uses in the
+  vendored source (`id_in.cpp`'s `Keyboard` map, `wl_menu.cpp`'s
+  `ScanNames` map) were swapped for a small custom
+  `kernel/wolf3d/port/scancode_map.h` (`ScanCodeMap<T>`, two flat
+  256-entry arrays instead of a real hash map — every real key value
+  used here is small enough to index directly).
+- **Symbol collisions with DOOM**: both vendored 1990s engines use
+  short, generic global variable names (`viewx`, `states`,
+  `gamestate`, `MainMenu`, `configdir`, ...) that collide as literal
+  duplicate-definition linker errors once both are built into the same
+  kernel — C++ doesn't mangle plain data symbols the way it mangles
+  functions. Fixed with an `objcopy --redefine-sym` pass
+  (`WOLF_REDEFINE_SYMS` in the `Makefile`) after compiling each
+  `kernel/wolf3d/*` object file, renaming the 18 colliding globals to a
+  `w3d_`-prefixed name.
+- **No `setjmp`/`longjmp` anywhere else in tOS** (`kernel/core/
+  usermode.c`'s `sys_exit_longjmp()` is an unrelated one-off for a
+  different purpose) — needed here because, unlike DOOM's
+  `doomgeneric_Tick()`, Wolf4SDL's `main()`/`DemoLoop()` has no
+  per-frame callback to return control through cooperatively; it's one
+  C++ function call that loops forever internally. `kernel/wolf3d/
+  port/wolf_jmp.h`/`wolf_jmp.s` implement a minimal i386
+  `wolf_setjmp()`/`wolf_longjmp()` (callee-saved registers + return
+  address only). `wl_main.cpp`'s `Quit()` (normally an unconditional
+  `exit()`, which just spins forever here the same way DOOM's platform
+  layer originally did) and `sdl_shim.cpp`'s `SDL_PollEvent()` (for
+  Ctrl+C, using the same `interrupt_char`/`interrupt_callback` IRQ hook
+  DOOM's Ctrl+C support already uses) both `wolf_longjmp()` back to
+  `cmd_wolf3d()` (`kernel/wolf3d/port/wolf_main.cpp`), which does the
+  same `bochs_disable()` + `vga_set_mode(VGA_MODE_TEXT)` restore
+  DOOM's Ctrl+C path uses before returning to the shell.
+
+Getting this running surfaced one real, previously-unnoticed bug (well,
+two) in the kernel's heap, independent of Wolf3D itself:
+- The README already documents an earlier fix making the heap start
+  after the initrd module's own end, not just the kernel binary's end
+  (see the DOOM section above) — that fix's actual clamp was backwards
+  (`if (heap_align > KERNEL_HEAP_START) heap_align = KERNEL_HEAP_START;`,
+  clamping *down* to the fixed 16MB mark instead of up to it), so it
+  silently did nothing whenever the combined kernel+initrd size was
+  still under 16MB, and produced the exact original bug again the
+  moment `assets/wolf3d/*.wl1` pushed the initrd back over that line.
+  Fixed for real this time (`kernel/lib/memory.c`), and the fixed
+  physical-page bitmap array (also placed at a fixed address) is now
+  used as the heap's actual floor instead of the same fixed
+  `KERNEL_HEAP_START` constant, so the heap can never start inside the
+  bitmap's own live bytes either.
+- **The more serious one:** `memory_init()` only ever marked the heap's
+  *initial* ~1MB region used in the physical page bitmap —
+  `alloc_physical_page()` (used for page tables, user-mode task stacks,
+  etc.) had no idea `heap_alloc()`'s own grow-on-demand path
+  (`kernel/lib/memory.c`) can extend `heap_end` by many more MB at any
+  later `malloc()` call, so it could (and did, deterministically, with
+  Wolf3D's data files in the initrd) hand out a physical page to a
+  completely unrelated caller — in this case, one of
+  `usermode_init()`'s user-mode stack pages — that heap growth then
+  claimed as normal heap memory a few malloc() calls later, corrupting
+  whichever one wrote there second. Fixed by reserving the heap's
+  entire *maximum* possible range (`KERNEL_HEAP_MAX_SIZE`, 64MB) in the
+  bitmap up front at `memory_init()` time, rather than only its small
+  starting region.
+
+**Known limitation, unresolved:** the exact shareware data files
+sourced for this feature (archive.org's `wolf3dsw`, "Wolfenstein 3D
+v1.4") load and pass their file-count/size sanity checks, but
+`vgahead.wl1` reports 157 graphics chunks at runtime — a number that
+doesn't match any of the three chunk-header variants
+(`kernel/wolf3d/gfxv_apo.h`, `gfxv_wl6.h`, `gfxv_sod.h`, expecting
+145/149/(Spear-specific) respectively) already built into this
+Wolf4SDL source for the version/build combinations it knows about.
+The engine correctly detects this itself (`CheckForEpisodes()`) and
+exits cleanly back to the shell rather than misbehaving, but doesn't
+actually render yet. Not yet root-caused — needs either a differently
+revisioned shareware data dump, or matching this exact revision's
+chunk header against the specific enum variant it actually needs.
+
+**Known gaps, same as DOOM:** no music (no sound backend wired up at
+all yet, unlike DOOM's `i_sound_tos.c`), no save/load, no windowed/
+desktop-launch mode (`doom_window_run()`'s equivalent doesn't exist
+yet — `wolf3d` is CLI-only for now), and
+`SDL_GetRelativeMouseState()` always reports `(0,0)` since
+`kernel/drivers/input/mouse.c` only ever exposes quantized text-cell
+position, not raw pixel deltas — keyboard-only turning still works.
+
 ## 3D rasterizer (`3d`)
 
 `kernel/drivers/video/render3d.c` is a from-scratch software 3D

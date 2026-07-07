@@ -264,6 +264,11 @@ int vfs_get_mounts(char out[][VFS_NAME_LEN], int max)
     return n;
 }
 
+void vfs_chdir(const char *path)
+{
+    abspath_into(path, cwd);
+}
+
 char *vfs_abspath(const char *path)
 {
     static char buf[VFS_NAME_LEN];

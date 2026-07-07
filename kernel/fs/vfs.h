@@ -36,7 +36,7 @@ typedef struct vfs_ops {
     int   (*mkdir)(void *ctx, const char *path, uint32_t mode);
     int   (*unlink)(void *ctx, const char *path);
     int   (*stat)(void *ctx, const char *path, vfs_entry_t *entry);
-    int   (*rename)(void *ctx, const char *old, const char *new);
+    int   (*rename)(void *ctx, const char *oldpath, const char *newpath);
     int   (*symlink)(void *ctx, const char *target, const char *path);
 } vfs_ops_t;
 
@@ -52,10 +52,11 @@ int  vfs_readdir(const char *path, vfs_entry_t *entries, int max);
 int  vfs_mkdir(const char *path, uint32_t mode);
 int  vfs_unlink(const char *path);
 int  vfs_stat(const char *path, vfs_entry_t *entry);
-int  vfs_rename(const char *old, const char *new);
+int  vfs_rename(const char *oldpath, const char *newpath);
 int  vfs_symlink(const char *target, const char *path);
 int  vfs_exists(const char *path);
 char *vfs_abspath(const char *path);
+void vfs_chdir(const char *path);
 int  vfs_path_has_mount(const char *path);
 int  vfs_get_mounts(char out[][VFS_NAME_LEN], int max);
 

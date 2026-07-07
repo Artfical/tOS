@@ -53,10 +53,15 @@ int strncasecmp(const char *a, const char *b, size_t n)
 /* DOOM checks a handful of environment variables (DOOMWADPATH,
  * DOOMWADDIR, HOME, ...) purely as optional extra search locations --
  * always reporting "not set" just means it falls back to whatever
- * -iwad path the tOS doom command passes explicitly, not a real gap. */
+ * -iwad path the tOS doom command passes explicitly, not a real gap.
+ * kernel/wolf3d/wl_menu.cpp's CheckForEpisodes() is different: unlike
+ * DOOM it hard Quit()s if $HOME is unset (it needs somewhere to save
+ * config/savegames), so HOME specifically gets a real answer here --
+ * the same directory cmd_wolf3d() (kernel/wolf3d/port/wolf_main.cpp)
+ * already vfs_chdir()s into for the data files. */
 char *getenv(const char *name)
 {
-    (void)name;
+    if (name && strcmp(name, "HOME") == 0) return "/assets/wolf3d";
     return NULL;
 }
 

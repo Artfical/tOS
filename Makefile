@@ -1,4 +1,5 @@
 CC = gcc
+CXX = g++
 AS = as
 LD = ld
 AR = ar
@@ -70,6 +71,49 @@ DOOM_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
 
 LDFLAGS = -m elf_i386 -T kernel/boot/linker.ld
 ASFLAGS = --32
+
+# Vendored C++ (Wolf4SDL, itself a port of id Software's original
+# Wolfenstein 3D) -- unlike doomgeneric, this engine calls SDL2
+# directly from within its own source rather than through a small
+# platform-specific shim, so kernel/wolf3d/port/ provides SDL.h/
+# SDL_mixer.h/SDL_syswm.h compatibility headers backed by tOS's own
+# framebuffer/keyboard/mouse/audio code instead of a real SDL2. This
+# is a from-scratch freestanding C++ setup (no libstdc++, no
+# exceptions/RTTI/threads -- tOS has no thread-safe statics or stack
+# unwinding support), same general idea as DOOM_CFLAGS below but with
+# g++-specific flags added.
+WOLF_CXXFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+             -fno-exceptions -fno-rtti -fno-use-cxa-atexit \
+             -fno-threadsafe-statics -fno-stack-protector -fno-pic -fno-pie \
+             -mno-mmx -mno-sse -mno-sse2 \
+             -O2 -Wall -Wno-unused-variable -Wno-unused-function \
+             -Wno-unused-parameter -Wno-sign-compare -Wno-unused-but-set-variable \
+             -Wno-missing-field-initializers -Wno-implicit-fallthrough \
+             -Wno-missing-braces -Wno-parentheses -Wno-format \
+             -Wno-type-limits -Wno-unused-value -Wno-reorder \
+             -Ikernel/wolf3d/port -Ikernel/wolf3d \
+             -I. -Ikernel/core -Ikernel/display \
+             -Ikernel/fs -Ikernel/shell -Ikernel/shell/commands -Ikernel/lib -Ikernel/net \
+             -Ikernel/drivers/include -Ikernel/drivers/bus -Ikernel/drivers/storage \
+             -Ikernel/drivers/net -Ikernel/drivers/usb -Ikernel/drivers/audio \
+             -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
+             -Ikernel/drivers/misc -Ikernel/audio
+
+WOLF_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+             -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
+             -mno-mmx -mno-sse -mno-sse2 \
+             -O2 -Wall -Wno-unused-variable -Wno-unused-function \
+             -Wno-unused-parameter -Wno-sign-compare -Wno-unused-but-set-variable \
+             -Wno-missing-field-initializers -Wno-implicit-fallthrough \
+             -Wno-missing-braces -Wno-parentheses -Wno-format \
+             -Wno-type-limits -Wno-unused-value \
+             -Ikernel/wolf3d/port -Ikernel/wolf3d \
+             -I. -Ikernel/core -Ikernel/display \
+             -Ikernel/fs -Ikernel/shell -Ikernel/shell/commands -Ikernel/lib -Ikernel/net \
+             -Ikernel/drivers/include -Ikernel/drivers/bus -Ikernel/drivers/storage \
+             -Ikernel/drivers/net -Ikernel/drivers/usb -Ikernel/drivers/audio \
+             -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
+             -Ikernel/drivers/misc -Ikernel/audio
 
 # Auto-discover driver sources
 DRIVER_SRCS := $(wildcard kernel/drivers/bus/*.c kernel/drivers/storage/*.c \
@@ -226,7 +270,19 @@ DOOM_SRCS := $(wildcard kernel/doom/*.c) $(wildcard kernel/doom/port/*.c)
 DOOM_OBJS := $(DOOM_SRCS:.c=.o)
 KERNEL_OBJS += $(DOOM_OBJS)
 
-PROGRAMS = programs/hello.elf programs/tosgui_demo.py lib/libc.so programs/hello_dyn.elf assets/doom1.wad
+# Vendored Wolf4SDL source (kernel/wolf3d/LICENSE, GPLv2) -- itself a
+# port of id Software's original Wolfenstein 3D to SDL2 -- plus tOS's
+# own SDL2 compatibility shim (kernel/wolf3d/port/).
+WOLF_CXX_SRCS := $(wildcard kernel/wolf3d/*.cpp) $(wildcard kernel/wolf3d/port/*.cpp)
+WOLF_C_SRCS := $(wildcard kernel/wolf3d/*.c) $(wildcard kernel/wolf3d/port/*.c)
+WOLF_ASM_SRCS := $(wildcard kernel/wolf3d/port/*.s)
+WOLF_OBJS := $(WOLF_CXX_SRCS:.cpp=.o) $(WOLF_C_SRCS:.c=.o) $(WOLF_ASM_SRCS:.s=.o)
+KERNEL_OBJS += $(WOLF_OBJS)
+
+PROGRAMS = programs/hello.elf programs/tosgui_demo.py lib/libc.so programs/hello_dyn.elf assets/doom1.wad \
+	assets/wolf3d/audiohed.wl1 assets/wolf3d/audiot.wl1 assets/wolf3d/gamemaps.wl1 \
+	assets/wolf3d/maphead.wl1 assets/wolf3d/vgadict.wl1 assets/wolf3d/vgagraph.wl1 \
+	assets/wolf3d/vgahead.wl1 assets/wolf3d/vswap.wl1
 
 .PHONY: all clean run iso
 
@@ -247,6 +303,52 @@ kernel/doom/port/%.o: kernel/doom/port/%.c
 
 kernel/doom/%.o: kernel/doom/%.c
 	$(CC) $(DOOM_CFLAGS) -c $< -o $@
+
+# Wolf4SDL and DOOM are two entirely separate id Software engines from
+# different eras, each with its own small, generic, non-static global
+# variable names (view*, states, gamestate, configdir, MainMenu, ...)
+# that happen to collide once both are linked into the same
+# kernel/tOS.elf -- C++ doesn't mangle plain data symbols the way it
+# mangles function names, so `int viewx;` in kernel/wolf3d/wl_draw.cpp
+# and `int viewx;` in kernel/doom/r_main.c are, as far as the linker
+# is concerned, the exact same symbol. objcopy --redefine-sym renames
+# just Wolf3D's copies with a w3d_ prefix after each object file
+# compiles (a no-op for any object that doesn't happen to define or
+# reference a given name, so this list is safe to apply uniformly
+# across every kernel/wolf3d/ object). Found by compiling the whole
+# tree and reading every "multiple definition" error the linker
+# reported -- if a future source change introduces a new colliding
+# global, the same error will point at exactly which name to add here.
+WOLF_REDEFINE_SYMS = --redefine-sym rndindex=w3d_rndindex \
+	--redefine-sym states=w3d_states \
+	--redefine-sym finetangent=w3d_finetangent \
+	--redefine-sym viewcos=w3d_viewcos \
+	--redefine-sym viewsin=w3d_viewsin \
+	--redefine-sym viewangle=w3d_viewangle \
+	--redefine-sym viewy=w3d_viewy \
+	--redefine-sym viewx=w3d_viewx \
+	--redefine-sym gamestate=w3d_gamestate \
+	--redefine-sym demoname=w3d_demoname \
+	--redefine-sym centerx=w3d_centerx \
+	--redefine-sym viewheight=w3d_viewheight \
+	--redefine-sym viewwidth=w3d_viewwidth \
+	--redefine-sym configdir=w3d_configdir \
+	--redefine-sym menuactive=w3d_menuactive \
+	--redefine-sym MainMenu=w3d_MainMenu \
+	--redefine-sym demobuffer=w3d_demobuffer \
+	--redefine-sym demoplayback=w3d_demoplayback
+
+kernel/wolf3d/port/%.o: kernel/wolf3d/port/%.c
+	$(CC) $(WOLF_CFLAGS) -c $< -o $@
+	objcopy $(WOLF_REDEFINE_SYMS) $@
+
+kernel/wolf3d/%.o: kernel/wolf3d/%.c
+	$(CC) $(WOLF_CFLAGS) -c $< -o $@
+	objcopy $(WOLF_REDEFINE_SYMS) $@
+
+kernel/wolf3d/%.o: kernel/wolf3d/%.cpp
+	$(CXX) $(WOLF_CXXFLAGS) -c $< -o $@
+	objcopy $(WOLF_REDEFINE_SYMS) $@
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@

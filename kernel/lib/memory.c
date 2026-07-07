@@ -58,9 +58,22 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
         used_pages++;
     }
 
+    /* page_bitmap itself lives at a fixed KERNEL_HEAP_START regardless
+     * of how big kernel_end (kernel image + initrd) turns out to be --
+     * the heap must start no earlier than wherever the bitmap array's
+     * own bytes end, not just no earlier than kernel_end, or a
+     * kernel_end that lands inside [KERNEL_HEAP_START, bitmap_end)
+     * (entirely possible once the initrd is large enough to push
+     * kernel_end just past KERNEL_HEAP_START by less than bitmap_size)
+     * would place the heap's very first header on top of still-live
+     * bitmap bytes -- corrupting bitmap state that then produces
+     * unpredictable double-use ups the moment any of those pages get
+     * allocated. */
+    uint32_t bitmap_end = ((uint32_t)page_bitmap + bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
     uint32_t heap_align = (kernel_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-    if (heap_align > KERNEL_HEAP_START)
-        heap_align = KERNEL_HEAP_START;
+    if (heap_align < bitmap_end)
+        heap_align = bitmap_end;
     heap_start = heap_align;
     heap_current = heap_align;
     heap_end = heap_align + KERNEL_HEAP_INITIAL_SIZE;
@@ -72,14 +85,25 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
     heap_list->used = 0;
     heap_list->next = NULL;
 
-    uint32_t bitmap_end = ((uint32_t)page_bitmap + bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     for (uint32_t i = kernel_end / PAGE_SIZE + 1; i < bitmap_end / PAGE_SIZE; i++) {
         page_bitmap[i / 32] |= (1 << (i % 32));
         used_pages++;
     }
 
-    uint32_t heap_end_page = (KERNEL_HEAP_START + KERNEL_HEAP_INITIAL_SIZE + PAGE_SIZE - 1) / PAGE_SIZE;
-    for (uint32_t i = bitmap_end / PAGE_SIZE; i < heap_end_page; i++) {
+    /* Reserve the heap's entire *maximum* possible range up front, not
+     * just its small initial region -- alloc_physical_page() has no
+     * idea heap_alloc() can grow heap_end well past its starting point
+     * at any later malloc() call (see heap_alloc()'s grow path), so if
+     * only the initial region were marked used here, a page anywhere
+     * between that and KERNEL_HEAP_MAX_SIZE could get handed out to a
+     * completely unrelated caller (a page table, a user stack page --
+     * this is exactly what usermode_init() does, right before ramfs
+     * import's first multi-MB malloc() for doom1.wad/Wolf3D assets
+     * grows the heap into memory usermode_init() had already claimed)
+     * and then get silently overwritten once heap growth reaches it. */
+    uint32_t heap_max_page = (heap_start + KERNEL_HEAP_MAX_SIZE + PAGE_SIZE - 1) / PAGE_SIZE;
+    if (heap_max_page > total_pages) heap_max_page = total_pages;
+    for (uint32_t i = bitmap_end / PAGE_SIZE; i < heap_max_page; i++) {
         page_bitmap[i / 32] |= (1 << (i % 32));
         used_pages++;
     }
@@ -210,6 +234,26 @@ static void *heap_alloc(uint32_t size)
     if (old_heap_end + HEAP_SLOT(size) > heap_end) {
         heap_irq_restore(flags);
         return NULL;
+    }
+
+    /* The page_bitmap only ever protects the heap's *initial* region
+     * (marked once at memory_init() time) -- every later growth here
+     * extends heap_end without telling alloc_physical_page() about it,
+     * so it could freely hand out a page that heap growth had already
+     * (or was about to) claim as heap memory, to a completely
+     * unrelated caller (a page table, a user stack page, ...). Both
+     * sides would then write through the same physical page thinking
+     * they alone own it. Mark every newly claimed page used here so
+     * that can't happen. */
+    if (page_bitmap) {
+        uint32_t first_page = old_heap_end / PAGE_SIZE;
+        uint32_t last_page = (heap_end + PAGE_SIZE - 1) / PAGE_SIZE;
+        for (uint32_t pg = first_page; pg < last_page && pg < total_pages; pg++) {
+            if (!(page_bitmap[pg / 32] & (1u << (pg % 32)))) {
+                page_bitmap[pg / 32] |= (1u << (pg % 32));
+                used_pages++;
+            }
+        }
     }
 
     heap_header_t *new_hdr = (heap_header_t *)old_heap_end;
