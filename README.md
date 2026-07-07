@@ -46,7 +46,7 @@ tOS is a from-scratch x86 hobby operating system with a Linux-like command envir
 - **Input:** PS/2 keyboard (mandatory), PS/2 mouse (optional)
 - **Network:** RTL8139, PCnet (AMD Am79C970A/PCnet32), E1000, virtio-net, or NE2000 (RTL8029) NIC
 - **Storage:** No disk required for boot — optional IDE disk for persistent storage via tFS
-- **tFS:** [github.com/Artfical/tfs](https://github.com/Artfical/tfs) — custom persistent filesystem
+- **tFS:** [git.artfical.com/Artfical/tfs](https://git.artfical.com/Artfical/tfs) — custom persistent filesystem
 
 ## Building from Source
 
@@ -60,7 +60,7 @@ tOS is a from-scratch x86 hobby operating system with a Linux-like command envir
 ### Build Steps
 
 ```bash
-git clone https://github.com/Artfical/tOS.git
+git clone https://git.artfical.com/Artfical/tOS.git
 cd tOS
 make
 ```
@@ -276,7 +276,7 @@ The `disk` shell command can probe, mount, and format the following on-disk file
 
 Use `disk list` to see detected block devices, `disk mount <device> <mountpoint> <fstype>` to mount one, and `disk format <device> <fstype>` to format it. The graphical Disk Manager app (see [GUI Mode](#gui-mode)) exposes the same operations visually.
 
-> **tFS source:** [github.com/Artfical/tfs](https://github.com/Artfical/tfs)
+> **tFS source:** [git.artfical.com/Artfical/tfs](https://git.artfical.com/Artfical/tfs)
 
 ## Networking
 
