@@ -13,7 +13,6 @@
 #include "usermode.h"
 #include "fs.h"
 #include "ramfs.h"
-#include "elf.h"
 #include "syscall.h"
 #include "shell.h"
 #include "gui.h"

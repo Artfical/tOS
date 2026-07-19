@@ -211,15 +211,6 @@ static const man_page_t man_pages[] = {
 "Example:\n"
 "  /> edit /notes/todo.txt\n"
 },
-{"exec",
-"exec - run an ELF executable\n\n"
-"Usage: exec <path> [args...]\n"
-"Loads and runs a tOS ELF binary (e.g. one built with the toolchain\n"
-"in programs/). Most user programs are scripts (T# or MicroPython)\n"
-"rather than compiled ELFs, but this is how compiled ones run.\n\n"
-"Example:\n"
-"  /> exec /programs/hello.elf\n"
-},
 {"tsharp",
 "tsharp - run the T# 4.1 Lite interpreter\n\n"
 "Usage: tsharp [path]\n"
@@ -504,7 +495,7 @@ static const man_page_t man_pages[] = {
 "Usage: hexdump <path>\n"
 "Useful for inspecting binary files or debugging file-format code.\n\n"
 "Example:\n"
-"  /> hexdump /programs/hello.elf\n"
+"  /> hexdump /assets/doom1.wad\n"
 },
 {"tee",
 "tee - write input to a file while also printing it\n\n"

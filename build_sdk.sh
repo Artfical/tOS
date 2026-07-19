@@ -2,6 +2,14 @@
 # tOS SDK Builder - Builds i386-elf cross-compiler + newlib for tOS
 # Usage: ./build_sdk.sh [prefix]
 # Default prefix: /usr/local/tos-sdk
+#
+# NOTE: tOS's ELF loader/exec support has been removed (see the
+# "ELF Program Loading (removed)" section of README.md -- it let any
+# user-run binary overwrite kernel memory, since this kernel maps all
+# physical RAM as PTE_USER with no real kernel/user isolation). This
+# script still builds a working cross-compiler, but binaries it
+# produces can no longer be run on tOS until real address-space
+# isolation exists.
 
 set -e
 

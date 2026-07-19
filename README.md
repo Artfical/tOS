@@ -139,7 +139,6 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `hexdump <path>` | Hex dump of a file |
 | `tee <path>` | Write stdin to both terminal and file |
 | `edit <path>` | Simple line-based text editor |
-| `exec <path>` | Execute an ELF binary (static, or dynamically linked against `/lib/<soname>`) |
 | `chmod <mode> <path>` | Change file permissions |
 | `disk` | Manage disks (list/info/mount/umount/format) |
 | `tar c\|x\|t <archive> ...` | Create/extract/list a ustar archive |
@@ -1184,17 +1183,31 @@ tg.close()
 
 `man <command>` prints a long-form description and at least one runnable example for every shell command, plus three scripting topics: `man tos_api`, `man tsharp_api`, and `man tosgui`. Run `man` with no arguments for the full list of pages.
 
-## ELF Program Loading
+## ELF Program Loading (removed)
 
-The kernel can load and execute ELF binaries from the ramfs. Programs are loaded into memory and executed in user context. The `exec` shell command loads and runs ELF files.
+tOS previously had an `exec` shell command and a `SYS_EXECVE` syscall
+that loaded and ran ELF binaries from the ramfs (`kernel/fs/elf.c`, a
+from-scratch i386 ELF loader with dynamic linking against
+`/lib/<soname>`). This has been **removed entirely** — the loader
+copied each `PT_LOAD` segment's bytes straight to the file's own
+`p_vaddr` with no bounds check, and `kernel/core/paging.c`'s boot-time
+identity map marks *all* physical RAM (kernel memory included) present
+with `PTE_USER`, so a crafted ELF could point a segment at kernel
+memory and have it overwritten via a plain `memcpy()` — a direct,
+unauthenticated write-what-where primitive from any user-run binary
+into kernel memory, i.e. straightforward privilege escalation, no
+special conditions required beyond `exec`ing a malicious file.
 
-### Dynamic Linking
-
-`kernel/fs/elf.c`'s `elf_load_dynamic()` is a from-scratch i386 ELF dynamic linker: it maps a non-PIE executable's `PT_LOAD` segments at their linked addresses, reads its `PT_DYNAMIC` section, and — if it has a `DT_NEEDED` entry — loads the named shared object from `/lib/<soname>` at a fixed base (`0x40000000`), relocating the library's own `R_386_RELATIVE`/`R_386_JMP_SLOT` entries (including intra-library PLT calls, since `-fPIC` code always calls through the GOT/PLT even for calls within the same object) before resolving the executable's imported symbols against the library's `.dynsym` (via a classic SysV `DT_HASH` table for the symbol count) and patching its `.rel.dyn` / `.rel.plt` (`R_386_32`, `R_386_PC32`, `R_386_GLOB_DAT`, `R_386_JMP_SLOT`).
-
-`userland/libc/tlibc.c` is a minimal freestanding shared C library (`write`/`read`/`open`/`close`/`malloc`/`puts`/`printf`/...) built as a real ELF shared object (`lib/libc.so`, linked with `--hash-style=sysv` for a resolvable symbol count) using tOS's `int 0x80` syscall numbers, which match the classic Linux i386 table. `userland/tests/hello_dyn.c` + `userland/tests/dyn_start.s` build into `programs/hello_dyn.elf`, a real dynamically-linked test binary — try `exec /programs/hello_dyn.elf`.
-
-> **Known limitation:** on some builds, a program that runs to completion and calls `exit()` can panic the kernel when unwinding back into the shell (`sys_exit_longjmp` in `kernel/core/usermode.c` only restores `ESP`/`EIP`, not full callee-saved register state) — this predates dynamic linking and affects static `exec` binaries too.
+A real fix needs actual address-space isolation (kernel pages not
+user-accessible, a non-identity, non-shared mapping per process) —
+a much larger architectural change than a point patch, and not
+something to ship half-done. Until that exists, tOS has no way to run
+compiled native binaries; scripting (T# and MicroPython, both
+sandboxed interpreters rather than raw machine code) remains the
+supported way to run user-written programs. `kernel/fs/elf.c`,
+`kernel/fs/elf.h`, the `exec` command, `SYS_EXECVE`'s implementation,
+and the `programs/hello.elf` / `programs/hello_dyn.elf` /
+`lib/libc.so` example binaries have all been removed accordingly.
 
 ## System Calls
 
@@ -1209,7 +1222,7 @@ System calls are invoked via `int 0x80` with the syscall number in `eax`:
 | `SYS_OPEN` | 5 | Open a file |
 | `SYS_CLOSE` | 6 | Close a file descriptor |
 | `SYS_WAITPID` | 7 | Wait for a child process |
-| `SYS_EXECVE` | 11 | Execute a program |
+| `SYS_EXECVE` | 11 | Reserved; always returns -1 (ELF loading removed, see above) |
 | `SYS_CHDIR` | 12 | Change the current directory |
 | `SYS_BRK` | 17 | Adjust the process heap break |
 | `SYS_LSEEK` | 19 | Reposition a file descriptor's offset |

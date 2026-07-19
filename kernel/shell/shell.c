@@ -73,7 +73,7 @@ static int parse_args(char *cmd, char **args)
 
 static const char *builtin_names[] = {
     "help", "man", "echo", "clear", "pwd", "ls", "cd", "mkdir", "rmdir", "rm",
-    "touch", "cat", "mv", "cp", "edit", "exec", "reboot", "shutdown",
+    "touch", "cat", "mv", "cp", "edit", "reboot", "shutdown",
     "version", "about", "uname", "ping", "wget", "python", "tsharp",
     "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
     "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
@@ -409,8 +409,6 @@ static void shell_exec_line(char *cmd_line)
             cmd_uniq(argc, args);
         } else if (strcmp(c, "edit") == 0) {
             cmd_edit(argc, args);
-        } else if (strcmp(c, "exec") == 0) {
-            cmd_exec(argc, args);
         } else if (strcmp(c, "tsharp") == 0) {
             cmd_tsharp(argc, args);
         } else if (strcmp(c, "python") == 0) {

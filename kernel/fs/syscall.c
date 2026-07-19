@@ -3,7 +3,6 @@
 #include "terminal.h"
 #include "fs.h"
 #include "ramfs.h"
-#include "elf.h"
 #include "memory.h"
 #include "paging.h"
 #include "usermode.h"
@@ -116,28 +115,20 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
         case SYS_WAITPID:
             return -1;
 
-        case SYS_EXECVE: {
-            const char *path = (const char *)a;
-            if (!ramfs_exists(path) || ramfs_is_dir(path))
-                return -1;
-            uint32_t sz = ramfs_size(path);
-            void *prog = malloc(sz);
-            if (!prog) return -1;
-            ramfs_read(path, prog, sz, 0);
-            uint32_t entry = 0;
-            if (elf_load_dynamic(prog, sz, &entry) != 0) {
-                free(prog);
-                return -1;
-            }
-            free(prog);
-            uint32_t save_esp, save_ebp, save_ebx, save_esi, save_edi;
-            asm volatile("mov %%esp, %0\n\tmov %%ebp, %1\n\tmov %%ebx, %2\n\tmov %%esi, %3\n\tmov %%edi, %4"
-                         : "=r"(save_esp), "=r"(save_ebp), "=r"(save_ebx), "=r"(save_esi), "=r"(save_edi));
-            sys_exit_set_jmp(save_esp, save_ebp, save_ebx, save_esi, save_edi, (uint32_t)&&after_exec);
-            enter_user_mode(entry, 0xBFFFF000);
-            after_exec:
-            return 0;
-        }
+        /* ELF loading/exec support has been removed: the loader wrote
+         * PT_LOAD segment data straight to phdr->p_vaddr with no
+         * bounds check, and this kernel's paging_init() maps *all*
+         * physical RAM (including kernel memory) with PTE_USER from
+         * boot -- so any user-supplied binary could point a segment
+         * at kernel memory and overwrite it via a plain memcpy(), a
+         * straightforward privilege-escalation primitive. Fixing that
+         * properly needs real per-process address space isolation
+         * (kernel pages not user-accessible, non-identity per-process
+         * mappings), which is a much larger change than a point fix,
+         * so exec is disabled rather than shipped half-fixed. */
+        case SYS_EXECVE:
+            (void)a;
+            return -1;
 
         case SYS_CHDIR:
             return 0;

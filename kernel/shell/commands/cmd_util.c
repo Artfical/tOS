@@ -4,10 +4,8 @@
 #include "ramfs.h"
 #include "memory.h"
 #include "stdlib.h"
-#include "elf.h"
 #include "keyboard.h"
 #include "shell.h"
-#include "usermode.h"
 
 static void print_num(uint32_t n)
 {
@@ -63,51 +61,6 @@ void cmd_edit(int argc, char **args)
         ramfs_write(filename, "\n", 1, offset + strlen(line));
         offset += strlen(line) + 1;
     }
-}
-
-void cmd_exec(int argc, char **args)
-{
-    if (argc < 2) {
-        terminal_writestring("usage: exec <program>\n");
-        return;
-    }
-    if (!ramfs_exists(args[1]) || ramfs_is_dir(args[1])) {
-        terminal_writestring("exec: ");
-        terminal_writestring(args[1]);
-        terminal_writestring(": Not found\n");
-        return;
-    }
-
-    uint32_t sz = ramfs_size(args[1]);
-    void *prog = malloc(sz);
-    if (!prog) {
-        terminal_writestring("exec: Out of memory\n");
-        return;
-    }
-    ramfs_read(args[1], prog, sz, 0);
-
-    terminal_writestring("Loading: ");
-    terminal_writestring(args[1]);
-    terminal_putchar('\n');
-
-    uint32_t entry = 0;
-    if (elf_load_dynamic(prog, sz, &entry) != 0) {
-        terminal_writestring("exec: ELF load failed\n");
-        free(prog);
-        return;
-    }
-    free(prog);
-
-    uint32_t save_esp, save_ebp, save_ebx, save_esi, save_edi;
-    asm volatile("mov %%esp, %0\n\tmov %%ebp, %1\n\tmov %%ebx, %2\n\tmov %%esi, %3\n\tmov %%edi, %4"
-                 : "=r"(save_esp), "=r"(save_ebp), "=r"(save_ebx), "=r"(save_esi), "=r"(save_edi));
-    sys_exit_set_jmp(save_esp, save_ebp, save_ebx, save_esi, save_edi, (uint32_t)&&after_umode);
-
-    terminal_writestring("Running in user mode...\n");
-    enter_user_mode(entry, 0xBFFFF000);
-
-after_umode:
-    terminal_writestring("\nexec: program returned\n");
 }
 
 void cmd_yes(int argc, char **args)

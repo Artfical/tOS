@@ -141,7 +141,6 @@ KERNEL_OBJS = \
     kernel/fs/fs.o \
     kernel/fs/vfs.o \
     kernel/fs/fsbridge.o \
-    kernel/fs/elf.o \
     kernel/fs/syscall.o \
     kernel/core/serial.o \
     kernel/core/debugmon.o \
@@ -279,7 +278,7 @@ WOLF_ASM_SRCS := $(wildcard kernel/wolf3d/port/*.s)
 WOLF_OBJS := $(WOLF_CXX_SRCS:.cpp=.o) $(WOLF_C_SRCS:.c=.o) $(WOLF_ASM_SRCS:.s=.o)
 KERNEL_OBJS += $(WOLF_OBJS)
 
-PROGRAMS = programs/hello.elf programs/tosgui_demo.py lib/libc.so programs/hello_dyn.elf assets/doom1.wad \
+PROGRAMS = programs/tosgui_demo.py assets/doom1.wad \
 	assets/wolf3d/audiohed.wl1 assets/wolf3d/audiot.wl1 assets/wolf3d/gamemaps.wl1 \
 	assets/wolf3d/maphead.wl1 assets/wolf3d/vgadict.wl1 assets/wolf3d/vgagraph.wl1 \
 	assets/wolf3d/vgahead.wl1 assets/wolf3d/vswap.wl1
@@ -376,26 +375,6 @@ $(CORE_C_OBJS): kernel/core/version.h
 kernel/tOS.elf: $(KERNEL_OBJS)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 
-programs/hello.elf: programs/hello.c
-	$(CC) -m32 -ffreestanding -nostdlib -nostartfiles -fno-builtin -fno-stack-protector \
-	      -fno-pic -fno-pie \
-	      -O2 -Wall -static -T programs/program.ld -I. -o $@ $<
-
-# Dynamic-linking userland: a minimal shared libc (kernel/fs/elf.c's
-# elf_load_dynamic() resolves DT_NEEDED against /lib/<soname>) plus a
-# test program that imports puts/printf/exit from it via PLT/GOT
-# relocations.
-lib/libc.so: userland/libc/tlibc.c
-	mkdir -p lib
-	$(CC) -m32 -fPIC -nostdlib -fno-stack-protector -c $< -o lib/tlibc.o
-	$(CC) -m32 -nostdlib -shared -Wl,--hash-style=sysv -Wl,-soname,libc.so -o $@ lib/tlibc.o
-
-programs/hello_dyn.elf: userland/tests/hello_dyn.c userland/tests/dyn_start.s lib/libc.so
-	$(CC) -m32 -c userland/tests/dyn_start.s -o programs/crt0_dyn.o
-	$(CC) -m32 -nostdlib -fno-stack-protector -fno-pic -c userland/tests/hello_dyn.c -o programs/hello_dyn.o
-	$(CC) -m32 -nostdlib -Wl,-Ttext-segment=0x400000 -Wl,-e,_start -Wl,--dynamic-linker=/lib/libc.so \
-	      -o $@ programs/crt0_dyn.o programs/hello_dyn.o -Llib -l:libc.so
-
 initrd.tar: $(PROGRAMS)
 	tar cf $@ --format=ustar $^
 
@@ -431,6 +410,5 @@ run-noinstall: tOS.iso
 		-serial stdio 2>/dev/null || true
 
 clean:
-	rm -f $(KERNEL_OBJS) kernel/tOS.elf initrd.tar tOS.iso programs/hello.elf
-	rm -f lib/libc.so lib/tlibc.o programs/hello_dyn.elf programs/hello_dyn.o programs/crt0_dyn.o
+	rm -f $(KERNEL_OBJS) kernel/tOS.elf initrd.tar tOS.iso
 	rm -rf iso
