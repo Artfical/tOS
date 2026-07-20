@@ -170,6 +170,16 @@ int m4a_demux(const uint8_t *data, uint32_t size, m4a_result_t *out)
         uint32_t spc = be32(stsc_ent + si * 12 + 4);
         uint32_t last_chunk = (si + 1 < stsc_count) ? be32(stsc_ent + (si + 1) * 12 + 0) - 1 : chunk_count;
 
+        /* first_chunk is a 1-based chunk index straight from the
+         * file's own stsc box; the inner loop below computes
+         * chunk-1 as an offset into stco_ent, so a crafted file
+         * setting first_chunk=0 underflows that to 0xFFFFFFFF,
+         * producing a wild out-of-bounds read (and, via the offset
+         * it yields, a further OOB read copied into outbuf). Per the
+         * ISO-BMFF spec chunk indices are always >=1; reject anything
+         * that isn't. */
+        if (first_chunk == 0) { free(outbuf); return -1; }
+
         for (uint32_t chunk = first_chunk; chunk <= last_chunk && chunk <= chunk_count && sample_idx < sample_count; chunk++) {
             uint64_t offset = co64_mode
                 ? (((uint64_t)be32(stco_ent + (chunk - 1) * 8) << 32) | be32(stco_ent + (chunk - 1) * 8 + 4))
