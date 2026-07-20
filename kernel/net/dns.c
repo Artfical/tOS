@@ -70,11 +70,23 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
             if (resp[2] & 0x0F) return -1;
             int ans_count = (resp[6] << 8) | resp[7];
             if (ans_count == 0) return -1;
+            /* resp is a fixed-size stack buffer filled straight from
+             * a UDP datagram sent by whatever (spoofable, attacker-
+             * controlled) server answered on rx_port -- every label
+             * length byte and the rdlength field below come directly
+             * from that untrusted response, so pos must be checked
+             * against n before each read, not just at the final IP
+             * copy. A crafted/truncated response used to let pos walk
+             * past n (a label's own length byte can push it up to 63
+             * bytes over in one step) and read resp[pos]/resp[pos+1]
+             * out of bounds -- a remote out-of-bounds stack read. */
             int pos = 12;
             while (pos < n && resp[pos] != 0) {
-                if ((resp[pos] & 0xC0) == 0xC0) pos += 2;
-                else pos += resp[pos] + 1;
+                if ((resp[pos] & 0xC0) == 0xC0) { pos += 2; break; }
+                if (pos + resp[pos] + 1 > n) return -1;
+                pos += resp[pos] + 1;
             }
+            if (pos + 1 + 4 + 2 > n) return -1;
             pos += 1;
             pos += 4;
             int rdlength = (resp[pos] << 8) | resp[pos + 1]; pos += 2;
