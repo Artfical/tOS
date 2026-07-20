@@ -71,6 +71,28 @@ static int join(char *out, int cap, const char *a, const char *b)
     return k;
 }
 
+/* An archive header's name field is entirely attacker-controlled
+ * (this is the classic "tar-slip" issue) -- tar_extract() used to
+ * hand it straight to join()/fsbridge_*() with no sanitization at
+ * all, so an entry named e.g. "../../../boot/kernel.bin" (or an
+ * absolute path) would escape dest_dir and overwrite/delete
+ * arbitrary files anywhere fsbridge can reach, just by extracting an
+ * untrusted archive. Reject anything that could climb out: an
+ * absolute path, or any "." / ".." path component. */
+static int unsafe_entry_name(const char *name)
+{
+    if (name[0] == '/') return 1;
+    int i = 0;
+    while (name[i]) {
+        int start = i;
+        while (name[i] && name[i] != '/') i++;
+        int len = i - start;
+        if (len == 2 && name[start] == '.' && name[start + 1] == '.') return 1;
+        if (name[i] == '/') i++;
+    }
+    return 0;
+}
+
 typedef struct {
     int (*emit)(void *ctx, const void *data, unsigned int len);
     void *ctx;
@@ -205,29 +227,35 @@ int tar_extract(const char *archive, const char *dest_dir, char *err, int err_le
         unsigned int fsize = get_octal((const char *)hdr + 124, 11);
         char typeflag = (char)hdr[156];
 
-        char full[600];
-        join(full, sizeof(full), dest_dir, name);
-        int flen = (int)strlen(full);
-        int is_dir = (typeflag == '5') || (flen > 0 && full[flen - 1] == '/');
-        if (is_dir && flen > 0 && full[flen - 1] == '/') full[flen - 1] = 0;
-
-        if (is_dir) {
-            if (!fsbridge_exists(full)) fsbridge_mkdir(full);
+        if (unsafe_entry_name(name)) {
+            /* Skip this entry (still advance past its data blocks
+             * below) rather than extracting it -- see
+             * unsafe_entry_name()'s comment. */
         } else {
-            ensure_parent_dirs(full);
-            if (fsbridge_exists(full)) fsbridge_delete(full);
-            fsbridge_create(full);
-            uint8_t chunk[COPY_CHUNK];
-            uint32_t off = 0;
-            while (off < fsize) {
-                uint32_t n = fsize - off;
-                if (n > COPY_CHUNK) n = COPY_CHUNK;
-                if (fsbridge_read(archive, chunk, n, pos + off) < 0) break;
-                fsbridge_write(full, chunk, n, off);
-                off += n;
+            char full[600];
+            join(full, sizeof(full), dest_dir, name);
+            int flen = (int)strlen(full);
+            int is_dir = (typeflag == '5') || (flen > 0 && full[flen - 1] == '/');
+            if (is_dir && flen > 0 && full[flen - 1] == '/') full[flen - 1] = 0;
+
+            if (is_dir) {
+                if (!fsbridge_exists(full)) fsbridge_mkdir(full);
+            } else {
+                ensure_parent_dirs(full);
+                if (fsbridge_exists(full)) fsbridge_delete(full);
+                fsbridge_create(full);
+                uint8_t chunk[COPY_CHUNK];
+                uint32_t off = 0;
+                while (off < fsize) {
+                    uint32_t n = fsize - off;
+                    if (n > COPY_CHUNK) n = COPY_CHUNK;
+                    if (fsbridge_read(archive, chunk, n, pos + off) < 0) break;
+                    fsbridge_write(full, chunk, n, off);
+                    off += n;
+                }
             }
+            count++;
         }
-        count++;
 
         uint32_t data_blocks = (fsize + TAR_BLOCK - 1) / TAR_BLOCK;
         pos += data_blocks * TAR_BLOCK;

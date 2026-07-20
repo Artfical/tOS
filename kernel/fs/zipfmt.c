@@ -60,6 +60,24 @@ static int join(char *out, int cap, const char *a, const char *b)
     return k;
 }
 
+/* Same tar-slip-style issue as kernel/fs/tarfmt.c's identical helper:
+ * a zip entry's name comes straight from the archive with no
+ * sanitization, so an absolute path or a ".." component could escape
+ * dest_dir during extraction and overwrite/delete arbitrary files. */
+static int unsafe_entry_name(const char *name)
+{
+    if (name[0] == '/') return 1;
+    int i = 0;
+    while (name[i]) {
+        int start = i;
+        while (name[i] && name[i] != '/') i++;
+        int len = i - start;
+        if (len == 2 && name[start] == '.' && name[start + 1] == '.') return 1;
+        if (name[i] == '/') i++;
+    }
+    return 0;
+}
+
 typedef struct {
     char name[ZIP_NAME_MAX];
     uint32_t crc;
@@ -283,43 +301,48 @@ int zip_extract(const char *archive, const char *dest_dir, char *err, int err_le
         int nl = (int)strlen(name);
         int is_dir = (nl > 0 && name[nl - 1] == '/');
 
-        char full[600];
-        join(full, sizeof(full), dest_dir, name);
-        int flen = (int)strlen(full);
-        if (is_dir && flen > 0 && full[flen - 1] == '/') full[flen - 1] = 0;
+        if (unsafe_entry_name(name)) {
+            /* Skip this entry (still advance pos below) -- see
+             * unsafe_entry_name()'s comment. */
+        } else {
+            char full[600];
+            join(full, sizeof(full), dest_dir, name);
+            int flen = (int)strlen(full);
+            if (is_dir && flen > 0 && full[flen - 1] == '/') full[flen - 1] = 0;
 
-        if (is_dir) {
-            ensure_parent_dirs(full);
-            if (!fsbridge_exists(full)) fsbridge_mkdir(full);
-        } else if (method == 0) {
-            ensure_parent_dirs(full);
-            if (fsbridge_exists(full)) fsbridge_delete(full);
-            fsbridge_create(full);
-            uint8_t chunk[COPY_CHUNK];
-            uint32_t off = 0;
-            while (off < comp_size) {
-                uint32_t n = comp_size - off;
-                if (n > COPY_CHUNK) n = COPY_CHUNK;
-                if (fsbridge_read(archive, chunk, n, data_off + off) < 0) break;
-                fsbridge_write(full, chunk, n, off);
-                off += n;
-            }
-        } else if (method == 8) {
-            uint8_t *src = (uint8_t *)malloc(comp_size ? comp_size : 1);
-            uint8_t *dst = (uint8_t *)malloc(uncomp_size ? uncomp_size : 1);
-            if (src && dst && fsbridge_read(archive, src, comp_size, data_off) >= 0) {
-                uint32_t out_len = 0;
-                if (inflate_raw_buffer(src, comp_size, dst, uncomp_size, &out_len) == 0) {
-                    ensure_parent_dirs(full);
-                    if (fsbridge_exists(full)) fsbridge_delete(full);
-                    fsbridge_create(full);
-                    fsbridge_write(full, dst, out_len, 0);
+            if (is_dir) {
+                ensure_parent_dirs(full);
+                if (!fsbridge_exists(full)) fsbridge_mkdir(full);
+            } else if (method == 0) {
+                ensure_parent_dirs(full);
+                if (fsbridge_exists(full)) fsbridge_delete(full);
+                fsbridge_create(full);
+                uint8_t chunk[COPY_CHUNK];
+                uint32_t off = 0;
+                while (off < comp_size) {
+                    uint32_t n = comp_size - off;
+                    if (n > COPY_CHUNK) n = COPY_CHUNK;
+                    if (fsbridge_read(archive, chunk, n, data_off + off) < 0) break;
+                    fsbridge_write(full, chunk, n, off);
+                    off += n;
                 }
+            } else if (method == 8) {
+                uint8_t *src = (uint8_t *)malloc(comp_size ? comp_size : 1);
+                uint8_t *dst = (uint8_t *)malloc(uncomp_size ? uncomp_size : 1);
+                if (src && dst && fsbridge_read(archive, src, comp_size, data_off) >= 0) {
+                    uint32_t out_len = 0;
+                    if (inflate_raw_buffer(src, comp_size, dst, uncomp_size, &out_len) == 0) {
+                        ensure_parent_dirs(full);
+                        if (fsbridge_exists(full)) fsbridge_delete(full);
+                        fsbridge_create(full);
+                        fsbridge_write(full, dst, out_len, 0);
+                    }
+                }
+                free(src);
+                free(dst);
             }
-            free(src);
-            free(dst);
+            count++;
         }
-        count++;
         pos = data_off + comp_size;
     }
     if (count == 0) { seterr(err, err_len, "empty, invalid, or unsupported zip archive"); return -1; }
