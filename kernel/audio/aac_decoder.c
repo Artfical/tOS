@@ -336,6 +336,15 @@ static int decode_ics(bs_t *b, int32_t *spec, int global_gain, int *sf_out, int 
         return -1;
     }
     int max_sfb = (int)bs_getn(b,6);
+    /* max_sfb is a raw 6-bit field straight from the AAC bitstream
+     * (0..63), but sfb_top[]/sf_val[] below are only AAC_MAX_SFB (51)
+     * entries -- section_data's own write loop already clamps against
+     * that, but the sfb_top and scale_factor_data loops further down
+     * used the unclamped max_sfb directly, writing past both stack
+     * arrays (and reading sfb44[] out of its 53-entry bounds) for any
+     * crafted frame with max_sfb > 51. Clamp once here so every loop
+     * keyed off max_sfb inherits the same bound. */
+    if (max_sfb > AAC_MAX_SFB) max_sfb = AAC_MAX_SFB;
     *num_sfb = max_sfb;
     bs_getn(b,1); /* predictor_data_present */
 
