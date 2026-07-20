@@ -803,11 +803,23 @@ static int xfs_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, in
     int count = 0;
 
     if (fmt == XFS_DINODE_FMT_LOCAL) {
+        /* Unlike the XFS_DINODE_FMT_EXTENTS branch below (which
+         * checks `ep2 + 11 <= ep_end` before touching each entry),
+         * this shortform-directory path never bounded `ep`/`name_ptr`
+         * against inode_buf + inode_size. ncount/namelen/i8count are
+         * on-disk fields straight from a mounted (possibly hostile)
+         * XFS image -- a crafted inode with an oversized namelen or
+         * ncount let ftype/ino_bytes/the memcpy below read past the
+         * inode_buf heap allocation. */
+        uint8_t *fork_end = inode_buf + inode_size;
         uint8_t ncount = fork[0];
         uint8_t i8count = fork[1];
         uint8_t *ep = fork + 2 + 8;
         for (uint8_t ei = 0; ei < ncount && count < max; ei++) {
+            if (ep + 3 > fork_end) break;
             uint8_t namelen = ep[0];
+            uint32_t esz = 3 + namelen + 1 + (i8count > 0 ? 8 : 4);
+            if (ep + esz > fork_end) break;
             uint8_t *name_ptr = ep + 3;
             uint8_t ftype = name_ptr[namelen];
             uint8_t *ino_bytes = name_ptr + namelen + 1;
@@ -844,7 +856,6 @@ static int xfs_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, in
                 count++;
             }
 next_sf:;
-            uint32_t esz = 3 + namelen + 1 + (i8count > 0 ? 8 : 4);
             ep += esz;
         }
     } else if (fmt == XFS_DINODE_FMT_EXTENTS) {
