@@ -854,14 +854,26 @@ static int ext2_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, i
 
         uint32_t pos = 0;
         while (pos < fs->block_size && count < max) {
+            /* hdr->rec_len/name_len are on-disk fields, attacker-
+             * controlled if the mounted image is hostile -- name_len
+             * was only ever clamped against VFS_NAME_LEN, never
+             * against how much of `buf` (a single malloc(block_size)
+             * allocation) actually remains at this position, letting
+             * a crafted directory entry read past the end of that
+             * heap block. Bound the whole record against both the
+             * block buffer and rec_len before touching name_len. */
+            if (pos + 8 > fs->block_size) break;
             ext2_dirent_hdr_t *hdr = (ext2_dirent_hdr_t *)(buf + pos);
             if (hdr->rec_len == 0) break;
+            if (hdr->rec_len < 8 || pos + hdr->rec_len > fs->block_size) break;
 
             if (hdr->ino != 0) {
                 int is_dot = (hdr->name_len == 1 && buf[pos + 8] == '.');
                 int is_dotdot = (hdr->name_len == 2 && buf[pos + 8] == '.' && buf[pos + 9] == '.');
                 if (!is_dot && !is_dotdot) {
+                    uint32_t max_name = fs->block_size - pos - 8;
                     int nl = hdr->name_len;
+                    if ((uint32_t)nl > max_name) nl = (int)max_name;
                     if (nl > VFS_NAME_LEN - 1) nl = VFS_NAME_LEN - 1;
                     memcpy(entries[count].name, buf + pos + 8, (size_t)nl);
                     entries[count].name[nl] = 0;
