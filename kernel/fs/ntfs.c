@@ -372,8 +372,15 @@ static void ntfs_name_encode(const char *name, uint8_t *out, uint8_t *out_len)
     *out_len = (uint8_t)i;
 }
 
-static void ntfs_name_decode(const uint8_t *utf16_name, uint8_t len, char *out)
+/* len comes straight from the on-disk $FILE_NAME attribute's
+ * name_length byte (attacker-controlled if the volume/image is
+ * hostile -- NTFS allows up to 255 UTF-16 code units), but every
+ * caller's destination is a fixed VFS_NAME_LEN (128) char array.
+ * Clamp to out_cap so a crafted directory entry can't overflow it. */
+static void ntfs_name_decode(const uint8_t *utf16_name, uint8_t len, char *out, size_t out_cap)
 {
+    if (out_cap == 0) return;
+    if (len > out_cap - 1) len = (uint8_t)(out_cap - 1);
     int i;
     for (i = 0; i < len; i++) out[i] = (char)utf16_name[i * 2];
     out[i] = 0;
@@ -1090,7 +1097,7 @@ static int ntfs_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, i
         if (e->flags & NTFS_INDEX_ENTRY_LAST) break;
         ntfs_file_name_t *fn = (ntfs_file_name_t *)((uint8_t *)e + sizeof(ntfs_index_entry_t));
 
-        ntfs_name_decode((uint8_t *)fn + sizeof(ntfs_file_name_t), fn->name_length, entries[count].name);
+        ntfs_name_decode((uint8_t *)fn + sizeof(ntfs_file_name_t), fn->name_length, entries[count].name, sizeof(entries[count].name));
         entries[count].is_dir = (fn->file_attributes & NTFS_FA_DIRECTORY) ? 1 : 0;
         entries[count].inode = (uint32_t)e->mft_ref;
         entries[count].mode = fn->file_attributes;
