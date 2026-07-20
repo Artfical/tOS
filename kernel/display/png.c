@@ -365,13 +365,25 @@ int png_decode(const uint8_t *file, uint32_t file_len, uint8_t **out_rgb,
         return -1;
     }
 
-    uint32_t stride = width * (uint32_t)channels;
-    uint64_t raw_cap64 = ((uint64_t)stride + 1) * height;
-    if (raw_cap64 > MAX_RAW_SIZE) {
+    /* width/height/channels all trace back to attacker-controlled
+     * IHDR bytes -- computing stride in 32-bit let width*channels
+     * silently wrap (e.g. width=0x40000001, channels=4 wraps to a
+     * tiny stride), passing the MAX_RAW_SIZE check below with a
+     * stride far smaller than the real width implies. `pixels`
+     * further down then gets allocated using that undersized stride,
+     * while the final RGB conversion loop still iterates the real
+     * (huge, un-wrapped) `width` when indexing into it -- an
+     * out-of-bounds heap read driven entirely by the file's own
+     * width/colortype fields. Do the multiplication in 64-bit and
+     * validate before it's ever narrowed back to 32-bit. */
+    uint64_t stride64 = (uint64_t)width * (uint64_t)channels;
+    uint64_t raw_cap64 = (stride64 + 1) * (uint64_t)height;
+    if (stride64 == 0 || raw_cap64 > MAX_RAW_SIZE) {
         seterr(err, err_cap, "image too large");
         PNG_FREE(idat);
         return -1;
     }
+    uint32_t stride = (uint32_t)stride64;
     uint32_t raw_cap = (uint32_t)raw_cap64;
 
     if (idat_len < 2) {
