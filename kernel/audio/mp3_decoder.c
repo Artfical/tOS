@@ -571,9 +571,18 @@ uint32_t mp3_decode_frame(mp3_ctx_t *ctx, int16_t *pcm_out)
             if (bv_cnt > 576) bv_cnt = 576;
 
             /* Three regions for bigvalues */
+            /* ts[gr][c][0]/[1] are raw 5-bit fields straight from the
+             * frame's side info (0-31), but ra1tab only has 16
+             * entries -- unlike the tsel < 16 guard already used a
+             * few lines down for big_htable/linbits_tbl, nothing
+             * clamped these before indexing ra1tab, so a crafted
+             * region_address value >= 16 read past the end of the
+             * table. */
             static const int ra1tab[16] = {0,1,2,3,4,6,8,10,12,14,16,18,20,22,24,26};
-            int r0 = (ws[gr][c] == 0) ? ra1tab[(ts[gr][c][0])] : 0;
-            int r1 = (ws[gr][c] == 0) ? ra1tab[(ts[gr][c][1])] + r0 : 0;
+            int ra_idx0 = ts[gr][c][0] & 0xF;
+            int ra_idx1 = ts[gr][c][1] & 0xF;
+            int r0 = (ws[gr][c] == 0) ? ra1tab[ra_idx0] : 0;
+            int r1 = (ws[gr][c] == 0) ? ra1tab[ra_idx1] + r0 : 0;
             if (r0 > bv_cnt) r0 = bv_cnt;
             if (r1 > bv_cnt) r1 = bv_cnt;
 
