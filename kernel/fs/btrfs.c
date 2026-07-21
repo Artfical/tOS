@@ -469,7 +469,16 @@ int btrfs_probe_and_mount(btrfs_t *fs, blockdev_t *bd)
     memcpy(fs->label, sb->label, (size_t)label_len);
     fs->label[label_len] = 0;
 
-    btrfs_parse_sys_chunk_array(fs, sb->sys_chunk_array, sb->sys_chunk_array_size);
+    /* sys_chunk_array_size is an independent on-disk uint32_t field,
+     * not derived from the actual sys_chunk_array[2048] member size
+     * -- a crafted superblock (a mounted, potentially hostile btrfs
+     * image) can set it arbitrarily large, and the parser below only
+     * bounds its walk against whatever `size` it's given. Clamp to
+     * the real array size so it can never read past sb's own
+     * malloc(sizeof(btrfs_super_t)) heap allocation. */
+    uint32_t chunk_arr_size = sb->sys_chunk_array_size;
+    if (chunk_arr_size > sizeof(sb->sys_chunk_array)) chunk_arr_size = sizeof(sb->sys_chunk_array);
+    btrfs_parse_sys_chunk_array(fs, sb->sys_chunk_array, chunk_arr_size);
     free(sb);
 
     uint8_t *node_buf = (uint8_t *)malloc(fs->nodesize);
