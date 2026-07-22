@@ -171,13 +171,13 @@ void cmd_wget(int argc, char **args)
     uint8_t resp[4096];
     int n;
     if (use_tls) {
-        n = https_get(host, port, path, resp, sizeof(resp) - 1);
+        n = https_get(ip, host, port, path, resp, sizeof(resp) - 1);
         if (n <= 0) {
             terminal_writestring("FAILED (TLS handshake or connection error)\n");
             return;
         }
     } else {
-        n = http_get(host, port, path, resp, sizeof(resp) - 1);
+        n = http_get(ip, host, port, path, resp, sizeof(resp) - 1);
         if (n < 0) {
             terminal_writestring("FAILED (");
             terminal_writestring(http_strerror(n));

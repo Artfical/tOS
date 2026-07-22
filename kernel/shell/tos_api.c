@@ -6,6 +6,7 @@
 #include "scheduler.h"
 #include "string.h"
 #include "http.h"
+#include "dns.h"
 #include "memory.h"
 #include "debugmon.h"
 #include "audio.h"
@@ -170,8 +171,24 @@ int tos_http_get(const char *url, char *out, int out_max)
     if (*url == '/') { while (*url && j < 255) path[j++] = *url++; path[j] = '\0'; }
     else { path[0] = '/'; path[1] = '\0'; }
 
+    uint32_t ip;
+    int host_is_ip = 1;
+    for (const char *p = host; *p; p++)
+        if ((*p < '0' || *p > '9') && *p != '.') { host_is_ip = 0; break; }
+    if (host_is_ip) {
+        ip = 0;
+        int shift = 0, val = 0;
+        for (const char *p = host; *p; p++) {
+            if (*p == '.') { ip |= (uint32_t)(val & 0xFF) << shift; shift += 8; val = 0; }
+            else val = val * 10 + (*p - '0');
+        }
+        ip |= (uint32_t)(val & 0xFF) << shift;
+    } else if (dns_resolve(host, &ip) != 0) {
+        return -1;
+    }
+
     static char resp[8192];
-    int n = http_get(host, port, path, (uint8_t *)resp, sizeof(resp) - 1);
+    int n = http_get(ip, host, port, path, (uint8_t *)resp, sizeof(resp) - 1);
     if (n <= 0) return -1;
     resp[n] = '\0';
 
