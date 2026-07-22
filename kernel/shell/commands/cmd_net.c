@@ -53,8 +53,13 @@ void cmd_ping(int argc, char **args)
         terminal_writestring("OK\n");
     }
     terminal_writestring("Pinging... ");
-    if (icmp_ping(ip) == 0) terminal_writestring("Reply received\n");
-    else terminal_writestring("No reply\n");
+    int prc = icmp_ping(ip);
+    if (prc == 0) terminal_writestring("Reply received\n");
+    else {
+        terminal_writestring("No reply (");
+        terminal_writestring(icmp_ping_strerror(prc));
+        terminal_writestring(")\n");
+    }
 }
 
 void cmd_wget(int argc, char **args)
