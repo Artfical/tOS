@@ -5,6 +5,7 @@
 #include "dns.h"
 #include "icmp.h"
 #include "http.h"
+#include "https.h"
 #include "tsharp.h"
 #include "micropython.h"
 #include "memory.h"
@@ -123,19 +124,21 @@ void cmd_wget(int argc, char **args)
     if (argc < 2) {
         terminal_writestring("usage: wget <url>\n");
         terminal_writestring("  e.g. wget http://example.com/file\n");
+        terminal_writestring("       wget https://example.com/file\n");
         return;
     }
     const char *url = args[1];
-    if (strncmp(url, "http://", 7) != 0)
-        { terminal_writestring("wget: Only http:// supported\n"); return; }
-    url += 7;
+    int use_tls = 0;
+    if (strncmp(url, "https://", 8) == 0) { use_tls = 1; url += 8; }
+    else if (strncmp(url, "http://", 7) == 0) { url += 7; }
+    else { terminal_writestring("wget: Only http:// and https:// supported\n"); return; }
 
     char host[256], path[256];
     int i = 0, j = 0;
     while (*url && *url != '/' && *url != ':' && i < 255) host[i++] = *url++;
     host[i] = '\0';
 
-    uint16_t port = 80;
+    uint16_t port = use_tls ? 443 : 80;
     if (*url == ':') { url++; port = 0; while (*url >= '0' && *url <= '9') { port = port * 10 + (*url - '0'); url++; } }
 
     if (*url == '/') { while (*url && j < 255) path[j++] = *url++; path[j] = '\0'; }
@@ -163,17 +166,26 @@ void cmd_wget(int argc, char **args)
         }
         terminal_writestring("OK\n");
     }
-    terminal_writestring("Connecting... ");
+    terminal_writestring(use_tls ? "Connecting (TLS)... " : "Connecting... ");
 
     uint8_t resp[4096];
-    int n = http_get(host, port, path, resp, sizeof(resp) - 1);
-    if (n < 0) {
-        terminal_writestring("FAILED (");
-        terminal_writestring(http_strerror(n));
-        terminal_writestring(")\n");
-        return;
+    int n;
+    if (use_tls) {
+        n = https_get(host, port, path, resp, sizeof(resp) - 1);
+        if (n <= 0) {
+            terminal_writestring("FAILED (TLS handshake or connection error)\n");
+            return;
+        }
+    } else {
+        n = http_get(host, port, path, resp, sizeof(resp) - 1);
+        if (n < 0) {
+            terminal_writestring("FAILED (");
+            terminal_writestring(http_strerror(n));
+            terminal_writestring(")\n");
+            return;
+        }
+        if (n == 0) { terminal_writestring("FAILED (connected, but received no data)\n"); return; }
     }
-    if (n == 0) { terminal_writestring("FAILED (connected, but received no data)\n"); return; }
     resp[n] = '\0';
     terminal_writestring("OK (");
     print_num(n);

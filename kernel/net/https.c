@@ -19,7 +19,7 @@ static uint32_t https_parse_ip(const char *s)
     return ip;
 }
 
-int https_get(const char *host, const char *path,
+int https_get(const char *host, uint16_t port, const char *path,
               uint8_t *response, int max_len)
 {
     uint32_t ip;
@@ -29,7 +29,7 @@ int https_get(const char *host, const char *path,
 
     if (host_is_ip) ip = https_parse_ip(host);
     else if (dns_resolve(host, &ip) != 0) return -1;
-    if (tls_connect(&g_tls, ip, 443) != 0) return -1;
+    if (tls_connect(&g_tls, ip, port) != 0) return -1;
 
     /* Build HTTP/1.0 request */
     char req[1024];
