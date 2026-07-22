@@ -77,6 +77,7 @@ void cmd_help(int argc, char **args)
     terminal_writestring("  free       - memory usage\n");
     terminal_writestring("  dmesg      - kernel log messages\n");
     terminal_writestring("  ping       - ping a host\n");
+    terminal_writestring("  ifconfig   - show NIC driver, MAC/IP, rx/tx counters\n");
     terminal_writestring("  wget       - download a file (HTTP)\n");
     terminal_writestring("  yes        - print string repeatedly\n");
     terminal_writestring("  seq        - print number sequence\n");

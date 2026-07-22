@@ -74,7 +74,7 @@ static int parse_args(char *cmd, char **args)
 static const char *builtin_names[] = {
     "help", "man", "echo", "clear", "pwd", "ls", "cd", "mkdir", "rmdir", "rm",
     "touch", "cat", "mv", "cp", "edit", "reboot", "shutdown",
-    "version", "about", "uname", "ping", "wget", "python", "tsharp",
+    "version", "about", "uname", "ping", "ifconfig", "wget", "python", "tsharp",
     "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
     "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
     "basename", "dirname", "which", "env", "uptime", "ps", "log", "kill",
@@ -467,6 +467,8 @@ static void shell_exec_line(char *cmd_line)
             cmd_env(argc, args);
         } else if (strcmp(c, "ping") == 0) {
             cmd_ping(argc, args);
+        } else if (strcmp(c, "ifconfig") == 0) {
+            cmd_ifconfig(argc, args);
         } else if (strcmp(c, "ping6") == 0) {
             cmd_ping6(argc, args);
         } else if (strcmp(c, "ip6addr") == 0) {

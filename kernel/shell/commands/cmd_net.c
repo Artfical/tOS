@@ -8,6 +8,32 @@
 #include "tsharp.h"
 #include "micropython.h"
 #include "memory.h"
+#include "net.h"
+#include "nic.h"
+
+static void print_ip_dotted(uint32_t ip)
+{
+    char buf[16]; int i = 0;
+    uint8_t b[4];
+    b[0] = ip & 0xFF; b[1] = (ip >> 8) & 0xFF;
+    b[2] = (ip >> 16) & 0xFF; b[3] = (ip >> 24) & 0xFF;
+    for (int n = 0; n < 4; n++) {
+        uint8_t v = b[n];
+        if (v >= 100) buf[i++] = '0' + v / 100;
+        if (v >= 10)  buf[i++] = '0' + (v / 10) % 10;
+        buf[i++] = '0' + v % 10;
+        if (n < 3) buf[i++] = '.';
+    }
+    buf[i] = '\0';
+    terminal_writestring(buf);
+}
+
+static void print_hex_byte(uint8_t v)
+{
+    static const char hex[] = "0123456789abcdef";
+    terminal_putchar(hex[v >> 4]);
+    terminal_putchar(hex[v & 0xF]);
+}
 
 static void print_num(uint32_t n)
 {
@@ -17,6 +43,35 @@ static void print_num(uint32_t n)
     if (n == 0) { buf[10] = '0'; terminal_writestring(buf + 10); return; }
     while (n > 0 && i > 0) { buf[--i] = '0' + (n % 10); n /= 10; }
     terminal_writestring(buf + i);
+}
+
+/* Shows which NIC driver actually attached (or "None" if every probe in
+ * nic_init() failed) and the current rx/tx counters -- without this,
+ * telling "no NIC found" apart from "a NIC attached but ARP/ICMP just
+ * isn't getting replies" required scrolling back through dmesg to find
+ * the probe lines. */
+void cmd_ifconfig(int argc, char **args)
+{
+    (void)argc; (void)args;
+    terminal_writestring("driver: ");
+    terminal_writestring(nic_driver_name);
+    terminal_writestring("\nmac:    ");
+    for (int i = 0; i < 6; i++) {
+        print_hex_byte(net_mac[i]);
+        if (i < 5) terminal_putchar(':');
+    }
+    terminal_writestring("\nip:     ");      print_ip_dotted(net_ip);
+    terminal_writestring("\ngateway:");      print_ip_dotted(net_gateway);
+    terminal_writestring("\ndns:    ");      print_ip_dotted(net_dns);
+    terminal_writestring("\nrx:     ");
+    print_num(nic_rx_packets);
+    terminal_writestring(" packets, ");
+    print_num(nic_rx_bytes);
+    terminal_writestring(" bytes\ntx:     ");
+    print_num(nic_tx_packets);
+    terminal_writestring(" packets, ");
+    print_num(nic_tx_bytes);
+    terminal_writestring(" bytes\n");
 }
 
 static uint32_t parse_ip(const char *s)

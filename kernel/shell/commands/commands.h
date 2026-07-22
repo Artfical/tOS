@@ -29,6 +29,7 @@ void cmd_crash(int argc, char **args);
 void cmd_about(int argc, char **args);
 void cmd_uname(int argc, char **args);
 void cmd_ping(int argc, char **args);
+void cmd_ifconfig(int argc, char **args);
 void cmd_wget(int argc, char **args);
 void cmd_sctp_connect(int argc, char **args);
 void cmd_sctp_send(int argc, char **args);
