@@ -67,7 +67,7 @@ int ip_send(uint32_t dst_ip, uint8_t protocol, void *data, int len)
 
     nic_tx_packets++;
     nic_tx_bytes += (uint32_t)(total + 14);
-    nic_send(buf, total + 14);
+    nic_transmit(buf, total + 14);
     free(buf);
     return 0;
 }

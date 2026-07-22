@@ -35,6 +35,18 @@ static void nic_log(const char *s)
     klog_write(s);
 }
 
+#define ETH_MIN_FRAME 60 /* IEEE 802.3 minimum, excluding the 4-byte FCS the hardware appends */
+
+void nic_transmit(void *data, int len)
+{
+    if (!nic_send) return;
+    if (len >= ETH_MIN_FRAME) { nic_send(data, len); return; }
+    uint8_t buf[ETH_MIN_FRAME];
+    memcpy(buf, data, (size_t)len);
+    memset(buf + len, 0, (size_t)(ETH_MIN_FRAME - len));
+    nic_send(buf, ETH_MIN_FRAME);
+}
+
 int nic_init(void)
 {
     nic_send = 0;

@@ -67,7 +67,7 @@ static void arp_send_request(uint32_t ip)
     memcpy(arp->sha, net_mac, 6);
     *(uint32_t *)arp->spa = net_ip;
     *(uint32_t *)arp->tpa = ip;
-    nic_send(buf, sizeof(arp_pkt_t));
+    nic_transmit(buf, sizeof(arp_pkt_t));
 }
 
 int arp_resolve(uint32_t ip, uint8_t *mac_out)
@@ -139,6 +139,6 @@ void arp_handle(uint8_t *data, int len)
         *(uint32_t *)reply->spa = net_ip;
         memcpy(reply->tha, arp->sha, 6);
         *(uint32_t *)reply->tpa = src_ip;
-        nic_send(buf, sizeof(arp_pkt_t));
+        nic_transmit(buf, sizeof(arp_pkt_t));
     }
 }

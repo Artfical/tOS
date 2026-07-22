@@ -118,7 +118,7 @@ static void dhcp_send(uint8_t msg_type, uint32_t xid, uint32_t requested_ip, uin
     int total = 14 + ip_total;
     nic_tx_packets++;
     nic_tx_bytes += (uint32_t)total;
-    nic_send(pkt, total);
+    nic_transmit(pkt, total);
 }
 
 /* Polls for the next DHCP reply matching `xid`, up to `deadline_ms`.

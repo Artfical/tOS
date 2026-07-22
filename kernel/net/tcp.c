@@ -163,7 +163,7 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     ip->checksum = htons((uint16_t)(~sum & 0xFFFF));
 
-    nic_send(pkt, total);
+    nic_transmit(pkt, total);
     free(pkt);
 
     if (flags & TCP_FLAG_SYN) s->seq++;
