@@ -131,13 +131,23 @@ static int raw_recv(tls_ctx_t *ctx, uint8_t *buf, int need)
 }
 
 /* ---- Receive one TLS record (pre-handshake, plaintext) ---- */
-static int recv_record(tls_ctx_t *ctx, uint8_t *type, uint8_t *data, int *len)
+/* `cap` is the actual capacity of the caller's `data` buffer -- some
+ * call sites pass stack buffers much smaller than TLS_RX_BUF (e.g.
+ * an 8-byte ChangeCipherSpec buffer, a 512-byte Finished-message
+ * buffer). The record-length field in `hdr` is fully controlled by
+ * the remote TLS server; validating it only against the generic
+ * TLS_RX_BUF (8192) instead of the real destination size let a
+ * malicious/compromised server declare a length up to 8192 and have
+ * raw_recv() write that many bytes into a far smaller stack array --
+ * a remotely triggerable stack buffer overflow reachable from any
+ * outbound HTTPS connection. */
+static int recv_record(tls_ctx_t *ctx, uint8_t *type, uint8_t *data, int cap, int *len)
 {
     uint8_t hdr[5];
     if (raw_recv(ctx, hdr, 5) != 0) return -1;
     *type = hdr[0];
     int rlen = u16be(hdr+3);
-    if (rlen < 0 || rlen > TLS_RX_BUF) return -1;
+    if (rlen < 0 || rlen > cap) return -1;
     if (raw_recv(ctx, data, rlen) != 0) return -1;
     *len = rlen;
     return 0;
@@ -395,7 +405,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
     if (tls_send_hs(ctx, TLS_HT_CLIENT_HELLO, ch, cpos) != 0) goto fail;
 
     /* --- Step 2: ServerHello --- */
-    if (recv_record(ctx, &rec_type, hs_data, &hs_len_recv) != 0) goto fail;
+    if (recv_record(ctx, &rec_type, hs_data, (int)sizeof(hs_data), &hs_len_recv) != 0) goto fail;
     if (rec_type != TLS_RT_HANDSHAKE) goto fail;
     {
         int pos = 0;
@@ -421,7 +431,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
     /* May span multiple records until ServerHelloDone */
     int got_done = 0;
     while (!got_done) {
-        if (recv_record(ctx, &rec_type, hs_data, &hs_len_recv) != 0) goto fail;
+        if (recv_record(ctx, &rec_type, hs_data, (int)sizeof(hs_data), &hs_len_recv) != 0) goto fail;
         if (rec_type != TLS_RT_HANDSHAKE) goto fail;
         int pos = 0;
         while (pos < hs_len_recv) {
@@ -519,13 +529,13 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
         /* ChangeCipherSpec */
         uint8_t ccs_data[8];
         int ccs_len;
-        if (recv_record(ctx, &rec_type, ccs_data, &ccs_len) != 0) goto fail;
+        if (recv_record(ctx, &rec_type, ccs_data, (int)sizeof(ccs_data), &ccs_len) != 0) goto fail;
         if (rec_type != TLS_RT_CHANGE_CIPHER) goto fail;
 
         /* Encrypted Finished */
         uint8_t ef_data[512];
         int ef_len;
-        if (recv_record(ctx, &rec_type, ef_data, &ef_len) != 0) goto fail;
+        if (recv_record(ctx, &rec_type, ef_data, (int)sizeof(ef_data), &ef_len) != 0) goto fail;
         if (rec_type != TLS_RT_HANDSHAKE) goto fail;
 
         uint8_t fin_plain[256];
