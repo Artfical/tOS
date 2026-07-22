@@ -223,6 +223,7 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
     s->got_rst  = 0;
     s->state    = TCP_SYN_SENT;
 
+    uint32_t syn_seq = s->seq; /* send_seg() bumps s->seq by 1 for the SYN flag on every call -- a resent SYN must carry this same original seq, not a new one */
     int src = send_seg(s, TCP_FLAG_SYN, 0, 0);
     if (src != 0) {
         s->state = TCP_CLOSED;
@@ -233,8 +234,15 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
      * why: how long nic_poll() takes per call varies enormously across
      * drivers/hypervisors, so any fixed retry count is either too short
      * on a slow one or a multi-minute hang on a very slow one. 5 real
-     * seconds either way. */
-    uint32_t deadline = debugmon_uptime_ms() + 5000;
+     * seconds either way. A single SYN with no retransmission only ever
+     * worked against a local/loopback-style path (QEMU slirp) where
+     * nothing gets dropped; on a real network hop any one lost SYN
+     * burned the entire wait for nothing, which is exactly what made
+     * wget fail intermittently once routing actually reached the real
+     * internet. Resend at a 1s cadence like a normal TCP stack's
+     * initial retransmission timer. */
+    uint32_t deadline   = debugmon_uptime_ms() + 5000;
+    uint32_t next_retx  = debugmon_uptime_ms() + 1000;
     while (debugmon_uptime_ms() < deadline) {
         uint8_t buf[1536];
         int len = nic_poll(buf, sizeof(buf));
@@ -247,6 +255,11 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
         }
         if (s->state == TCP_ESTABLISHED) return 0;
         if (s->got_rst) { s->state = TCP_CLOSED; return TCP_ERR_REFUSED; }
+        if (debugmon_uptime_ms() >= next_retx) {
+            s->seq = syn_seq;
+            send_seg(s, TCP_FLAG_SYN, 0, 0);
+            next_retx += 1000;
+        }
         task_yield();
     }
     s->state = TCP_CLOSED;
