@@ -4,6 +4,7 @@
 #include "aes.h"
 #include "bignum.h"
 #include "string.h"
+#include "klog.h"
 
 /* TLS 1.2, cipher suite TLS_RSA_WITH_AES_128_CBC_SHA256 (0x003C)
  * No certificate verification (hobby OS, no CA store). */
@@ -368,6 +369,45 @@ static int recv_encrypted_record(tls_ctx_t *ctx)
     return 0;
 }
 
+/* ---- Handshake diagnostics ----
+ * tls_connect() used to just goto fail from any of a dozen call sites
+ * and return -1, so a failed HTTPS fetch gave zero indication of
+ * *where* the handshake actually broke down -- whether the server
+ * rejected our only cipher suite outright (a fatal Alert record before
+ * ServerHello ever arrives, likely for any server that doesn't offer
+ * legacy RSA key exchange), our x509 parser couldn't find an RSA key
+ * in its certificate, or the exchange completed but Finished
+ * verification failed. Each step now logs to klog so dmesg shows
+ * exactly how far a failed connection got. */
+static void tls_log(const char *s)
+{
+    klog_write("tls: ");
+    klog_write(s);
+    klog_write("\n");
+}
+
+/* Returns 1 (and logs the alert's level/description) if `rec_type` is
+ * a TLS alert record, so callers can tell "server actively refused
+ * this" apart from "reply never arrived"/"garbled reply". */
+static int tls_log_if_alert(uint8_t rec_type, const uint8_t *data, int len)
+{
+    if (rec_type != TLS_RT_ALERT) return 0;
+    static const char hex[] = "0123456789abcdef";
+    char buf[48];
+    int i = 0;
+    const char *p = "received fatal alert level=";
+    while (*p) buf[i++] = *p++;
+    uint8_t lvl  = len >= 1 ? data[0] : 0xFF;
+    uint8_t desc = len >= 2 ? data[1] : 0xFF;
+    buf[i++] = hex[(lvl >> 4) & 0xF]; buf[i++] = hex[lvl & 0xF];
+    p = " desc=";
+    while (*p) buf[i++] = *p++;
+    buf[i++] = hex[(desc >> 4) & 0xF]; buf[i++] = hex[desc & 0xF];
+    buf[i] = '\0';
+    tls_log(buf);
+    return 1;
+}
+
 /* ---- TLS handshake ---- */
 int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
 {
@@ -382,6 +422,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
     if (tcp_connect2(ctx->fd, ip, port) != 0) {
         tcp_close2(ctx->fd); return -1;
     }
+    tls_log("TCP connected, sending ClientHello");
 
     /* --- Step 1: ClientHello --- */
     prng_fill(ctx->client_rand, 32);
@@ -402,11 +443,22 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
     /* compression: null only */
     ch[cpos++] = 1; ch[cpos++] = 0;
     /* no extensions */
-    if (tls_send_hs(ctx, TLS_HT_CLIENT_HELLO, ch, cpos) != 0) goto fail;
+    if (tls_send_hs(ctx, TLS_HT_CLIENT_HELLO, ch, cpos) != 0) {
+        tls_log("ClientHello send failed");
+        goto fail;
+    }
 
     /* --- Step 2: ServerHello --- */
-    if (recv_record(ctx, &rec_type, hs_data, (int)sizeof(hs_data), &hs_len_recv) != 0) goto fail;
-    if (rec_type != TLS_RT_HANDSHAKE) goto fail;
+    if (recv_record(ctx, &rec_type, hs_data, (int)sizeof(hs_data), &hs_len_recv) != 0) {
+        tls_log("no reply after ClientHello (connection closed or timed out)");
+        goto fail;
+    }
+    if (tls_log_if_alert(rec_type, hs_data, hs_len_recv)) goto fail;
+    if (rec_type != TLS_RT_HANDSHAKE) {
+        tls_log("expected ServerHello, got a different record type");
+        goto fail;
+    }
+    tls_log("ServerHello received");
     {
         int pos = 0;
         while (pos < hs_len_recv) {
@@ -416,7 +468,10 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
             hs_append(ctx, hs_data+pos, 4+(uint32_t)hlen);
             if (ht == TLS_HT_SERVER_HELLO) {
                 /* version (2) + server_random (32) + session_id_len (1) + ... */
-                if (hlen < 35) goto fail;
+                if (hlen < 35) {
+                    tls_log("ServerHello message too short to parse");
+                    goto fail;
+                }
                 memcpy(ctx->server_rand, hbody+2, 32);
                 /* check cipher suite matches (don't fail if server picks something else) */
             }
@@ -431,8 +486,15 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
     /* May span multiple records until ServerHelloDone */
     int got_done = 0;
     while (!got_done) {
-        if (recv_record(ctx, &rec_type, hs_data, (int)sizeof(hs_data), &hs_len_recv) != 0) goto fail;
-        if (rec_type != TLS_RT_HANDSHAKE) goto fail;
+        if (recv_record(ctx, &rec_type, hs_data, (int)sizeof(hs_data), &hs_len_recv) != 0) {
+            tls_log("no reply while waiting for Certificate/ServerHelloDone");
+            goto fail;
+        }
+        if (tls_log_if_alert(rec_type, hs_data, hs_len_recv)) goto fail;
+        if (rec_type != TLS_RT_HANDSHAKE) {
+            tls_log("expected Certificate/ServerHelloDone, got a different record type");
+            goto fail;
+        }
         int pos = 0;
         while (pos < hs_len_recv) {
             uint8_t ht = hs_data[pos];
@@ -454,7 +516,11 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
             pos += 4 + (int)hlen;
         }
     }
-    if (!found_key) goto fail;
+    if (!found_key) {
+        tls_log("certificate received, but no RSA key found (server likely doesn't support plain RSA key exchange)");
+        goto fail;
+    }
+    tls_log("certificate received, RSA key found");
 
     /* --- Step 4: ClientKeyExchange --- */
     uint8_t premaster[48];
@@ -462,12 +528,19 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
     prng_fill(premaster+2, 46);
 
     uint8_t enc_pm[256];
-    if (pkcs1_encrypt(premaster, 48, rsa_mod, 256, rsa_exp, enc_pm, 256) != 0) goto fail;
+    if (pkcs1_encrypt(premaster, 48, rsa_mod, 256, rsa_exp, enc_pm, 256) != 0) {
+        tls_log("RSA encrypt of premaster secret failed");
+        goto fail;
+    }
 
     uint8_t cke[258];
     cke[0] = 0x01; cke[1] = 0x00; /* length = 256 */
     memcpy(cke+2, enc_pm, 256);
-    if (tls_send_hs(ctx, TLS_HT_CLIENT_KEY_EX, cke, 258) != 0) goto fail;
+    if (tls_send_hs(ctx, TLS_HT_CLIENT_KEY_EX, cke, 258) != 0) {
+        tls_log("ClientKeyExchange send failed");
+        goto fail;
+    }
+    tls_log("ClientKeyExchange sent");
 
     /* --- Step 5: Compute master secret --- */
     {
@@ -495,7 +568,10 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
     /* --- Step 7: ChangeCipherSpec --- */
     {
         uint8_t ccs = 1;
-        if (tls_send_raw(ctx, TLS_RT_CHANGE_CIPHER, &ccs, 1) != 0) goto fail;
+        if (tls_send_raw(ctx, TLS_RT_CHANGE_CIPHER, &ccs, 1) != 0) {
+            tls_log("ChangeCipherSpec send failed");
+            goto fail;
+        }
     }
 
     /* --- Step 8: Finished --- */
@@ -520,8 +596,15 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
         /* Encrypt and send */
         uint8_t enc[512];
         int enc_len = 0;
-        if (tls_encrypt_record(ctx, TLS_RT_HANDSHAKE, fin_hs, 16, enc, &enc_len) != 0) goto fail;
-        if (tls_send_raw(ctx, TLS_RT_HANDSHAKE, enc, enc_len) != 0) goto fail;
+        if (tls_encrypt_record(ctx, TLS_RT_HANDSHAKE, fin_hs, 16, enc, &enc_len) != 0) {
+            tls_log("encrypting client Finished failed");
+            goto fail;
+        }
+        if (tls_send_raw(ctx, TLS_RT_HANDSHAKE, enc, enc_len) != 0) {
+            tls_log("client Finished send failed");
+            goto fail;
+        }
+        tls_log("client Finished sent, waiting for server ChangeCipherSpec+Finished");
     }
 
     /* --- Step 9: Receive server ChangeCipherSpec + Finished --- */
@@ -529,29 +612,51 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
         /* ChangeCipherSpec */
         uint8_t ccs_data[8];
         int ccs_len;
-        if (recv_record(ctx, &rec_type, ccs_data, (int)sizeof(ccs_data), &ccs_len) != 0) goto fail;
-        if (rec_type != TLS_RT_CHANGE_CIPHER) goto fail;
+        if (recv_record(ctx, &rec_type, ccs_data, (int)sizeof(ccs_data), &ccs_len) != 0) {
+            tls_log("no reply after client Finished (connection closed or timed out)");
+            goto fail;
+        }
+        if (tls_log_if_alert(rec_type, ccs_data, ccs_len)) goto fail;
+        if (rec_type != TLS_RT_CHANGE_CIPHER) {
+            tls_log("expected server ChangeCipherSpec, got a different record type");
+            goto fail;
+        }
 
         /* Encrypted Finished */
         uint8_t ef_data[512];
         int ef_len;
-        if (recv_record(ctx, &rec_type, ef_data, (int)sizeof(ef_data), &ef_len) != 0) goto fail;
-        if (rec_type != TLS_RT_HANDSHAKE) goto fail;
+        if (recv_record(ctx, &rec_type, ef_data, (int)sizeof(ef_data), &ef_len) != 0) {
+            tls_log("no reply after server ChangeCipherSpec (connection closed or timed out)");
+            goto fail;
+        }
+        if (rec_type != TLS_RT_HANDSHAKE) {
+            tls_log("expected encrypted server Finished, got a different record type");
+            goto fail;
+        }
 
         uint8_t fin_plain[256];
         int fin_plen = 0;
-        if (tls_decrypt_record(ctx, TLS_RT_HANDSHAKE, ef_data, ef_len, fin_plain, &fin_plen) != 0)
+        if (tls_decrypt_record(ctx, TLS_RT_HANDSHAKE, ef_data, ef_len, fin_plain, &fin_plen) != 0) {
+            tls_log("decrypting server Finished failed");
             goto fail;
+        }
 
         /* Verify server Finished */
-        if (fin_plen < 16) goto fail;
+        if (fin_plen < 16) {
+            tls_log("decrypted server Finished too short");
+            goto fail;
+        }
         uint8_t hs_hash[32];
         sha256_hash(ctx->hs_buf, ctx->hs_len, hs_hash);
         uint8_t expected[12];
         tls_prf(ctx->master, 48, "server finished", 15, hs_hash, 32, expected, 12);
-        if (memcmp(fin_plain+4, expected, 12) != 0) goto fail;
+        if (memcmp(fin_plain+4, expected, 12) != 0) {
+            tls_log("server Finished verification failed (MAC/hash mismatch)");
+            goto fail;
+        }
     }
 
+    tls_log("handshake complete");
     ctx->handshake_done = 1;
     return 0;
 fail:
