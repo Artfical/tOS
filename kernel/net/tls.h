@@ -33,8 +33,19 @@ typedef struct {
     uint32_t rx_plain_pos;
 } tls_ctx_t;
 
+/* tls_connect()'s negative return codes -- numbered well past every
+ * other layer's range (see tcp.h). A failed TCP connect propagates
+ * tcp_connect()'s own code verbatim (an ARP_ERR_, IP_ERR_NOMEM, or
+ * TCP_ERR_ value), so that case reports the real underlying reason
+ * instead of a single generic "handshake or connection error" that
+ * couldn't tell "the SYN never got a reply" apart from "the server
+ * rejected our handshake". */
+#define TLS_ERR_ALERT     -50 /* server sent a fatal alert (see dmesg for level/description) */
+#define TLS_ERR_HANDSHAKE -51 /* handshake failed after TCP connected -- see dmesg for which step */
+
 /* Connect and perform TLS 1.2 handshake */
 int  tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port);
+const char *tls_connect_strerror(int err);
 /* Write application data */
 int  tls_write(tls_ctx_t *ctx, const uint8_t *data, int len);
 /* Read decrypted application data */

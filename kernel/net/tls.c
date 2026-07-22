@@ -1,5 +1,6 @@
 #include "tls.h"
 #include "tcp.h"
+#include "arp.h"
 #include "sha256.h"
 #include "aes.h"
 #include "bignum.h"
@@ -414,13 +415,16 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
     uint8_t hs_data[8192];
     int hs_len_recv;
     uint8_t rec_type;
+    int rc = TLS_ERR_HANDSHAKE; /* default for the fail: label; overridden at the specific sites below */
 
     memset(ctx, 0, sizeof(*ctx));
 
     ctx->fd = tcp_socket();
-    if (ctx->fd < 0) return -1;
-    if (tcp_connect2(ctx->fd, ip, port) != 0) {
-        tcp_close2(ctx->fd); return -1;
+    if (ctx->fd < 0) return TCP_ERR_NOSOCK;
+    int trc = tcp_connect2(ctx->fd, ip, port);
+    if (trc != 0) {
+        tcp_close2(ctx->fd);
+        return trc; /* propagate arp_resolve()'s/IP_ERR_NOMEM/TCP_ERR_* verbatim -- see tcp.h */
     }
     tls_log("TCP connected, sending ClientHello");
 
@@ -453,7 +457,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
         tls_log("no reply after ClientHello (connection closed or timed out)");
         goto fail;
     }
-    if (tls_log_if_alert(rec_type, hs_data, hs_len_recv)) goto fail;
+    if (tls_log_if_alert(rec_type, hs_data, hs_len_recv)) { rc = TLS_ERR_ALERT; goto fail; }
     if (rec_type != TLS_RT_HANDSHAKE) {
         tls_log("expected ServerHello, got a different record type");
         goto fail;
@@ -490,7 +494,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
             tls_log("no reply while waiting for Certificate/ServerHelloDone");
             goto fail;
         }
-        if (tls_log_if_alert(rec_type, hs_data, hs_len_recv)) goto fail;
+        if (tls_log_if_alert(rec_type, hs_data, hs_len_recv)) { rc = TLS_ERR_ALERT; goto fail; }
         if (rec_type != TLS_RT_HANDSHAKE) {
             tls_log("expected Certificate/ServerHelloDone, got a different record type");
             goto fail;
@@ -616,7 +620,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
             tls_log("no reply after client Finished (connection closed or timed out)");
             goto fail;
         }
-        if (tls_log_if_alert(rec_type, ccs_data, ccs_len)) goto fail;
+        if (tls_log_if_alert(rec_type, ccs_data, ccs_len)) { rc = TLS_ERR_ALERT; goto fail; }
         if (rec_type != TLS_RT_CHANGE_CIPHER) {
             tls_log("expected server ChangeCipherSpec, got a different record type");
             goto fail;
@@ -662,7 +666,20 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
 fail:
     tcp_close2(ctx->fd);
     ctx->fd = -1;
-    return -1;
+    return rc;
+}
+
+const char *tls_connect_strerror(int err)
+{
+    switch (err) {
+        case TLS_ERR_ALERT:     return "server sent a fatal TLS alert (see dmesg for level/description)";
+        case TLS_ERR_HANDSHAKE: return "TLS handshake failed (see dmesg for which step)";
+        case TCP_ERR_NOSOCK:    return "no free TCP socket";
+        case TCP_ERR_REFUSED:   return "connection refused (RST received)";
+        case TCP_ERR_TIMEOUT:   return "connection timed out, no reply to SYN";
+        case IP_ERR_NOMEM:      return "out of memory building packet";
+        default:                 return arp_resolve_strerror(err); /* ARP_ERR_* -- couldn't even send the SYN */
+    }
 }
 
 int tls_write(tls_ctx_t *ctx, const uint8_t *data, int len)

@@ -1,5 +1,6 @@
 #include "https.h"
 #include "tls.h"
+#include "tcp.h"
 #include "string.h"
 
 static tls_ctx_t g_tls;  /* static: one HTTPS connection at a time */
@@ -7,7 +8,8 @@ static tls_ctx_t g_tls;  /* static: one HTTPS connection at a time */
 int https_get(uint32_t ip, const char *host, uint16_t port, const char *path,
               uint8_t *response, int max_len)
 {
-    if (tls_connect(&g_tls, ip, port) != 0) return -1;
+    int rc = tls_connect(&g_tls, ip, port);
+    if (rc != 0) return rc;
 
     /* Build HTTP/1.0 request */
     char req[1024];
@@ -22,7 +24,8 @@ int https_get(uint32_t ip, const char *host, uint16_t port, const char *path,
     while (*conn) req[off++] = *conn++;
 
     if (tls_write(&g_tls, (const uint8_t*)req, off) != 0) {
-        tls_close(&g_tls); return -1;
+        tls_close(&g_tls);
+        return TCP_ERR_TIMEOUT; /* connection dropped between connect() and send() */
     }
 
     int total = 0;

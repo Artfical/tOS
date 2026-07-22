@@ -3,8 +3,10 @@
 
 #include <stdint.h>
 
-/* HTTPS GET over TLS 1.2.  Returns total bytes received (header + body),
- * or -1 on error. No certificate verification (hobby OS).
+/* HTTPS GET over TLS 1.2. Returns total bytes received (header + body),
+ * or propagates tls_connect()'s own negative code on failure (see
+ * tls.h -- use tls_connect_strerror() to turn it into a message). No
+ * certificate verification (hobby OS).
  * `ip` must already be resolved by the caller -- `host` is only used
  * for the request's Host: header, never re-resolved here (a second,
  * independent DNS lookup right after the caller's own successful one

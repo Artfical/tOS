@@ -6,6 +6,7 @@
 #include "icmp.h"
 #include "http.h"
 #include "https.h"
+#include "tls.h"
 #include "tsharp.h"
 #include "micropython.h"
 #include "memory.h"
@@ -172,10 +173,13 @@ void cmd_wget(int argc, char **args)
     int n;
     if (use_tls) {
         n = https_get(ip, host, port, path, resp, sizeof(resp) - 1);
-        if (n <= 0) {
-            terminal_writestring("FAILED (TLS handshake or connection error)\n");
+        if (n < 0) {
+            terminal_writestring("FAILED (");
+            terminal_writestring(tls_connect_strerror(n));
+            terminal_writestring(")\n");
             return;
         }
+        if (n == 0) { terminal_writestring("FAILED (connected, but received no data)\n"); return; }
     } else {
         n = http_get(ip, host, port, path, resp, sizeof(resp) - 1);
         if (n < 0) {
