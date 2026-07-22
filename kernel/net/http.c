@@ -29,10 +29,15 @@ int http_get(const char *host, uint16_t port, const char *path, uint8_t *respons
     for (const char *p = host; *p; p++)
         if ((*p < '0' || *p > '9') && *p != '.') { host_is_ip = 0; break; }
 
-    if (host_is_ip) ip = http_parse_ip(host);
-    else if (dns_resolve(host, &ip) != 0) return -1;
+    if (host_is_ip) {
+        ip = http_parse_ip(host);
+    } else {
+        int rc = dns_resolve(host, &ip);
+        if (rc != 0) return rc;
+    }
 
-    if (tcp_connect(ip, port) != 0) return -1;
+    int rc = tcp_connect(ip, port);
+    if (rc != 0) return rc;
 
     char req[1024];
     int off = 0;
@@ -45,7 +50,7 @@ int http_get(const char *host, uint16_t port, const char *path, uint8_t *respons
     const char *c = "\r\nConnection: close\r\n\r\n";
     while (*c) req[off++] = *c++;
 
-    if (tcp_send(req, off) != 0) { tcp_close(); return -1; }
+    if (tcp_send(req, off) != 0) { tcp_close(); return TCP_ERR_TIMEOUT; /* connection dropped between connect() and send() */ }
 
     int total = 0;
     while (total < max_len) {
@@ -56,4 +61,15 @@ int http_get(const char *host, uint16_t port, const char *path, uint8_t *respons
 
     tcp_close();
     return total;
+}
+
+const char *http_strerror(int err)
+{
+    /* DNS_ERR_* occupies exactly -20..-24 (see dns.h); anything in that
+     * band is dns_resolve()'s own code, everything else -- TCP_ERR_*,
+     * or an ARP/IP code tcp_connect() propagated verbatim -- belongs to
+     * tcp_connect_strerror(), which already falls back to
+     * arp_resolve_strerror() for those. */
+    if (err <= -20 && err >= -24) return dns_strerror(err);
+    return tcp_connect_strerror(err);
 }

@@ -51,6 +51,12 @@ typedef struct {
     int      accept_queue[4];
     int      accept_head;
     int      accept_tail;
+
+    /* Set by tcp_handle()'s RST branch so tcp_connect2() can tell
+     * "the peer actively refused" apart from "no reply arrived" --
+     * both used to just leave state == TCP_CLOSED, indistinguishable
+     * from the outside. */
+    int      got_rst;
 } tcp_sock_t;
 
 static tcp_sock_t socks[TCP_MAX_SOCKETS];
@@ -102,12 +108,13 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     uint32_t nh = route_lookup(net_ip, s->dst_ip);
     if (!nh) nh = s->dst_ip;
     uint8_t mac[6];
-    if (arp_resolve(nh, mac) != 0) return -1;
+    int arc = arp_resolve(nh, mac);
+    if (arc != 0) return arc;
 
     int tcp_len = 20 + plen;
     int total   = 14 + 20 + tcp_len;
     uint8_t *pkt = (uint8_t *)malloc(total);
-    if (!pkt) return -1;
+    if (!pkt) return IP_ERR_NOMEM;
 
     eth_hdr_t *eth = (eth_hdr_t *)pkt;
     memcpy(eth->dst, mac, 6);
@@ -206,18 +213,20 @@ int tcp_socket(void)
 int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
 {
     tcp_sock_t *s = get_sock(fd);
-    if (!s || s->state != TCP_CLOSED) return -1;
+    if (!s || s->state != TCP_CLOSED) return TCP_ERR_NOSOCK;
 
     s->dst_ip   = dst_ip;
     s->dst_port = dst_port;
     s->src_port = alloc_port();
     s->seq      = 0x1000;
     s->ack      = 0;
+    s->got_rst  = 0;
     s->state    = TCP_SYN_SENT;
 
-    if (send_seg(s, TCP_FLAG_SYN, 0, 0) != 0) {
+    int src = send_seg(s, TCP_FLAG_SYN, 0, 0);
+    if (src != 0) {
         s->state = TCP_CLOSED;
-        return -1;
+        return src; /* propagate arp_resolve()'s/IP_ERR_NOMEM verbatim -- see tcp.h */
     }
 
     /* Wall-clock timeout, not an iteration count — see arp_resolve() for
@@ -237,11 +246,11 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
                 ip_handle(buf + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
         }
         if (s->state == TCP_ESTABLISHED) return 0;
-        if (s->state == TCP_CLOSED)      return -1;
+        if (s->got_rst) { s->state = TCP_CLOSED; return TCP_ERR_REFUSED; }
         task_yield();
     }
     s->state = TCP_CLOSED;
-    return -1;
+    return TCP_ERR_TIMEOUT;
 }
 
 int tcp_send2(int fd, void *data, int len)
@@ -435,6 +444,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
     if (flags & TCP_FLAG_RST) {
         retx_clear(s);
         if (s->rx_buf) { free(s->rx_buf); s->rx_buf = 0; }
+        s->got_rst = 1;
         s->state = TCP_CLOSED;
         return;
     }
@@ -511,13 +521,25 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port)
 {
     if (compat_fd >= 0) { tcp_close2(compat_fd); compat_fd = -1; }
     int fd = tcp_socket();
-    if (fd < 0) return -1;
-    if (tcp_connect2(fd, dst_ip, dst_port) != 0) {
+    if (fd < 0) return TCP_ERR_NOSOCK;
+    int rc = tcp_connect2(fd, dst_ip, dst_port);
+    if (rc != 0) {
         tcp_close2(fd);
-        return -1;
+        return rc;
     }
     compat_fd = fd;
     return 0;
+}
+
+const char *tcp_connect_strerror(int err)
+{
+    switch (err) {
+        case TCP_ERR_NOSOCK:  return "no free TCP socket";
+        case TCP_ERR_REFUSED: return "connection refused (RST received)";
+        case TCP_ERR_TIMEOUT: return "connection timed out, no reply to SYN";
+        case IP_ERR_NOMEM:    return "out of memory building packet";
+        default:               return arp_resolve_strerror(err); /* ARP_ERR_* -- couldn't even send the SYN */
+    }
 }
 
 int tcp_send(void *data, int len)

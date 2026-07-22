@@ -167,7 +167,13 @@ void cmd_wget(int argc, char **args)
 
     uint8_t resp[4096];
     int n = http_get(host, port, path, resp, sizeof(resp) - 1);
-    if (n <= 0) { terminal_writestring("FAILED\n"); return; }
+    if (n < 0) {
+        terminal_writestring("FAILED (");
+        terminal_writestring(http_strerror(n));
+        terminal_writestring(")\n");
+        return;
+    }
+    if (n == 0) { terminal_writestring("FAILED (connected, but received no data)\n"); return; }
     resp[n] = '\0';
     terminal_writestring("OK (");
     print_num(n);

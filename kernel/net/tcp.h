@@ -28,6 +28,17 @@
 #define TCP_RETX_TIMEOUT 50
 #define TCP_RETX_MAX     5
 
+/* tcp_connect()/tcp_connect2()'s negative return codes -- numbered well
+ * past every other layer's range (see dns.h/icmp.h) so a propagated
+ * lower-layer code (arp_resolve()'s or ip_send()'s own, returned
+ * verbatim when the SYN can't even be sent) never collides with one of
+ * these. Without this, "connection refused" and "no reply to SYN" both
+ * used to collapse into the same generic failure a caller couldn't
+ * tell apart. */
+#define TCP_ERR_NOSOCK   -40 /* no free TCP socket */
+#define TCP_ERR_REFUSED  -41 /* SYN sent, got RST back (port closed / firewalled) */
+#define TCP_ERR_TIMEOUT  -42 /* SYN sent, no reply before the deadline */
+
 /* Socket-based API */
 int  tcp_socket(void);
 int  tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port);
@@ -42,6 +53,7 @@ int  tcp_connect(uint32_t dst_ip, uint16_t dst_port);
 int  tcp_send(void *data, int len);
 int  tcp_recv(uint8_t *buf, int max_len);
 void tcp_close(void);
+const char *tcp_connect_strerror(int err);
 
 /* Called by ip.c and scheduler */
 void tcp_handle(ip_hdr_t *ip, void *pkt, int len);
