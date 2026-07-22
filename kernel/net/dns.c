@@ -51,7 +51,7 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
 
     /* Wall-clock timeout, not an iteration count — see arp_resolve()
      * for why a fixed retry count is unreliable across drivers. */
-    uint32_t deadline = debugmon_uptime_ms() + 3000;
+    uint32_t deadline = debugmon_uptime_ms() + 5000;
     while (debugmon_uptime_ms() < deadline) {
         uint8_t buf[1536];
         int len = nic_poll(buf, sizeof(buf));
@@ -81,18 +81,54 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
              * bytes over in one step) and read resp[pos]/resp[pos+1]
              * out of bounds -- a remote out-of-bounds stack read. */
             int pos = 12;
+            int qname_compressed = 0;
             while (pos < n && resp[pos] != 0) {
-                if ((resp[pos] & 0xC0) == 0xC0) { pos += 2; break; }
+                if ((resp[pos] & 0xC0) == 0xC0) { pos += 2; qname_compressed = 1; break; }
                 if (pos + resp[pos] + 1 > n) return -1;
                 pos += resp[pos] + 1;
             }
-            if (pos + 1 + 4 + 2 > n) return -1;
-            pos += 1;
-            pos += 4;
-            int rdlength = (resp[pos] << 8) | resp[pos + 1]; pos += 2;
-            if (rdlength == 4 && pos + 4 <= n) {
-                *ip_out = *(uint32_t *)&resp[pos];
-                return 0;
+            if (pos >= n) return -1;
+            if (!qname_compressed) pos += 1; /* skip the name's null terminator */
+            if (pos + 4 > n) return -1;
+            pos += 4; /* qtype + qclass */
+
+            /* Walk each answer RR looking for the first real A record.
+             * The previous version jumped straight from here to
+             * reading two bytes as RDLENGTH, but a real answer RR
+             * starts with its own NAME (almost always a 2-byte
+             * compression pointer back to the question, not the
+             * literal question bytes), then TYPE(2)/CLASS(2)/TTL(4),
+             * and only then RDLENGTH -- skipping all of that made the
+             * compression pointer's own bytes get misread as
+             * RDLENGTH, so a real-world DNS response (which always
+             * uses name compression) could never match `rdlength==4`
+             * and resolution failed unconditionally. Also, if the
+             * first answer is a CNAME (common for aliased hosts)
+             * rather than an A record, it must be skipped in favor of
+             * a later answer rather than giving up immediately. */
+            for (int a = 0; a < ans_count && pos < n; a++) {
+                if ((resp[pos] & 0xC0) == 0xC0) {
+                    if (pos + 2 > n) return -1;
+                    pos += 2;
+                } else {
+                    while (pos < n && resp[pos] != 0) {
+                        if (pos + resp[pos] + 1 > n) return -1;
+                        pos += resp[pos] + 1;
+                    }
+                    if (pos >= n) return -1;
+                    pos += 1;
+                }
+                if (pos + 10 > n) return -1; /* type+class+ttl+rdlength */
+                uint16_t rtype = (uint16_t)((resp[pos] << 8) | resp[pos + 1]);
+                pos += 2 + 2 + 4; /* type, class, ttl */
+                int rdlength = (resp[pos] << 8) | resp[pos + 1];
+                pos += 2;
+                if (pos + rdlength > n) return -1;
+                if (rtype == 1 && rdlength == 4) {
+                    *ip_out = *(uint32_t *)&resp[pos];
+                    return 0;
+                }
+                pos += rdlength; /* not an A record -- try the next answer */
             }
         }
         task_yield();
