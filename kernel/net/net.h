@@ -25,6 +25,7 @@ extern uint8_t  net_mac[6];
 extern uint32_t net_ip;
 extern uint32_t net_gateway;
 extern uint32_t net_dns;
+extern uint32_t net_netmask;
 
 #define htons(x) ((uint16_t)(((x) >> 8) | ((x) << 8)))
 #define ntohs(x) htons(x)

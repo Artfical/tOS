@@ -203,6 +203,7 @@ KERNEL_OBJS = \
     kernel/net/icmp.o \
     kernel/net/udp.o \
     kernel/net/dns.o \
+    kernel/net/dhcp.o \
     kernel/net/tcp.o \
     kernel/net/sctp.o \
     kernel/net/dccp.o \

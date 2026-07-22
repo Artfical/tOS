@@ -61,12 +61,17 @@ void route_init(void)
     if (net_gateway)
         route_add(0, 0, net_gateway, 0, 100, 0);
 
-    /* Direct route for local subnet: 10.0.2.0/24, table 0
-     * (IP4() packs octets in memory-byte order, matching wire format on
-     * this little-endian target — the mask must use the same convention,
-     * NOT a plain 0xFFFFFF00 host-order literal, or the prefix compare
-     * in route_lookup() silently never matches.) */
-    route_add(IP4(10,0,2,0), IP4(255,255,255,0),
+    /* Direct route for the local subnet, table 0. net_ip/net_netmask
+     * come from dhcp_configure() on a real network (see net.c) -- a
+     * subnet hardcoded to QEMU slirp's 10.0.2.0/24 is wrong on any other
+     * hypervisor's NAT network (e.g. VMware's, which uses its own
+     * subnet entirely), so it silently made every packet ARP for a
+     * gateway that doesn't exist on that segment. (IP4() packs octets
+     * in memory-byte order, matching wire format on this little-endian
+     * target -- net_netmask must use the same convention, not a plain
+     * host-order literal, or the prefix compare in route_lookup()
+     * silently never matches.) */
+    route_add(net_ip & net_netmask, net_netmask,
               0, net_ip, 0, 0);
 }
 

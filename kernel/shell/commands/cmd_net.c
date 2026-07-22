@@ -61,6 +61,7 @@ void cmd_ifconfig(int argc, char **args)
         if (i < 5) terminal_putchar(':');
     }
     terminal_writestring("\nip:     ");      print_ip_dotted(net_ip);
+    terminal_writestring("\nmask:   ");      print_ip_dotted(net_netmask);
     terminal_writestring("\ngateway:");      print_ip_dotted(net_gateway);
     terminal_writestring("\ndns:    ");      print_ip_dotted(net_dns);
     terminal_writestring("\nrx:     ");

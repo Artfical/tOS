@@ -11,13 +11,20 @@
 #include "gre.h"
 #include "ipip.h"
 #include "wgtun.h"
+#include "dhcp.h"
 #include "string.h"
 #include "terminal.h"
+#include "klog.h"
 
 uint8_t  net_mac[6];
+/* QEMU user-mode networking (slirp) defaults -- used as-is if DHCP
+ * doesn't find a server (e.g. an isolated test network), overwritten
+ * by dhcp_configure() on any real network, where a hardcoded subnet
+ * is almost certainly wrong (see route_init()). */
 uint32_t net_ip = IP4(10,0,2,15);
 uint32_t net_gateway = IP4(10,0,2,2);
 uint32_t net_dns = IP4(10,0,2,3);
+uint32_t net_netmask = IP4(255,255,255,0);
 
 void net_init(void)
 {
@@ -26,6 +33,14 @@ void net_init(void)
     if (nic_init() != 0) {
         terminal_writestring("[WARN] No network card found\n");
         return;
+    }
+    int drc = dhcp_configure();
+    if (drc == 0) {
+        klog_write("dhcp: lease acquired\n");
+    } else {
+        klog_write("dhcp: ");
+        klog_write(dhcp_strerror(drc));
+        klog_write(" -- falling back to compiled-in defaults\n");
     }
     ip6_init(net_mac);
     route_init();
