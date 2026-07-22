@@ -67,7 +67,12 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
         uint16_t src_port;
         int n = udp_listen(rx_port, resp, sizeof(resp), &src_ip, &src_port);
         if (n > 12 + 16) {
-            if (resp[2] & 0x0F) return DNS_ERR_SERVER;
+            /* RCODE is the low nibble of byte 3 (RA|Z|RCODE), not byte 2
+             * (QR|Opcode|AA|TC|RD) -- our query always sets RD=1, and a
+             * real server echoes that bit straight back, so checking
+             * byte 2 here made a perfectly successful NOERROR response
+             * always look like a server error. */
+            if (resp[3] & 0x0F) return DNS_ERR_SERVER;
             int ans_count = (resp[6] << 8) | resp[7];
             if (ans_count == 0) return DNS_ERR_NO_ANSWER;
             /* resp is a fixed-size stack buffer filled straight from
