@@ -72,7 +72,7 @@ static void arp_send_request(uint32_t ip)
 
 int arp_resolve(uint32_t ip, uint8_t *mac_out)
 {
-    if (!nic_send || !nic_poll) return -1;
+    if (!nic_send || !nic_poll) return ARP_ERR_NO_NIC;
 
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (arp_cache[i].valid && arp_cache[i].ip == ip) {
@@ -104,7 +104,16 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
         }
         task_yield();
     }
-    return -1;
+    return ARP_ERR_TIMEOUT;
+}
+
+const char *arp_resolve_strerror(int err)
+{
+    switch (err) {
+        case ARP_ERR_NO_NIC:  return "no network card found";
+        case ARP_ERR_TIMEOUT: return "ARP request timed out, no reply";
+        default:               return "unknown error";
+    }
 }
 
 void arp_handle(uint8_t *data, int len)

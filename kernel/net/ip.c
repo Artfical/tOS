@@ -35,11 +35,12 @@ int ip_send(uint32_t dst_ip, uint8_t protocol, void *data, int len)
     if (!nh) nh = dst_ip; /* no route configured — try direct */
 
     uint8_t mac[6];
-    if (arp_resolve(nh, mac) != 0) return -1;
+    int arc = arp_resolve(nh, mac);
+    if (arc != 0) return arc;
 
     int total = sizeof(ip_hdr_t) + len;
     uint8_t *buf = (uint8_t *)malloc(total + 14);
-    if (!buf) return -1;
+    if (!buf) return IP_ERR_NOMEM;
 
     eth_hdr_t *eth = (eth_hdr_t *)buf;
     memcpy(eth->dst, mac, 6);

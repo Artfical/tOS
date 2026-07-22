@@ -8,6 +8,7 @@
 #include "serial.h"
 #include "terminal.h"
 #include "string.h"
+#include "klog.h"
 
 void (*nic_send)(void *data, int len) = 0;
 int  (*nic_poll)(uint8_t *buf, int max_len) = 0;
@@ -18,51 +19,67 @@ uint32_t nic_tx_packets = 0;
 uint32_t nic_rx_bytes   = 0;
 uint32_t nic_tx_bytes   = 0;
 
+/* Probing status previously only went to serial_write() -- visible on
+ * a real serial console, but invisible to `dmesg` (which reads back
+ * klog's ring buffer, see klog_write()) since nothing here ever wrote
+ * to it. That made it impossible to tell, from inside a running VM
+ * with no serial console attached, whether NIC probing found nothing
+ * at all versus found a card that just isn't getting ARP replies --
+ * two very different problems that look identical from the shell
+ * ("no route to host"). Mirror every probing line to klog_write() too,
+ * the same way kernel/drivers/audio/ich.c already does for its own
+ * unsupported-device diagnostics. */
+static void nic_log(const char *s)
+{
+    serial_write(s);
+    klog_write(s);
+}
+
 int nic_init(void)
 {
     nic_send = 0;
     nic_poll = 0;
 
-    serial_write("nic: probing RTL8139... ");
+    nic_log("nic: probing RTL8139... ");
     if (rtl8139_init() == 0) {
         nic_send = rtl8139_send;
         nic_poll = rtl8139_poll;
         strncpy(nic_driver_name, "RTL8139", 31);
-        serial_write("OK\n");
+        nic_log("OK\n");
         return 0;
     }
-    serial_write("no\nnic: probing PCnet... ");
+    nic_log("no\nnic: probing PCnet... ");
     if (pcnet_init() == 0) {
         nic_send = pcnet_send;
         nic_poll = pcnet_poll;
         strncpy(nic_driver_name, "PCnet", 31);
-        serial_write("OK\n");
+        nic_log("OK\n");
         return 0;
     }
-    serial_write("no\nnic: probing E1000... ");
+    nic_log("no\nnic: probing E1000... ");
     if (e1000_init() == 0) {
         nic_send = e1000_send;
         nic_poll = e1000_poll;
         strncpy(nic_driver_name, "E1000", 31);
-        serial_write("OK\n");
+        nic_log("OK\n");
         return 0;
     }
-    serial_write("no\nnic: probing virtio-net... ");
+    nic_log("no\nnic: probing virtio-net... ");
     if (virtio_net_init() == 0) {
         nic_send = virtio_net_send;
         nic_poll = virtio_net_poll;
         strncpy(nic_driver_name, "virtio-net", 31);
-        serial_write("OK\n");
+        nic_log("OK\n");
         return 0;
     }
-    serial_write("no\nnic: probing NE2000... ");
+    nic_log("no\nnic: probing NE2000... ");
     if (ne2000_init() == 0) {
         nic_send = ne2000_send;
         nic_poll = ne2000_poll;
         strncpy(nic_driver_name, "NE2000", 31);
-        serial_write("OK\n");
+        nic_log("OK\n");
         return 0;
     }
-    serial_write("no\n");
+    nic_log("no\nnic: no supported network card found -- networking will not work\n");
     return -1;
 }

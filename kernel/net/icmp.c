@@ -51,8 +51,8 @@ int icmp_ping(uint32_t dst_ip)
     icmp->seq = htons(1);
     icmp->checksum = icmp_checksum((uint16_t *)pkt, sizeof(pkt));
 
-    if (ip_send(dst_ip, IPPROTO_ICMP, pkt, sizeof(pkt)) != 0)
-        return ICMP_ERR_SEND;
+    int src = ip_send(dst_ip, IPPROTO_ICMP, pkt, sizeof(pkt));
+    if (src != 0) return src; /* propagate ip_send()/arp_resolve()'s own specific code */
 
     /* Wall-clock timeout, not an iteration count — see arp_resolve()
      * for why a fixed retry count is unreliable across drivers. */
@@ -76,8 +76,8 @@ int icmp_ping(uint32_t dst_ip)
 const char *icmp_ping_strerror(int err)
 {
     switch (err) {
-        case ICMP_ERR_SEND:    return "no route to host (ARP never resolved)";
         case ICMP_ERR_TIMEOUT: return "request sent, no reply (host down or filtering ICMP)";
-        default:                return "unknown error";
+        case IP_ERR_NOMEM:     return "out of memory building packet";
+        default:                return arp_resolve_strerror(err); /* ARP_ERR_* (couldn't send at all) */
     }
 }

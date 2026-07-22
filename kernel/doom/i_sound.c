@@ -60,6 +60,11 @@ static music_module_t *music_module = NULL;
 int snd_musicdevice = SNDDEVICE_SB;
 int snd_sfxdevice = SNDDEVICE_SB;
 
+// Resampling is not implemented on this platform; these exist only
+// so the config file format stays compatible with chocolate-doom's.
+int use_libsamplerate = 0;
+float libsamplerate_scale = 1.0f;
+
 // DOS-specific options: These are unused but should be maintained
 // so that the config file can be shared between chocolate
 // doom and doom.exe
@@ -394,9 +399,6 @@ boolean I_MusicIsPlaying(void)
 
 void I_BindSoundVariables(void)
 {
-    extern int use_libsamplerate;
-    extern float libsamplerate_scale;
-
     M_BindVariable("snd_musicdevice",   &snd_musicdevice);
     M_BindVariable("snd_sfxdevice",     &snd_sfxdevice);
     M_BindVariable("snd_sbport",        &snd_sbport);

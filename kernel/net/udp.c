@@ -81,7 +81,7 @@ int udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port, void *data, 
 {
     int total = sizeof(udp_hdr_t) + len;
     uint8_t *buf = (uint8_t *)malloc(total);
-    if (!buf) return -1;
+    if (!buf) return IP_ERR_NOMEM; /* same class of failure as ip_send()'s own OOM check */
 
     udp_hdr_t *udp = (udp_hdr_t *)buf;
     udp->src_port = htons(src_port);

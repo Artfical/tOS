@@ -46,8 +46,8 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
     int rx_port = 12345;
     udp_open(rx_port);
 
-    if (udp_send(net_dns, DNS_PORT, rx_port, pkt, off) != 0)
-        return DNS_ERR_SEND;
+    int src = udp_send(net_dns, DNS_PORT, rx_port, pkt, off);
+    if (src != 0) return src; /* propagate ip_send()/arp_resolve()'s own specific code */
 
     /* Wall-clock timeout, not an iteration count — see arp_resolve()
      * for why a fixed retry count is unreliable across drivers. */
@@ -140,12 +140,12 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
 const char *dns_strerror(int err)
 {
     switch (err) {
-        case DNS_ERR_SEND:      return "could not send query (no route to DNS server)";
         case DNS_ERR_TIMEOUT:   return "no response from DNS server (timed out)";
         case DNS_ERR_SERVER:    return "DNS server returned an error";
         case DNS_ERR_NO_ANSWER: return "no such host (no records returned)";
         case DNS_ERR_MALFORMED: return "malformed response from DNS server";
         case DNS_ERR_NO_A:      return "host has no IPv4 (A) address";
-        default:                return "unknown error";
+        case IP_ERR_NOMEM:      return "out of memory building packet";
+        default:                return arp_resolve_strerror(err); /* ARP_ERR_* (couldn't send at all) */
     }
 }
