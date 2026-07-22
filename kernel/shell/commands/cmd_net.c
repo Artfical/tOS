@@ -43,8 +43,13 @@ void cmd_ping(int argc, char **args)
     if (is_ip) ip = parse_ip(args[1]);
     else {
         terminal_writestring("Resolving... ");
-        if (dns_resolve(args[1], &ip) != 0)
-            { terminal_writestring("FAILED\n"); return; }
+        int rc = dns_resolve(args[1], &ip);
+        if (rc != 0) {
+            terminal_writestring("FAILED (");
+            terminal_writestring(dns_strerror(rc));
+            terminal_writestring(")\n");
+            return;
+        }
         terminal_writestring("OK\n");
     }
     terminal_writestring("Pinging... ");
@@ -88,7 +93,13 @@ void cmd_wget(int argc, char **args)
         ip = parse_ip(host);
     } else {
         terminal_writestring("Resolving... ");
-        if (dns_resolve(host, &ip) != 0) { terminal_writestring("FAILED\n"); return; }
+        int rc = dns_resolve(host, &ip);
+        if (rc != 0) {
+            terminal_writestring("FAILED (");
+            terminal_writestring(dns_strerror(rc));
+            terminal_writestring(")\n");
+            return;
+        }
         terminal_writestring("OK\n");
     }
     terminal_writestring("Connecting... ");

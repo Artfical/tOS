@@ -47,7 +47,7 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
     udp_open(rx_port);
 
     if (udp_send(net_dns, DNS_PORT, rx_port, pkt, off) != 0)
-        return -1;
+        return DNS_ERR_SEND;
 
     /* Wall-clock timeout, not an iteration count — see arp_resolve()
      * for why a fixed retry count is unreliable across drivers. */
@@ -67,9 +67,9 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
         uint16_t src_port;
         int n = udp_listen(rx_port, resp, sizeof(resp), &src_ip, &src_port);
         if (n > 12 + 16) {
-            if (resp[2] & 0x0F) return -1;
+            if (resp[2] & 0x0F) return DNS_ERR_SERVER;
             int ans_count = (resp[6] << 8) | resp[7];
-            if (ans_count == 0) return -1;
+            if (ans_count == 0) return DNS_ERR_NO_ANSWER;
             /* resp is a fixed-size stack buffer filled straight from
              * a UDP datagram sent by whatever (spoofable, attacker-
              * controlled) server answered on rx_port -- every label
@@ -84,12 +84,12 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
             int qname_compressed = 0;
             while (pos < n && resp[pos] != 0) {
                 if ((resp[pos] & 0xC0) == 0xC0) { pos += 2; qname_compressed = 1; break; }
-                if (pos + resp[pos] + 1 > n) return -1;
+                if (pos + resp[pos] + 1 > n) return DNS_ERR_MALFORMED;
                 pos += resp[pos] + 1;
             }
-            if (pos >= n) return -1;
+            if (pos >= n) return DNS_ERR_MALFORMED;
             if (!qname_compressed) pos += 1; /* skip the name's null terminator */
-            if (pos + 4 > n) return -1;
+            if (pos + 4 > n) return DNS_ERR_MALFORMED;
             pos += 4; /* qtype + qclass */
 
             /* Walk each answer RR looking for the first real A record.
@@ -108,30 +108,44 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
              * a later answer rather than giving up immediately. */
             for (int a = 0; a < ans_count && pos < n; a++) {
                 if ((resp[pos] & 0xC0) == 0xC0) {
-                    if (pos + 2 > n) return -1;
+                    if (pos + 2 > n) return DNS_ERR_MALFORMED;
                     pos += 2;
                 } else {
                     while (pos < n && resp[pos] != 0) {
-                        if (pos + resp[pos] + 1 > n) return -1;
+                        if (pos + resp[pos] + 1 > n) return DNS_ERR_MALFORMED;
                         pos += resp[pos] + 1;
                     }
-                    if (pos >= n) return -1;
+                    if (pos >= n) return DNS_ERR_MALFORMED;
                     pos += 1;
                 }
-                if (pos + 10 > n) return -1; /* type+class+ttl+rdlength */
+                if (pos + 10 > n) return DNS_ERR_MALFORMED; /* type+class+ttl+rdlength */
                 uint16_t rtype = (uint16_t)((resp[pos] << 8) | resp[pos + 1]);
                 pos += 2 + 2 + 4; /* type, class, ttl */
                 int rdlength = (resp[pos] << 8) | resp[pos + 1];
                 pos += 2;
-                if (pos + rdlength > n) return -1;
+                if (pos + rdlength > n) return DNS_ERR_MALFORMED;
                 if (rtype == 1 && rdlength == 4) {
                     *ip_out = *(uint32_t *)&resp[pos];
                     return 0;
                 }
                 pos += rdlength; /* not an A record -- try the next answer */
             }
+            return DNS_ERR_NO_A;
         }
         task_yield();
     }
-    return -1;
+    return DNS_ERR_TIMEOUT;
+}
+
+const char *dns_strerror(int err)
+{
+    switch (err) {
+        case DNS_ERR_SEND:      return "could not send query (no route to DNS server)";
+        case DNS_ERR_TIMEOUT:   return "no response from DNS server (timed out)";
+        case DNS_ERR_SERVER:    return "DNS server returned an error";
+        case DNS_ERR_NO_ANSWER: return "no such host (no records returned)";
+        case DNS_ERR_MALFORMED: return "malformed response from DNS server";
+        case DNS_ERR_NO_A:      return "host has no IPv4 (A) address";
+        default:                return "unknown error";
+    }
 }
