@@ -85,7 +85,19 @@ void ip_handle(uint8_t *data, int len)
     if (ip_checksum((uint8_t *)ip, sizeof(ip_hdr_t)) != sum) return;
     ip->checksum = sum;
 
-    int payload_len = len - ihl;
+    /* Use the IP header's own declared total_len, not the raw Ethernet
+     * frame length -- small packets (e.g. a bare ACK, or a short data
+     * segment) routinely get padded up to the 60-byte Ethernet minimum
+     * by real switches/NICs, and `len` here is that padded frame size.
+     * Using it directly turned that trailing zero-padding into fake
+     * extra TCP/UDP payload bytes appended to whatever real data the
+     * segment carried -- e.g. a handful of real response bytes coming
+     * out the other end as a chunk of zero bytes. Clamp against `len`
+     * too, since total_len is attacker/peer-controlled and must never
+     * be trusted to read past what was actually received. */
+    int ip_total = ntohs(ip->total_len);
+    if (ip_total < ihl || ip_total > len) return;
+    int payload_len = ip_total - ihl;
     void *payload = (uint8_t *)data + ihl;
 
     /* Firewall + DNAT check */
