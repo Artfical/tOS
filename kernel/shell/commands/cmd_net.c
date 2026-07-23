@@ -173,8 +173,10 @@ void cmd_wget(int argc, char **args)
      * 4096-byte stack array silently truncated anything past that.
      * A buffer that size can't just be made a bigger stack array (the
      * kernel stack is nowhere near large enough), so heap-allocate it
-     * instead. */
-    #define WGET_BUF_SIZE (512 * 1024)
+     * instead. Capped well under KERNEL_HEAP_MAX_SIZE (64MB total, the
+     * whole kernel heap's hard ceiling, not just this buffer's) so one
+     * wget doesn't leave nothing for anything else running. */
+    #define WGET_BUF_SIZE (32 * 1024 * 1024)
     uint8_t *resp = (uint8_t *)malloc(WGET_BUF_SIZE);
     if (!resp) { terminal_writestring("FAILED (out of memory)\n"); return; }
     int n;
