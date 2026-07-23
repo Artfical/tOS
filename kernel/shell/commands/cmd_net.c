@@ -169,26 +169,35 @@ void cmd_wget(int argc, char **args)
     }
     terminal_writestring(use_tls ? "Connecting (TLS)... " : "Connecting... ");
 
-    uint8_t resp[4096];
+    /* A real page can easily run into the hundreds of KB -- the old
+     * 4096-byte stack array silently truncated anything past that.
+     * A buffer that size can't just be made a bigger stack array (the
+     * kernel stack is nowhere near large enough), so heap-allocate it
+     * instead. */
+    #define WGET_BUF_SIZE (512 * 1024)
+    uint8_t *resp = (uint8_t *)malloc(WGET_BUF_SIZE);
+    if (!resp) { terminal_writestring("FAILED (out of memory)\n"); return; }
     int n;
     if (use_tls) {
-        n = https_get(ip, host, port, path, resp, sizeof(resp) - 1);
+        n = https_get(ip, host, port, path, resp, WGET_BUF_SIZE - 1);
         if (n < 0) {
             terminal_writestring("FAILED (");
             terminal_writestring(tls_connect_strerror(n));
             terminal_writestring(")\n");
+            free(resp);
             return;
         }
-        if (n == 0) { terminal_writestring("FAILED (connected, but received no data)\n"); return; }
+        if (n == 0) { terminal_writestring("FAILED (connected, but received no data)\n"); free(resp); return; }
     } else {
-        n = http_get(ip, host, port, path, resp, sizeof(resp) - 1);
+        n = http_get(ip, host, port, path, resp, WGET_BUF_SIZE - 1);
         if (n < 0) {
             terminal_writestring("FAILED (");
             terminal_writestring(http_strerror(n));
             terminal_writestring(")\n");
+            free(resp);
             return;
         }
-        if (n == 0) { terminal_writestring("FAILED (connected, but received no data)\n"); return; }
+        if (n == 0) { terminal_writestring("FAILED (connected, but received no data)\n"); free(resp); return; }
     }
     resp[n] = '\0';
     terminal_writestring("OK (");
@@ -205,6 +214,7 @@ void cmd_wget(int argc, char **args)
         terminal_writestring((char *)resp);
         terminal_putchar('\n');
     }
+    free(resp);
 }
 
 void cmd_tsharp(int argc, char **args)
