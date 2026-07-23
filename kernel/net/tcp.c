@@ -311,6 +311,13 @@ int tcp_recv2(int fd, uint8_t *buf, int max_len)
 {
     tcp_sock_t *s = get_sock(fd);
     if (!s) return -1;
+    /* Wall-clock timeout, not an iteration count -- see arp_resolve()
+     * for why. Without this, a connection that established fine but
+     * whose peer never actually sends a reply (or a reply that never
+     * makes it back) hung this loop forever -- the shell just sat at
+     * "Connecting..." with no way out. Reset on every byte actually
+     * received, so a slow-but-alive connection isn't cut off early. */
+    uint32_t deadline = debugmon_uptime_ms() + 10000;
     for (;;) {
         if (s->rx_len > 0) {
             int n = s->rx_len < max_len ? s->rx_len : max_len;
@@ -327,9 +334,11 @@ int tcp_recv2(int fd, uint8_t *buf, int max_len)
         }
         if (s->rx_closed)           return 0;
         if (s->state == TCP_CLOSED) return -1;
+        if (debugmon_uptime_ms() >= deadline) return TCP_ERR_RECV_TIMEOUT;
         uint8_t pkt[1536];
         int plen = nic_poll(pkt, sizeof(pkt));
         if (plen > 0) {
+            deadline = debugmon_uptime_ms() + 10000;
             eth_hdr_t *eth = (eth_hdr_t *)pkt;
             if (ntohs(eth->type) == ETHERTYPE_ARP)
                 arp_handle(pkt, plen);

@@ -35,9 +35,10 @@
  * these. Without this, "connection refused" and "no reply to SYN" both
  * used to collapse into the same generic failure a caller couldn't
  * tell apart. */
-#define TCP_ERR_NOSOCK   -40 /* no free TCP socket */
-#define TCP_ERR_REFUSED  -41 /* SYN sent, got RST back (port closed / firewalled) */
-#define TCP_ERR_TIMEOUT  -42 /* SYN sent, no reply before the deadline */
+#define TCP_ERR_NOSOCK      -40 /* no free TCP socket */
+#define TCP_ERR_REFUSED     -41 /* SYN sent, got RST back (port closed / firewalled) */
+#define TCP_ERR_TIMEOUT     -42 /* SYN sent, no reply before the deadline */
+#define TCP_ERR_RECV_TIMEOUT -43 /* connected, but no data arrived before the deadline (peer went silent) */
 
 /* Socket-based API */
 int  tcp_socket(void);
