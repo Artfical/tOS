@@ -120,6 +120,49 @@ void cmd_ping(int argc, char **args)
     }
 }
 
+/* Case-insensitive substring search -- HTTP header names are
+ * case-insensitive on the wire, and servers disagree on how they
+ * capitalize "Content-Type". */
+static const char *ci_strstr(const char *hay, const char *needle)
+{
+    int nlen = 0;
+    while (needle[nlen]) nlen++;
+    for (const char *p = hay; *p; p++) {
+        int k = 0;
+        while (k < nlen && p[k] && (p[k] | 0x20) == (needle[k] | 0x20)) k++;
+        if (k == nlen) return p;
+    }
+    return 0;
+}
+
+/* Maps the response's Content-Type header to a file extension, so a
+ * URL with no filename in its path (e.g. "wget http://site.com/") or
+ * an extensionless one saves as something recognizable instead of a
+ * bare "downloaded" with no type info at all. Empty string if the
+ * header's missing or the type isn't one of the common ones below. */
+static const char *ext_for_content_type(const char *resp)
+{
+    const char *hdr_end = strstr(resp, "\r\n\r\n");
+    const char *ct = ci_strstr(resp, "content-type:");
+    if (!ct || (hdr_end && ct > hdr_end)) return "";
+    ct += 13;
+    while (*ct == ' ') ct++;
+    if (!strncmp(ct, "text/html", 9))            return ".html";
+    if (!strncmp(ct, "application/json", 16))    return ".json";
+    if (!strncmp(ct, "text/css", 8))             return ".css";
+    if (!strncmp(ct, "application/javascript", 22)) return ".js";
+    if (!strncmp(ct, "text/javascript", 15))     return ".js";
+    if (!strncmp(ct, "image/png", 9))            return ".png";
+    if (!strncmp(ct, "image/jpeg", 10))          return ".jpg";
+    if (!strncmp(ct, "image/gif", 9))            return ".gif";
+    if (!strncmp(ct, "image/svg", 9))            return ".svg";
+    if (!strncmp(ct, "application/pdf", 15))     return ".pdf";
+    if (!strncmp(ct, "text/xml", 8))              return ".xml";
+    if (!strncmp(ct, "application/xml", 15))     return ".xml";
+    if (!strncmp(ct, "text/plain", 10))          return ".txt";
+    return "";
+}
+
 void cmd_wget(int argc, char **args)
 {
     if (argc < 2) {
@@ -145,9 +188,13 @@ void cmd_wget(int argc, char **args)
     if (*url == '/') { while (*url && j < 255) path[j++] = *url++; path[j] = '\0'; }
     else { path[0] = '/'; path[1] = '\0'; }
 
-    const char *fname = path;
-    for (const char *p = path; *p; p++) if (*p == '/') fname = p + 1;
-    if (*fname == '\0') fname = "downloaded";
+    const char *base_fname = path;
+    for (const char *p = path; *p; p++) if (*p == '/') base_fname = p + 1;
+    if (*base_fname == '\0') base_fname = "downloaded";
+    char fname[300];
+    int fi = 0;
+    while (base_fname[fi] && fi < 250) { fname[fi] = base_fname[fi]; fi++; }
+    fname[fi] = '\0';
 
     uint32_t ip;
     int host_is_ip = 1;
@@ -205,6 +252,15 @@ void cmd_wget(int argc, char **args)
     terminal_writestring("OK (");
     print_num(n);
     terminal_writestring(" bytes)\n");
+
+    int has_dot = 0;
+    for (int k = 0; fname[k]; k++) if (fname[k] == '.') has_dot = 1;
+    if (!has_dot) {
+        const char *ext = ext_for_content_type((const char *)resp);
+        int el = 0;
+        while (ext[el] && fi + el < 299) { fname[fi + el] = ext[el]; el++; }
+        fname[fi + el] = '\0';
+    }
 
     if (ramfs_create(fname) == 0) {
         ramfs_write(fname, (char *)resp, n, 0);
