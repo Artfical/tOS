@@ -20,6 +20,7 @@
 #include "scheduler.h"
 #include "debugmon.h"
 #include "terminal.h"
+#include "klog.h"
 
 /* -- TCP Control Block ---------------------------------------------------- */
 typedef struct {
@@ -143,25 +144,48 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     *(uint16_t *)(tcp + 14) = htons(65535);
     if (plen > 0) memcpy(tcp + 20, payload, plen);
 
+    /* Pseudo header + checksum: built and read as plain bytes, never
+     * through a mismatched pointer-cast onto this buffer. Doing that
+     * (the previous code) was a textbook strict-aliasing violation --
+     * writing pseudo[] via a uint32_t-pointer store and then reading
+     * it back through a uint16_t-pointer are two incompatible pointer
+     * types the compiler is not required to treat as aliasing.
+     * Under -O2 this silently dropped the write's visibility to the
+     * read for this exact buffer, so every TCP checksum ever sent was
+     * wrong -- it just happened to still look internally consistent
+     * (fold + complement of some number), so nothing crashed; real
+     * receivers just silently discarded the corrupt segment, which is
+     * exactly why every TCP SYN got no reply while ICMP (checksummed
+     * with ip_checksum()'s byte-indexed style, never hitting this bug)
+     * worked fine. */
     uint8_t pseudo[12];
-    *(uint32_t *)(pseudo + 0)  = net_ip;
-    *(uint32_t *)(pseudo + 4)  = s->dst_ip;
-    *(pseudo + 8)              = 0;
-    *(pseudo + 9)              = IPPROTO_TCP;
-    *(uint16_t *)(pseudo + 10) = htons(tcp_len);
+    pseudo[0] = (uint8_t)(net_ip);         pseudo[1] = (uint8_t)(net_ip >> 8);
+    pseudo[2] = (uint8_t)(net_ip >> 16);   pseudo[3] = (uint8_t)(net_ip >> 24);
+    pseudo[4] = (uint8_t)(s->dst_ip);      pseudo[5] = (uint8_t)(s->dst_ip >> 8);
+    pseudo[6] = (uint8_t)(s->dst_ip >> 16);pseudo[7] = (uint8_t)(s->dst_ip >> 24);
+    pseudo[8] = 0;
+    pseudo[9] = IPPROTO_TCP;
+    pseudo[10] = (uint8_t)((unsigned)tcp_len >> 8);
+    pseudo[11] = (uint8_t)(tcp_len & 0xFF);
 
     uint32_t sum = 0;
-    int i;
-    for (i = 0; i < 6; i++)                 sum += ntohs(((uint16_t *)pseudo)[i]);
-    for (i = 0; i < (tcp_len + 1) / 2; i++) sum += ntohs(((uint16_t *)tcp)[i]);
+    int j;
+    for (j = 0; j < 12; j += 2) sum += ((uint16_t)pseudo[j] << 8) | pseudo[j + 1];
+    for (j = 0; j + 1 < tcp_len; j += 2) sum += ((uint16_t)tcp[j] << 8) | tcp[j + 1];
+    if (tcp_len & 1) sum += (uint32_t)tcp[tcp_len - 1] << 8;
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
-    *(uint16_t *)(tcp + 16) = htons((uint16_t)(~sum & 0xFFFF));
+    uint16_t tcp_cksum = (uint16_t)(~sum & 0xFFFF);
+    tcp[16] = (uint8_t)(tcp_cksum >> 8);
+    tcp[17] = (uint8_t)(tcp_cksum & 0xFF);
 
     ip->checksum = 0;
     sum = 0;
-    for (i = 0; i < 10; i++) sum += ntohs(((uint16_t *)ip)[i]);
+    for (j = 0; j < 10; j++) sum += ntohs(((uint16_t *)ip)[j]);
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     ip->checksum = htons((uint16_t)(~sum & 0xFFFF));
+
+    if (flags & TCP_FLAG_SYN)
+        klog_write_hex("tcp: outgoing SYN", pkt, total);
 
     nic_transmit(pkt, total);
     free(pkt);
@@ -247,6 +271,12 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
         uint8_t buf[1536];
         int len = nic_poll(buf, sizeof(buf));
         if (len > 0) {
+            /* Log absolutely everything nic_poll() hands back while we
+             * wait for the SYN-ACK, not just packets we recognize --
+             * this is the only way to tell "nothing at all comes back"
+             * apart from "something arrives but our own parsing drops
+             * it", which look identical from the shell. */
+            klog_write_hex("tcp: packet seen while waiting for SYN-ACK", buf, len);
             eth_hdr_t *eth = (eth_hdr_t *)buf;
             if (ntohs(eth->type) == ETHERTYPE_ARP)
                 arp_handle(buf, len);
