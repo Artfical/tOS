@@ -60,6 +60,10 @@ const char *tcp_connect_strerror(int err);
 void tcp_handle(ip_hdr_t *ip, void *pkt, int len);
 void tcp_tick(void);
 
+/* Debug only: when on, every tcp_handle() invocation logs src/dst
+ * port, seq, len, flags via klog_write() (see dmesg). */
+void tcp_set_debug_trace(int on);
+
 /* Read-only query API (for Network Monitor GUI) */
 typedef struct {
     int      fd;

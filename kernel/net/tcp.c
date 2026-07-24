@@ -439,6 +439,14 @@ void tcp_tick(void)
 }
 
 /* -- Incoming packet dispatcher -------------------------------------------- */
+static int tcp_debug_trace = 0;
+void tcp_set_debug_trace(int on) { tcp_debug_trace = on; }
+
+static void tcp_trace_hex32(char *dbg, int *di, uint32_t v) {
+    static const char hx[] = "0123456789ABCDEF";
+    for (int sh = 28; sh >= 0; sh -= 4) dbg[(*di)++] = hx[(v >> sh) & 0xF];
+}
+
 void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
 {
     if (len < 20) return;
@@ -465,6 +473,28 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
             c->dst_ip   == ip_hdr->src_ip) {
             s = c; break;
         }
+    }
+
+    if (tcp_debug_trace) {
+        char dbg[100];
+        int di = 0;
+        const char *lbl = "tcp: dport=";
+        while (*lbl) dbg[di++] = *lbl++;
+        tcp_trace_hex32(dbg, &di, dst_port);
+        const char *l2 = " seq="; while (*l2) dbg[di++] = *l2++;
+        tcp_trace_hex32(dbg, &di, pkt_seq);
+        const char *l3 = " len="; while (*l3) dbg[di++] = *l3++;
+        tcp_trace_hex32(dbg, &di, (uint32_t)data_len);
+        const char *l4 = " flags="; while (*l4) dbg[di++] = *l4++;
+        tcp_trace_hex32(dbg, &di, flags);
+        const char *l5 = " sockfound="; while (*l5) dbg[di++] = *l5++;
+        dbg[di++] = s ? '1' : '0';
+        if (s) {
+            const char *l6 = " s.ack="; while (*l6) dbg[di++] = *l6++;
+            tcp_trace_hex32(dbg, &di, s->ack);
+        }
+        dbg[di++] = '\n'; dbg[di] = 0;
+        klog_write(dbg);
     }
 
     /* LISTEN: incoming SYN -- spawn new socket */
@@ -535,6 +565,16 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
     if (data_len > 0 && pkt_seq == s->ack) {
         rx_append(s, data, data_len);
         s->ack += (uint32_t)data_len;
+        send_seg(s, TCP_FLAG_ACK, 0, 0);
+    } else if (data_len > 0) {
+        /* Out-of-sequence data (usually the sender retransmitting a
+         * chunk we already ACKed, because our ACK for it never made
+         * it back) -- we don't have a reorder buffer so it's dropped
+         * either way, but a real TCP always re-sends its current ACK
+         * here. Without this, a lost ACK meant the sender kept
+         * retransmitting forever while we silently dropped every
+         * copy and just... waited, eventually timing out even though
+         * the connection was perfectly alive. */
         send_seg(s, TCP_FLAG_ACK, 0, 0);
     }
 

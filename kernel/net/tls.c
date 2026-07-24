@@ -650,6 +650,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
     }
 
     /* --- Step 9: Receive server ChangeCipherSpec + Finished --- */
+    tcp_set_debug_trace(1);
     {
         /* ChangeCipherSpec */
         uint8_t ccs_data[8];
@@ -700,8 +701,10 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
 
     tls_log("handshake complete");
     ctx->handshake_done = 1;
+    tcp_set_debug_trace(0);
     return 0;
 fail:
+    tcp_set_debug_trace(0);
     tcp_close2(ctx->fd);
     ctx->fd = -1;
     return rc;
