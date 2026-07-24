@@ -45,13 +45,24 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
     if (total_pages > 0x100000) total_pages = 0x100000;
 
     uint32_t bitmap_size = total_pages / 8 + 1;
-    page_bitmap = (uint32_t *)(KERNEL_HEAP_START);
-    memset(page_bitmap, 0, bitmap_size);
 
     uint32_t kernel_end = 0;
     extern uint32_t end;
     kernel_end = (uint32_t)&end;
     if (reserved_end > kernel_end) kernel_end = reserved_end;
+
+    /* page_bitmap used to sit at a fixed KERNEL_HEAP_START (0x1000000)
+     * regardless of how big the kernel's own BSS turned out to be --
+     * fine while BSS was tiny, but a large static array anywhere in the
+     * kernel image (e.g. MicroPython's heap[]) can push kernel_end well
+     * past that fixed address, so the bitmap would land ON TOP of
+     * still-live BSS data and get corrupted the moment anything wrote
+     * through it. Place it dynamically, right after kernel_end, like
+     * heap_start already is below. */
+    uint32_t bitmap_addr = (kernel_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    if (bitmap_addr < KERNEL_HEAP_START) bitmap_addr = KERNEL_HEAP_START;
+    page_bitmap = (uint32_t *)bitmap_addr;
+    memset(page_bitmap, 0, bitmap_size);
 
     for (uint32_t i = 0; i < kernel_end / PAGE_SIZE + 1; i++) {
         page_bitmap[i / 32] |= (1 << (i % 32));
@@ -228,8 +239,16 @@ static void *heap_alloc(uint32_t size)
     uint32_t grow = ((needed + 0xFFFFF) / 0x100000) * 0x100000;
     if (grow < 0x100000) grow = 0x100000;
     heap_end += grow;
-    if (heap_end > KERNEL_HEAP_START + KERNEL_HEAP_MAX_SIZE)
-        heap_end = KERNEL_HEAP_START + KERNEL_HEAP_MAX_SIZE;
+    /* Clamp against the heap's *actual* dynamic start, not the fixed
+     * KERNEL_HEAP_START constant -- heap_start is computed at runtime
+     * in memory_init() and can sit far above that constant (e.g. once
+     * a large static BSS array pushes kernel_end up), and clamping
+     * against the stale constant here would slam heap_end down BELOW
+     * heap_start, permanently inverting the heap's valid range and
+     * making every later heap_ptr_ok() check on heap_list itself fail
+     * -- which is exactly what used to happen. */
+    if (heap_end > heap_start + KERNEL_HEAP_MAX_SIZE)
+        heap_end = heap_start + KERNEL_HEAP_MAX_SIZE;
 
     if (old_heap_end + HEAP_SLOT(size) > heap_end) {
         heap_irq_restore(flags);

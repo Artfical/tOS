@@ -391,24 +391,24 @@ tOS.iso: kernel/tOS.elf initrd.tar
 	grub-mkrescue -o $@ iso
 
 run: tOS.iso
-	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
+	qemu-system-x86_64 -cdrom tOS.iso -m 1024M \
 		-drive file=/tmp/tfs_test.img,if=ide,format=raw \
 		-serial stdio 2>/dev/null || \
-	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
+	qemu-system-x86_64 -cdrom tOS.iso -m 1024M \
 		-drive file=/tmp/tfs_test.img,if=ide,format=raw
 
 run-audio: tOS.iso
-	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
+	qemu-system-x86_64 -cdrom tOS.iso -m 1024M \
 		-drive file=/tmp/tfs_test.img,if=ide,format=raw \
 		-soundhw sb16 -serial stdio 2>/dev/null || \
-	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
+	qemu-system-x86_64 -cdrom tOS.iso -m 1024M \
 		-drive file=/tmp/tfs_test.img,if=ide,format=raw \
 		-soundhw sb16
 
 run-noinstall: tOS.iso
 	rm -f /tmp/tfs_test.img
 	dd if=/dev/zero of=/tmp/tfs_test.img bs=1M count=64 >/dev/null 2>&1
-	qemu-system-x86_64 -cdrom tOS.iso -m 256M \
+	qemu-system-x86_64 -cdrom tOS.iso -m 1024M \
 		-drive file=/tmp/tfs_test.img,if=ide,format=raw \
 		-serial stdio 2>/dev/null || true
 

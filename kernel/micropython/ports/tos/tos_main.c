@@ -12,7 +12,7 @@
 #include "serial.h"
 #include "keyboard.h"
 
-static char heap[128 * 1024];
+static char heap[512 * 1024 * 1024];
 
 void tos_module_init(void);
 void tosgui_module_init(void);

@@ -76,13 +76,13 @@ make run
 Or manually:
 
 ```bash
-qemu-system-i386 -cdrom tOS.iso -m 256
+qemu-system-i386 -cdrom tOS.iso -m 1024
 ```
 
 For networking (PCnet):
 
 ```bash
-qemu-system-i386 -cdrom tOS.iso -m 256 -netdev user,id=net0 -device pcnet,netdev=net0
+qemu-system-i386 -cdrom tOS.iso -m 1024 -netdev user,id=net0 -device pcnet,netdev=net0
 ```
 
 For audio — QEMU SB16:
@@ -90,7 +90,7 @@ For audio — QEMU SB16:
 ```bash
 make run-audio
 # or manually:
-qemu-system-x86_64 -cdrom tOS.iso -m 256M -soundhw sb16
+qemu-system-x86_64 -cdrom tOS.iso -m 1024M -soundhw sb16
 ```
 
 For audio — VirtualBox (ICH AC97, auto-detected):
