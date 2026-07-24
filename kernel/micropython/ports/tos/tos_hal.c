@@ -7,10 +7,12 @@
 #include <string.h>
 
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
+    /* terminal_putchar() already mirrors every char to serial_putchar()
+     * internally, so an extra explicit serial_putchar() call here
+     * doubled each character on output. */
     for (size_t i = 0; i < len; i++) {
         if (str[i] == '\n') terminal_putchar('\r');
         terminal_putchar(str[i]);
-        serial_putchar(str[i]);
     }
     return len;
 }
