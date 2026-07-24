@@ -212,9 +212,23 @@ static MP_DEFINE_CONST_FUN_OBJ_1(sock_enter_obj, sock_enter);
 static mp_obj_t sock_exit(size_t n, const mp_obj_t *args) { (void)n; return sock_close(args[0]); }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(sock_exit_obj, 4, 4, sock_exit);
 
+/* This is the type's real locals dict -- what MicroPython's attribute
+ * lookup actually consults for `sock.connect(...)`-style calls. The
+ * constructor used to build a fresh per-instance dict with these same
+ * entries and then just discard it (`(void)d`), so none of these were
+ * ever reachable via normal method-call syntax -- only a direct,
+ * unbound call like `sock_connect_obj(sock, addr)` would have worked,
+ * which nothing (including this port's own test code) ever did. */
 static const mp_rom_map_elem_t sock_locals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___enter__), MP_ROM_PTR(&sock_enter_obj) },
     { MP_ROM_QSTR(MP_QSTR___exit__),  MP_ROM_PTR(&sock_exit_obj)  },
+    { MP_ROM_QSTR(MP_QSTR_connect),   MP_ROM_PTR(&sock_connect_obj)  },
+    { MP_ROM_QSTR(MP_QSTR_bind),      MP_ROM_PTR(&sock_bind_obj)     },
+    { MP_ROM_QSTR(MP_QSTR_send),      MP_ROM_PTR(&sock_send_obj)     },
+    { MP_ROM_QSTR(MP_QSTR_recv),      MP_ROM_PTR(&sock_recv_obj)     },
+    { MP_ROM_QSTR(MP_QSTR_sendto),    MP_ROM_PTR(&sock_sendto_obj)   },
+    { MP_ROM_QSTR(MP_QSTR_recvfrom),  MP_ROM_PTR(&sock_recvfrom_obj) },
+    { MP_ROM_QSTR(MP_QSTR_close),     MP_ROM_PTR(&sock_close_obj)    },
 };
 static MP_DEFINE_CONST_DICT(sock_locals_dict, sock_locals_table);
 
@@ -242,20 +256,7 @@ static mp_obj_t mp_socket_socket(size_t n_args, const mp_obj_t *args) {
     s->port      = 0;
     s->connected = 0;
     s->use_tls   = tls;
-    /* Attach methods directly so callers can do s.send() etc. */
-    mp_obj_t inst = MP_OBJ_FROM_PTR(s);
-    mp_obj_dict_t *d = mp_obj_new_dict(8);
-    mp_obj_dict_store(d, MP_OBJ_NEW_QSTR(qstr_from_str("connect")),   MP_OBJ_FROM_PTR(&sock_connect_obj));
-    mp_obj_dict_store(d, MP_OBJ_NEW_QSTR(qstr_from_str("bind")),      MP_OBJ_FROM_PTR(&sock_bind_obj));
-    mp_obj_dict_store(d, MP_OBJ_NEW_QSTR(qstr_from_str("send")),      MP_OBJ_FROM_PTR(&sock_send_obj));
-    mp_obj_dict_store(d, MP_OBJ_NEW_QSTR(qstr_from_str("recv")),      MP_OBJ_FROM_PTR(&sock_recv_obj));
-    mp_obj_dict_store(d, MP_OBJ_NEW_QSTR(qstr_from_str("sendto")),    MP_OBJ_FROM_PTR(&sock_sendto_obj));
-    mp_obj_dict_store(d, MP_OBJ_NEW_QSTR(qstr_from_str("recvfrom")),  MP_OBJ_FROM_PTR(&sock_recvfrom_obj));
-    mp_obj_dict_store(d, MP_OBJ_NEW_QSTR(qstr_from_str("close")),     MP_OBJ_FROM_PTR(&sock_close_obj));
-    /* store self pointer so methods can reach it */
-    mp_obj_dict_store(d, MP_OBJ_NEW_QSTR(qstr_from_str("_self")),     inst);
-    (void)d; /* methods are called unbound; self is first arg anyway */
-    return inst;
+    return MP_OBJ_FROM_PTR(s);
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_socket_socket_obj, 0, 3, mp_socket_socket);
 
