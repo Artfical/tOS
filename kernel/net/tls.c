@@ -410,7 +410,7 @@ static int tls_log_if_alert(uint8_t rec_type, const uint8_t *data, int len)
 }
 
 /* ---- TLS handshake ---- */
-int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
+int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host)
 {
     uint8_t hs_data[8192];
     int hs_len_recv;
@@ -435,7 +435,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
     ctx->client_rand[0]=(uint8_t)(ts>>24); ctx->client_rand[1]=(uint8_t)(ts>>16);
     ctx->client_rand[2]=(uint8_t)(ts>>8);  ctx->client_rand[3]=(uint8_t)ts;
 
-    uint8_t ch[128];
+    uint8_t ch[384];
     int cpos = 0;
     ch[cpos++] = TLS_VER_MAJOR; ch[cpos++] = TLS_VER_MINOR; /* client version */
     memcpy(ch+cpos, ctx->client_rand, 32); cpos += 32;
@@ -446,7 +446,45 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port)
     ch[cpos++] = TLS_CIPHER_RSA_AES128_CBC_SHA256 & 0xFF;
     /* compression: null only */
     ch[cpos++] = 1; ch[cpos++] = 0;
-    /* no extensions */
+
+    /* extensions: the ClientHello's one "extensions" block can hold
+     * several -- a single 2-byte length up front covers all of them
+     * combined, then each is its own type+length+data. */
+    int name_len = sni_host ? (int)strlen(sni_host) : 0;
+    int have_sni = (name_len > 0 && name_len < 250);
+    {
+        int all_ext_pos = cpos;
+        cpos += 2; /* combined extensions length, filled in below */
+
+        if (have_sni) {
+            /* server_name (SNI, RFC 6066) -- without this, a proxy/CDN
+             * fronting many hostnames on one IP (e.g. Cloudflare) has
+             * no way to know which origin/certificate this connection
+             * is for. */
+            ch[cpos++] = 0x00; ch[cpos++] = 0x00; /* extension type: server_name */
+            ch[cpos++] = 0x00; ch[cpos++] = (uint8_t)(name_len + 5); /* extension_data length */
+            ch[cpos++] = 0x00; ch[cpos++] = (uint8_t)(name_len + 3); /* server_name_list length */
+            ch[cpos++] = 0x00; /* name_type: host_name */
+            ch[cpos++] = 0x00; ch[cpos++] = (uint8_t)name_len; /* HostName length */
+            memcpy(ch + cpos, sni_host, (size_t)name_len); cpos += name_len;
+        }
+
+        /* signature_algorithms (RFC 5246 7.4.1.4.1) -- mandatory in
+         * practice for a TLS 1.2 RSA handshake against any modern
+         * stack (OpenSSL etc): without it, a server can't tell we
+         * support SHA-256 signatures and commonly just fails the
+         * handshake rather than guess. Advertise the one algorithm
+         * this client actually verifies against: rsa_pkcs1_sha256. */
+        ch[cpos++] = 0x00; ch[cpos++] = 0x0d; /* extension type: signature_algorithms */
+        ch[cpos++] = 0x00; ch[cpos++] = 0x04; /* extension_data length */
+        ch[cpos++] = 0x00; ch[cpos++] = 0x02; /* supported_signature_algorithms length */
+        ch[cpos++] = 0x04; ch[cpos++] = 0x01; /* sha256, rsa */
+
+        int all_ext_total = cpos - (all_ext_pos + 2);
+        ch[all_ext_pos] = (uint8_t)((all_ext_total >> 8) & 0xFF);
+        ch[all_ext_pos + 1] = (uint8_t)(all_ext_total & 0xFF);
+    }
+
     if (tls_send_hs(ctx, TLS_HT_CLIENT_HELLO, ch, cpos) != 0) {
         tls_log("ClientHello send failed");
         goto fail;

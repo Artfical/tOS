@@ -43,8 +43,12 @@ typedef struct {
 #define TLS_ERR_ALERT     -50 /* server sent a fatal alert (see dmesg for level/description) */
 #define TLS_ERR_HANDSHAKE -51 /* handshake failed after TCP connected -- see dmesg for which step */
 
-/* Connect and perform TLS 1.2 handshake */
-int  tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port);
+/* Connect and perform TLS 1.2 handshake. sni_host, if non-NULL and
+ * non-empty, is sent as the server_name extension -- required by
+ * SNI-routing proxies/CDNs (e.g. Cloudflare) that terminate TLS for
+ * many hostnames behind one IP and have no other way to tell which
+ * one a given connection is for. Pass NULL to omit it. */
+int  tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host);
 const char *tls_connect_strerror(int err);
 /* Write application data */
 int  tls_write(tls_ctx_t *ctx, const uint8_t *data, int len);

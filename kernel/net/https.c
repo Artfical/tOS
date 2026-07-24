@@ -8,7 +8,10 @@ static tls_ctx_t g_tls;  /* static: one HTTPS connection at a time */
 int https_get(uint32_t ip, const char *host, uint16_t port, const char *path,
               uint8_t *response, int max_len)
 {
-    int rc = tls_connect(&g_tls, ip, port);
+    /* host gets consumed by the request-building loop below, so grab
+     * the SNI value before that happens. */
+    const char *sni_host = host;
+    int rc = tls_connect(&g_tls, ip, port, sni_host);
     if (rc != 0) return rc;
 
     /* Build HTTP/1.0 request */

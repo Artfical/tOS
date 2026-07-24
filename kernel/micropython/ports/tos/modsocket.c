@@ -7,6 +7,7 @@
 #include "../../net/udp.h"
 #include "../../net/tcp.h"
 #include "../../net/dns.h"
+#include "../../net/tls.h"
 
 /* parse "a.b.c.d" into four unsigned ints; returns 4 on success */
 static int parse_ipv4(const char *s, unsigned *a, unsigned *b, unsigned *c, unsigned *d) {
@@ -56,10 +57,17 @@ typedef struct {
     int type;        /* SOCK_STREAM or SOCK_DGRAM */
     uint16_t port;   /* local port (UDP) */
     int connected;   /* TCP only */
+    int use_tls;     /* socket.socket(..., tls=True) -- see mp_socket_socket */
 } tos_sock_obj_t;
 
 /* forward declaration — defined via MP_DEFINE_CONST_OBJ_TYPE below */
 extern const mp_obj_type_t tos_sock_type;
+
+/* One shared TLS context, like https.c's g_tls -- tls_ctx_t carries
+ * ~24KB of handshake/record buffers, too much to heap-allocate per
+ * socket on a 128KB total heap. Fine for this port's actual usage:
+ * one TLS connection open at a time (git.py's clone/push, sequentially). */
+static tls_ctx_t g_tls_sock;
 
 /* resolve hostname or dotted-decimal string to uint32_t IP */
 static uint32_t resolve_host(const char *host) {
@@ -83,7 +91,12 @@ static mp_obj_t sock_connect(mp_obj_t self_in, mp_obj_t addr_in) {
 
     if (self->type == SOCK_STREAM) {
         uint32_t ip = resolve_host(host);
-        int r = tcp_connect(ip, port);
+        int r;
+        if (self->use_tls) {
+            r = tls_connect(&g_tls_sock, ip, port, host);
+        } else {
+            r = tcp_connect(ip, port);
+        }
         if (r < 0) mp_raise_OSError(-r);
         self->connected = 1;
     } else {
@@ -112,9 +125,14 @@ static mp_obj_t sock_send(mp_obj_t self_in, mp_obj_t data_in) {
     tos_sock_obj_t *self = MP_OBJ_TO_PTR(self_in);
     if (self->type != SOCK_STREAM) mp_raise_OSError(38); /* ENOSYS */
     size_t len; const char *data = mp_obj_str_get_data(data_in, &len);
-    int r = tcp_send((void *)data, (int)len);
+    int r = self->use_tls
+        ? tls_write(&g_tls_sock, (const uint8_t *)data, (int)len)
+        : tcp_send((void *)data, (int)len);
     if (r < 0) mp_raise_OSError(-r);
-    return mp_obj_new_int(r);
+    /* tls_write() returns 0 on success (all-or-nothing), unlike
+     * tcp_send()'s byte count -- report the full length either way so
+     * callers checking "did everything go out" see a consistent API. */
+    return mp_obj_new_int(self->use_tls ? (int)len : r);
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(sock_send_obj, sock_send);
 
@@ -122,12 +140,11 @@ static MP_DEFINE_CONST_FUN_OBJ_2(sock_send_obj, sock_send);
 static mp_obj_t sock_recv(mp_obj_t self_in, mp_obj_t size_in) {
     tos_sock_obj_t *self = MP_OBJ_TO_PTR(self_in);
     if (self->type != SOCK_STREAM) mp_raise_OSError(38);
-    (void)self;
     int sz = mp_obj_get_int(size_in);
     if (sz <= 0 || sz > 65536) sz = 4096;
     uint8_t *buf = (uint8_t *)m_malloc((size_t)sz);
     if (!buf) mp_raise_OSError(12);
-    int n = tcp_recv(buf, sz);
+    int n = self->use_tls ? tls_read(&g_tls_sock, buf, sz) : tcp_recv(buf, sz);
     if (n < 0) { m_free(buf); mp_raise_OSError(-n); }
     mp_obj_t ret = mp_obj_new_str((char *)buf, (size_t)n);
     m_free(buf);
@@ -179,7 +196,11 @@ static MP_DEFINE_CONST_FUN_OBJ_2(sock_recvfrom_obj, sock_recvfrom);
 static mp_obj_t sock_close(mp_obj_t self_in) {
     tos_sock_obj_t *self = MP_OBJ_TO_PTR(self_in);
     if (self->type == SOCK_STREAM && self->connected) {
-        tcp_close();
+        if (self->use_tls) {
+            tls_close(&g_tls_sock);
+        } else {
+            tcp_close();
+        }
         self->connected = 0;
     }
     return mp_const_none;
@@ -204,17 +225,23 @@ MP_DEFINE_CONST_OBJ_TYPE(
     locals_dict, &sock_locals_dict
 );
 
-/* socket.socket(af, type) constructor */
+/* socket.socket(af, type, tls=False) constructor -- the tls flag is a
+ * tOS-specific extension (real Python wraps a plain socket in
+ * ssl.wrap_socket() instead); simplest thing that works given this
+ * port's tls_connect() folds the TCP connect and TLS handshake into
+ * one call, so there's no separate "upgrade this socket" step. */
 static mp_obj_t mp_socket_socket(size_t n_args, const mp_obj_t *args) {
     (void)n_args;
     int af   = (n_args > 0) ? mp_obj_get_int(args[0]) : AF_INET;
     int type = (n_args > 1) ? mp_obj_get_int(args[1]) : SOCK_STREAM;
+    int tls  = (n_args > 2) ? mp_obj_is_true(args[2]) : 0;
     (void)af;
     tos_sock_obj_t *s = m_new_obj(tos_sock_obj_t);
     s->base.type = &tos_sock_type;
     s->type      = type;
     s->port      = 0;
     s->connected = 0;
+    s->use_tls   = tls;
     /* Attach methods directly so callers can do s.send() etc. */
     mp_obj_t inst = MP_OBJ_FROM_PTR(s);
     mp_obj_dict_t *d = mp_obj_new_dict(8);
@@ -230,7 +257,7 @@ static mp_obj_t mp_socket_socket(size_t n_args, const mp_obj_t *args) {
     (void)d; /* methods are called unbound; self is first arg anyway */
     return inst;
 }
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_socket_socket_obj, 0, 2, mp_socket_socket);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_socket_socket_obj, 0, 3, mp_socket_socket);
 
 /* socket.getaddrinfo(host, port) -> [(AF_INET, SOCK_STREAM, 0, '', (ip, port))] */
 static mp_obj_t mp_socket_getaddrinfo(mp_obj_t host_in, mp_obj_t port_in) {
