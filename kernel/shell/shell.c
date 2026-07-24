@@ -49,25 +49,33 @@ static const char *history_get(int offset)
     return history[idx];
 }
 
+/* Splits on plain spaces like before, but a '"' or '\'' opens a quoted
+ * token that runs (spaces included) until the matching close quote --
+ * needed for anything that takes a multi-word argument, e.g.
+ * `git commit -m "fix thing"`. The quotes themselves are stripped by
+ * shifting the token left in place, since args[] just points into the
+ * same cmd buffer being tokenized. */
 static int parse_args(char *cmd, char **args)
 {
     int argc = 0;
     char *p = cmd;
     while (*p == ' ') p++;
-    if (*p == '\0') return 0;
-    args[argc++] = p;
-    while (*p) {
-        if (*p == ' ') {
-            *p = '\0';
+    while (*p && argc < MAX_ARGS) {
+        if (*p == '"' || *p == '\'') {
+            char quote = *p;
             p++;
-            while (*p == ' ') p++;
-            if (*p && argc < MAX_ARGS) {
-                args[argc++] = p;
-                continue;
-            }
-            break;
+            char *tok = p;
+            char *w = p;
+            while (*p && *p != quote) *w++ = *p++;
+            if (*p == quote) p++;
+            *w = '\0';
+            args[argc++] = tok;
+        } else {
+            args[argc++] = p;
+            while (*p && *p != ' ') p++;
+            if (*p) { *p = '\0'; p++; }
         }
-        p++;
+        while (*p == ' ') p++;
     }
     return argc;
 }
