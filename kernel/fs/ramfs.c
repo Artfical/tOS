@@ -638,6 +638,11 @@ int ramfs_chdir(const char *path)
     int i = 0;
     while (abs[i] && i < VFS_NAME_LEN - 1) { ramfs_cwd[i] = abs[i]; i++; }
     ramfs_cwd[i] = 0;
+    /* vfs_abspath() resolves relative paths against vfs.c's own cwd,
+     * which is only advanced by vfs_chdir() -- without this it never
+     * moves past "/", so any cd two levels deep resolved against the
+     * wrong base. */
+    vfs_chdir(ramfs_cwd);
     return 0;
 }
 
