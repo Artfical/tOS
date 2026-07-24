@@ -20,6 +20,7 @@ void os_module_init(void);
 void time_module_init(void);
 void json_module_init(void);
 void socket_module_init(void);
+void gitcrypto_module_init(void);
 
 int micropython_init(void) {
     serial_write("micropython: init\n");
@@ -33,6 +34,7 @@ int micropython_init(void) {
     time_module_init();
     json_module_init();
     socket_module_init();
+    gitcrypto_module_init();
     interrupt_callback = mp_sched_keyboard_interrupt;
     serial_write("micropython: ready\n");
     return 0;
