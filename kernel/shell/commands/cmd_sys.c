@@ -80,6 +80,8 @@ void cmd_help(int argc, char **args)
     terminal_writestring("  ifconfig   - show NIC driver, MAC/IP, rx/tx counters\n");
     terminal_writestring("  wget       - download a file (HTTP)\n");
     terminal_writestring("  tpkg       - list/install packages from pkg.artfical.com\n");
+    terminal_writestring("             - installed packages become runnable by name\n");
+    terminal_writestring("               (e.g. 'tpkg install git' then just 'git ...')\n");
     terminal_writestring("  yes        - print string repeatedly\n");
     terminal_writestring("  seq        - print number sequence\n");
     terminal_writestring("  sleep      - delay for N seconds\n");

@@ -14,9 +14,31 @@
 #include "py/parse.h"
 #include "py/qstr.h"
 #include "py/mpprint.h"
+#include "py/objlist.h"
 #include "terminal.h"
 #include "memory.h"
 #include "fsbridge.h"
+#include <string.h>
+
+/* sys.argv[0] is conventionally the script path; argv[1:] are the
+ * extra words the shell passed after it (e.g. `git clone <url>` runs
+ * /programs/git/git.py with sys.argv == ["git", "clone", "<url>"]). */
+static void set_sys_argv(int argc, char **argv)
+{
+    mp_obj_list_t *list = MP_OBJ_TO_PTR(mp_sys_argv);
+    mp_obj_list_init(list, (size_t)argc);
+    for (int i = 0; i < argc; i++) {
+        list->items[i] = mp_obj_new_str(argv[i], strlen(argv[i]));
+    }
+}
+
+int tos_micropython_exec_file(const char *path);
+
+int tos_micropython_exec_file_argv(const char *path, int argc, char **argv)
+{
+    set_sys_argv(argc, argv);
+    return tos_micropython_exec_file(path);
+}
 
 int tos_micropython_exec_file(const char *path)
 {

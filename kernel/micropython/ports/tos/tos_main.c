@@ -49,7 +49,12 @@ int micropython_run_repl(void) {
 }
 
 int tos_micropython_exec_file(const char *path);
+int tos_micropython_exec_file_argv(const char *path, int argc, char **argv);
 
 int micropython_run_file(const char *path) {
     return tos_micropython_exec_file(path);
+}
+
+int micropython_run_file_argv(const char *path, int argc, char **argv) {
+    return tos_micropython_exec_file_argv(path, argc, argv);
 }

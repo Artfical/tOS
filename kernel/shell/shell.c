@@ -8,6 +8,7 @@
 #include "commands.h"
 #include "vfs.h"
 #include "scheduler.h"
+#include "micropython.h"
 
 #define MAX_ARGS 16
 #define MAX_CMD_LEN 512
@@ -544,9 +545,23 @@ static void shell_exec_line(char *cmd_line)
         } else if (strcmp(c, "unzip") == 0) {
             cmd_unzip(argc, args);
         } else {
-            terminal_writestring("Unknown command: ");
-            terminal_writestring(c);
-            terminal_putchar('\n');
+            /* PATH fallback: tpkg installs land at /programs/<name>/,
+             * with the entry point conventionally named <name>.py -- so
+             * an installed package's own name becomes runnable directly
+             * (e.g. `git clone ...` instead of `python git/git.py clone ...`). */
+            char path[160];
+            strcpy(path, "/programs/");
+            strcat(path, c);
+            strcat(path, "/");
+            strcat(path, c);
+            strcat(path, ".py");
+            if (ramfs_exists(path)) {
+                micropython_run_file_argv(path, argc, args);
+            } else {
+                terminal_writestring("Unknown command: ");
+                terminal_writestring(c);
+                terminal_putchar('\n');
+            }
         }
 }
 

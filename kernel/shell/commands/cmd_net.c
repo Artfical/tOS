@@ -283,7 +283,10 @@ void cmd_tsharp(int argc, char **args)
 
 void cmd_python(int argc, char **args)
 {
-    if (argc > 1) micropython_run_file(args[1]);
+    /* args[0]="python", args[1]=script path, args[2:]=script args --
+     * sys.argv inside the script is args[1:] (path is sys.argv[0], same
+     * as CPython's `python foo.py a b` -> sys.argv == ["foo.py","a","b"]) */
+    if (argc > 1) micropython_run_file_argv(args[1], argc - 1, args + 1);
     else micropython_run_repl();
 }
 

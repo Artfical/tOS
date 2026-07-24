@@ -15,4 +15,12 @@ int png_decode(const uint8_t *file, uint32_t file_len, uint8_t **out_rgb,
 int inflate_raw_buffer(const uint8_t *src, uint32_t src_len,
                         uint8_t *out, uint32_t out_cap, uint32_t *out_len);
 
+/* Same as inflate_raw_buffer(), but also reports how many bytes of
+ * `src` the DEFLATE stream actually consumed (in *consumed_len) --
+ * needed when several streams are packed back-to-back with no length
+ * prefix, such as git pack file entries. */
+int inflate_raw_buffer_ex(const uint8_t *src, uint32_t src_len,
+                           uint8_t *out, uint32_t out_cap, uint32_t *out_len,
+                           uint32_t *consumed_len);
+
 #endif

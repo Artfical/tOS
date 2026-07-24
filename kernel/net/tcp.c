@@ -555,8 +555,15 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
         if (s->state == TCP_LAST_ACK)   s->state = TCP_CLOSED;
     }
 
-    /* FIN */
-    if (flags & TCP_FLAG_FIN) {
+    /* FIN -- only honor it in sequence order, same as the data block
+     * above. Without this check, a FIN that arrives even slightly
+     * out-of-order relative to trailing data segments (increasingly
+     * likely the more segments a transfer needs) closed the connection
+     * before all the preceding data had been delivered, silently
+     * truncating large downloads. An out-of-order FIN is simply
+     * dropped here; the sender's own retransmit timer resends it once
+     * the missing segments have had a chance to arrive and be ACKed. */
+    if ((flags & TCP_FLAG_FIN) && pkt_seq == s->ack) {
         s->ack++;
         s->rx_closed = 1;
         send_seg(s, TCP_FLAG_ACK, 0, 0);

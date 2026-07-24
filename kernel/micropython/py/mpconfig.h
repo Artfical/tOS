@@ -1423,6 +1423,14 @@ typedef double mp_float_t;
 #define MICROPY_PY_IO (MICROPY_CONFIG_ROM_LEVEL_AT_LEAST_CORE_FEATURES)
 #endif
 
+/* Lets a port register its own builtin open() (a custom file object,
+ * not the full io module -- StringIO/BytesIO/etc from modio.c) without
+ * turning on MICROPY_PY_IO and everything that drags in. Off by
+ * default everywhere except a port opts in. */
+#ifndef MICROPY_PY_BUILTINS_IO_OPEN
+#define MICROPY_PY_BUILTINS_IO_OPEN (0)
+#endif
+
 // Whether to provide "io.IOBase" class to support user streams
 #ifndef MICROPY_PY_IO_IOBASE
 #define MICROPY_PY_IO_IOBASE (MICROPY_CONFIG_ROM_LEVEL_AT_LEAST_EXTRA_FEATURES)

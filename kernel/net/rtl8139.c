@@ -7,7 +7,13 @@
 #include "serial.h"
 #include "terminal.h"
 
-#define RX_BUF_SIZE  8192
+/* 8K was too small: a fast burst of back-to-back segments (the common
+ * case for any download past a few KB) could fill the ring faster than
+ * nic_poll() drains it, silently dropping packets the chip had no room
+ * left to DMA -- observed as downloads truncating partway through with
+ * no error at all. 64K is the largest size RTL8139 hardware supports
+ * (RBLEN bits in RCR below), giving much more slack. */
+#define RX_BUF_SIZE  65536
 #define TX_BUF_SIZE  1536
 #define NUM_TX_DESC  4
 
@@ -125,7 +131,7 @@ int rtl8139_init(void)
     tx_cur = 0;
 
     outl(io_base + RTL_REG_RBSTART, (uint32_t)(uintptr_t)rx_buf);
-    outl(io_base + RTL_REG_RCR, 0x0000E70E); /* AB+AM+APM, 8K rx buf, unlimited MXDMA, no RX-FIFO threshold */
+    outl(io_base + RTL_REG_RCR, 0x0000FF0E); /* AB+AM+APM, 64K rx buf, unlimited MXDMA, no RX-FIFO threshold */
     outl(io_base + RTL_REG_TCR, 0x00000A00);
     outb(io_base + RTL_REG_CR, 0x0C); /* RE + TE */
 

@@ -129,6 +129,30 @@ static mp_obj_t mod_zlib_decompress(mp_obj_t data_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(mod_zlib_decompress_obj, mod_zlib_decompress);
 
+/* Like zlib_decompress(), but also returns how many bytes of the input
+ * the zlib stream actually occupied (header + deflate body + Adler-32
+ * trailer) -- needed to walk git pack files, where each object's zlib
+ * stream is packed back-to-back with no length prefix. Returns
+ * (decompressed_bytes, total_consumed). */
+static mp_obj_t mod_zlib_decompress_ex(mp_obj_t data_in) {
+    size_t len; const char *data = mp_obj_str_get_data(data_in, &len);
+    if (len < 2) mp_raise_ValueError(MP_ERROR_TEXT("zlib: truncated stream"));
+    const uint8_t *body = (const uint8_t *)data + 2;
+    uint32_t body_len = (uint32_t)(len - 2);
+
+    uint32_t cap = body_len * 8 + 4096;
+    uint8_t *out = (uint8_t *)m_malloc(cap);
+    if (!out) mp_raise_OSError(12);
+    uint32_t out_len = 0, consumed = 0;
+    int rc = inflate_raw_buffer_ex(body, body_len, out, cap, &out_len, &consumed);
+    if (rc != 0) { m_free(out); mp_raise_ValueError(MP_ERROR_TEXT("zlib: inflate failed")); }
+    mp_obj_t data_out = mp_obj_new_bytes(out, out_len);
+    m_free(out);
+    mp_obj_t items[2] = { data_out, mp_obj_new_int_from_uint(2 + consumed + 4) };
+    return mp_obj_new_tuple(2, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(mod_zlib_decompress_ex_obj, mod_zlib_decompress_ex);
+
 /* Emits a valid zlib stream using uncompressed ("stored") DEFLATE
  * blocks -- spec-legal (RFC 1951 section 3.2.4), just not shrunk. */
 static mp_obj_t mod_zlib_compress(mp_obj_t data_in) {
@@ -176,5 +200,6 @@ void gitcrypto_module_init(void) {
     mp_obj_dict_t *g = mp_obj_module_get_globals(mod);
     gitcrypto_store(g, "sha1",            &mod_sha1_obj);
     gitcrypto_store(g, "zlib_decompress", &mod_zlib_decompress_obj);
+    gitcrypto_store(g, "zlib_decompress_ex", &mod_zlib_decompress_ex_obj);
     gitcrypto_store(g, "zlib_compress",   &mod_zlib_compress_obj);
 }

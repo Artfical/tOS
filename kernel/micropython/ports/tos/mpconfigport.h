@@ -22,6 +22,7 @@
 #define MICROPY_PY___FILE__         0
 #define MICROPY_PY_SYS_EXIT         0
 #define MICROPY_PY_IO               0
+#define MICROPY_PY_BUILTINS_IO_OPEN 1  /* tos_stubs.c's own open()/file object, not the full io module */
 #define MICROPY_PY_IO_FILEIO        0
 #define MICROPY_PY_OS               0
 #define MICROPY_PY_THREAD           0
