@@ -9,6 +9,79 @@
 #include "vfs.h"
 #include "scheduler.h"
 #include "micropython.h"
+#include "memory.h"
+
+#define PATH_FILE "/sys/path.tmbl"
+
+/* Resolves an unrecognized command against /sys/path.tmbl (plain
+ * text, one directory per line -- see cmd_tpkg.c's tpkg_path_add(),
+ * which appends a package's install dir here automatically on
+ * install). For each listed dir, tries <dir>/<cmd>.py (MicroPython)
+ * then <dir>/<cmd>.t (native .t binary, via cmd_run()'s loader).
+ * Falls back to the original hardcoded /programs/<cmd>/<cmd>.py
+ * convention too, so packages installed before this existed (or a
+ * missing/empty path.tmbl) still work. Returns 1 if something ran. */
+static int path_fallback_exec(const char *cmd, int argc, char **args)
+{
+    if (ramfs_exists(PATH_FILE)) {
+        uint32_t size = ramfs_size(PATH_FILE);
+        char *buf = (char *)malloc(size + 1);
+        if (buf) {
+            int n = ramfs_read(PATH_FILE, buf, size, 0);
+            if (n > 0) {
+                buf[n] = 0;
+                char *p = buf;
+                while (*p) {
+                    char *line_start = p;
+                    while (*p && *p != '\n') p++;
+                    int line_len = (int)(p - line_start);
+                    if (*p == '\n') { *p = 0; p++; }
+                    if (line_len > 0) {
+                        char cand[192];
+                        int i = 0;
+                        while (i < line_len && i < 150) { cand[i] = line_start[i]; i++; }
+                        cand[i] = 0;
+                        int dir_len = i;
+                        strcat(cand, "/");
+                        strcat(cand, cmd);
+                        strcat(cand, ".py");
+                        if (ramfs_exists(cand)) {
+                            micropython_run_file_argv(cand, argc, args);
+                            free(buf);
+                            return 1;
+                        }
+                        cand[dir_len] = 0;
+                        strcat(cand, "/");
+                        strcat(cand, cmd);
+                        strcat(cand, ".t");
+                        if (ramfs_exists(cand)) {
+                            char *run_args[2];
+                            run_args[0] = "run";
+                            run_args[1] = cand;
+                            cmd_run(2, run_args);
+                            free(buf);
+                            return 1;
+                        }
+                    }
+                }
+            }
+            free(buf);
+        }
+    }
+
+    /* legacy fallback, predates path.tmbl */
+    char path[160];
+    strcpy(path, "/programs/");
+    strcat(path, cmd);
+    strcat(path, "/");
+    strcat(path, cmd);
+    strcat(path, ".py");
+    if (ramfs_exists(path)) {
+        micropython_run_file_argv(path, argc, args);
+        return 1;
+    }
+    return 0;
+}
 
 #define MAX_ARGS 16
 #define MAX_CMD_LEN 512
@@ -555,19 +628,7 @@ static void shell_exec_line(char *cmd_line)
         } else if (strcmp(c, "unzip") == 0) {
             cmd_unzip(argc, args);
         } else {
-            /* PATH fallback: tpkg installs land at /programs/<name>/,
-             * with the entry point conventionally named <name>.py -- so
-             * an installed package's own name becomes runnable directly
-             * (e.g. `git clone ...` instead of `python git/git.py clone ...`). */
-            char path[160];
-            strcpy(path, "/programs/");
-            strcat(path, c);
-            strcat(path, "/");
-            strcat(path, c);
-            strcat(path, ".py");
-            if (ramfs_exists(path)) {
-                micropython_run_file_argv(path, argc, args);
-            } else {
+            if (!path_fallback_exec(c, argc, args)) {
                 terminal_writestring("Unknown command: ");
                 terminal_writestring(c);
                 terminal_putchar('\n');

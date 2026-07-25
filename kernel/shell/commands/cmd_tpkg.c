@@ -27,6 +27,48 @@ static void print_uint(uint32_t n)
     terminal_writestring(buf + i);
 }
 
+#define TPKG_PATH_FILE "/sys/path.tmbl"
+
+/* Registers `dir` as a PATH entry for the shell's command fallback
+ * (see shell.c's path_fallback_exec()) -- plain text, one directory
+ * per line. Idempotent: skips the append if `dir` is already listed,
+ * so re-installing the same package doesn't grow the file forever. */
+static void tpkg_path_add(const char *dir)
+{
+    if (!ramfs_exists("/sys")) ramfs_mkdir("/sys");
+
+    uint32_t size = ramfs_exists(TPKG_PATH_FILE) ? ramfs_size(TPKG_PATH_FILE) : 0;
+    if (size > 0) {
+        char *buf = (char *)malloc(size + 1);
+        if (buf) {
+            int n = ramfs_read(TPKG_PATH_FILE, buf, size, 0);
+            if (n > 0) {
+                buf[n] = 0;
+                int dir_len = strlen(dir);
+                char *p = buf;
+                while (*p) {
+                    char *line_start = p;
+                    while (*p && *p != '\n') p++;
+                    int line_len = (int)(p - line_start);
+                    if (line_len == dir_len && strncmp(line_start, dir, dir_len) == 0) {
+                        free(buf);
+                        return; /* already registered */
+                    }
+                    if (*p == '\n') p++;
+                }
+            }
+            free(buf);
+        }
+    }
+
+    if (!ramfs_exists(TPKG_PATH_FILE)) ramfs_create(TPKG_PATH_FILE);
+    char line[176];
+    int i = 0;
+    while (dir[i] && i < 174) { line[i] = dir[i]; i++; }
+    line[i++] = '\n';
+    ramfs_write(TPKG_PATH_FILE, line, i, size);
+}
+
 static int tpkg_resolve(uint32_t *ip)
 {
     terminal_writestring("Resolving " TPKG_HOST "... ");
@@ -175,6 +217,8 @@ static void tpkg_install(uint32_t ip, const char *name)
         terminal_writestring(")\n");
         return;
     }
+    tpkg_path_add(destdir);
+
     terminal_writestring("Installed to ");
     terminal_writestring(destdir);
     terminal_writestring(" (");
