@@ -13,18 +13,31 @@ void paging_init(void)
     uint32_t total_mem = get_total_pages() * PAGE_SIZE;
     if (total_mem < 0x2000000) total_mem = 0x2000000;
 
+    /* Deliberately *not* PTE_USER/PDE_USER here: this loop identity-maps
+     * every physical page the kernel itself uses (its own code/data/
+     * heap, MicroPython's heap, ramfs file contents, everything).
+     * Ring0 code ignores the U/S bit entirely, so the kernel's own
+     * access is unaffected -- this only stops ring3 code from touching
+     * any of it. Before cmd_run()'s loader existed, nothing ever ran
+     * in ring3, so this bit being wide open never mattered; now that
+     * `.t` programs do, user-mode code and stack get their own
+     * explicit PTE_USER mappings elsewhere (see cmd_run() and
+     * usermode_init()), and syscalls reach kernel memory via the
+     * int 0x80 trap gate, which switches to ring0 before touching
+     * anything here -- so nothing legitimate needs this range to be
+     * ring3-accessible. */
     for (uint32_t virt = 0; virt < total_mem; virt += 0x400000) {
         uint32_t pd_idx = virt >> 22;
         uint32_t *pt = (uint32_t *)alloc_physical_page();
         memset(pt, 0, PAGE_SIZE);
 
-        uint32_t pt_flags = PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+        uint32_t pt_flags = PTE_PRESENT | PTE_WRITABLE;
         for (uint32_t j = 0; j < 1024; j++) {
             uint32_t phys = (virt + j * PAGE_SIZE);
             pt[j] = phys | pt_flags;
         }
 
-        kernel_dir[pd_idx] = ((uint32_t)pt) | PDE_PRESENT | PDE_WRITABLE | PDE_USER;
+        kernel_dir[pd_idx] = ((uint32_t)pt) | PDE_PRESENT | PDE_WRITABLE;
     }
 
     uint32_t vga_page = 0xB8000 >> 22;
