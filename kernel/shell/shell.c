@@ -83,7 +83,7 @@ static int parse_args(char *cmd, char **args)
 static const char *builtin_names[] = {
     "help", "man", "echo", "clear", "pwd", "ls", "cd", "mkdir", "rmdir", "rm",
     "touch", "cat", "mv", "cp", "edit", "reboot", "shutdown",
-    "version", "about", "uname", "ping", "ifconfig", "wget", "tpkg", "python", "tsharp",
+    "version", "about", "uname", "ping", "ifconfig", "wget", "tpkg", "python", "tsharp", "run",
     "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
     "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
     "basename", "dirname", "which", "env", "uptime", "ps", "log", "kill",
@@ -422,6 +422,8 @@ static void shell_exec_line(char *cmd_line)
             cmd_tsharp(argc, args);
         } else if (strcmp(c, "python") == 0) {
             cmd_python(argc, args);
+        } else if (strcmp(c, "run") == 0) {
+            cmd_run(argc, args);
         } else if (strcmp(c, "reboot") == 0) {
             cmd_reboot(argc, args);
         } else if (strcmp(c, "shutdown") == 0) {

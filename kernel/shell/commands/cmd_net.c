@@ -12,6 +12,9 @@
 #include "memory.h"
 #include "net.h"
 #include "nic.h"
+#include "fsbridge.h"
+#include "usermode.h"
+#include "paging.h"
 
 static void print_ip_dotted(uint32_t ip)
 {
@@ -288,6 +291,75 @@ void cmd_python(int argc, char **args)
      * as CPython's `python foo.py a b` -> sys.argv == ["foo.py","a","b"]) */
     if (argc > 1) micropython_run_file_argv(args[1], argc - 1, args + 1);
     else micropython_run_repl();
+}
+
+/* Fixed load address for `.t` flat binaries (v1: no relocations, no
+ * ELF headers -- offset 0 in the file is the entry point, loaded
+ * verbatim). Must sit above whatever total physical RAM this boot
+ * has (paging_init() identity-maps [0, total_mem) 1:1, so any address
+ * inside that range is live kernel/heap memory already) -- picked
+ * with a healthy margin above a 1024MB boot rather than right at the
+ * boundary, and well below USER_STACK_TOP (0xBFFFF000) so a growing
+ * program and the stack can't collide. */
+#define USER_CODE_BASE 0x50000000
+#define USER_CODE_MAX_SIZE 0x2000000 /* 32MB ceiling for a single .t binary */
+
+void cmd_run(int argc, char **args)
+{
+    if (argc < 2) {
+        terminal_writestring("usage: run <file.t>\n");
+        return;
+    }
+    const char *path = args[1];
+
+    if (!fsbridge_exists(path) || fsbridge_is_dir(path)) {
+        terminal_writestring("run: file not found: ");
+        terminal_writestring(path);
+        terminal_writestring("\n");
+        return;
+    }
+
+    uint32_t size = fsbridge_size(path);
+    if (size == 0 || size > USER_CODE_MAX_SIZE) {
+        terminal_writestring("run: bad file size\n");
+        return;
+    }
+
+    char *buf = (char *)malloc(size);
+    if (!buf) {
+        terminal_writestring("run: out of memory\n");
+        return;
+    }
+    if (fsbridge_read(path, buf, size, 0) < 0) {
+        terminal_writestring("run: read failed\n");
+        free(buf);
+        return;
+    }
+
+    uint32_t pages = (size + 4095) / 4096;
+    for (uint32_t i = 0; i < pages; i++) {
+        uint32_t phys = alloc_physical_page();
+        if (!phys) {
+            terminal_writestring("run: out of memory mapping program\n");
+            free(buf);
+            return;
+        }
+        paging_map(USER_CODE_BASE + i * 4096, phys, PTE_USER | PTE_WRITABLE);
+    }
+    memcpy((void *)USER_CODE_BASE, buf, size);
+    free(buf);
+
+    /* Minimal setjmp/longjmp pair: capture where to resume (this call
+     * site) before dropping to ring3, so the SYS_EXIT/SYS_KILL syscall
+     * handlers can jump straight back here instead of the kernel
+     * needing real process teardown, which doesn't exist yet. */
+    uint32_t esp;
+    asm volatile("mov %%esp, %0" : "=r"(esp));
+    sys_exit_set_jmp(esp, 0, 0, 0, 0, (uint32_t)&&resume);
+    enter_user_mode(USER_CODE_BASE, USER_STACK_TOP);
+
+resume:
+    terminal_writestring("\n");
 }
 
 /* -----------------------------------------------------------------------

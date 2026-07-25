@@ -53,6 +53,7 @@ void cmd_ipip(int argc, char **args);
 void cmd_wg(int argc, char **args);
 void cmd_tsharp(int argc, char **args);
 void cmd_python(int argc, char **args);
+void cmd_run(int argc, char **args);
 
 void cmd_head(int argc, char **args);
 void cmd_tail(int argc, char **args);

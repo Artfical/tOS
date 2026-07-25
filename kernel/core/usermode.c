@@ -5,8 +5,6 @@
 #include "string.h"
 #include "terminal.h"
 
-#define USER_STACK_TOP 0xBFFFF000
-
 static uint32_t exit_esp;
 static uint32_t exit_eip;
 
