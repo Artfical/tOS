@@ -19,6 +19,17 @@
 #define SYS_ISATTY  71
 #define SYS_FSTAT   108
 
+/* tOS-specific extensions -- deliberately numbered well above the
+ * Linux-i386-compatible range above (highest real one there is 108)
+ * so a future real syscall never collides with these. */
+#define SYS_NET_RESOLVE  200
+#define SYS_NET_CONNECT  201
+#define SYS_NET_SEND     202
+#define SYS_NET_RECV     203
+#define SYS_NET_CLOSE    204
+#define SYS_GFX_INIT     210
+#define SYS_GFX_PUTPIXEL 211
+
 struct tos_stat {
     uint16_t st_dev;
     uint16_t st_ino;

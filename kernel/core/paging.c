@@ -59,12 +59,31 @@ void paging_map(uint32_t virt, uint32_t phys, uint32_t flags)
 
     if (!(kernel_dir[pd_idx] & PDE_PRESENT)) {
         uint32_t *pt = (uint32_t *)alloc_physical_page();
+        /* alloc_physical_page() returns 0 on exhaustion -- without
+         * this check that null pointer went straight into memset(),
+         * silently zeroing real physical address 0 (whatever lives in
+         * the kernel's low memory, e.g. the real-mode IVT) instead of
+         * failing loudly. */
+        if (!pt) {
+            terminal_writestring("[paging] out of physical pages, cannot map\n");
+            return;
+        }
         memset(pt, 0, PAGE_SIZE);
         kernel_dir[pd_idx] = ((uint32_t)pt) | PDE_PRESENT | PDE_WRITABLE | (flags & PDE_USER);
     }
 
     uint32_t *pt = (uint32_t *)(kernel_dir[pd_idx] & 0xFFFFF000);
     pt[pt_idx] = (phys & 0xFFFFF000) | PTE_PRESENT | (flags & 0xFFF);
+
+    /* The CPU caches virtual->physical translations in the TLB and
+     * does NOT notice a page table entry changing underneath it --
+     * without this, remapping an address that was already mapped
+     * (e.g. cmd_run() reusing USER_CODE_BASE for a new .t program
+     * after a previous one ran there) leaves the CPU still executing
+     * out of the OLD physical page until something else happens to
+     * flush the TLB, which looks like the new program randomly
+     * running old/corrupted code. */
+    asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
 }
 
 void paging_map_range(uint32_t virt, uint32_t phys, uint32_t size, uint32_t flags)
