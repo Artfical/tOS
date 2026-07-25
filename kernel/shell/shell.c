@@ -13,14 +13,36 @@
 
 #define PATH_FILE "/sys/path.tmbl"
 
-/* Resolves an unrecognized command against /sys/path.tmbl (plain
- * text, one directory per line -- see cmd_tpkg.c's tpkg_path_add(),
- * which appends a package's install dir here automatically on
- * install). For each listed dir, tries <dir>/<cmd>.py (MicroPython)
- * then <dir>/<cmd>.t (native .t binary, via cmd_run()'s loader).
- * Falls back to the original hardcoded /programs/<cmd>/<cmd>.py
- * convention too, so packages installed before this existed (or a
- * missing/empty path.tmbl) still work. Returns 1 if something ran. */
+/* Runs whatever `fullpath` is, dispatching on its extension --
+ * shared by the "cmdname=fullpath" lookup below and the legacy
+ * fallback. Returns 1 if it recognized the extension and ran it. */
+static int path_run_file(const char *fullpath, int argc, char **args)
+{
+    int len = strlen(fullpath);
+    if (len >= 3 && strcmp(fullpath + len - 3, ".py") == 0) {
+        micropython_run_file_argv(fullpath, argc, args);
+        return 1;
+    }
+    if (len >= 2 && strcmp(fullpath + len - 2, ".t") == 0) {
+        char *run_args[2];
+        run_args[0] = "run";
+        run_args[1] = (char *)fullpath;
+        cmd_run(2, run_args);
+        return 1;
+    }
+    return 0;
+}
+
+/* Resolves an unrecognized command against /sys/path.tmbl -- plain
+ * text, one "cmdname=/full/path/to/file.py-or-.t" mapping per line.
+ * A package's own tpkg_path_register() (cmd_tpkg.c) writes these:
+ * one line per file that ships with a "<file>.txt" sidecar declaring
+ * its command name (so the invokable name doesn't have to match the
+ * file's own basename, and one package can expose several commands),
+ * or a single default line matching the package name for packages
+ * that don't use sidecars. Also falls back to the original hardcoded
+ * /programs/<cmd>/<cmd>.py convention for anything installed before
+ * path.tmbl existed. Returns 1 if something ran. */
 static int path_fallback_exec(const char *cmd, int argc, char **args)
 {
     if (ramfs_exists(PATH_FILE)) {
@@ -30,38 +52,22 @@ static int path_fallback_exec(const char *cmd, int argc, char **args)
             int n = ramfs_read(PATH_FILE, buf, size, 0);
             if (n > 0) {
                 buf[n] = 0;
+                int cmd_len = strlen(cmd);
                 char *p = buf;
                 while (*p) {
                     char *line_start = p;
                     while (*p && *p != '\n') p++;
                     int line_len = (int)(p - line_start);
                     if (*p == '\n') { *p = 0; p++; }
-                    if (line_len > 0) {
-                        char cand[192];
-                        int i = 0;
-                        while (i < line_len && i < 150) { cand[i] = line_start[i]; i++; }
-                        cand[i] = 0;
-                        int dir_len = i;
-                        strcat(cand, "/");
-                        strcat(cand, cmd);
-                        strcat(cand, ".py");
-                        if (ramfs_exists(cand)) {
-                            micropython_run_file_argv(cand, argc, args);
-                            free(buf);
-                            return 1;
-                        }
-                        cand[dir_len] = 0;
-                        strcat(cand, "/");
-                        strcat(cand, cmd);
-                        strcat(cand, ".t");
-                        if (ramfs_exists(cand)) {
-                            char *run_args[2];
-                            run_args[0] = "run";
-                            run_args[1] = cand;
-                            cmd_run(2, run_args);
-                            free(buf);
-                            return 1;
-                        }
+                    char *eq = NULL;
+                    for (int i = 0; i < line_len; i++) {
+                        if (line_start[i] == '=') { eq = line_start + i; break; }
+                    }
+                    if (eq && (eq - line_start) == cmd_len &&
+                        strncmp(line_start, cmd, cmd_len) == 0) {
+                        int ran = path_run_file(eq + 1, argc, args);
+                        free(buf);
+                        return ran;
                     }
                 }
             }

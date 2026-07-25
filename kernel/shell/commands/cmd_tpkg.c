@@ -29,13 +29,21 @@ static void print_uint(uint32_t n)
 
 #define TPKG_PATH_FILE "/sys/path.tmbl"
 
-/* Registers `dir` as a PATH entry for the shell's command fallback
- * (see shell.c's path_fallback_exec()) -- plain text, one directory
- * per line. Idempotent: skips the append if `dir` is already listed,
- * so re-installing the same package doesn't grow the file forever. */
-static void tpkg_path_add(const char *dir)
+/* Appends one "cmdname=fullpath\n" line to /sys/path.tmbl for the
+ * shell's command fallback (shell.c's path_fallback_exec()).
+ * Idempotent against the exact same line, so re-installing the same
+ * package version doesn't grow the file forever. */
+static void tpkg_path_register(const char *cmdname, const char *fullpath)
 {
     if (!ramfs_exists("/sys")) ramfs_mkdir("/sys");
+
+    char line[224];
+    int i = 0;
+    while (cmdname[i] && i < 60) { line[i] = cmdname[i]; i++; }
+    line[i++] = '=';
+    const char *p = fullpath;
+    while (*p && i < 222) { line[i++] = *p++; }
+    line[i++] = '\n';
 
     uint32_t size = ramfs_exists(TPKG_PATH_FILE) ? ramfs_size(TPKG_PATH_FILE) : 0;
     if (size > 0) {
@@ -44,17 +52,13 @@ static void tpkg_path_add(const char *dir)
             int n = ramfs_read(TPKG_PATH_FILE, buf, size, 0);
             if (n > 0) {
                 buf[n] = 0;
-                int dir_len = strlen(dir);
-                char *p = buf;
-                while (*p) {
-                    char *line_start = p;
-                    while (*p && *p != '\n') p++;
-                    int line_len = (int)(p - line_start);
-                    if (line_len == dir_len && strncmp(line_start, dir, dir_len) == 0) {
-                        free(buf);
-                        return; /* already registered */
-                    }
-                    if (*p == '\n') p++;
+                char *found = strstr(buf, line);
+                /* strstr alone could match a substring spanning two
+                 * lines by accident; also require it to start right
+                 * after a '\n' (or at the very start of the file). */
+                if (found && (found == buf || *(found - 1) == '\n')) {
+                    free(buf);
+                    return; /* already registered */
                 }
             }
             free(buf);
@@ -62,11 +66,103 @@ static void tpkg_path_add(const char *dir)
     }
 
     if (!ramfs_exists(TPKG_PATH_FILE)) ramfs_create(TPKG_PATH_FILE);
-    char line[176];
-    int i = 0;
-    while (dir[i] && i < 174) { line[i] = dir[i]; i++; }
-    line[i++] = '\n';
     ramfs_write(TPKG_PATH_FILE, line, i, size);
+}
+
+/* Trims a trailing \r/\n/space run off a command-name sidecar's
+ * content -- files written from a text editor or `echo` almost
+ * always carry a trailing newline that isn't part of the name. */
+static void trim_trailing_ws(char *s)
+{
+    int n = strlen(s);
+    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' ' || s[n - 1] == '\t')) {
+        s[--n] = 0;
+    }
+}
+
+/* Scans an extracted package directory for "<file>.txt" sidecars --
+ * each one declares the command name that "<file>" (a .py or .t
+ * sitting right next to it) should be invokable as, decoupling the
+ * shell command name from the file's own basename and letting one
+ * package expose several commands. Falls back to registering
+ * <pkgname> -> <destdir>/<pkgname>.py or .t if the package ships no
+ * sidecars at all (older/simpler packages). */
+static void tpkg_register_package(const char *destdir, const char *pkgname)
+{
+    vfs_entry_t entries[64];
+    int count = ramfs_list(destdir, entries, 64);
+    int registered_any = 0;
+
+    for (int i = 0; i < count; i++) {
+        if (entries[i].is_dir) continue;
+        int name_len = strlen(entries[i].name);
+        if (name_len <= 4 || strcmp(entries[i].name + name_len - 4, ".txt") != 0)
+            continue;
+
+        char base_name[VFS_NAME_LEN];
+        int base_len = name_len - 4;
+        int k = 0;
+        while (k < base_len && k < VFS_NAME_LEN - 1) { base_name[k] = entries[i].name[k]; k++; }
+        base_name[k] = 0;
+
+        int base_ok = 0;
+        for (int j = 0; j < count; j++) {
+            if (!entries[j].is_dir && strcmp(entries[j].name, base_name) == 0) { base_ok = 1; break; }
+        }
+        if (!base_ok) continue;
+
+        char sidecar_path[192];
+        int p = 0;
+        while (destdir[p] && p < 160) { sidecar_path[p] = destdir[p]; p++; }
+        sidecar_path[p++] = '/';
+        int q = 0;
+        while (entries[i].name[q] && p < 190) sidecar_path[p++] = entries[i].name[q++];
+        sidecar_path[p] = 0;
+
+        uint32_t sc_size = ramfs_size(sidecar_path);
+        if (sc_size == 0 || sc_size > 60) continue;
+        char cmdname[64];
+        int n = ramfs_read(sidecar_path, cmdname, sc_size, 0);
+        if (n <= 0) continue;
+        cmdname[n] = 0;
+        trim_trailing_ws(cmdname);
+        if (!cmdname[0]) continue;
+
+        char full_path[192];
+        p = 0;
+        while (destdir[p] && p < 160) { full_path[p] = destdir[p]; p++; }
+        full_path[p++] = '/';
+        q = 0;
+        while (base_name[q] && p < 190) full_path[p++] = base_name[q++];
+        full_path[p] = 0;
+
+        tpkg_path_register(cmdname, full_path);
+        registered_any = 1;
+    }
+
+    if (!registered_any) {
+        char full_path[192];
+        int p = 0;
+        while (destdir[p] && p < 150) { full_path[p] = destdir[p]; p++; }
+        full_path[p] = 0;
+        int base = p;
+        full_path[base++] = '/';
+        int q = 0;
+        while (pkgname[q] && base < 180) full_path[base++] = pkgname[q++];
+        full_path[base] = 0;
+        int ext_at = base;
+
+        strcat(full_path, ".py");
+        if (ramfs_exists(full_path)) {
+            tpkg_path_register(pkgname, full_path);
+            return;
+        }
+        full_path[ext_at] = 0;
+        strcat(full_path, ".t");
+        if (ramfs_exists(full_path)) {
+            tpkg_path_register(pkgname, full_path);
+        }
+    }
 }
 
 static int tpkg_resolve(uint32_t *ip)
@@ -217,7 +313,7 @@ static void tpkg_install(uint32_t ip, const char *name)
         terminal_writestring(")\n");
         return;
     }
-    tpkg_path_add(destdir);
+    tpkg_register_package(destdir, name);
 
     terminal_writestring("Installed to ");
     terminal_writestring(destdir);
