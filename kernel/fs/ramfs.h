@@ -49,6 +49,7 @@ int ramfs_read(const char *path, void *buf, uint32_t size, uint32_t offset);
 int ramfs_write(const char *path, const void *buf, uint32_t size, uint32_t offset);
 int ramfs_rename(const char *old, const char *new_path);
 int ramfs_mkdir(const char *path);
+int ramfs_rmdir(const char *path);
 
 int  ramfs_open(const char *path, int flags);
 int  ramfs_close(int fd);

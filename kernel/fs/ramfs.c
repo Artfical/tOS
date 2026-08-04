@@ -460,6 +460,52 @@ int ramfs_vfs_unlink(const char *path)
     return 0;
 }
 
+/* Removes an empty directory. Unlike ramfs_vfs_unlink() (which
+ * refuses any S_IFDIR inode outright), this is the directory-only
+ * counterpart -- added for tpkg's `remove` subcommand, which deletes
+ * every file in a package's directory first, then the now-empty
+ * directory itself. Rejects non-empty directories rather than
+ * silently orphaning their contents. */
+int ramfs_rmdir(const char *path)
+{
+    uint32_t ino = resolve_path(path, 0);
+    if (!ino) return -1;
+    ramfs_inode_t *n = iget(ino);
+    if (!n || !(n->mode & S_IFDIR)) return -1;
+
+    /* readdir()'s entry count includes synthetic "." and ".." (see
+     * ramfs_vfs_readdir()'s comment on why those are real directory
+     * entries here, not just a listing-time convenience) -- an
+     * actually-empty directory still has exactly those two. */
+    if (n->size > 2 * sizeof(ramfs_dir_entry_t)) return -1; /* not empty */
+
+    char parent_path[VFS_NAME_LEN];
+    char name_buf[RAMFS_NAME_LEN];
+    int i = 0;
+    while (path[i]) i++;
+    int last_sep = -1;
+    for (int j = i - 1; j >= 0; j--) { if (path[j] == '/') { last_sep = j; break; } }
+    if (last_sep <= 0) {
+        parent_path[0] = 0;
+        int k = 0;
+        int start = (last_sep == 0) ? 1 : 0;
+        for (int j = start; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        name_buf[k] = 0;
+    } else {
+        for (int j = 0; j < last_sep && j < VFS_NAME_LEN - 1; j++) parent_path[j] = path[j];
+        parent_path[last_sep] = 0;
+        int k = 0;
+        for (int j = last_sep + 1; path[j] && k < RAMFS_NAME_LEN - 1; j++) name_buf[k++] = path[j];
+        name_buf[k] = 0;
+    }
+
+    uint32_t p_ino = resolve_path(parent_path, 1);
+    if (!p_ino) return -1;
+    n->ino = 0;
+    del_child(p_ino, name_buf);
+    return 0;
+}
+
 int ramfs_vfs_stat(const char *path, vfs_entry_t *entry)
 {
     uint32_t ino = resolve_path(path, 1);
