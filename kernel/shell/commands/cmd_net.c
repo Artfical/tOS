@@ -293,15 +293,10 @@ void cmd_python(int argc, char **args)
     else micropython_run_repl();
 }
 
-/* Fixed load address for `.t` flat binaries (v1: no relocations, no
- * ELF headers -- offset 0 in the file is the entry point, loaded
- * verbatim). Must sit above whatever total physical RAM this boot
- * has (paging_init() identity-maps [0, total_mem) 1:1, so any address
- * inside that range is live kernel/heap memory already) -- picked
- * with a healthy margin above a 1024MB boot rather than right at the
- * boundary, and well below USER_STACK_TOP (0xBFFFF000) so a growing
- * program and the stack can't collide. */
-#define USER_CODE_BASE 0x50000000
+/* USER_CODE_BASE / USER_STACK_TOP come from usermode.h -- see the
+ * comment there for why these have to be fixed constants shared
+ * between the loader and the SDK's linker script, not computed at
+ * boot. */
 #define USER_CODE_MAX_SIZE 0x2000000 /* 32MB ceiling for a single .t binary */
 
 void cmd_run(int argc, char **args)
