@@ -9,10 +9,11 @@
 
 /* tpkg: a minimal package manager talking to a Flask+Waitress server
  * at a fixed, well-known address -- no host/port argument needed.
- * `tpkg list` hits /api/list (plain text, one "name|version|desc" per
- * line); `tpkg install <name>` hits /api/download/<name> (a raw
- * ustar .tar), saves it to ramfs, and extracts it into
- * /programs/<name>/ with the tar support this kernel already has. */
+ * `tpkg list` hits /api/list (plain text, one
+ * "name|version|license|desc" per line); `tpkg install <name>` hits
+ * /api/download/<name> (a raw ustar .tar), saves it to ramfs, and
+ * extracts it into /programs/<name>/ with the tar support this
+ * kernel already has. */
 #define TPKG_HOST "pkg.artfical.com"
 #define TPKG_PORT 80
 #define TPKG_BUF_SIZE (256 * 1024)
@@ -422,6 +423,50 @@ static int tpkg_cache_find_version(const char *name, char *version_out)
     return found;
 }
 
+/* Looks up `name`'s license (3rd field) in the cached server list
+ * (/sys/tpkg_cache.tmbl, refreshed by `tpkg update`). Returns 1 if
+ * found. license_out is 64 bytes. */
+static int tpkg_cache_find_license(const char *name, char *license_out)
+{
+    int len;
+    char *buf = tpkg_read_whole(TPKG_CACHE_FILE, &len);
+    if (!buf) return 0;
+    int name_len = strlen(name);
+    int found = 0;
+
+    char *p = buf;
+    while (*p) {
+        char *line_start = p;
+        while (*p && *p != '\n') p++;
+        int line_len = (int)(p - line_start);
+        if (*p == '\n') p++;
+
+        char *bar1 = NULL;
+        for (int i = 0; i < line_len; i++) {
+            if (line_start[i] == '|') { bar1 = line_start + i; break; }
+        }
+        if (bar1 && (bar1 - line_start) == name_len && strncmp(line_start, name, name_len) == 0) {
+            char *bar2 = NULL;
+            for (char *q = bar1 + 1; q < line_start + line_len; q++) {
+                if (*q == '|') { bar2 = q; break; }
+            }
+            if (!bar2) break; /* older 3-field entry, no license present */
+            char *bar3 = NULL;
+            for (char *q = bar2 + 1; q < line_start + line_len; q++) {
+                if (*q == '|') { bar3 = q; break; }
+            }
+            int lend_len = bar3 ? (int)(bar3 - (bar2 + 1)) : (int)(line_start + line_len - (bar2 + 1));
+            int k = 0;
+            while (k < lend_len && k < 63) { license_out[k] = bar2[1 + k]; k++; }
+            license_out[k] = 0;
+            found = 1;
+            break;
+        }
+    }
+    free(buf);
+    return found;
+}
+
 static int tpkg_resolve(uint32_t *ip)
 {
     terminal_writestring("Resolving " TPKG_HOST "... ");
@@ -440,7 +485,7 @@ static int tpkg_resolve(uint32_t *ip)
  * response body or the cached copy of it) as a formatted table. */
 static void tpkg_print_list_body(char *body)
 {
-    terminal_writestring("NAME            VERSION    DESCRIPTION\n");
+    terminal_writestring("NAME            VERSION    LICENSE              DESCRIPTION\n");
     char *line = body;
     while (*line) {
         char *nl = strchr(line, '\n');
@@ -449,7 +494,23 @@ static void tpkg_print_list_body(char *body)
         if (*line) {
             char *bar1 = strchr(line, '|');
             char *bar2 = bar1 ? strchr(bar1 + 1, '|') : 0;
-            if (bar1 && bar2) {
+            char *bar3 = bar2 ? strchr(bar2 + 1, '|') : 0;
+            if (bar1 && bar2 && bar3) {
+                *bar1 = '\0'; *bar2 = '\0'; *bar3 = '\0';
+                const char *name = line, *ver = bar1 + 1, *lic = bar2 + 1, *desc = bar3 + 1;
+                terminal_writestring(name);
+                int pad = 16 - (int)strlen(name);
+                for (int k = 0; k < pad; k++) terminal_putchar(' ');
+                terminal_writestring(ver);
+                pad = 11 - (int)strlen(ver);
+                for (int k = 0; k < pad; k++) terminal_putchar(' ');
+                terminal_writestring(lic);
+                pad = 21 - (int)strlen(lic);
+                for (int k = 0; k < pad; k++) terminal_putchar(' ');
+                terminal_writestring(desc);
+                terminal_putchar('\n');
+            } else if (bar1 && bar2) {
+                /* backward-compat: older 3-field cache entries */
                 *bar1 = '\0'; *bar2 = '\0';
                 const char *name = line, *ver = bar1 + 1, *desc = bar2 + 1;
                 terminal_writestring(name);
@@ -457,6 +518,9 @@ static void tpkg_print_list_body(char *body)
                 for (int k = 0; k < pad; k++) terminal_putchar(' ');
                 terminal_writestring(ver);
                 pad = 11 - (int)strlen(ver);
+                for (int k = 0; k < pad; k++) terminal_putchar(' ');
+                terminal_writestring("?");
+                pad = 20;
                 for (int k = 0; k < pad; k++) terminal_putchar(' ');
                 terminal_writestring(desc);
                 terminal_putchar('\n');
@@ -647,11 +711,21 @@ static void tpkg_install(uint32_t ip, const char *name)
     }
     tpkg_db_upsert(name, version, destdir);
 
+    char license[64];
+    if (!tpkg_cache_find_license(name, license)) {
+        license[0] = '?'; license[1] = 0;
+    }
+
     terminal_writestring("Installed to ");
     terminal_writestring(destdir);
     terminal_writestring(" (");
     print_uint((uint32_t)cnt);
     terminal_writestring(" files)\n");
+    terminal_writestring("Version: ");
+    terminal_writestring(version);
+    terminal_writestring("  License: ");
+    terminal_writestring(license);
+    terminal_putchar('\n');
 }
 
 /* `tpkg remove <name>`: deletes every file the package's directory

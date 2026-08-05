@@ -282,7 +282,7 @@ WOLF_OBJS := $(WOLF_CXX_SRCS:.cpp=.o) $(WOLF_C_SRCS:.c=.o) $(WOLF_ASM_SRCS:.s=.o
 KERNEL_OBJS += $(WOLF_OBJS)
 
 PROGRAMS = programs/tosgui_demo.py programs/hello.t programs/bsstest.t \
-	programs/filetest.t programs/gfxtest.t programs/termtest.t programs/nettest.t programs/cryptotest.t programs/ssh.t assets/doom1.wad \
+	programs/filetest.t programs/gfxtest.t programs/termtest.t programs/nettest.t programs/cryptotest.t assets/doom1.wad \
 	assets/wolf3d/audiohed.wl1 assets/wolf3d/audiot.wl1 assets/wolf3d/gamemaps.wl1 \
 	assets/wolf3d/maphead.wl1 assets/wolf3d/vgadict.wl1 assets/wolf3d/vgagraph.wl1 \
 	assets/wolf3d/vgahead.wl1 assets/wolf3d/vswap.wl1
