@@ -450,12 +450,16 @@ static int tpkg_cache_find_license(const char *name, char *license_out)
             for (char *q = bar1 + 1; q < line_start + line_len; q++) {
                 if (*q == '|') { bar2 = q; break; }
             }
-            if (!bar2) break; /* older 3-field entry, no license present */
+            if (!bar2) break; /* malformed line, bail */
             char *bar3 = NULL;
             for (char *q = bar2 + 1; q < line_start + line_len; q++) {
                 if (*q == '|') { bar3 = q; break; }
             }
-            int lend_len = bar3 ? (int)(bar3 - (bar2 + 1)) : (int)(line_start + line_len - (bar2 + 1));
+            if (!bar3) break; /* older 3-field entry (name|version|desc)
+                                * -- no license field to read, and the
+                                * text after bar2 here is the
+                                * description, not a license. */
+            int lend_len = (int)(bar3 - (bar2 + 1));
             int k = 0;
             while (k < lend_len && k < 63) { license_out[k] = bar2[1 + k]; k++; }
             license_out[k] = 0;
@@ -704,6 +708,12 @@ static void tpkg_install(uint32_t ip, const char *name)
         return;
     }
     tpkg_register_package(destdir, name);
+
+    /* Refresh the cache before reading version/license from it --
+     * without this, a fresh install on a system that never ran
+     * `tpkg update`/`tpkg look` first always reports "?" for both,
+     * even though the server has real values. */
+    tpkg_update(ip, 1);
 
     char version[64];
     if (!tpkg_cache_find_version(name, version)) {
