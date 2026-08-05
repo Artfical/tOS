@@ -289,7 +289,17 @@ char keyboard_getchar(void)
             keyboard_push_char(usb_c);
         } else {
             net_poll();
-            asm volatile("hlt");
+            /* Used to `hlt` here to save power while waiting -- but hlt
+             * only wakes up on an interrupt, and this function is
+             * reachable from a ring3 .t program's blocking tos_read()
+             * (SYS_READ, entered via the int $0x80 interrupt gate,
+             * which keeps IF off for the whole syscall on purpose now
+             * -- see keyboard_poll()'s own comment). Hitting this hlt
+             * with interrupts genuinely off froze the entire VM on the
+             * very first blocking read, before a key was ever pressed.
+             * `pause` is a safe busy-wait hint that doesn't depend on
+             * interrupts at all. */
+            asm volatile("pause");
         }
     }
 }
