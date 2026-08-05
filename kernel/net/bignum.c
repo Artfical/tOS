@@ -193,3 +193,47 @@ void rsa2048_pub_encrypt(const uint8_t base[256], const uint8_t mod[256],
 
     bn_to_be(&r, out);
 }
+
+/* base^exp mod m, exp is an arbitrary-length big-endian byte string
+ * (unlike rsa2048_pub_encrypt's fixed uint32_t exponent) -- same
+ * square-and-multiply as that function, just walking bits across
+ * however many exponent bytes the caller has instead of a fixed 32. */
+void bignum_modexp(const uint8_t base[256], const uint8_t exp[], uint32_t exp_len,
+                   const uint8_t mod[256], uint8_t out[256])
+{
+    bn_t b, m, r, tmp;
+
+    bn_from_be(base, &b);
+    bn_from_be(mod, &m);
+
+    memset(r.d, 0, sizeof(r.d));
+    r.d[0] = 1;
+
+    /* Skip leading zero bytes, then find the highest set bit of the
+     * first nonzero byte, so the square-and-multiply loop starts
+     * exactly at the exponent's real MSB instead of wasting passes
+     * on leading zero bits. */
+    uint32_t start_byte = 0;
+    while (start_byte < exp_len && exp[start_byte] == 0) start_byte++;
+    if (start_byte == exp_len) {
+        /* exponent is zero -> result is 1 */
+        bn_to_be(&r, out);
+        return;
+    }
+    int start_bit = 7;
+    while (start_bit > 0 && !((exp[start_byte] >> start_bit) & 1)) start_bit--;
+
+    for (uint32_t byte_i = start_byte; byte_i < exp_len; byte_i++) {
+        int bit_from = (byte_i == start_byte) ? start_bit : 7;
+        for (int bit = bit_from; bit >= 0; bit--) {
+            bn_modmul(&r, &r, &m, &tmp);
+            if ((exp[byte_i] >> bit) & 1) {
+                bn_modmul(&tmp, &b, &m, &r);
+            } else {
+                bn_copy(&r, &tmp);
+            }
+        }
+    }
+
+    bn_to_be(&r, out);
+}

@@ -315,7 +315,7 @@ void cmd_run(int argc, char **args)
     }
 
     uint32_t size = fsbridge_size(path);
-    if (size == 0 || size > USER_CODE_MAX_SIZE) {
+    if (size <= 4 || size > USER_CODE_MAX_SIZE) {
         terminal_writestring("run: bad file size\n");
         return;
     }
@@ -331,7 +331,29 @@ void cmd_run(int argc, char **args)
         return;
     }
 
-    uint32_t pages = (size + 4095) / 4096;
+    /* Last 4 bytes are a little-endian footer (added by the SDK's
+     * build.sh) giving the program's real total memory size --
+     * objcopy -O binary doesn't reliably pad .bss into the flat
+     * image, so the file's own on-disk length can undercount how
+     * much memory a program with more than a trivial amount of .bss
+     * actually needs (see Desktop/tos_sdk/user.ld's comment). The
+     * content actually copied into memory is everything except this
+     * footer; the rest of the mapped pages stay zero from the fresh
+     * page allocation below, covering .bss correctly regardless of
+     * whether objcopy wrote real bytes for it or not. */
+    uint32_t content_size = size - 4;
+    uint32_t mem_size = (uint32_t)(uint8_t)buf[content_size] |
+                         ((uint32_t)(uint8_t)buf[content_size + 1] << 8) |
+                         ((uint32_t)(uint8_t)buf[content_size + 2] << 16) |
+                         ((uint32_t)(uint8_t)buf[content_size + 3] << 24);
+    if (mem_size < content_size) mem_size = content_size;
+    if (mem_size > USER_CODE_MAX_SIZE) {
+        terminal_writestring("run: program's memory footer is implausibly large\n");
+        free(buf);
+        return;
+    }
+
+    uint32_t pages = (mem_size + 4095) / 4096;
     for (uint32_t i = 0; i < pages; i++) {
         uint32_t phys = alloc_physical_page();
         if (!phys) {
@@ -341,7 +363,7 @@ void cmd_run(int argc, char **args)
         }
         paging_map(USER_CODE_BASE + i * 4096, phys, PTE_USER | PTE_WRITABLE);
     }
-    memcpy((void *)USER_CODE_BASE, buf, size);
+    memcpy((void *)USER_CODE_BASE, buf, content_size);
     free(buf);
 
     /* Minimal setjmp/longjmp pair: capture where to resume (this call

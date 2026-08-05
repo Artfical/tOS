@@ -11,6 +11,82 @@
 #include "tcp.h"
 #include "bochs.h"
 #include "keyboard.h"
+#include "sha256.h"
+#include "aes.h"
+#include "bignum.h"
+
+/* Fixed-layout argument structs for the crypto syscalls -- mirrored
+ * by hand in the SDK's tos.h (there's no shared kernel/userspace
+ * header; the SDK lives in a separate repo). Keep field order/types
+ * in sync if either side changes. */
+struct crypto_hash_args {
+    const uint8_t *data;
+    uint32_t len;
+    uint8_t *out; /* 32 bytes */
+};
+struct crypto_hmac_args {
+    const uint8_t *key;
+    uint32_t klen;
+    const uint8_t *msg;
+    uint32_t mlen;
+    uint8_t *out; /* 32 bytes */
+};
+struct crypto_aesctr_args {
+    const uint8_t *key16;
+    const uint8_t *iv16;
+    const uint8_t *in;
+    uint8_t *out;
+    uint32_t len;
+};
+struct crypto_modexp_args {
+    const uint8_t *base256;
+    const uint8_t *exp;
+    uint32_t exp_len;
+    const uint8_t *mod256;
+    uint8_t *out256;
+};
+
+/* Seeded from RDTSC on first use rather than a fixed constant, so it
+ * at least varies boot to boot -- still just an LCG, not
+ * cryptographically secure (same tradeoff tls.c's own prng_state
+ * already makes for TLS's client-random/premaster secret). Good
+ * enough for this v1's threat model (see the security-limitations
+ * note in the SSH client's own source), not a real CSPRNG. */
+static uint32_t prng_state_syscall = 0;
+static uint8_t prng_syscall_byte(void)
+{
+    if (!prng_state_syscall) {
+        uint32_t lo, hi;
+        asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+        prng_state_syscall = lo ^ hi ^ 0x2AF7C1D3;
+        if (!prng_state_syscall) prng_state_syscall = 0x2AF7C1D3;
+    }
+    prng_state_syscall = prng_state_syscall * 1664525 + 1013904223;
+    return (uint8_t)(prng_state_syscall >> 16);
+}
+
+/* AES-128-CTR: not in aes.h (which only has the raw block primitive)
+ * -- built here from aes128_encrypt() the same way tls.c builds its
+ * own CBC framing on top of the same block primitive. CTR's
+ * keystream block i is AES(key, iv_as_128bit_counter + i); the
+ * caller's data is XORed with it, which is its own inverse, so this
+ * same function both encrypts and decrypts. */
+static void aes128_ctr_crypt(const uint8_t key[16], const uint8_t iv[16],
+                              const uint8_t *in, uint8_t *out, uint32_t len)
+{
+    uint8_t counter[16];
+    memcpy(counter, iv, 16);
+    uint32_t off = 0;
+    while (off < len) {
+        uint8_t stream[16];
+        aes128_encrypt(key, counter, stream);
+        uint32_t chunk = len - off;
+        if (chunk > 16) chunk = 16;
+        for (uint32_t i = 0; i < chunk; i++) out[off + i] = in[off + i] ^ stream[i];
+        off += chunk;
+        for (int i = 15; i >= 0; i--) { if (++counter[i]) break; }
+    }
+}
 
 #define TOS_O_WRONLY 0x0001
 #define TOS_O_RDWR   0x0002
@@ -254,9 +330,18 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
         }
 
         case SYS_NET_SEND: {
+            /* tcp_send() returns a status code (0 success, negative
+             * failure), not a byte count -- SYS_NET_SEND's userspace
+             * contract (tos_net_send() in the SDK) is the usual
+             * write()-style "returns bytes sent, <=0 on failure" that
+             * callers loop on, so translate here rather than exposing
+             * the status-code convention directly, which a caller
+             * checking `r <= 0` would misread a *successful* 0 as a
+             * failure. */
             void *data = (void *)a;
             int len = (int)b;
-            return tcp_send(data, len);
+            int rc = tcp_send(data, len);
+            return (rc == 0) ? len : -1;
         }
 
         case SYS_NET_RECV: {
@@ -296,6 +381,37 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             int y = (int)b;
             uint32_t color = c;
             bochs_put_pixel(&gfx_dev, x, y, color);
+            return 0;
+        }
+
+        case SYS_CRYPTO_RANDOM: {
+            uint8_t *buf = (uint8_t *)a;
+            int len = (int)b;
+            for (int i = 0; i < len; i++) buf[i] = prng_syscall_byte();
+            return 0;
+        }
+
+        case SYS_CRYPTO_SHA256: {
+            struct crypto_hash_args *args = (struct crypto_hash_args *)a;
+            sha256_hash(args->data, args->len, args->out);
+            return 0;
+        }
+
+        case SYS_CRYPTO_HMAC_SHA256: {
+            struct crypto_hmac_args *args = (struct crypto_hmac_args *)a;
+            hmac_sha256(args->key, args->klen, args->msg, args->mlen, args->out);
+            return 0;
+        }
+
+        case SYS_CRYPTO_AES128_CTR: {
+            struct crypto_aesctr_args *args = (struct crypto_aesctr_args *)a;
+            aes128_ctr_crypt(args->key16, args->iv16, args->in, args->out, args->len);
+            return 0;
+        }
+
+        case SYS_CRYPTO_MODEXP: {
+            struct crypto_modexp_args *args = (struct crypto_modexp_args *)a;
+            bignum_modexp(args->base256, args->exp, args->exp_len, args->mod256, args->out256);
             return 0;
         }
 

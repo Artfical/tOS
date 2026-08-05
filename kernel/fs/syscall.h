@@ -30,6 +30,20 @@
 #define SYS_GFX_INIT     210
 #define SYS_GFX_PUTPIXEL 211
 
+/* Crypto primitives -- thin wrappers over the kernel's existing,
+ * already-in-production TLS crypto (kernel/net/sha256.c, aes.c,
+ * bignum.c) instead of reimplementing any of it in userspace, where
+ * a subtle bug would be much easier to introduce and much harder to
+ * notice than a protocol-logic bug. Used by the SSH client SDK
+ * example. All take a pointer to a fixed-layout argument struct in
+ * ebx (see the matching structs in tos.h) since most need more than
+ * the 4 plain register args a syscall gets. */
+#define SYS_CRYPTO_RANDOM      230 /* a=buf, b=len */
+#define SYS_CRYPTO_SHA256      231 /* a=struct crypto_hash_args* */
+#define SYS_CRYPTO_HMAC_SHA256 232 /* a=struct crypto_hmac_args* */
+#define SYS_CRYPTO_AES128_CTR  233 /* a=struct crypto_aesctr_args* */
+#define SYS_CRYPTO_MODEXP      234 /* a=struct crypto_modexp_args* */
+
 struct tos_stat {
     uint16_t st_dev;
     uint16_t st_ino;

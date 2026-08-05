@@ -26,5 +26,5 @@ start:
 .section .bss, "aw"
 .align 16
 stack_bottom:
-    .skip 16384
+    .skip 131072
 stack_top:
