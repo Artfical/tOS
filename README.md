@@ -2,7 +2,7 @@
 
 tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
-**Current version: v0.9.105**
+**Current version: v0.9.156**
 
 ## Screenshots
 
@@ -186,6 +186,12 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `uname` | System information |
 | `reboot` | Reboot the system |
 | `shutdown` | Halt the system |
+| `tpkg look` | Show the package server's full catalog (name, version, license, description) |
+| `tpkg list` | List locally installed packages |
+| `tpkg update` | Refresh the local cache of the server's package list |
+| `tpkg install <name>` | Download and install a package, printing its resolved version + license |
+| `tpkg remove <name>` | Uninstall a package |
+| `tpkg upgrade` | Upgrade all installed packages to the latest server version |
 
 ### Scripting
 
@@ -407,6 +413,15 @@ Five NIC drivers are available, all auto-detected via PCI bus scanning:
 | E1000 | `e1000.c` | Intel PRO/1000 |
 | virtio-net | `virtio_net.c` | VirtIO paravirtualized NIC |
 | NE2000 | `ne2000.c` | Realtek RTL8029 / NE2000 PCI clone |
+
+## Package Manager (tpkg)
+
+`tpkg` is tOS's package manager, talking to a small Flask+Waitress server (`pkg.artfical.com`) over plain HTTP. The server's catalog (`tpkg look`) lists every available package as `name|version|license|description`; `tpkg install <name>` downloads a ustar `.tar`, extracts it into `/programs/<name>/`, and registers any commands it ships (via `<file>.txt` sidecars next to each `.py`/`.t`) in `/sys/path.tmbl`. Everything currently on the server is AGPL-3.0-or-later.
+
+Packages can ship native `.t` executables — flat, non-relocatable binaries built with [tos-sdk](https://github.com/Artfical/tos-sdk), running in ring3 with a Linux-i386-style `int 0x80` syscall ABI (file I/O, terminal, TCP networking, linear-framebuffer graphics, and crypto primitives — SHA-256/HMAC/AES-128-CTR/modexp — backed by this kernel's own TLS code). Two example packages:
+
+- **`tdemo`** — one `.t` program per syscall area (`thello`/`tbss`/`tfile`/`tterm`/`tnet`/`tgfx`).
+- **`ssh-client`** — a from-scratch SSH-2 client (`ssh` command; DH group14 key exchange, AES-128-CTR + HMAC-SHA256, password auth, single-command exec — see the package's own README for its documented v1 limitations). Not bundled into tOS's own boot image; install it with `tpkg install ssh-client`.
 
 ## Multitasking
 
