@@ -290,7 +290,13 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
             send_seg(s, TCP_FLAG_SYN, 0, 0);
             next_retx += 1000;
         }
-        task_yield();
+        /* Used to task_yield() (int $32) here -- this loop is reachable
+         * from a ring3 .t program's blocking tos_net_connect() (SYS_NET_CONNECT,
+         * entered via int $0x80), and a nested software interrupt from inside
+         * that trap gate's own handler is the same reentrancy bug class
+         * confirmed (via a reproducible GPF) in keyboard_getchar()'s own
+         * yield -- see kernel/drivers/input/keyboard.c. nic_poll() above
+         * already polls the NIC directly, so no yield is needed here either. */
     }
     s->state = TCP_CLOSED;
     return TCP_ERR_TIMEOUT;

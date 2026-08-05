@@ -247,7 +247,23 @@ char keyboard_getchar(void)
             return c;
         }
         if (!wm_current_task_has_focus()) {
-            task_yield();
+            /* Used to call task_yield() (int $32) here -- but this
+             * function is reachable from a ring3 .t program's
+             * blocking tos_read() (SYS_READ, entered via int $0x80),
+             * and firing a second software interrupt while already
+             * inside that trap gate's handler is the same nested-
+             * interrupt reentrancy class of bug previously suspected
+             * (never confirmed) in tcp_connect()/arp_resolve()'s own
+             * yielding retry loops -- confirmed here via a reproducible
+             * GPF: a .t program's ring3 write right after tos_read()
+             * returned faulted with a corrupted pointer, consistent
+             * with clobbered register/stack state from a task switch
+             * nested inside the syscall handler. Poll directly instead
+             * of yielding -- still lets an unfocused window's task
+             * back off from actually consuming input it won't get,
+             * without re-entering the scheduler mid-syscall. */
+            keyboard_poll();
+            net_poll();
             continue;
         }
         keyboard_poll();

@@ -102,7 +102,12 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
                 return 0;
             }
         }
-        task_yield();
+        /* No task_yield() here -- reachable from a ring3 .t program's
+         * blocking syscall (tos_net_connect() -> tcp_connect() ->
+         * arp_resolve()), and a nested software interrupt from inside
+         * that syscall's own int $0x80 trap-gate handler is a confirmed
+         * reentrancy bug (see kernel/drivers/input/keyboard.c). nic_poll()
+         * above already polls the NIC directly. */
     }
     return ARP_ERR_TIMEOUT;
 }

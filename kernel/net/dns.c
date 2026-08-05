@@ -137,7 +137,12 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
             }
             return DNS_ERR_NO_A;
         }
-        task_yield();
+        /* No task_yield() here -- reachable from a ring3 .t program's
+         * blocking tos_net_resolve() (SYS_NET_RESOLVE, via int $0x80);
+         * see kernel/drivers/input/keyboard.c for why a nested software
+         * interrupt from inside a syscall's own trap-gate handler is
+         * unsafe. The nic_poll() call above this loop already polls
+         * the NIC directly. */
     }
     return DNS_ERR_TIMEOUT;
 }
