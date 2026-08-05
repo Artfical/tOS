@@ -215,22 +215,39 @@ static void process_scancode(uint8_t scancode)
     }
 }
 
+/* Both of these used to unconditionally `sti` at the end -- fine for
+ * keyboard_callback() (only ever reached with interrupts already on,
+ * since it's an IRQ handler), but keyboard_poll() is also called from
+ * keyboard_getchar(), which is reachable from a ring3 .t program's
+ * blocking tos_read() (SYS_READ, entered via the int $0x80 interrupt
+ * gate -- which auto-clears IF for the whole syscall so it can't be
+ * preempted mid-handling). An unconditional `sti` here silently turned
+ * interrupts back on in the middle of that syscall, letting the 100Hz
+ * PIT timer (int $32) preempt right there -- a genuine nested hardware
+ * interrupt, no explicit task_yield() call needed to trigger it. That
+ * caused a real, reproducible GPF (corrupted ring3 register/stack state
+ * on return) the moment a user typed into ssh.t's blocking hostname
+ * prompt. Save/restore the actual incoming IF bit with pushfl/popfl
+ * instead, so a caller that entered with interrupts already off (a
+ * syscall handler) leaves with them off too. */
 static void keyboard_callback(registers_t *regs)
 {
     (void)regs;
-    asm volatile("cli");
+    uint32_t flags;
+    asm volatile("pushfl; pop %0; cli" : "=r"(flags));
     uint8_t status;
     while (((status = inb(0x64)) & 1) && !(status & 0x20))
         process_scancode(inb(0x60));
-    asm volatile("sti");
+    if (flags & 0x200) asm volatile("sti");
 }
 
 static void keyboard_poll(void)
 {
-    asm volatile("cli");
+    uint32_t flags;
+    asm volatile("pushfl; pop %0; cli" : "=r"(flags));
     uint8_t status = inb(0x64);
     if ((status & 1) && !(status & 0x20)) process_scancode(inb(0x60));
-    asm volatile("sti");
+    if (flags & 0x200) asm volatile("sti");
 }
 
 int keyboard_data_available(void)
