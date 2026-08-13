@@ -118,11 +118,22 @@ static void gfx_leave_if_active(void)
 {
     if (!gfx_ready) return;
     gfx_ready = 0;
+    /* Same reasoning as vga_set_mode()'s own interrupt-disable (see its
+     * comment): GUI mode's desktop task repaints on every timer tick
+     * regardless of what this sequence is doing, and bochs_disable()
+     * plus the terminal state resets below are just as vulnerable to
+     * landing mid-sequence as vga_set_mode()'s own register writes --
+     * vga_set_mode() only protects its own body, not bochs_disable()
+     * before it or the terminal calls after it. pushfl/popfl nests
+     * safely with vga_set_mode()'s own inner disable. */
+    uint32_t flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
     bochs_disable();
     vga_set_mode(VGA_MODE_TEXT);
     terminal_set_force_direct(0);
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
     terminal_clear();
+    asm volatile("pushl %0; popfl" :: "r"(flags));
 }
 
 #define FD_MAX 64
@@ -404,7 +415,21 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
              * left to restore later. Same ordering cmd_vgatest() uses. */
             vga_init();
             if (bochs_init(&gfx_dev) != 0) return -1;
-            if (bochs_set_mode(&gfx_dev, width, height, 32) != 0) return -1;
+            /* Same reasoning as vga_set_mode()'s own interrupt-disable:
+             * GUI mode's desktop task repaints on every timer tick
+             * regardless of what this mode switch is doing, and a timer
+             * interrupt landing mid-sequence here could corrupt VGA/VBE
+             * state exactly like the DOOM/vgatest/wolf3d cases already
+             * documented for the equivalent restore path. Covers the
+             * actual mode switch through the framebuffer page mapping;
+             * both early-return points below are before this or
+             * restore flags themselves. */
+            uint32_t flags;
+            asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+            if (bochs_set_mode(&gfx_dev, width, height, 32) != 0) {
+                asm volatile("pushl %0; popfl" :: "r"(flags));
+                return -1;
+            }
             /* The LFB is a PCI BAR address, not RAM -- it sits well
              * above paging_init()'s identity-mapped [0, total_mem)
              * range and was never actually paged in, so bochs_put_pixel
@@ -418,6 +443,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
                 paging_map(addr, addr, PTE_PRESENT | PTE_WRITABLE);
             }
             gfx_ready = 1;
+            asm volatile("pushl %0; popfl" :: "r"(flags));
             return 0;
         }
 
