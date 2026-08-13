@@ -255,6 +255,22 @@ int keyboard_data_available(void)
     return key_buffer_head != key_buffer_tail;
 }
 
+/* Non-blocking: polls the hardware once, and if a key is already
+ * buffered, pops and returns it without waiting. Returns 1 and fills
+ * *out on success, 0 if nothing is available right now -- for a
+ * caller (like a video playback loop) that can't afford to block a
+ * whole frame's timing budget waiting on keyboard_getchar(). */
+int keyboard_try_getchar(char *out)
+{
+    keyboard_poll();
+    if (key_buffer_head != key_buffer_tail) {
+        *out = key_buffer[key_buffer_tail];
+        key_buffer_tail = (key_buffer_tail + 1) % 256;
+        return 1;
+    }
+    return 0;
+}
+
 char keyboard_getchar(void)
 {
     for (;;) {

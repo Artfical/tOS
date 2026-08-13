@@ -29,6 +29,39 @@
 #define SYS_NET_CLOSE    204
 #define SYS_GFX_INIT     210
 #define SYS_GFX_PUTPIXEL 211
+#define SYS_GFX_BLIT     212 /* a=struct gfx_blit_args* -- copies a whole
+                               * rectangle of 32bpp pixels into the
+                               * framebuffer in one call; too slow to do
+                               * real-time video via per-pixel syscalls. */
+#define SYS_GFX_EXIT     213 /* Leaves Bochs/VBE graphics mode and
+                               * restores VGA text mode -- SYS_EXIT does
+                               * this automatically too as a safety net
+                               * if a program forgets, but call this
+                               * explicitly to return to text mode
+                               * without actually exiting. */
+#define SYS_KEY_POLL     206 /* non-blocking: returns -1 if no key
+                               * buffered, else the key byte (same
+                               * decoding as SYS_READ's fd 0 path) --
+                               * doesn't echo or block, for a playback
+                               * loop that needs to check for a pause
+                               * key without stalling frame timing. */
+#define SYS_UPTIME_MS    207 /* wraps debugmon_uptime_ms() -- monotonic
+                               * milliseconds since boot, for pacing a
+                               * fixed-framerate playback loop. */
+
+/* Audio -- thin wrappers over the kernel's existing audio.c mixer
+ * (already used by DOOM/media player), fixed 8-bit unsigned mono PCM
+ * at the backend's fixed output rate (22050Hz), max 4096 bytes per
+ * submit (AUDIO_DMA_SIZE) -- same constraints audio.c already has. */
+#define SYS_AUDIO_SUBMIT 221 /* a=buf, b=len -- returns 0 or -1 */
+#define SYS_AUDIO_BUSY   222 /* returns 1 if the last submit is still playing */
+#define SYS_AUDIO_STOP   223
+
+/* General-purpose raw DEFLATE (RFC1951) decompression -- exposes the
+ * kernel's existing inflate_raw_buffer() (kernel/display/png.c, used
+ * by the PNG decoder) directly to userspace rather than shipping a
+ * second copy of an inflate implementation in the SDK. */
+#define SYS_INFLATE      240 /* a=struct inflate_args* */
 
 /* Crypto primitives -- thin wrappers over the kernel's existing,
  * already-in-production TLS crypto (kernel/net/sha256.c, aes.c,

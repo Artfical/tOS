@@ -369,10 +369,26 @@ void cmd_run(int argc, char **args)
     /* Minimal setjmp/longjmp pair: capture where to resume (this call
      * site) before dropping to ring3, so the SYS_EXIT/SYS_KILL syscall
      * handlers can jump straight back here instead of the kernel
-     * needing real process teardown, which doesn't exist yet. */
-    uint32_t esp;
+     * needing real process teardown, which doesn't exist yet.
+     *
+     * ebp/ebx/esi/edi (this function's own callee-saved registers)
+     * must be captured for real, not passed as placeholder 0s --
+     * enter_user_mode() is noreturn and never returns the normal way,
+     * so the compiler doesn't preserve them across that call the way
+     * an ordinary function return would guarantee, and this function's
+     * own -O2 code addresses spilled locals ebp-relative at `resume:`.
+     * Confirmed via a reproducible page fault right after a real .t
+     * program's clean exit (CR2 landing exactly on the ring3 stack's
+     * upper boundary -- leftover garbage from deep in the syscall
+     * handler's own call chain, previously landing somewhere
+     * "accidentally" mapped for every earlier, simpler .t program). */
+    uint32_t esp, ebp, ebx, esi, edi;
     asm volatile("mov %%esp, %0" : "=r"(esp));
-    sys_exit_set_jmp(esp, 0, 0, 0, 0, (uint32_t)&&resume);
+    asm volatile("mov %%ebp, %0" : "=r"(ebp));
+    asm volatile("mov %%ebx, %0" : "=r"(ebx));
+    asm volatile("mov %%esi, %0" : "=r"(esi));
+    asm volatile("mov %%edi, %0" : "=r"(edi));
+    sys_exit_set_jmp(esp, ebp, ebx, esi, edi, (uint32_t)&&resume);
     enter_user_mode(USER_CODE_BASE, USER_STACK_TOP);
 
 resume:

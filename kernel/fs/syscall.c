@@ -14,6 +14,10 @@
 #include "sha256.h"
 #include "aes.h"
 #include "bignum.h"
+#include "audio.h"
+#include "png.h"
+#include "debugmon.h"
+#include "vga.h"
 
 /* Fixed-layout argument structs for the crypto syscalls -- mirrored
  * by hand in the SDK's tos.h (there's no shared kernel/userspace
@@ -44,6 +48,17 @@ struct crypto_modexp_args {
     uint32_t exp_len;
     const uint8_t *mod256;
     uint8_t *out256;
+};
+struct gfx_blit_args {
+    int x, y, w, h;
+    const uint32_t *pixels; /* w*h, packed 0x00RRGGBB, row-major */
+};
+struct inflate_args {
+    const uint8_t *src;
+    uint32_t src_len;
+    uint8_t *out;
+    uint32_t out_cap;
+    uint32_t *out_len; /* written on success */
 };
 
 /* Seeded from RDTSC on first use rather than a fixed constant, so it
@@ -96,6 +111,20 @@ static void aes128_ctr_crypt(const uint8_t key[16], const uint8_t iv[16],
 static bochs_device_t gfx_dev;
 static int gfx_ready = 0;
 
+/* Same restore sequence cmd_vgatest() uses. Shared by SYS_GFX_EXIT
+ * (explicit) and SYS_EXIT's safety net (implicit, for a program that
+ * crashed or forgot). */
+static void gfx_leave_if_active(void)
+{
+    if (!gfx_ready) return;
+    gfx_ready = 0;
+    bochs_disable();
+    vga_set_mode(VGA_MODE_TEXT);
+    terminal_set_force_direct(0);
+    terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
+    terminal_clear();
+}
+
 #define FD_MAX 64
 #define FD_FREE 0
 #define FD_FILE 1
@@ -129,6 +158,17 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
 
     switch (syscall) {
         case SYS_EXIT:
+            /* If the exiting program left Bochs/VBE graphics mode
+             * active (crashed, forgot, or just never called
+             * SYS_GFX_EXIT), restore VGA text mode before handing
+             * control back to the shell -- returning to the shell
+             * mid-graphics-mode with no restore is exactly the bug
+             * class DOOM/vgatest/wolf3d all had to solve explicitly
+             * (see the kernel README's Linear framebuffer graphics
+             * section); reproduced here directly by a video player
+             * that never called any restore path at all, causing a
+             * page fault right after "done." on return to the shell. */
+            gfx_leave_if_active();
             sys_exit_longjmp();
 
         case SYS_FORK:
@@ -357,6 +397,12 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
         case SYS_GFX_INIT: {
             int width = (int)a;
             int height = (int)b;
+            /* Snapshot the real, valid boot-time text-mode VGA
+             * registers before anything touches VBE -- has to happen
+             * before the first-ever mode switch (idempotent past that,
+             * see vga_init()'s own guard) or there's nothing correct
+             * left to restore later. Same ordering cmd_vgatest() uses. */
+            vga_init();
             if (bochs_init(&gfx_dev) != 0) return -1;
             if (bochs_set_mode(&gfx_dev, width, height, 32) != 0) return -1;
             /* The LFB is a PCI BAR address, not RAM -- it sits well
@@ -381,6 +427,68 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             int y = (int)b;
             uint32_t color = c;
             bochs_put_pixel(&gfx_dev, x, y, color);
+            return 0;
+        }
+
+        case SYS_GFX_BLIT: {
+            if (!gfx_ready) return -1;
+            struct gfx_blit_args *args = (struct gfx_blit_args *)a;
+            if (args->x < 0 || args->y < 0 || args->w <= 0 || args->h <= 0) return -1;
+            if (args->x + args->w > gfx_dev.width || args->y + args->h > gfx_dev.height) return -1;
+            uint32_t *fb = (uint32_t *)(unsigned long)gfx_dev.lfb;
+            for (int row = 0; row < args->h; row++) {
+                memcpy(fb + (args->y + row) * gfx_dev.width + args->x,
+                       args->pixels + row * args->w,
+                       (uint32_t)args->w * 4);
+            }
+            return 0;
+        }
+
+        case SYS_GFX_EXIT:
+            gfx_leave_if_active();
+            return 0;
+
+        case SYS_KEY_POLL: {
+            char ch;
+            if (keyboard_try_getchar(&ch)) return (uint32_t)(uint8_t)ch;
+            return (uint32_t)-1;
+        }
+
+        case SYS_UPTIME_MS:
+            return debugmon_uptime_ms();
+
+        case SYS_AUDIO_SUBMIT: {
+            /* audio_init() re-probes hardware I/O ports with several
+             * busy-wait loops per backend tried (SB16 at up to 3 base
+             * ports, then an AC97 PCI scan) -- fine as a one-time cost,
+             * but calling it on every single failed submit (as a video
+             * player does, once per frame, when no audio backend is
+             * present) made a whole video noticeably slower to play
+             * back, entirely from repeated failed hardware probing.
+             * Try exactly once. */
+            static int audio_probe_done = 0;
+            if (!audio_probe_done) {
+                audio_probe_done = 1;
+                if (!audio_available()) audio_init();
+            }
+            const uint8_t *buf = (const uint8_t *)a;
+            uint32_t len = b;
+            return (uint32_t)audio_submit(buf, len);
+        }
+
+        case SYS_AUDIO_BUSY:
+            return (uint32_t)audio_busy();
+
+        case SYS_AUDIO_STOP:
+            audio_stop();
+            return 0;
+
+        case SYS_INFLATE: {
+            struct inflate_args *args = (struct inflate_args *)a;
+            uint32_t out_len = 0;
+            int rc = inflate_raw_buffer(args->src, args->src_len, args->out, args->out_cap, &out_len);
+            if (rc != 0) return (uint32_t)-1;
+            *args->out_len = out_len;
             return 0;
         }
 
