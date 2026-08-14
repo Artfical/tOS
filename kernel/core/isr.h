@@ -23,7 +23,8 @@ void isr_handler(registers_t *regs);
  * command to show the exact same screen for a demo without actually
  * taking the system down. */
 void crash_screen_trigger(const char *exception_name, int exception_code,
-                           uint32_t cr2, uint32_t eip, uint32_t err_code, int fake);
+                           uint32_t cr2, uint32_t eip, uint32_t err_code, int fake,
+                           const char *extra_line);
 
 /* True while a (real or fake) crash screen is on-screen. The desktop's
  * own task keeps running and repainting even while another task is

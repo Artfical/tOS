@@ -2,6 +2,7 @@
 #include "terminal.h"
 #include "io.h"
 #include "debugmon.h"
+#include "scheduler.h"
 
 isr_handler_t interrupt_handlers[256];
 static const char *exception_messages[] = {
@@ -64,7 +65,8 @@ void crash_screen_clear(void)
 }
 
 void crash_screen_trigger(const char *exception_name, int exception_code,
-                           uint32_t cr2, uint32_t eip, uint32_t err_code, int fake)
+                           uint32_t cr2, uint32_t eip, uint32_t err_code, int fake,
+                           const char *extra_line)
 {
     char buf[9];
 
@@ -95,6 +97,12 @@ void crash_screen_trigger(const char *exception_name, int exception_code,
     terminal_writestring(buf);
     terminal_writestring("\n\n");
 
+    if (extra_line) {
+        terminal_writestring("        ");
+        terminal_writestring(extra_line);
+        terminal_writestring("\n\n");
+    }
+
     terminal_writestring("        Your system is halted.\n");
     terminal_writestring("        Please contact us via mail in help@artfical.com\n");
 
@@ -118,8 +126,32 @@ void isr_handler(registers_t *regs)
             asm volatile("mov %%cr2, %0" : "=r"(cr2));
         }
 
+        /* Extra forensic line for a crash that's proven hard to
+         * reproduce off real hardware (see task_current()/regs->cs
+         * below) -- ESP/EBP at fault time, CS (which privilege level
+         * the fault happened in), and the currently running task's
+         * pid/name, so a single crash-screen photo carries much more
+         * of what a debugger would normally show. */
+        char extra[96];
+        int p = 0;
+        const char *lbl1 = "ESP:";
+        while (*lbl1) extra[p++] = *lbl1++;
+        for (int nib = 28; nib >= 0; nib -= 4) extra[p++] = "0123456789ABCDEF"[(regs->esp >> nib) & 0xF];
+        const char *lbl2 = " EBP:";
+        while (*lbl2) extra[p++] = *lbl2++;
+        for (int nib = 28; nib >= 0; nib -= 4) extra[p++] = "0123456789ABCDEF"[(regs->ebp >> nib) & 0xF];
+        const char *lbl3 = " CS:";
+        while (*lbl3) extra[p++] = *lbl3++;
+        for (int nib = 12; nib >= 0; nib -= 4) extra[p++] = "0123456789ABCDEF"[(regs->cs >> nib) & 0xF];
+        const char *lbl4 = " PID:";
+        while (*lbl4) extra[p++] = *lbl4++;
+        task_t *cur = task_current();
+        uint32_t pid = cur ? cur->pid : 0xFFFFFFFF;
+        for (int nib = 28; nib >= 0; nib -= 4) extra[p++] = "0123456789ABCDEF"[(pid >> nib) & 0xF];
+        extra[p] = 0;
+
         crash_screen_trigger(exception_messages[regs->int_no], (int)regs->int_no,
-                              cr2, regs->eip, regs->err_code, 0);
+                              cr2, regs->eip, regs->err_code, 0, extra);
     }
 }
 
