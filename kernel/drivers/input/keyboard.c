@@ -296,7 +296,6 @@ char keyboard_getchar(void)
              * back off from actually consuming input it won't get,
              * without re-entering the scheduler mid-syscall. */
             keyboard_poll();
-            net_poll();
             continue;
         }
         keyboard_poll();
@@ -304,7 +303,17 @@ char keyboard_getchar(void)
         if (usb_keyboard_read(&usb_c)) {
             keyboard_push_char(usb_c);
         } else {
-            net_poll();
+            /* Used to also call net_poll() here (and in the unfocused
+             * branch above) to keep the network stack serviced while
+             * idle at a keyboard prompt -- but this whole loop runs
+             * from inside a ring3 syscall's int $0x80 handler (IF off
+             * for the entire wait), and net_poll() -> nic_poll() ->
+             * driver-specific rx handling adds real nested stack depth
+             * on every single spin, on top of everything else already
+             * live in that call chain. Not worth it just to avoid a
+             * few hundred ms of DHCP/ARP staleness while a human is
+             * mid-keystroke; dropped to keep this loop's stack
+             * footprint as small as possible. */
             /* Used to `hlt` here to save power while waiting -- but hlt
              * only wakes up on an interrupt, and this function is
              * reachable from a ring3 .t program's blocking tos_read()
