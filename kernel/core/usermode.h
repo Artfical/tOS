@@ -25,6 +25,8 @@
  * 1GB of gap between code and stack. */
 #define USER_CODE_BASE 0x80000000
 #define USER_STACK_TOP 0xBFFFF000
+#define USER_CODE_MAX_SIZE 0x2000000 /* 32MB ceiling for a single .t binary, matches cmd_run()'s own limit */
+#define USER_STACK_PAGES   16        /* 64KB, matches usermode_init()'s own mapping */
 
 void enter_user_mode(uint32_t entry, uint32_t user_stack_top);
 void usermode_init(void);

@@ -77,7 +77,9 @@ void __attribute__((noreturn)) sys_exit_longjmp(void)
     __builtin_unreachable();
 }
 
-#define USER_STACK_PAGES 16 /* 64 KB — enough headroom for nested libc calls */
+/* USER_STACK_PAGES (64 KB — enough headroom for nested libc calls)
+ * comes from usermode.h now, shared with syscall.c's pointer-range
+ * validation. */
 
 void usermode_init(void)
 {

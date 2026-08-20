@@ -293,11 +293,10 @@ void cmd_python(int argc, char **args)
     else micropython_run_repl();
 }
 
-/* USER_CODE_BASE / USER_STACK_TOP come from usermode.h -- see the
- * comment there for why these have to be fixed constants shared
- * between the loader and the SDK's linker script, not computed at
- * boot. */
-#define USER_CODE_MAX_SIZE 0x2000000 /* 32MB ceiling for a single .t binary */
+/* USER_CODE_BASE / USER_STACK_TOP / USER_CODE_MAX_SIZE come from
+ * usermode.h -- see the comment there for why these have to be fixed
+ * constants shared between the loader and the SDK's linker script,
+ * not computed at boot. */
 
 void cmd_run(int argc, char **args)
 {

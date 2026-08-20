@@ -111,6 +111,33 @@ static void aes128_ctr_crypt(const uint8_t key[16], const uint8_t iv[16],
 static bochs_device_t gfx_dev;
 static int gfx_ready = 0;
 
+/* Checks that [ptr, ptr+len) lies entirely within memory a ring3 .t
+ * program actually legitimately owns (its own code/data region or its
+ * own stack), rejecting overflow (ptr+len wrapping past 0xFFFFFFFF)
+ * and zero-length ranges. Several syscalls added this session
+ * (SYS_GFX_BLIT, SYS_INFLATE) take a pointer straight from ring3 and
+ * either read from it in bulk (memcpy into the framebuffer -- an
+ * arbitrary kernel-memory-read primitive if unchecked) or write to it
+ * in bulk (inflate's decompression output -- an arbitrary kernel-
+ * memory-write primitive, strictly worse, since the attacker also
+ * controls the compressed input driving what gets written) without
+ * ever checking the pointer was ring3's to begin with. Ring0 ignores
+ * the page tables' U/S bit entirely (see the PTE_USER hardening
+ * commit's own comment), so nothing about the paging setup stops the
+ * kernel itself from touching any address a ring3 program hands it
+ * through a syscall -- that check has to happen here, explicitly, per
+ * syscall that takes a buffer pointer. */
+static int user_range_ok(uint32_t ptr, uint32_t len)
+{
+    if (len == 0) return 0;
+    uint32_t end = ptr + len;
+    if (end < ptr) return 0; /* overflow */
+    if (ptr >= USER_CODE_BASE && end <= USER_CODE_BASE + USER_CODE_MAX_SIZE) return 1;
+    uint32_t stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * 4096;
+    if (ptr >= stack_bottom && end <= USER_STACK_TOP) return 1;
+    return 0;
+}
+
 /* Same restore sequence cmd_vgatest() uses. Shared by SYS_GFX_EXIT
  * (explicit) and SYS_EXIT's safety net (implicit, for a program that
  * crashed or forgot). */
@@ -458,9 +485,18 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
 
         case SYS_GFX_BLIT: {
             if (!gfx_ready) return -1;
+            if (!user_range_ok(a, sizeof(struct gfx_blit_args))) return -1;
             struct gfx_blit_args *args = (struct gfx_blit_args *)a;
             if (args->x < 0 || args->y < 0 || args->w <= 0 || args->h <= 0) return -1;
             if (args->x + args->w > gfx_dev.width || args->y + args->h > gfx_dev.height) return -1;
+            /* args->pixels is a second, independent pointer read out of
+             * ring3-controlled memory -- validating the struct itself
+             * says nothing about where this points. Without this check
+             * a ring3 program could point it at arbitrary kernel memory
+             * and have this syscall copy it straight into the
+             * framebuffer, an arbitrary kernel-read primitive. */
+            if (!user_range_ok((uint32_t)(unsigned long)args->pixels, (uint32_t)args->w * (uint32_t)args->h * 4))
+                return -1;
             uint32_t *fb = (uint32_t *)(unsigned long)gfx_dev.lfb;
             for (int row = 0; row < args->h; row++) {
                 memcpy(fb + (args->y + row) * gfx_dev.width + args->x,
@@ -497,6 +533,12 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
                 audio_probe_done = 1;
                 if (!audio_available()) audio_init();
             }
+            /* buf is read from directly (memcpy'd into the backend's
+             * DMA buffer) -- same unchecked-ring3-pointer class as
+             * SYS_GFX_BLIT's pixel source, just a smaller/less directly
+             * observable read (audio output rather than a visible
+             * framebuffer), capped at AUDIO_DMA_SIZE (4096) either way. */
+            if (!user_range_ok(a, b)) return (uint32_t)-1;
             const uint8_t *buf = (const uint8_t *)a;
             uint32_t len = b;
             return (uint32_t)audio_submit(buf, len);
@@ -510,7 +552,19 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             return 0;
 
         case SYS_INFLATE: {
+            /* args->out is the decompression *output* target -- an
+             * unchecked pointer here is an arbitrary kernel-memory-write
+             * primitive with attacker-controlled content (the caller
+             * also controls args->src, the compressed input driving
+             * what gets written), strictly worse than SYS_GFX_BLIT's
+             * read-only equivalent. args->out_len is a second write
+             * target (the decompressed length gets stored there) and
+             * needs the same check. */
+            if (!user_range_ok(a, sizeof(struct inflate_args))) return (uint32_t)-1;
             struct inflate_args *args = (struct inflate_args *)a;
+            if (!user_range_ok((uint32_t)(unsigned long)args->src, args->src_len)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->out, args->out_cap)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->out_len, sizeof(uint32_t))) return (uint32_t)-1;
             uint32_t out_len = 0;
             int rc = inflate_raw_buffer(args->src, args->src_len, args->out, args->out_cap, &out_len);
             if (rc != 0) return (uint32_t)-1;
