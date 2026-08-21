@@ -572,7 +572,22 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             return 0;
         }
 
+        /* None of the five crypto syscalls below validated their
+         * ring3-supplied pointers before this either -- the same
+         * missing-check class as SYS_GFX_BLIT/SYS_INFLATE/
+         * SYS_AUDIO_SUBMIT, just generally lower-impact per call:
+         * SYS_CRYPTO_RANDOM and SYS_CRYPTO_AES128_CTR can still be
+         * driven into a fully attacker-chosen arbitrary write (CTR
+         * mode's output is plaintext XOR a keystream the caller can
+         * already compute from its own chosen key/iv, so `in` can be
+         * set to cancel the keystream out to any desired byte), but
+         * SYS_CRYPTO_SHA256/HMAC_SHA256 only ever leak a 32-byte
+         * *digest* of whatever memory `data`/`key`/`msg` pointed at --
+         * real disclosure in principle, but not practically usable
+         * without also breaking SHA-256 preimage resistance. Hardened
+         * all five regardless while already auditing this file. */
         case SYS_CRYPTO_RANDOM: {
+            if ((int)b < 0 || !user_range_ok(a, b)) return (uint32_t)-1;
             uint8_t *buf = (uint8_t *)a;
             int len = (int)b;
             for (int i = 0; i < len; i++) buf[i] = prng_syscall_byte();
@@ -580,25 +595,42 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
         }
 
         case SYS_CRYPTO_SHA256: {
+            if (!user_range_ok(a, sizeof(struct crypto_hash_args))) return (uint32_t)-1;
             struct crypto_hash_args *args = (struct crypto_hash_args *)a;
+            if (!user_range_ok((uint32_t)(unsigned long)args->data, args->len)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->out, 32)) return (uint32_t)-1;
             sha256_hash(args->data, args->len, args->out);
             return 0;
         }
 
         case SYS_CRYPTO_HMAC_SHA256: {
+            if (!user_range_ok(a, sizeof(struct crypto_hmac_args))) return (uint32_t)-1;
             struct crypto_hmac_args *args = (struct crypto_hmac_args *)a;
+            if (!user_range_ok((uint32_t)(unsigned long)args->key, args->klen)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->msg, args->mlen)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->out, 32)) return (uint32_t)-1;
             hmac_sha256(args->key, args->klen, args->msg, args->mlen, args->out);
             return 0;
         }
 
         case SYS_CRYPTO_AES128_CTR: {
+            if (!user_range_ok(a, sizeof(struct crypto_aesctr_args))) return (uint32_t)-1;
             struct crypto_aesctr_args *args = (struct crypto_aesctr_args *)a;
+            if (!user_range_ok((uint32_t)(unsigned long)args->key16, 16)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->iv16, 16)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->in, args->len)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->out, args->len)) return (uint32_t)-1;
             aes128_ctr_crypt(args->key16, args->iv16, args->in, args->out, args->len);
             return 0;
         }
 
         case SYS_CRYPTO_MODEXP: {
+            if (!user_range_ok(a, sizeof(struct crypto_modexp_args))) return (uint32_t)-1;
             struct crypto_modexp_args *args = (struct crypto_modexp_args *)a;
+            if (!user_range_ok((uint32_t)(unsigned long)args->base256, 256)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->exp, args->exp_len)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->mod256, 256)) return (uint32_t)-1;
+            if (!user_range_ok((uint32_t)(unsigned long)args->out256, 256)) return (uint32_t)-1;
             bignum_modexp(args->base256, args->exp, args->exp_len, args->mod256, args->out256);
             return 0;
         }
