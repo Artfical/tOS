@@ -29,6 +29,22 @@ typedef struct heap_header {
 #define HEAP_MAGIC   0xDEADBEEF
 #define HEAP_CANARY  0xC0FFEEEE
 
+/* Moved up here (was originally defined right before heap_report(),
+ * further down the file) so alloc_physical_page()/free_physical_page()
+ * -- which now need it too, see their own comment -- can use it
+ * without a forward declaration. */
+static inline uint32_t heap_irq_save(void)
+{
+    uint32_t flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    return flags;
+}
+
+static inline void heap_irq_restore(uint32_t flags)
+{
+    asm volatile("pushl %0; popfl" : : "r"(flags));
+}
+
 /* Total bytes a block with `size`-byte payload occupies, header
  * through canary, i.e. the distance from this block's header to the
  * next one -- every place that used to compute a "next block" address
@@ -133,42 +149,58 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
     }
 }
 
+/* page_bitmap is shared, mutable kernel state with no lock of any
+ * kind -- fine as long as exactly one task ever touches it at a time,
+ * which was true for the entire project until GUI mode gave more than
+ * "main" and "idle" a reason to actually run kernel-mode code
+ * concurrently (a window/desktop task allocating memory of its own
+ * while another task is mid-allocation). The find-a-free-bit-then-
+ * set-it sequence below is a classic check-then-act race: a timer
+ * tick landing between the read at the top of the loop and the write
+ * that claims the bit lets two tasks walk away thinking they each own
+ * the *same* physical page, and whatever each of them does with it
+ * next corrupts the other's data -- a very plausible source of a
+ * real, GUI-mode-only, real-hardware-only kernel data corruption bug
+ * chased over several earlier commits without a conclusive cause
+ * (a General Protection Fault in timer_handler() itself, reading a
+ * completely unrelated global, immediately after loading a .t
+ * program from the shell -- exactly the kind of "some *other* memory
+ * got corrupted a moment earlier by an unrelated race" signature).
+ * Disabling interrupts for this one bitmap read-modify-write is cheap
+ * (a handful of instructions) and makes it atomic against exactly
+ * this class of cross-task race. */
 uint32_t alloc_physical_page(void)
 {
+    uint32_t flags = heap_irq_save();
+    int found = 0;
+    uint32_t addr = 0;
     for (uint32_t i = 0; i < total_pages; i++) {
         if (!(page_bitmap[i / 32] & (1 << (i % 32)))) {
             page_bitmap[i / 32] |= (1 << (i % 32));
             used_pages++;
-            uint32_t addr = i * PAGE_SIZE;
-            memset((void *)addr, 0, PAGE_SIZE);
-            return addr;
+            addr = i * PAGE_SIZE;
+            found = 1;
+            break;
         }
     }
-    return 0;
+    heap_irq_restore(flags);
+    if (!found) return 0;
+    memset((void *)addr, 0, PAGE_SIZE);
+    return addr;
 }
 
 void free_physical_page(uint32_t addr)
 {
     uint32_t page = addr / PAGE_SIZE;
     if (page >= total_pages) return;
+    uint32_t flags = heap_irq_save();
     page_bitmap[page / 32] &= ~(1 << (page % 32));
     used_pages--;
+    heap_irq_restore(flags);
 }
 
 uint32_t get_total_pages(void) { return total_pages; }
 uint32_t get_used_pages(void)  { return used_pages; }
-
-static inline uint32_t heap_irq_save(void)
-{
-    uint32_t flags;
-    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
-    return flags;
-}
-
-static inline void heap_irq_restore(uint32_t flags)
-{
-    asm volatile("pushl %0; popfl" : : "r"(flags));
-}
 
 static void heap_report(const char *msg)
 {
