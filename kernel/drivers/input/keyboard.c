@@ -329,6 +329,68 @@ char keyboard_getchar(void)
     }
 }
 
+/* Blocking keyboard read for a ring3 .t program's SYS_READ (see
+ * syscall.c) -- NOT the same wait as plain keyboard_getchar() above.
+ *
+ * The pure-polling design above (keyboard_poll() reading ports 0x60/
+ * 0x64 directly, CPU interrupts held off for the whole syscall) was
+ * built to dodge a real, confirmed bug: a hardware timer tick (int
+ * $32) landing while the CPU was already inside int $0x80's own
+ * trap-gate handler corrupted ring3 register/stack state on return.
+ * It worked in every QEMU test. It also, on at least one real machine
+ * (VMware), simply never saw a keystroke at all -- the serial log
+ * shows tos_readline() printing its prompt and then nothing forever,
+ * confirmed by a total VM freeze (even the guest's own clock/mouse
+ * stopped), meaning this specific PS/2 controller's byte only ever
+ * becomes visible through the real IRQ1 path, not through polling
+ * ports 0x60/0x64 directly the way QEMU's controller allows.
+ *
+ * The actual danger was never "any interrupt at all" -- it was
+ * specifically the *timer* (int $32) triggering a scheduler task
+ * switch mid-syscall. IRQ1 (keyboard) just pushes a byte into
+ * key_buffer and returns; it doesn't touch the scheduler and was
+ * never the reentrancy risk. So: mask IRQ0 at the PIC itself (not the
+ * CPU's IF flag), leave the CPU's interrupts genuinely enabled, and
+ * `hlt`-wait for the real, hardware-delivered keyboard interrupt --
+ * the same mechanism the kernel's own shell readline has always used
+ * successfully, just with the one specific interrupt that caused
+ * trouble kept out of the picture instead of all of them. */
+char keyboard_getchar_ring3(void)
+{
+    if (wm_current_task_has_focus() && key_buffer_head != key_buffer_tail) {
+        char c = key_buffer[key_buffer_tail];
+        key_buffer_tail = (key_buffer_tail + 1) % 256;
+        return c;
+    }
+
+    uint8_t mask = inb(0x21);
+    outb(0x21, mask | 0x01); /* mask IRQ0 (timer) only */
+    asm volatile("sti");
+
+    char c;
+    for (;;) {
+        if (wm_current_task_has_focus() && key_buffer_head != key_buffer_tail) {
+            c = key_buffer[key_buffer_tail];
+            key_buffer_tail = (key_buffer_tail + 1) % 256;
+            break;
+        }
+        if (!wm_current_task_has_focus()) {
+            asm volatile("pause");
+            continue;
+        }
+        char usb_c;
+        if (usb_keyboard_read(&usb_c)) {
+            keyboard_push_char(usb_c);
+            continue;
+        }
+        asm volatile("hlt");
+    }
+
+    asm volatile("cli");
+    outb(0x21, mask); /* restore IRQ0 to whatever it was (unmasked, normally) */
+    return c;
+}
+
 void keyboard_readline(char *buf, int max)
 {
     int i = 0;

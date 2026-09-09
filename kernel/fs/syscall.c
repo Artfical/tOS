@@ -219,7 +219,12 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             if (fd == 0) {
                 int i;
                 for (i = 0; i < count; i++) {
-                    char ch = keyboard_getchar();
+                    /* keyboard_getchar_ring3(), not keyboard_getchar():
+                     * see its own comment in keyboard.c for why a ring3
+                     * program's blocking read needs a genuinely
+                     * different wait than the kernel's own interactive
+                     * readline uses. */
+                    char ch = keyboard_getchar_ring3();
                     terminal_putchar(ch);
                     buf[i] = ch;
                     if (ch == '\n') { i++; break; }

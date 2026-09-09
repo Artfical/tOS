@@ -8,6 +8,7 @@
 
 void keyboard_init(void);
 char keyboard_getchar(void);
+char keyboard_getchar_ring3(void);
 void keyboard_readline(char *buf, int max);
 int keyboard_data_available(void);
 int keyboard_try_getchar(char *out);
