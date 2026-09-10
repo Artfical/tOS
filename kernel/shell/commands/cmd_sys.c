@@ -291,10 +291,12 @@ void cmd_fbtest(int argc, char **args)
      * it -- no working crash screen or serial capture required from
      * whoever is testing this. Remove once fbtest is confirmed stable
      * on real hardware. */
-    terminal_writestring("fbtest: step 1 - vga_init\n");
+    terminal_writestring("fbtest: step 1 - about to sleep\n");
+    task_sleep(150);
+    terminal_writestring("fbtest: step 1b - slept ok, calling vga_init\n");
     task_sleep(150);
     vga_init();
-    terminal_writestring("fbtest: step 2 - bochs_init\n");
+    terminal_writestring("fbtest: step 2 - vga_init returned, calling bochs_init\n");
     task_sleep(150);
 
     bochs_device_t bochs;
