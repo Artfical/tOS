@@ -279,7 +279,20 @@ void cmd_fbtest(int argc, char **args)
      * will be built on, as opposed to today's 80x25 VGA text-mode
      * character cells.
      *
-     * Same reasoning as SYS_GFX_INIT's gfx_leave_if_active(): in GUI
+     * vga_init()/bochs_init() run with interrupts on, same as
+     * SYS_GFX_INIT -- bochs_init()'s PCI bus scan is a long run of
+     * port I/O and must not happen with interrupts (and therefore the
+     * scheduler) stopped. Only the actual mode switch below needs
+     * protecting. */
+    vga_init();
+
+    bochs_device_t bochs;
+    if (bochs_init(&bochs) != 0 || !bochs.lfb) {
+        terminal_writestring("fbtest: no Bochs/VBE-capable display adapter found\n");
+        return;
+    }
+
+    /* Same reasoning as SYS_GFX_INIT's gfx_leave_if_active(): in GUI
      * mode the desktop task repaints on every timer tick regardless
      * of what this mode switch is doing, so a tick landing mid-switch
      * can leave VGA/VBE registers in a half-programmed state. Disable
@@ -288,28 +301,13 @@ void cmd_fbtest(int argc, char **args)
      * cursor updates etc). */
     uint32_t fbtest_flags;
     asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
-    vga_init();
-
-    bochs_device_t bochs;
-    if (bochs_init(&bochs) != 0 || !bochs.lfb) {
-        asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
-        terminal_writestring("fbtest: no Bochs/VBE-capable display adapter found\n");
-        return;
-    }
 
     bochs_set_mode(&bochs, 1024, 768, 32);
 
-    /* The LFB is a PCI BAR address, not RAM -- it sits above
-     * paging_init()'s identity-mapped [0, total_mem) range and was
-     * never actually paged in, so writing through it directly (every
-     * fbconsole_* call below) would page fault. Map it identity
-     * (virt == phys), same as SYS_GFX_INIT does for the same reason. */
-    uint32_t fb_bytes = (uint32_t)bochs.width * (uint32_t)bochs.height * 4;
-    uint32_t fb_pages = (fb_bytes + 4095) / 4096;
-    for (uint32_t i = 0; i < fb_pages; i++) {
-        uint32_t addr = bochs.lfb + i * 4096;
-        paging_map(addr, addr, PTE_PRESENT | PTE_WRITABLE);
-    }
+    /* bochs_init() already identity-mapped 4MB starting at dev->lfb
+     * for this same reason (a PCI BAR address, not RAM, sitting above
+     * paging_init()'s identity-mapped range), so no separate mapping
+     * is needed here -- a 1024x768x32bpp frame (~3MB) fits inside it. */
 
     fbconsole_init(&bochs);
     asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
