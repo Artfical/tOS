@@ -276,17 +276,29 @@ void cmd_fbtest(int argc, char **args)
      * real 8x16 glyphs, blitted from the boot font, onto a real
      * linear framebuffer -- the foundation the pixel-based desktop
      * will be built on, as opposed to today's 80x25 VGA text-mode
-     * character cells. */
+     * character cells.
+     *
+     * Same reasoning as SYS_GFX_INIT's gfx_leave_if_active(): in GUI
+     * mode the desktop task repaints on every timer tick regardless
+     * of what this mode switch is doing, so a tick landing mid-switch
+     * can leave VGA/VBE registers in a half-programmed state. Disable
+     * interrupts around the switch itself (not the whole command --
+     * the wait loop below still needs the scheduler running for mouse
+     * cursor updates etc). */
+    uint32_t fbtest_flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
     vga_init();
 
     bochs_device_t bochs;
     if (bochs_init(&bochs) != 0 || !bochs.lfb) {
+        asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
         terminal_writestring("fbtest: no Bochs/VBE-capable display adapter found\n");
         return;
     }
 
     bochs_set_mode(&bochs, 1024, 768, 32);
     fbconsole_init(&bochs);
+    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
 
     fbconsole_clear(0x00202030);
     fbconsole_puts(2, 1, "tOS framebuffer console", 0x00FFFFFF, 0x00202030);
@@ -302,11 +314,13 @@ void cmd_fbtest(int argc, char **args)
     while (keyboard_data_available()) keyboard_getchar();
     keyboard_getchar();
 
+    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
     bochs_disable();
     vga_set_mode(VGA_MODE_TEXT);
     terminal_set_force_direct(0);
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
     terminal_clear();
+    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
 }
 
 /* Shows the exact same full-screen red panic display a real kernel
