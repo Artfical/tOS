@@ -292,8 +292,10 @@ void cmd_fbtest(int argc, char **args)
      * whoever is testing this. Remove once fbtest is confirmed stable
      * on real hardware. */
     terminal_writestring("fbtest: step 1 - vga_init\n");
+    task_sleep(150);
     vga_init();
     terminal_writestring("fbtest: step 2 - bochs_init\n");
+    task_sleep(150);
 
     bochs_device_t bochs;
     if (bochs_init(&bochs) != 0 || !bochs.lfb) {
@@ -301,6 +303,7 @@ void cmd_fbtest(int argc, char **args)
         return;
     }
     terminal_writestring("fbtest: step 3 - bochs_init done, lfb found\n");
+    task_sleep(150);
 
     /* Must happen before bochs_set_mode() below -- it reads the boot
      * font out of VGA plane 2 through the legacy Sequencer/Graphics
@@ -309,6 +312,7 @@ void cmd_fbtest(int argc, char **args)
      * hardware outright (QEMU's Bochs emulation tolerated it). */
     fbconsole_prepare_font();
     terminal_writestring("fbtest: step 4 - font prepared\n");
+    task_sleep(150);
 
     /* Same reasoning as SYS_GFX_INIT's gfx_leave_if_active(): in GUI
      * mode the desktop task repaints on every timer tick regardless
@@ -319,6 +323,7 @@ void cmd_fbtest(int argc, char **args)
      * cursor updates etc). */
     uint32_t fbtest_flags;
     terminal_writestring("fbtest: step 5 - about to cli + bochs_set_mode\n");
+    task_sleep(150);
     asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
 
     bochs_set_mode(&bochs, 1024, 768, 32);
