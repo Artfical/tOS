@@ -145,6 +145,7 @@ static void gfx_leave_if_active(void)
 {
     if (!gfx_ready) return;
     gfx_ready = 0;
+    bochs_set_graphics_active(0);
     /* Same reasoning as vga_set_mode()'s own interrupt-disable (see its
      * comment): GUI mode's desktop task repaints on every timer tick
      * regardless of what this sequence is doing, and bochs_disable()
@@ -475,6 +476,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
                 paging_map(addr, addr, PTE_PRESENT | PTE_WRITABLE);
             }
             gfx_ready = 1;
+            bochs_set_graphics_active(1);
             asm volatile("pushl %0; popfl" :: "r"(flags));
             return 0;
         }

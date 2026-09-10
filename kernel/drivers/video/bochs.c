@@ -120,6 +120,11 @@ void bochs_disable(void)
     bochs_write_reg(VBE_DISPI_INDEX_ENABLE, VBE_DISPI_DISABLED);
 }
 
+static int g_graphics_active = 0;
+
+void bochs_set_graphics_active(int active) { g_graphics_active = active; }
+int  bochs_graphics_active(void) { return g_graphics_active; }
+
 void bochs_put_pixel(bochs_device_t *dev, int x, int y, uint32_t color)
 {
     if (!dev->lfb || x >= dev->width || y >= dev->height) return;

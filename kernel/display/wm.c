@@ -1582,6 +1582,17 @@ static void wm_desktop_tick(void)
      * nothing. */
     if (crash_screen_is_active()) return;
 
+    /* Same reasoning as the crash-screen check above: some other task
+     * has switched the display into real VBE pixel graphics (DOOM,
+     * vgatest, fbtest, a SYS_GFX_INIT-based .t program, ...) and owns
+     * it until it switches back. The desktop task still gets preempted
+     * back in on every timer tick regardless, so without this it would
+     * keep writing 0xB8000 the whole time -- harmless once the mode
+     * switch itself is done, but still wrong, and each graphics-mode
+     * caller doesn't need its own bespoke window kind (WIN_KIND_DOOM)
+     * just to keep the desktop from fighting it. */
+    if (bochs_graphics_active()) return;
+
     mouse_poll();
 
     if (drag_window) {

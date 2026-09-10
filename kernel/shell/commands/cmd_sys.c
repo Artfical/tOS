@@ -310,6 +310,12 @@ void cmd_fbtest(int argc, char **args)
      * is needed here -- a 1024x768x32bpp frame (~3MB) fits inside it. */
 
     fbconsole_init(&bochs);
+    /* Tell GUI mode's desktop task to stop repainting 0xB8000 for as
+     * long as this command owns the display -- see bochs.h. Set while
+     * still inside the interrupt-disabled block so there's no window
+     * where the mode switch is done but the desktop hasn't been told
+     * yet. */
+    bochs_set_graphics_active(1);
     asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
 
     fbconsole_clear(0x00202030);
@@ -332,6 +338,7 @@ void cmd_fbtest(int argc, char **args)
     terminal_set_force_direct(0);
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
     terminal_clear();
+    bochs_set_graphics_active(0);
     asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
 }
 

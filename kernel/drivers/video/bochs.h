@@ -40,4 +40,15 @@ void bochs_put_pixel(bochs_device_t *dev, int x, int y, uint32_t color);
  * cleanly falls back to whatever text mode was already active
  * underneath, no manual register restore needed. */
 void bochs_disable(void);
+
+/* Whether *any* code path has switched the display into real VBE
+ * pixel graphics (DOOM, vgatest, fbtest, SYS_GFX_INIT, ...) and hasn't
+ * switched it back yet. GUI mode's desktop task (wm.c's
+ * wm_desktop_tick()) checks this the same way it already checks
+ * crash_screen_is_active() -- skip the tick entirely rather than
+ * write 0xB8000 while some other task owns the display, so a
+ * graphics-mode caller doesn't need its own bespoke window kind
+ * (WIN_KIND_DOOM) just to keep the desktop from fighting it. */
+void bochs_set_graphics_active(int active);
+int  bochs_graphics_active(void);
 #endif
