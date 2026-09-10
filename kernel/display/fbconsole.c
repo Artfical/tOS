@@ -13,6 +13,19 @@ void fbconsole_init(bochs_device_t *dev)
     fb_dev = dev;
     fb_cols = dev->width / GLYPH_W;
     fb_rows = dev->height / GLYPH_H;
+    /* Font capture is the caller's job now, done before the VBE mode
+     * switch -- see fbconsole_prepare_font() and its call site. */
+}
+
+void fbconsole_prepare_font(void)
+{
+    /* Reads the real boot font out of VGA plane 2 via the legacy
+     * Sequencer/Graphics Controller registers (0x3C4/0x3CE) -- must
+     * happen before bochs_set_mode() touches VBE, not after. Once VBE
+     * owns the display these legacy registers no longer mean what
+     * font_read() assumes they mean, and poking them anyway produced
+     * an immediate, unrecoverable hang on real hardware (unnoticed in
+     * QEMU's more forgiving Bochs emulation). */
     vga_font_capture_base();
 }
 

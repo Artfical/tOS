@@ -292,6 +292,13 @@ void cmd_fbtest(int argc, char **args)
         return;
     }
 
+    /* Must happen before bochs_set_mode() below -- it reads the boot
+     * font out of VGA plane 2 through the legacy Sequencer/Graphics
+     * Controller registers, which no longer mean the same thing once
+     * VBE owns the display. Doing this after the mode switch hung real
+     * hardware outright (QEMU's Bochs emulation tolerated it). */
+    fbconsole_prepare_font();
+
     /* Same reasoning as SYS_GFX_INIT's gfx_leave_if_active(): in GUI
      * mode the desktop task repaints on every timer tick regardless
      * of what this mode switch is doing, so a tick landing mid-switch

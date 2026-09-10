@@ -11,6 +11,7 @@
  * whatever resolution the framebuffer is running, rather than a
  * fixed 80x25 grid of hardware text-mode cells. */
 
+void fbconsole_prepare_font(void);
 void fbconsole_init(bochs_device_t *dev);
 void fbconsole_clear(uint32_t bg);
 void fbconsole_putc(int col, int row, char c, uint32_t fg, uint32_t bg);
