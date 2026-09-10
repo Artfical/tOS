@@ -22,6 +22,7 @@ void cmd_version(int argc, char **args);
 void cmd_beep(int argc, char **args);
 void cmd_soundinfo(int argc, char **args);
 void cmd_vgatest(int argc, char **args);
+void cmd_fbtest(int argc, char **args);
 void cmd_doom(int argc, char **args);
 void cmd_wolf3d(int argc, char **args);
 void cmd_3d(int argc, char **args);

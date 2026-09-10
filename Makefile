@@ -192,6 +192,7 @@ KERNEL_OBJS = \
     kernel/display/png.o \
     kernel/display/viewer.o \
     kernel/display/taskmgr.o \
+    kernel/display/fbconsole.o \
     kernel/net/net.o \
     kernel/net/nic.o \
     kernel/net/rtl8139.o \

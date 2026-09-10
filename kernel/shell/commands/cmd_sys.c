@@ -17,6 +17,7 @@
 #include "ich.h"
 #include "bochs.h"
 #include "vga.h"
+#include "fbconsole.h"
 #include "render3d.h"
 
 static void print_num(uint32_t n)
@@ -256,6 +257,47 @@ void cmd_vgatest(int argc, char **args)
     }
     for (int x = 0; x < 320; x++) bochs_put_pixel(&bochs, x, 100, 0x000000);
     for (int y = 0; y < 200; y++) bochs_put_pixel(&bochs, 160, y, 0x000000);
+
+    while (keyboard_data_available()) keyboard_getchar();
+    keyboard_getchar();
+
+    bochs_disable();
+    vga_set_mode(VGA_MODE_TEXT);
+    terminal_set_force_direct(0);
+    terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
+    terminal_clear();
+}
+
+void cmd_fbtest(int argc, char **args)
+{
+    (void)argc; (void)args;
+
+    /* Sanity check for the framebuffer text console (fbconsole.c):
+     * real 8x16 glyphs, blitted from the boot font, onto a real
+     * linear framebuffer -- the foundation the pixel-based desktop
+     * will be built on, as opposed to today's 80x25 VGA text-mode
+     * character cells. */
+    vga_init();
+
+    bochs_device_t bochs;
+    if (bochs_init(&bochs) != 0 || !bochs.lfb) {
+        terminal_writestring("fbtest: no Bochs/VBE-capable display adapter found\n");
+        return;
+    }
+
+    bochs_set_mode(&bochs, 1024, 768, 32);
+    fbconsole_init(&bochs);
+
+    fbconsole_clear(0x00202030);
+    fbconsole_puts(2, 1, "tOS framebuffer console", 0x00FFFFFF, 0x00202030);
+    fbconsole_puts(2, 2, "8x16 glyphs, real linear framebuffer, no text mode", 0x00A0A0FF, 0x00202030);
+    fbconsole_puts(2, 4, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", 0x0000FF00, 0x00202030);
+    fbconsole_puts(2, 5, "abcdefghijklmnopqrstuvwxyz", 0x0000FF00, 0x00202030);
+    fbconsole_puts(2, 6, "0123456789 !\"#$%&'()*+,-./", 0x0000FF00, 0x00202030);
+    fbconsole_puts(2, 8, "Press any key to return.", 0x00FFFF00, 0x00202030);
+
+    for (int i = 0; i < fbconsole_cols() && i < 60; i++)
+        fbconsole_putc(2 + i, 10, '-', 0x00808080, 0x00202030);
 
     while (keyboard_data_available()) keyboard_getchar();
     keyboard_getchar();

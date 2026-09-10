@@ -262,6 +262,12 @@ void vga_font_capture_base(void)
     ensure_base_captured();
 }
 
+const uint8_t *vga_font_get_glyph(unsigned char c)
+{
+    ensure_base_captured();
+    return &base_font[c * GLYPH_ROWS];
+}
+
 void vga_font_set_style(int style)
 {
     if (style < 0 || style >= VGA_FONT_STYLE_COUNT) style = 0;
