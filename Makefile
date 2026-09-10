@@ -7,7 +7,7 @@ AR = ar
 GCC_INC := $(shell $(CC) -m32 -print-file-name=include)
 
 # Regular kernel flags (no nostdinc to avoid breaking existing code)
-CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
          -mno-mmx -mno-sse -mno-sse2 \
          -O2 -Wall -Wextra -Werror \
@@ -22,7 +22,7 @@ CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -Ikernel/audio
 
 # Relaxed flags for MicroPython core (uses -isystem for 32-bit glibc compat)
-MPY_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+MPY_CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
              -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 \
              -mno-mmx -mno-sse -mno-sse2 \
@@ -52,7 +52,7 @@ MPY_PORT_CFLAGS = $(MPY_CFLAGS) \
 # kernel/lib ones, adding only the handful of extra declarations DOOM
 # needs -- see kernel/doom/port/doom_compat.c) instead of kernel/lib's
 # directly.
-DOOM_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+DOOM_CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
              -mno-mmx -mno-sse -mno-sse2 \
              -O2 -Wall -Wno-unused-variable -Wno-unused-function \
@@ -82,7 +82,7 @@ ASFLAGS = --32
 # exceptions/RTTI/threads -- tOS has no thread-safe statics or stack
 # unwinding support), same general idea as DOOM_CFLAGS below but with
 # g++-specific flags added.
-WOLF_CXXFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+WOLF_CXXFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -fno-exceptions -fno-rtti -fno-use-cxa-atexit \
              -fno-threadsafe-statics -fno-stack-protector -fno-pic -fno-pie \
              -mno-mmx -mno-sse -mno-sse2 \
@@ -99,7 +99,7 @@ WOLF_CXXFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
              -Ikernel/drivers/misc -Ikernel/audio
 
-WOLF_CFLAGS = -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+WOLF_CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
              -mno-mmx -mno-sse -mno-sse2 \
              -O2 -Wall -Wno-unused-variable -Wno-unused-function \
@@ -369,14 +369,6 @@ kernel/audio/demo_song.wav: gen_demo_song.py
 kernel/boot/boot.o: kernel/boot/boot.s
 	$(CC) $(CFLAGS) -x assembler-with-cpp -c $< -o $@
 
-# No automatic header dependency tracking (no -MMD/.d files) — force every
-# kernel .c to recompile whenever version.h changes, so a version bump can
-# never leave a stale TOS_VERSION/TOS_BOOT_STRING baked into an old .o
-# (this bit us once: kernel.c's boot banner stayed on 0.9.52 for a dozen
-# releases because nothing forced it to rebuild).
-CORE_C_OBJS := $(patsubst %.c,%.o,$(wildcard kernel/core/*.c kernel/display/*.c kernel/shell/*.c kernel/shell/commands/*.c))
-$(CORE_C_OBJS): kernel/core/version.h
-
 kernel/tOS.elf: $(KERNEL_OBJS)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 
@@ -417,3 +409,17 @@ run-noinstall: tOS.iso
 clean:
 	rm -f $(KERNEL_OBJS) kernel/tOS.elf initrd.tar tOS.iso
 	rm -rf iso
+	find kernel -name '*.d' -delete
+
+# Real header dependency tracking (-MMD -MP on every *_CFLAGS above emits
+# a .d file per object, listing every header it actually included) --
+# replaces the old hand-maintained "$(CORE_C_OBJS): kernel/core/version.h"
+# rule, which only ever covered version.h and nothing else. Without this,
+# changing a widely-included header (e.g. adding a field to scheduler.h's
+# task_t) leaves every .o that wasn't itself edited stale: they keep
+# linking against the old struct layout since make has no way to know
+# they depend on it, which is exactly how mouse.o/ps2.o went two months
+# without rebuilding despite scheduler.h changing today. The "-" prefix
+# means make doesn't complain on a clean checkout, before any .d files
+# exist yet.
+-include $(KERNEL_OBJS:.o=.d)
