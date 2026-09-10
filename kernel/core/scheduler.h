@@ -19,6 +19,7 @@ typedef struct task {
     uint32_t sleep_ticks;
     uint32_t cpu_ticks;
     uint32_t in_use;
+    uint32_t no_preempt;
     struct task *next;
     uint8_t *kernel_stack;
     char name[TASK_NAME_MAX];
@@ -31,6 +32,8 @@ void task_yield(void);
 void task_exit(void);
 void task_sleep(uint32_t ms);
 uint32_t timer_handler(uint32_t esp);
+void task_preempt_disable(void);
+void task_preempt_enable(void);
 task_t *task_current(void);
 void     task_set_userdata(void *p);
 void    *task_get_userdata(void);

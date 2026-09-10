@@ -128,6 +128,17 @@ uint32_t timer_handler(uint32_t esp)
     debugmon_tick();
     current->cpu_ticks++;
     current->esp = esp;
+
+    if (current->no_preempt) {
+        /* This task is inside a wait loop that must not be switched
+         * away from mid-stride (e.g. a blocking ring3 keyboard read
+         * that only masks IRQ0 at the PIC, which cannot cancel an
+         * IRQ0 already in flight when the mask was applied). Still
+         * counting ticks/cpu_ticks above keeps wall-clock timing and
+         * accounting correct; we just skip the actual task switch. */
+        return current->esp;
+    }
+
     if (current->state == TASK_STATE_RUNNING)
         current->state = TASK_STATE_READY;
 
@@ -142,6 +153,9 @@ uint32_t timer_handler(uint32_t esp)
     current->state = TASK_STATE_RUNNING;
     return current->esp;
 }
+
+void task_preempt_disable(void) { current->no_preempt++; }
+void task_preempt_enable(void)  { if (current->no_preempt) current->no_preempt--; }
 
 void task_yield(void)   { asm volatile("int $32"); }
 

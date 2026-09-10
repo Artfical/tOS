@@ -363,8 +363,15 @@ char keyboard_getchar_ring3(void)
         return c;
     }
 
-    uint8_t mask = inb(0x21);
-    outb(0x21, mask | 0x01); /* mask IRQ0 (timer) only */
+    /* Masking IRQ0 at the PIC cannot cancel a timer interrupt already
+     * in flight when the mask is applied, so the scheduler could still
+     * preempt this task mid-wait -- and since the task never reaches
+     * the code that restores the mask, IRQ0 would stay masked forever
+     * and freeze the whole system. task_preempt_disable() instead makes
+     * the guarantee at the one place that actually enforces it: the
+     * scheduler itself skips switching away from this task, no matter
+     * how many timer ticks land while we wait. */
+    task_preempt_disable();
     asm volatile("sti");
 
     char c;
@@ -386,8 +393,7 @@ char keyboard_getchar_ring3(void)
         asm volatile("hlt");
     }
 
-    asm volatile("cli");
-    outb(0x21, mask); /* restore IRQ0 to whatever it was (unmasked, normally) */
+    task_preempt_enable();
     return c;
 }
 
