@@ -18,6 +18,7 @@
 #include "bochs.h"
 #include "vga.h"
 #include "fbconsole.h"
+#include "paging.h"
 #include "render3d.h"
 
 static void print_num(uint32_t n)
@@ -297,6 +298,19 @@ void cmd_fbtest(int argc, char **args)
     }
 
     bochs_set_mode(&bochs, 1024, 768, 32);
+
+    /* The LFB is a PCI BAR address, not RAM -- it sits above
+     * paging_init()'s identity-mapped [0, total_mem) range and was
+     * never actually paged in, so writing through it directly (every
+     * fbconsole_* call below) would page fault. Map it identity
+     * (virt == phys), same as SYS_GFX_INIT does for the same reason. */
+    uint32_t fb_bytes = (uint32_t)bochs.width * (uint32_t)bochs.height * 4;
+    uint32_t fb_pages = (fb_bytes + 4095) / 4096;
+    for (uint32_t i = 0; i < fb_pages; i++) {
+        uint32_t addr = bochs.lfb + i * 4096;
+        paging_map(addr, addr, PTE_PRESENT | PTE_WRITABLE);
+    }
+
     fbconsole_init(&bochs);
     asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
 
