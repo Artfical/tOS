@@ -351,6 +351,34 @@ void cmd_fbtest(int argc, char **args)
 
     fbconsole_clear(0x00202030);
     fbconsole_puts(2, 1, "tOS framebuffer console", 0x00FFFFFF, 0x00202030);
+
+    /* Checkpoint B: bounce back right after the FIRST glyph-rendering
+     * call (fbconsole_clear() alone is confirmed safe -- checkpoint A
+     * survived -- but nothing that actually blits a font glyph has
+     * been isolated yet). If this shows up, glyph rendering itself is
+     * fine and the flicker/hang is specific to something further down
+     * (a particular string, or repeated fbconsole_putc calls); if it
+     * doesn't, vga_font_get_glyph()/the blit loop in fbconsole_putc()
+     * is the culprit. */
+    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
+    bochs_set_graphics_active(0);
+    bochs_disable();
+    vga_set_mode(VGA_MODE_TEXT);
+    terminal_set_force_direct(0);
+    terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
+    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
+    terminal_writestring("fbtest: checkpoint B - first glyph line survived\n");
+    terminal_writestring("fbtest: press any key to continue...\n");
+    while (keyboard_data_available()) keyboard_getchar();
+    keyboard_getchar();
+
+    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
+    bochs_set_mode(&bochs, 640, 480, 32);
+    bochs_set_graphics_active(1);
+    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
+
+    fbconsole_clear(0x00202030);
+    fbconsole_puts(2, 1, "tOS framebuffer console", 0x00FFFFFF, 0x00202030);
     fbconsole_puts(2, 2, "8x16 glyphs, real linear framebuffer, no text mode", 0x00A0A0FF, 0x00202030);
     fbconsole_puts(2, 4, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", 0x0000FF00, 0x00202030);
     fbconsole_puts(2, 5, "abcdefghijklmnopqrstuvwxyz", 0x0000FF00, 0x00202030);
