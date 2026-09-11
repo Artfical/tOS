@@ -323,10 +323,16 @@ void cmd_fbtest(int argc, char **args)
      * VBE owns the display. Doing this after the mode switch hung real
      * hardware outright (QEMU's Bochs emulation tolerated it). */
     fbconsole_prepare_font();
-    terminal_writestring("fbtest: step 4 - font prepared, 'A' glyph bytes: ");
+    terminal_writestring("fbtest: step 4 - font prepared, 'A' glyph bytes:\n");
     {
         const uint8_t *glyph_a = vga_font_get_glyph('A');
-        for (int gi = 0; gi < 16; gi++) {
+        terminal_writestring("  rows 0-7:  ");
+        for (int gi = 0; gi < 8; gi++) {
+            print_hex_byte(glyph_a[gi]);
+            terminal_writestring(" ");
+        }
+        terminal_writestring("\n  rows 8-15: ");
+        for (int gi = 8; gi < 16; gi++) {
             print_hex_byte(glyph_a[gi]);
             terminal_writestring(" ");
         }

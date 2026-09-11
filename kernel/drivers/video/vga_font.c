@@ -82,9 +82,22 @@ static void font_read(void)
     outb(0x3CE, 0x05); outb(0x3CF, 0x00);
     outb(0x3CE, 0x06); outb(0x3CF, 0x04);
 
+    /* Diagnostic finding on real hardware (VMware SVGA II): the first
+     * few bytes of a glyph read back correctly, then the rest come
+     * back as zero -- consistent with the plane-2 selection above
+     * only holding for a handful of reads before something resets it,
+     * rather than for the whole 256*16-byte scan. Re-assert the same
+     * three GC register writes before every single byte instead of
+     * once before the whole loop, trading a lot of extra (but cheap,
+     * one-shot-command) port I/O for reads that don't quietly go
+     * stale partway through. */
     for (int g = 0; g < 256; g++)
-        for (int r = 0; r < GLYPH_ROWS; r++)
+        for (int r = 0; r < GLYPH_ROWS; r++) {
+            outb(0x3CE, 0x04); outb(0x3CF, 0x02);
+            outb(0x3CE, 0x05); outb(0x3CF, 0x00);
+            outb(0x3CE, 0x06); outb(0x3CF, 0x04);
             font_buf[g * GLYPH_ROWS + r] = FONT_ADDR[g * FONT_HW_STRIDE + r];
+        }
 
     outb(0x3C4, 0x00); outb(0x3C5, seq0);
     outb(0x3C4, 0x02); outb(0x3C5, seq2);
