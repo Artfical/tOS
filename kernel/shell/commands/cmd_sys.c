@@ -31,6 +31,16 @@ static void print_num(uint32_t n)
     terminal_writestring(buf + i);
 }
 
+static void print_hex_byte(uint8_t v)
+{
+    char buf[3];
+    const char *hex = "0123456789ABCDEF";
+    buf[0] = hex[(v >> 4) & 0xF];
+    buf[1] = hex[v & 0xF];
+    buf[2] = '\0';
+    terminal_writestring(buf);
+}
+
 static uint8_t cmos_read(uint8_t reg)
 {
     outb(0x70, reg | 0x80);
@@ -313,7 +323,15 @@ void cmd_fbtest(int argc, char **args)
      * VBE owns the display. Doing this after the mode switch hung real
      * hardware outright (QEMU's Bochs emulation tolerated it). */
     fbconsole_prepare_font();
-    terminal_writestring("fbtest: step 4 - font prepared\n");
+    terminal_writestring("fbtest: step 4 - font prepared, 'A' glyph bytes: ");
+    {
+        const uint8_t *glyph_a = vga_font_get_glyph('A');
+        for (int gi = 0; gi < 16; gi++) {
+            print_hex_byte(glyph_a[gi]);
+            terminal_writestring(" ");
+        }
+    }
+    terminal_writestring("\n");
     task_sleep(150);
 
     /* Same reasoning as SYS_GFX_INIT's gfx_leave_if_active(): in GUI
