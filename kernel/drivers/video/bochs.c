@@ -108,11 +108,24 @@ int bochs_set_mode(bochs_device_t *dev, int width, int height, int bpp)
     bochs_write_reg(VBE_DISPI_INDEX_XRES, (uint16_t)width);
     bochs_write_reg(VBE_DISPI_INDEX_YRES, (uint16_t)height);
     bochs_write_reg(VBE_DISPI_INDEX_BPP, (uint16_t)bpp);
+    /* Every pixel address this driver computes (here and in
+     * fbconsole.c) assumes the scanline pitch is exactly `width`
+     * pixels -- true by default on QEMU/Bochs, but never actually
+     * requested. Set it explicitly instead of trusting whatever
+     * VMware SVGA II's "legacy Bochs compatibility" defaults
+     * VIRT_WIDTH to; a real hardware readback of it can be added if
+     * this alone doesn't fix the repeating/sheared text seen there. */
+    bochs_write_reg(VBE_DISPI_INDEX_VIRT_WIDTH, (uint16_t)width);
     bochs_write_reg(VBE_DISPI_INDEX_ENABLE, VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED);
     dev->width = width;
     dev->height = height;
     dev->bpp = bpp;
     return 0;
+}
+
+uint16_t bochs_get_virt_width(void)
+{
+    return bochs_read_reg(VBE_DISPI_INDEX_VIRT_WIDTH);
 }
 
 void bochs_disable(void)

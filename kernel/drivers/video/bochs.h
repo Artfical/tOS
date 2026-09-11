@@ -30,6 +30,7 @@ typedef struct {
 } bochs_device_t;
 int bochs_init(bochs_device_t *dev);
 int bochs_set_mode(bochs_device_t *dev, int width, int height, int bpp);
+uint16_t bochs_get_virt_width(void);
 void bochs_put_pixel(bochs_device_t *dev, int x, int y, uint32_t color);
 
 /* Turns VBE back off. Unlike hand-rolled legacy VGA mode switching
