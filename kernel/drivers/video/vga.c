@@ -176,17 +176,19 @@ static void capture_current_regs(uint8_t *out)
         out[i++] = inb(VGA_GC_DATA);
     }
 
-    terminal_writestring("vga: capture - ac\n");
-    task_sleep(150);
-    /* AC index/read use separate ports (0x3C0 for index, 0x3C1 for
-     * data) unlike every other register block here where the same
-     * port serves both after selecting an index. */
-    (void)inb(VGA_INSTAT);
-    for (int r = 0; r < 21; r++) {
-        outb(VGA_AC_ADDR, (uint8_t)r);
-        out[i++] = inb(VGA_AC_DATA);
-    }
-    terminal_writestring("vga: capture - done\n");
+    /* AC (Attribute Controller) readback is skipped entirely -- not
+     * just unreliable under emulation (see g_ac_text's own comment
+     * above: "the reason g_ac_text is a fixed table instead of a live
+     * capture"), but confirmed here to hang real hardware outright
+     * (VMware SVGA II), reproducibly, every time, before this loop
+     * ever returns. Whatever this loop reads gets overwritten anyway:
+     * vga_init()'s caller immediately replaces out[VGA_AC_OFFSET..]
+     * with g_ac_text right after calling this, so the value never
+     * mattered even when the read didn't hang anything. i is left at
+     * 40 (1 misc + 5 seq + 25 crtc + 9 gc); the untouched AC slots in
+     * out[40..60] are dead space until that same overwrite fills them. */
+    (void)i;
+    terminal_writestring("vga: capture - done (ac readback skipped)\n");
     task_sleep(150);
 }
 
