@@ -313,7 +313,7 @@ void cmd_fbtest(int argc, char **args)
     uint32_t fbtest_flags;
     asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
 
-    bochs_set_mode(&bochs, 1024, 768, 32);
+    bochs_set_mode(&bochs, 640, 480, 32);
 
     /* bochs_init() already identity-mapped 4MB starting at dev->lfb
      * for this same reason (a PCI BAR address, not RAM, sitting above
@@ -345,7 +345,7 @@ void cmd_fbtest(int argc, char **args)
     keyboard_getchar();
 
     asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
-    bochs_set_mode(&bochs, 1024, 768, 32);
+    bochs_set_mode(&bochs, 640, 480, 32);
     bochs_set_graphics_active(1);
     asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
 
