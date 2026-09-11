@@ -31,16 +31,6 @@ static void print_num(uint32_t n)
     terminal_writestring(buf + i);
 }
 
-static void print_hex_byte(uint8_t v)
-{
-    char buf[3];
-    const char *hex = "0123456789ABCDEF";
-    buf[0] = hex[(v >> 4) & 0xF];
-    buf[1] = hex[v & 0xF];
-    buf[2] = '\0';
-    terminal_writestring(buf);
-}
-
 static uint8_t cmos_read(uint8_t reg)
 {
     outb(0x70, reg | 0x80);
@@ -294,33 +284,13 @@ void cmd_fbtest(int argc, char **args)
      * port I/O and must not happen with interrupts (and therefore the
      * scheduler) stopped. Only the actual mode switch below needs
      * protecting. */
-    /* Debug trail: each line stays on real VGA text memory, which
-     * survives even a hard VM reset dialog (the display just freezes
-     * on whatever it last showed), so whichever line is the last one
-     * visible when this hangs/crashes tells us exactly which call did
-     * it -- no working crash screen or serial capture required from
-     * whoever is testing this. Remove once fbtest is confirmed stable
-     * on real hardware. */
-    terminal_writestring("fbtest: step 1 - about to sleep\n");
-    task_sleep(150);
-    terminal_writestring("fbtest: step 1b - slept ok, calling vga_init\n");
-    task_sleep(150);
     vga_init();
-    terminal_writestring("fbtest: step 2 - vga_init returned, calling bochs_init\n");
-    task_sleep(150);
 
     bochs_device_t bochs;
     if (bochs_init(&bochs) != 0 || !bochs.lfb) {
         terminal_writestring("fbtest: no Bochs/VBE-capable display adapter found\n");
         return;
     }
-    terminal_writestring("fbtest: step 3 - bochs_init done, lfb=0x");
-    print_hex_byte((uint8_t)(bochs.lfb >> 24));
-    print_hex_byte((uint8_t)(bochs.lfb >> 16));
-    print_hex_byte((uint8_t)(bochs.lfb >> 8));
-    print_hex_byte((uint8_t)(bochs.lfb));
-    terminal_writestring("\n");
-    task_sleep(150);
 
     /* Must happen before bochs_set_mode() below -- it reads the boot
      * font out of VGA plane 2 through the legacy Sequencer/Graphics
@@ -328,23 +298,6 @@ void cmd_fbtest(int argc, char **args)
      * VBE owns the display. Doing this after the mode switch hung real
      * hardware outright (QEMU's Bochs emulation tolerated it). */
     fbconsole_prepare_font();
-    terminal_writestring("fbtest: step 4 - font prepared, 'A' glyph bytes:\n");
-    {
-        const uint8_t *glyph_a = vga_font_get_glyph('A');
-        terminal_writestring("  rows 0-7:  ");
-        for (int gi = 0; gi < 8; gi++) {
-            print_hex_byte(glyph_a[gi]);
-            terminal_writestring(" ");
-        }
-        terminal_writestring("\n  rows 8-15: ");
-        for (int gi = 8; gi < 16; gi++) {
-            print_hex_byte(glyph_a[gi]);
-            terminal_writestring(" ");
-        }
-    }
-    terminal_writestring("\nfbtest: press any key to continue to the mode switch...\n");
-    while (keyboard_data_available()) keyboard_getchar();
-    keyboard_getchar();
 
     /* Same reasoning as SYS_GFX_INIT's gfx_leave_if_active(): in GUI
      * mode the desktop task repaints on every timer tick regardless
@@ -352,37 +305,13 @@ void cmd_fbtest(int argc, char **args)
      * can leave VGA/VBE registers in a half-programmed state. Disable
      * interrupts around the switch itself (not the whole command --
      * the wait loop below still needs the scheduler running for mouse
-     * cursor updates etc). */
-    uint32_t fbtest_flags = 0;
-    (void)fbtest_flags;
-    /* TEMPORARY: cli/sti protection removed for this diagnostic build
-     * only, so each sub-step can actually reach the screen (nothing
-     * written while interrupts are off ever gets redrawn if the
-     * system hangs before they're re-enabled -- which is exactly what
-     * was happening between "step 5" and "step 6"). Put back once the
-     * real hang point inside this range is found. */
-    terminal_writestring("fbtest: step 5a - about to bochs_set_mode (no cli)\n");
-    task_sleep(150);
-
-    bochs_set_mode(&bochs, 1024, 768, 32);
-    uint16_t fbtest_virt_width = bochs_get_virt_width();
-
-    /* Bounce straight back to text mode here, before touching
-     * fbconsole/drawing anything, purely to prove (or disprove) that
-     * bochs_set_mode() itself is what hangs real hardware -- if
-     * "step 5b" below shows up, the mode switch and switching back
-     * both survived and the real culprit is further down (fbconsole
-     * init or the draw calls); if it never appears, bochs_set_mode()
-     * itself is the hang. */
-    bochs_disable();
-    vga_set_mode(VGA_MODE_TEXT);
-    terminal_set_force_direct(0);
-    terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
-    terminal_writestring("fbtest: step 5b - mode switch + switch back survived, virt_width=");
-    print_num((uint32_t)fbtest_virt_width);
-    terminal_writestring("\nfbtest: press any key to continue to the actual draw...\n");
-    while (keyboard_data_available()) keyboard_getchar();
-    keyboard_getchar();
+     * cursor updates etc), and set bochs_set_graphics_active(1) before
+     * re-enabling them so the desktop task never gets a window where
+     * VBE is live but it doesn't know to stay off the display yet --
+     * that gap was the real cause of a flicker seen while diagnosing
+     * this on real hardware. */
+    uint32_t fbtest_flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
 
     bochs_set_mode(&bochs, 1024, 768, 32);
 
@@ -392,12 +321,8 @@ void cmd_fbtest(int argc, char **args)
      * is needed here -- a 1024x768x32bpp frame (~3MB) fits inside it. */
 
     fbconsole_init(&bochs);
-    terminal_writestring("fbtest: step 5d - fbconsole_init returned\n");
-    task_sleep(150);
-
     bochs_set_graphics_active(1);
-    terminal_writestring("fbtest: step 6 - mode switch done, about to draw\n");
-    task_sleep(150);
+    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
 
     fbconsole_clear(0x00202030);
     fbconsole_puts(2, 1, "tOS framebuffer console", 0x00FFFFFF, 0x00202030);
@@ -421,10 +346,6 @@ void cmd_fbtest(int argc, char **args)
     terminal_clear();
     bochs_set_graphics_active(0);
     asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
-
-    terminal_writestring("fbtest: back in text mode ok. real VBE virt_width was ");
-    print_num((uint32_t)fbtest_virt_width);
-    terminal_writestring(" (requested 1024)\n");
 }
 
 /* Shows the exact same full-screen red panic display a real kernel
