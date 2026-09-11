@@ -353,13 +353,38 @@ void cmd_fbtest(int argc, char **args)
      * interrupts around the switch itself (not the whole command --
      * the wait loop below still needs the scheduler running for mouse
      * cursor updates etc). */
-    uint32_t fbtest_flags;
-    terminal_writestring("fbtest: step 5 - about to cli + bochs_set_mode\n");
+    uint32_t fbtest_flags = 0;
+    (void)fbtest_flags;
+    /* TEMPORARY: cli/sti protection removed for this diagnostic build
+     * only, so each sub-step can actually reach the screen (nothing
+     * written while interrupts are off ever gets redrawn if the
+     * system hangs before they're re-enabled -- which is exactly what
+     * was happening between "step 5" and "step 6"). Put back once the
+     * real hang point inside this range is found. */
+    terminal_writestring("fbtest: step 5a - about to bochs_set_mode (no cli)\n");
     task_sleep(150);
-    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
 
     bochs_set_mode(&bochs, 1024, 768, 32);
     uint16_t fbtest_virt_width = bochs_get_virt_width();
+
+    /* Bounce straight back to text mode here, before touching
+     * fbconsole/drawing anything, purely to prove (or disprove) that
+     * bochs_set_mode() itself is what hangs real hardware -- if
+     * "step 5b" below shows up, the mode switch and switching back
+     * both survived and the real culprit is further down (fbconsole
+     * init or the draw calls); if it never appears, bochs_set_mode()
+     * itself is the hang. */
+    bochs_disable();
+    vga_set_mode(VGA_MODE_TEXT);
+    terminal_set_force_direct(0);
+    terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
+    terminal_writestring("fbtest: step 5b - mode switch + switch back survived, virt_width=");
+    print_num((uint32_t)fbtest_virt_width);
+    terminal_writestring("\nfbtest: press any key to continue to the actual draw...\n");
+    while (keyboard_data_available()) keyboard_getchar();
+    keyboard_getchar();
+
+    bochs_set_mode(&bochs, 1024, 768, 32);
 
     /* bochs_init() already identity-mapped 4MB starting at dev->lfb
      * for this same reason (a PCI BAR address, not RAM, sitting above
@@ -367,14 +392,12 @@ void cmd_fbtest(int argc, char **args)
      * is needed here -- a 1024x768x32bpp frame (~3MB) fits inside it. */
 
     fbconsole_init(&bochs);
-    /* Tell GUI mode's desktop task to stop repainting 0xB8000 for as
-     * long as this command owns the display -- see bochs.h. Set while
-     * still inside the interrupt-disabled block so there's no window
-     * where the mode switch is done but the desktop hasn't been told
-     * yet. */
+    terminal_writestring("fbtest: step 5d - fbconsole_init returned\n");
+    task_sleep(150);
+
     bochs_set_graphics_active(1);
-    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
     terminal_writestring("fbtest: step 6 - mode switch done, about to draw\n");
+    task_sleep(150);
 
     fbconsole_clear(0x00202030);
     fbconsole_puts(2, 1, "tOS framebuffer console", 0x00FFFFFF, 0x00202030);
