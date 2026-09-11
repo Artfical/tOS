@@ -314,7 +314,12 @@ void cmd_fbtest(int argc, char **args)
         terminal_writestring("fbtest: no Bochs/VBE-capable display adapter found\n");
         return;
     }
-    terminal_writestring("fbtest: step 3 - bochs_init done, lfb found\n");
+    terminal_writestring("fbtest: step 3 - bochs_init done, lfb=0x");
+    print_hex_byte((uint8_t)(bochs.lfb >> 24));
+    print_hex_byte((uint8_t)(bochs.lfb >> 16));
+    print_hex_byte((uint8_t)(bochs.lfb >> 8));
+    print_hex_byte((uint8_t)(bochs.lfb));
+    terminal_writestring("\n");
     task_sleep(150);
 
     /* Must happen before bochs_set_mode() below -- it reads the boot
@@ -354,6 +359,7 @@ void cmd_fbtest(int argc, char **args)
     asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
 
     bochs_set_mode(&bochs, 1024, 768, 32);
+    uint16_t fbtest_virt_width = bochs_get_virt_width();
 
     /* bochs_init() already identity-mapped 4MB starting at dev->lfb
      * for this same reason (a PCI BAR address, not RAM, sitting above
@@ -392,6 +398,10 @@ void cmd_fbtest(int argc, char **args)
     terminal_clear();
     bochs_set_graphics_active(0);
     asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
+
+    terminal_writestring("fbtest: back in text mode ok. real VBE virt_width was ");
+    print_num((uint32_t)fbtest_virt_width);
+    terminal_writestring(" (requested 1024)\n");
 }
 
 /* Shows the exact same full-screen red panic display a real kernel
