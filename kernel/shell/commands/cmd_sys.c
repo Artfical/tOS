@@ -331,8 +331,9 @@ void cmd_fbtest(int argc, char **args)
             terminal_writestring(" ");
         }
     }
-    terminal_writestring("\n");
-    task_sleep(150);
+    terminal_writestring("\nfbtest: press any key to continue to the mode switch...\n");
+    while (keyboard_data_available()) keyboard_getchar();
+    keyboard_getchar();
 
     /* Same reasoning as SYS_GFX_INIT's gfx_leave_if_active(): in GUI
      * mode the desktop task repaints on every timer tick regardless
