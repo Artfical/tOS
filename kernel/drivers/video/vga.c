@@ -2,8 +2,6 @@
 #include "io.h"
 #include "serial.h"
 #include "vga_font.h"
-#include "terminal.h"
-#include "scheduler.h"
 
 /* Mode set is done by programming the VGA controller's registers
  * directly (Misc Output, Sequencer, CRTC, Graphics Controller,
@@ -151,26 +149,18 @@ static void capture_current_regs(uint8_t *out)
 {
     int i = 0;
 
-    terminal_writestring("vga: capture - misc\n");
-    task_sleep(150);
     out[i++] = inb(0x3CC); /* Misc Output read-back port */
 
-    terminal_writestring("vga: capture - seq\n");
-    task_sleep(150);
     for (int r = 0; r < 5; r++) {
         outb(VGA_SEQ_ADDR, (uint8_t)r);
         out[i++] = inb(VGA_SEQ_DATA);
     }
 
-    terminal_writestring("vga: capture - crtc\n");
-    task_sleep(150);
     for (int r = 0; r < 25; r++) {
         outb(VGA_CRTC_ADDR, (uint8_t)r);
         out[i++] = inb(VGA_CRTC_DATA);
     }
 
-    terminal_writestring("vga: capture - gc\n");
-    task_sleep(150);
     for (int r = 0; r < 9; r++) {
         outb(VGA_GC_ADDR, (uint8_t)r);
         out[i++] = inb(VGA_GC_DATA);
@@ -179,17 +169,15 @@ static void capture_current_regs(uint8_t *out)
     /* AC (Attribute Controller) readback is skipped entirely -- not
      * just unreliable under emulation (see g_ac_text's own comment
      * above: "the reason g_ac_text is a fixed table instead of a live
-     * capture"), but confirmed here to hang real hardware outright
-     * (VMware SVGA II), reproducibly, every time, before this loop
-     * ever returns. Whatever this loop reads gets overwritten anyway:
+     * capture"), but confirmed to hang real hardware outright (VMware
+     * SVGA II), reproducibly, every time, before this loop ever
+     * returned. Whatever this loop would read gets overwritten anyway:
      * vga_init()'s caller immediately replaces out[VGA_AC_OFFSET..]
      * with g_ac_text right after calling this, so the value never
      * mattered even when the read didn't hang anything. i is left at
      * 40 (1 misc + 5 seq + 25 crtc + 9 gc); the untouched AC slots in
      * out[40..60] are dead space until that same overwrite fills them. */
     (void)i;
-    terminal_writestring("vga: capture - done (ac readback skipped)\n");
-    task_sleep(150);
 }
 
 static void restore_dac_text(void)
