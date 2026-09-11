@@ -83,7 +83,14 @@ int bochs_init(bochs_device_t *dev)
         int is_vbox_vga = (pdevs[i].vendor_id == 0x80EE && pdevs[i].device_id == 0xBEEF);
         int is_vmware_svga = (pdevs[i].vendor_id == 0x15AD && pdevs[i].device_id == 0x0405);
         if (is_qemu_std || is_vbox_vga || is_vmware_svga) {
-            uint32_t bar0 = pci_get_bar(pdevs[i].bus, pdevs[i].device, pdevs[i].func, 0);
+            /* VMware SVGA II puts the linear framebuffer in BAR1, not
+             * BAR0 -- BAR0 there is an I/O-space BAR for its FIFO/
+             * register interface (confirmed on real hardware: BAR0
+             * read back as 0x1070, an I/O port range, not a plausible
+             * PCI memory address). QEMU's std-vga/bochs-display and
+             * VBoxVGA both put it in BAR0. */
+            int bar_index = is_vmware_svga ? 1 : 0;
+            uint32_t bar0 = pci_get_bar(pdevs[i].bus, pdevs[i].device, pdevs[i].func, bar_index);
             dev->lfb = bar0 & ~0xFU; /* mask off the low BAR type/flag bits */
             /* This BAR usually sits well above the kernel's normal
              * identity-mapped range (paging_init() only covers the
