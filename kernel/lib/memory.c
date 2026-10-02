@@ -475,9 +475,18 @@ void *kcalloc(size_t num, size_t size)
 void memory_get_usage(uint32_t *total_kb, uint32_t *used_kb)
 {
     *total_kb = total_pages * 4;
-    uint32_t kernel_end = 0;
     extern uint32_t end;
-    kernel_end = (uint32_t)&end;
-    *used_kb = (kernel_end / 1024) + (heap_current - heap_start) / 1024;
+    uint32_t used_bytes = (uint32_t)&end;
+
+    uint32_t flags = heap_irq_save();
+    heap_header_t *curr = heap_list;
+    int hops = 0;
+    while (curr && heap_ptr_ok(curr) && curr->magic == HEAP_MAGIC && hops++ < 1000000) {
+        if (curr->used) used_bytes += sizeof(heap_header_t) + curr->size;
+        curr = curr->next;
+    }
+    heap_irq_restore(flags);
+
+    *used_kb = used_bytes / 1024;
     if (*used_kb > *total_kb) *used_kb = *total_kb;
 }
