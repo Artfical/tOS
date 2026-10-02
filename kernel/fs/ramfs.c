@@ -226,6 +226,9 @@ static uint32_t make_inode(const char *name, uint32_t mode, uint32_t parent_ino)
     n->ino = ino;
     n->mode = mode;
     n->uid = 0; n->gid = 0;
+    n->data = 0;
+    n->size = 0;
+    n->blocks = 0;
     int k = 0;
     while (name[k] && k < RAMFS_NAME_LEN - 1) { n->name[k] = name[k]; k++; }
     n->name[k] = 0;
@@ -455,6 +458,8 @@ int ramfs_vfs_unlink(const char *path)
     uint32_t p_ino = resolve_path(parent_path, 1);
     if (!p_ino) return -1;
     if (n->data) free(n->data);
+    n->data = 0;
+    n->size = 0;
     n->ino = 0;
     del_child(p_ino, name_buf);
     return 0;
