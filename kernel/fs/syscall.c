@@ -127,12 +127,16 @@ static int gfx_ready = 0;
  * kernel itself from touching any address a ring3 program hands it
  * through a syscall -- that check has to happen here, explicitly, per
  * syscall that takes a buffer pointer. */
+#define USER_BRK_BASE 0x800000
+static uint32_t program_break = USER_BRK_BASE;
+
 static int user_range_ok(uint32_t ptr, uint32_t len)
 {
     if (len == 0) return 0;
     uint32_t end = ptr + len;
     if (end < ptr) return 0; /* overflow */
     if (ptr >= USER_CODE_BASE && end <= USER_CODE_BASE + USER_CODE_MAX_SIZE) return 1;
+    if (ptr >= USER_BRK_BASE && end <= program_break) return 1;
     uint32_t stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * 4096;
     if (ptr >= stack_bottom && end <= USER_STACK_TOP) return 1;
     return 0;
@@ -175,7 +179,15 @@ typedef struct {
 } fd_entry_t;
 
 static fd_entry_t fd_table[FD_MAX];
-static uint32_t program_break = 0x800000;
+
+static int user_cstr_ok(uint32_t ptr)
+{
+    for (uint32_t i = 0; i < FS_NAME_LEN; i++) {
+        if (!user_range_ok(ptr + i, 1)) return 0;
+        if (((const char *)ptr)[i] == 0) return 1;
+    }
+    return 0;
+}
 
 static int fd_alloc(void)
 {
@@ -217,6 +229,8 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             int fd = (int)a;
             char *buf = (char *)b;
             int count = (int)c;
+            if (count <= 0) return 0;
+            if (!user_range_ok(b, (uint32_t)count)) return -1;
             if (fd == 0) {
                 int i;
                 for (i = 0; i < count; i++) {
@@ -240,7 +254,8 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
                  * this syscall never actually worked before. */
                 fs_file_t *f = &fd_table[fd].file;
                 uint32_t to_read = count;
-                if (f->offset + to_read > f->size)
+                if (f->offset >= f->size) return 0;
+                if (to_read > f->size - f->offset)
                     to_read = f->size - f->offset;
                 int n = ramfs_read(f->name, buf, to_read, f->offset);
                 if (n < 0) return -1;
@@ -254,6 +269,8 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             int fd = (int)a;
             const char *buf = (const char *)b;
             int count = (int)c;
+            if (count <= 0) return 0;
+            if (!user_range_ok(b, (uint32_t)count)) return -1;
             if (fd == 1 || fd == 2) {
                 for (int i = 0; i < count; i++) {
                     if (buf[i] == '\n')
@@ -283,6 +300,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
              * is the filesystem everything else in tOS actually uses. */
             const char *path = (const char *)a;
             int flags = (int)b;
+            if (!user_cstr_ok(a)) return -1;
             if (!ramfs_exists(path)) {
                 if (!(flags & TOS_O_CREAT)) return -1;
                 if (ramfs_create(path) != 0) return -1;
@@ -384,7 +402,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
         case SYS_FSTAT: {
             int fd = (int)a;
             struct tos_stat *st = (struct tos_stat *)b;
-            if (!st) return -1;
+            if (!user_range_ok(b, sizeof(*st))) return -1;
             memset(st, 0, sizeof(*st));
             if (fd >= 0 && fd <= 2) {
                 st->st_mode = 0x2000;
@@ -403,6 +421,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
         case SYS_NET_RESOLVE: {
             const char *host = (const char *)a;
             uint32_t ip = 0;
+            if (!user_cstr_ok(a)) return 0;
             if (dns_resolve(host, &ip) != 0) return 0;
             return ip;
         }
@@ -424,6 +443,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
              * failure. */
             void *data = (void *)a;
             int len = (int)b;
+            if (len <= 0 || !user_range_ok(a, (uint32_t)len)) return -1;
             int rc = tcp_send(data, len);
             return (rc == 0) ? len : -1;
         }
@@ -431,6 +451,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
         case SYS_NET_RECV: {
             uint8_t *buf = (uint8_t *)a;
             int max_len = (int)b;
+            if (max_len <= 0 || !user_range_ok(a, (uint32_t)max_len)) return -1;
             return tcp_recv(buf, max_len);
         }
 
