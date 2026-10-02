@@ -225,7 +225,7 @@ static int heap_ptr_ok(heap_header_t *h)
 
 static void *heap_alloc(uint32_t size)
 {
-    if (size == 0) return NULL;
+    if (size == 0 || size > KERNEL_HEAP_MAX_SIZE) return NULL;
     size = (size + 3) & ~3;
 
     uint32_t flags = heap_irq_save();
