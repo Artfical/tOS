@@ -111,6 +111,7 @@ void cmd_touch(int argc, char **args)
         terminal_writestring("usage: touch <file>\n");
         return;
     }
+    if (fsbridge_exists(args[1])) return;
     if (fsbridge_create(args[1]) != 0) {
         terminal_writestring("touch: ");
         terminal_writestring(args[1]);
