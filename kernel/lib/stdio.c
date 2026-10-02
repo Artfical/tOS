@@ -235,6 +235,7 @@ int fclose(FILE *fp)
 }
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp)
 {
+    if (size == 0 || nmemb == 0) return 0;
     int r = vfs_read(fp->fd, ptr, size * nmemb);
     if (r < 0) { fp->error = 1; return 0; }
     if (r == 0) fp->eof = 1;
