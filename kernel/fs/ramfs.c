@@ -315,7 +315,8 @@ int ramfs_vfs_open(const char *path, int flags)
         if (!fds[i].used) {
             fds[i].used = 1;
             fds[i].ino = ino;
-            fds[i].offset = 0;
+            ramfs_inode_t *an = iget(ino);
+            fds[i].offset = ((flags & VFS_APPEND) && an) ? an->size : 0;
             fds[i].flags = flags;
             return i;
         }
