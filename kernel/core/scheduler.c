@@ -93,7 +93,10 @@ int task_spawn(void (*entry)(void), const char *name)
     t->in_use = 1;
     t->state = TASK_STATE_READY;
     t->kernel_stack = malloc(KERNEL_STACK_SZ);
-    if (!t->kernel_stack) return -1;
+    if (!t->kernel_stack) {
+        t->in_use = 0;
+        return -1;
+    }
     memset(t->kernel_stack, 0, KERNEL_STACK_SZ);
     setup_task_stack(t, entry);
 
