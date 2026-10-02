@@ -120,8 +120,9 @@ static int resolve_path(const char *path, int follow_final)
         while (path[i] && path[i] != '/') i++;
         int len = i - start;
         char comp[RAMFS_NAME_LEN];
-        for (int j = 0; j < len && j < RAMFS_NAME_LEN - 1; j++) comp[j] = path[start + j];
-        comp[len] = 0;
+        int clen = len < RAMFS_NAME_LEN - 1 ? len : RAMFS_NAME_LEN - 1;
+        for (int j = 0; j < clen; j++) comp[j] = path[start + j];
+        comp[clen] = 0;
 
         if (name_eq(comp, ".")) { while (path[i] == '/') i++; continue; }
         if (name_eq(comp, "..")) {
