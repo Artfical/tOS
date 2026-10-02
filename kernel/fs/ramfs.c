@@ -506,6 +506,9 @@ int ramfs_rmdir(const char *path)
 
     uint32_t p_ino = resolve_path(parent_path, 1);
     if (!p_ino) return -1;
+    if (n->data) free(n->data);
+    n->data = 0;
+    n->size = 0;
     n->ino = 0;
     del_child(p_ino, name_buf);
     return 0;
