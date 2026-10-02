@@ -57,6 +57,7 @@ void abort(void)
 
 void *calloc(size_t nmemb, size_t size)
 {
+    if (size && nmemb > (size_t)-1 / size) return NULL;
     void *ptr = malloc(nmemb * size);
     if (ptr) memset(ptr, 0, nmemb * size);
     return ptr;
