@@ -109,8 +109,11 @@ static int follow_link(uint32_t ino, char *out, int out_sz)
     return 0;
 }
 
-static int resolve_path(const char *path, int follow_final)
+#define RAMFS_MAX_SYMLINK_DEPTH 8
+
+static int resolve_path_depth(const char *path, int follow_final, int depth)
 {
+    if (depth > RAMFS_MAX_SYMLINK_DEPTH) return 0;
     if (!path || !path[0]) return 1;
     uint32_t cur = 1;
     int i = 0;
@@ -158,7 +161,7 @@ static int resolve_path(const char *path, int follow_final)
                         full[k] = 0;
                     }
                 }
-                return resolve_path(full, follow_final);
+                return resolve_path_depth(full, follow_final, depth + 1);
             }
         }
 
@@ -166,6 +169,11 @@ static int resolve_path(const char *path, int follow_final)
         while (path[i] == '/') i++;
     }
     return cur;
+}
+
+static int resolve_path(const char *path, int follow_final)
+{
+    return resolve_path_depth(path, follow_final, 0);
 }
 
 void ramfs_init(void)
