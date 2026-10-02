@@ -203,6 +203,8 @@ int fprintf(FILE *fp, const char *fmt, ...)
     if (fp == stdout || fp == stderr) {
         for (int i = 0; buf[i]; i++)
             putchar(buf[i]);
+    } else if (fp && r > 0) {
+        if (vfs_write(fp->fd, buf, (uint32_t)r) < 0) fp->error = 1;
     }
     return r;
 }
