@@ -303,6 +303,14 @@ int ramfs_vfs_open(const char *path, int flags)
         ino = make_inode(name_buf, S_IFREG | 0644, p_ino);
         if (!ino) return -1;
     }
+    if (flags & VFS_TRUNC) {
+        ramfs_inode_t *tn = iget(ino);
+        if (tn && !(tn->mode & S_IFDIR)) {
+            if (tn->data) free(tn->data);
+            tn->data = 0;
+            tn->size = 0;
+        }
+    }
     for (int i = 0; i < VFS_MAX_FDS; i++) {
         if (!fds[i].used) {
             fds[i].used = 1;
