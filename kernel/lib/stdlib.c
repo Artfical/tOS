@@ -1,5 +1,6 @@
 #include "stdlib.h"
 #include "string.h"
+#include "memory.h"
 #include "../core/serial.h"
 
 static unsigned long _rand_seed = 1;
@@ -63,12 +64,5 @@ void *calloc(size_t nmemb, size_t size)
 
 void *realloc(void *ptr, size_t size)
 {
-    if (!ptr) return malloc(size);
-    if (size == 0) { free(ptr); return NULL; }
-    void *new_ptr = malloc(size);
-    if (new_ptr) {
-        memcpy(new_ptr, ptr, size);
-        free(ptr);
-    }
-    return new_ptr;
+    return krealloc(ptr, size);
 }
