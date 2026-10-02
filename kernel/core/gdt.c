@@ -31,7 +31,7 @@ static void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access,
 void gdt_set_tss(uint32_t tss_addr)
 {
     uint32_t base = tss_addr;
-    uint32_t limit = sizeof(struct gdt_entry) + 104 - 1;
+    uint32_t limit = 104 - 1; /* sizeof(tss_t) - 1 */
     gdt_set_gate(5, base, limit, 0x89, 0x40);
     asm volatile("ltr %%ax" : : "a"(5 << 3));
 }
