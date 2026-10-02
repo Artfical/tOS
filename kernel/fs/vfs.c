@@ -143,6 +143,7 @@ int vfs_open(const char *path, int flags)
             return i;
         }
     }
+    if (m->ops->close) m->ops->close(m->private_data, fd);
     return -1;
 }
 
