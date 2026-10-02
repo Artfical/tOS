@@ -6,8 +6,6 @@
 #include "terminal.h"
 
 static ramfs_inode_t inodes[RAMFS_MAX_INODES];
-static uint32_t next_ino = 1;
-
 typedef struct {
     uint32_t ino;
     uint32_t offset;
@@ -18,13 +16,21 @@ typedef struct {
 static ramfs_fd_t fds[VFS_MAX_FDS];
 static int ramfs_next_fd = 3;
 
+static int ino_has_open_fd(uint32_t ino)
+{
+    for (int i = 0; i < VFS_MAX_FDS; i++)
+        if (fds[i].used && fds[i].ino == ino) return 1;
+    return 0;
+}
+
 static uint32_t alloc_ino(void)
 {
-    while (next_ino < RAMFS_MAX_INODES && inodes[next_ino].ino) next_ino++;
-    if (next_ino >= RAMFS_MAX_INODES) return 0;
-    uint32_t ino = next_ino++;
-    inodes[ino].ino = ino;
-    return ino;
+    for (uint32_t ino = 1; ino < RAMFS_MAX_INODES; ino++) {
+        if (inodes[ino].ino || ino_has_open_fd(ino)) continue;
+        inodes[ino].ino = ino;
+        return ino;
+    }
+    return 0;
 }
 
 static ramfs_inode_t *iget(uint32_t ino)
@@ -165,7 +171,6 @@ void ramfs_init(void)
 {
     memset(inodes, 0, sizeof(inodes));
     memset(fds, 0, sizeof(fds));
-    next_ino = 1;
     ramfs_next_fd = 3;
 
     uint32_t root = alloc_ino();
