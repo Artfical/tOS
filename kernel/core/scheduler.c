@@ -187,8 +187,9 @@ uint32_t task_get_ticks(void) { return system_ticks; }
 
 int task_kill(uint32_t pid)
 {
+    if (pid == 0) return -1;
     for (int i = 0; i < MAX_TASKS; i++) {
-        if (tasks[i].pid == pid && tasks[i].state != TASK_STATE_ZOMBIE) {
+        if (tasks[i].in_use && tasks[i].pid == pid && tasks[i].state != TASK_STATE_ZOMBIE) {
             unlink_task(&tasks[i]);
             tasks[i].state = TASK_STATE_ZOMBIE;
             return 0;
