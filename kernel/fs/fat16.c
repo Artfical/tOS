@@ -1,4 +1,5 @@
 #include "fat16.h"
+#include "fat_lfn.h"
 #include "memory.h"
 #include "string.h"
 #include "terminal.h"
@@ -139,43 +140,6 @@ static void fat16_free_chain(fat16_t *fs, uint32_t cluster)
     }
 }
 
-static void fat16_name_to_83(const char *name, char out[11])
-{
-    memset(out, ' ', 11);
-    int i = 0, j = 0;
-    while (name[i] && name[i] != '.' && j < 8) {
-        char c = name[i];
-        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
-        out[j++] = c;
-        i++;
-    }
-    while (name[i] && name[i] != '.') i++;
-    if (name[i] == '.') {
-        i++;
-        int k = 0;
-        while (name[i] && k < 3) {
-            char c = name[i];
-            if (c >= 'a' && c <= 'z') c = (char)(c - 32);
-            out[8 + k] = c;
-            k++;
-            i++;
-        }
-    }
-}
-
-static void fat16_83_to_name(const fat16_dirent_t *de, char *out)
-{
-    int j = 0;
-    for (int i = 0; i < 8 && de->name[i] != ' '; i++) out[j++] = de->name[i];
-    int has_ext = 0;
-    for (int i = 0; i < 3; i++) if (de->ext[i] != ' ') has_ext = 1;
-    if (has_ext) {
-        out[j++] = '.';
-        for (int i = 0; i < 3 && de->ext[i] != ' '; i++) out[j++] = de->ext[i];
-    }
-    out[j] = 0;
-}
-
 static int fat16_split_path(const char *path, char *parent, size_t parent_sz, char *name, size_t name_sz)
 {
     int len = (int)strlen(path);
@@ -224,100 +188,229 @@ static int fat16_dir_nth_sector(fat16_t *fs, int is_root, uint32_t first_cluster
     return 0;
 }
 
-static int fat16_dir_find(fat16_t *fs, int is_root, uint32_t dir_cluster, const char *name,
-                           fat16_dirent_t *out, uint32_t *out_sector, uint32_t *out_offset)
+#define FAT16_NAME_MAX 768   /* UTF-8 bytes for a 255-character name */
+
+typedef struct {
+    fat16_dirent_t de;
+    uint32_t sec, off;      /* where the short entry lives */
+    uint32_t slot;          /* its slot (32-byte entry) index in the directory */
+    uint32_t first_slot;    /* first slot of its set (long-name fragments + short entry) */
+} fat16_loc_t;
+
+/* Directory slots: a directory is a chain of clusters of 32-byte entries. */
+static int fat16_slot_loc(fat16_t *fs, fat16_dirref_t dir, uint32_t slot, uint32_t *sec, uint32_t *off)
 {
-    char want[11];
-    fat16_name_to_83(name, want);
-
-    uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
-    if (!buf) return -1;
-
-    int entries_per_sector = fs->bytes_per_sector / sizeof(fat16_dirent_t);
-
-    for (uint32_t n = 0; ; n++) {
-        uint32_t sec;
-        if (fat16_dir_nth_sector(fs, is_root, dir_cluster, n, &sec) != 0) break;
-        if (fat16_read_sector(fs, sec, buf) != 0) break;
-
-        for (int i = 0; i < entries_per_sector; i++) {
-            fat16_dirent_t *de = (fat16_dirent_t *)(buf + i * sizeof(fat16_dirent_t));
-            if (de->name[0] == 0x00) { free(buf); return -1; }
-            if ((uint8_t)de->name[0] == 0xE5) continue;
-            if (de->attr == FAT16_ATTR_VOLUME || de->attr == FAT16_ATTR_LFN) continue;
-
-            char cmp[11];
-            memcpy(cmp, de->name, 8);
-            memcpy(cmp + 8, de->ext, 3);
-            if (memcmp(cmp, want, 11) == 0) {
-                if (out) *out = *de;
-                if (out_sector) *out_sector = sec;
-                if (out_offset) *out_offset = i * sizeof(fat16_dirent_t);
-                free(buf);
-                return 0;
-            }
-        }
-    }
-
-    free(buf);
-    return -1;
+    uint32_t per_sector = fs->bytes_per_sector / 32;
+    if (fat16_dir_nth_sector(fs, dir.is_root, dir.cluster, slot / per_sector, sec) != 0) return -1;
+    *off = (slot % per_sector) * 32;
+    return 0;
 }
 
-static int fat16_dir_add_entry(fat16_t *fs, int is_root, uint32_t dir_cluster, const fat16_dirent_t *entry,
-                                uint32_t *out_sector, uint32_t *out_offset)
+static int fat16_slot_read(fat16_t *fs, fat16_dirref_t dir, uint32_t slot, uint8_t *e32)
 {
-    uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
-    if (!buf) return -1;
+    uint32_t sec, off;
+    if (fat16_slot_loc(fs, dir, slot, &sec, &off) != 0) return -1;
+    uint8_t *b = (uint8_t *)malloc(fs->bytes_per_sector);
+    if (!b) return -1;
+    int rc = fat16_read_sector(fs, sec, b);
+    if (rc == 0) memcpy(e32, b + off, 32);
+    free(b);
+    return rc;
+}
 
-    int entries_per_sector = fs->bytes_per_sector / sizeof(fat16_dirent_t);
-    uint32_t n = 0;
+static int fat16_slot_write(fat16_t *fs, fat16_dirref_t dir, uint32_t slot, const uint8_t *e32)
+{
+    uint32_t sec, off;
+    if (fat16_slot_loc(fs, dir, slot, &sec, &off) != 0) return -1;
+    uint8_t *b = (uint8_t *)malloc(fs->bytes_per_sector);
+    if (!b) return -1;
+    int rc = fat16_read_sector(fs, sec, b);
+    if (rc == 0) {
+        memcpy(b + off, e32, 32);
+        rc = fat16_write_sector(fs, sec, b);
+    }
+    free(b);
+    return rc;
+}
 
-    while (1) {
-        uint32_t sec;
-        int rc = fat16_dir_nth_sector(fs, is_root, dir_cluster, n, &sec);
-        if (rc != 0) {
-            if (is_root) { free(buf); return -1; }
+/* Appends one zeroed cluster to a directory's chain. */
+static int fat16_dir_extend(fat16_t *fs, fat16_dirref_t dir)
+{
+    if (dir.is_root) return -1;   /* the FAT16 root directory has a fixed size */
+    uint32_t cur = dir.cluster;
+    uint32_t e;
+    while ((e = fat16_get_fat_entry(fs, cur)) != 0 && e < FAT16_CLUSTER_BAD) cur = e;
+    uint32_t nc = fat16_alloc_cluster(fs);
+    if (nc == 0) return -1;
+    fat16_set_fat_entry(fs, cur, nc);
+    fat16_set_fat_entry(fs, nc, FAT16_CLUSTER_EOF);
+    uint8_t *z = (uint8_t *)malloc(fs->bytes_per_sector);
+    if (!z) return -1;
+    memset(z, 0, fs->bytes_per_sector);
+    for (uint32_t s = 0; s < fs->sectors_per_cluster; s++)
+        fat16_write_sector(fs, fat16_cluster_to_sector(fs, nc) + s, z);
+    free(z);
+    return 0;
+}
 
-            uint32_t cur = dir_cluster;
-            uint16_t e;
-            while ((e = fat16_get_fat_entry(fs, cur)) != 0 && e < FAT16_CLUSTER_BAD) cur = e;
+static int fat16_valid_name(const uint16_t *n, int len)
+{
+    if (len <= 0 || len > FATL_MAX) return 0;
+    for (int i = 0; i < len; i++) {
+        uint16_t c = n[i];
+        if (c < 0x20 || c == '"' || c == '*' || c == '/' || c == ':' || c == '<' || c == '>' || c == '?' || c == '\\' || c == '|') return 0;
+    }
+    if (n[len - 1] == '.' || n[len - 1] == ' ') return 0;
+    if (len == 1 && n[0] == '.') return 0;
+    if (len == 2 && n[0] == '.' && n[1] == '.') return 0;
+    return 1;
+}
 
-            uint32_t new_cluster = fat16_alloc_cluster(fs);
-            if (new_cluster == 0) { free(buf); return -1; }
-            fat16_set_fat_entry(fs, cur, new_cluster);
-            fat16_set_fat_entry(fs, new_cluster, FAT16_CLUSTER_EOF);
-
-            memset(buf, 0, fs->bytes_per_sector);
-            for (uint32_t s = 0; s < fs->sectors_per_cluster; s++)
-                fat16_write_sector(fs, fat16_cluster_to_sector(fs, new_cluster) + s, buf);
-
+/* Looks a name up (long name or 8.3 alias, case-insensitively). */
+static int fat16_dir_find_ex(fat16_t *fs, fat16_dirref_t dir, const uint16_t *want, int wlen, fat16_loc_t *out)
+{
+    fatl_state_t lfn;
+    fatl_reset(&lfn);
+    uint32_t run_first = 0;
+    for (uint32_t slot = 0;; slot++) {
+        uint8_t e[32];
+        if (fat16_slot_read(fs, dir, slot, e) != 0) return -1;
+        if (e[0] == 0x00) return -1;
+        if (e[0] == 0xE5) { fatl_reset(&lfn); continue; }
+        if (e[11] == FAT16_ATTR_LFN) {
+            if (e[0] & 0x40) run_first = slot;
+            fatl_feed(&lfn, e);
             continue;
         }
+        if (e[11] & FAT16_ATTR_VOLUME) { fatl_reset(&lfn); continue; }
 
-        if (fat16_read_sector(fs, sec, buf) != 0) { free(buf); return -1; }
+        uint16_t sn[16];
+        int sl = fatl_short_to_utf16(e, sn);
+        uint16_t ln[FATL_MAX + 1];
+        int ll = fatl_complete(&lfn, e, ln, FATL_MAX);
+        uint32_t first = ll > 0 ? run_first : slot;
+        fatl_reset(&lfn);
 
-        for (int i = 0; i < entries_per_sector; i++) {
-            fat16_dirent_t *de = (fat16_dirent_t *)(buf + i * sizeof(fat16_dirent_t));
-            if (de->name[0] == 0x00 || (uint8_t)de->name[0] == 0xE5) {
-                memcpy(de, entry, sizeof(fat16_dirent_t));
-                if (fat16_write_sector(fs, sec, buf) != 0) { free(buf); return -1; }
-                if (out_sector) *out_sector = sec;
-                if (out_offset) *out_offset = i * sizeof(fat16_dirent_t);
-                free(buf);
-                return 0;
-            }
+        if ((ll > 0 && fatl_equal(want, wlen, ln, ll)) || fatl_equal(want, wlen, sn, sl)) {
+            memcpy(&out->de, e, 32);
+            out->slot = slot;
+            out->first_slot = first;
+            if (fat16_slot_loc(fs, dir, slot, &out->sec, &out->off) != 0) return -1;
+            return 0;
         }
-        n++;
     }
+}
+
+static int fat16_dir_find(fat16_t *fs, fat16_dirref_t dir, const char *name, fat16_loc_t *out)
+{
+    uint16_t n16[FATL_MAX + 1];
+    int nl = fatl_utf8_to_utf16(name, (int)strlen(name), n16, FATL_MAX);
+    if (nl <= 0) return -1;
+    return fat16_dir_find_ex(fs, dir, n16, nl, out);
+}
+
+static int fat16_short_exists(fat16_t *fs, fat16_dirref_t dir, const uint8_t *n11)
+{
+    for (uint32_t slot = 0;; slot++) {
+        uint8_t e[32];
+        if (fat16_slot_read(fs, dir, slot, e) != 0) return 0;
+        if (e[0] == 0x00) return 0;
+        if (e[0] == 0xE5 || e[11] == FAT16_ATTR_LFN) continue;
+        if (memcmp(e, n11, 11) == 0) return 1;
+    }
+}
+
+/* Finds (or makes room for) `count` consecutive free slots. */
+static int fat16_dir_alloc_run(fat16_t *fs, fat16_dirref_t dir, int count, uint32_t *first)
+{
+    uint32_t run_start = 0;
+    int run = 0;
+    for (uint32_t slot = 0;; slot++) {
+        uint8_t e[32];
+        int rc = fat16_slot_read(fs, dir, slot, e);
+        if (rc != 0 || e[0] == 0x00) {
+            uint32_t start = run ? run_start : slot;
+            for (int k = 0; k < count; k++) {
+                uint32_t sec, off;
+                while (fat16_slot_loc(fs, dir, start + (uint32_t)k, &sec, &off) != 0)
+                    if (fat16_dir_extend(fs, dir) != 0) return -1;
+            }
+            *first = start;
+            return 0;
+        }
+        if (e[0] == 0xE5) {
+            if (!run) run_start = slot;
+            if (++run >= count) { *first = run_start; return 0; }
+        } else {
+            run = 0;
+        }
+    }
+}
+
+/* Creates a directory entry set for `name` (long-name fragments plus a
+ * short entry with a generated alias when the name does not fit 8.3).
+ * Returns -2 if the name already exists. */
+static int fat16_dir_add_named(fat16_t *fs, fat16_dirref_t dir, const char *name, const fat16_dirent_t *proto, fat16_loc_t *out)
+{
+    uint16_t n16[FATL_MAX + 1];
+    int nlen = fatl_utf8_to_utf16(name, (int)strlen(name), n16, FATL_MAX);
+    if (!fat16_valid_name(n16, nlen)) return -1;
+    fat16_loc_t ex;
+    if (fat16_dir_find_ex(fs, dir, n16, nlen, &ex) == 0) return -2;
+
+    uint8_t set[22][32];
+    int cnt = 0;
+    uint8_t s11[11], nt = 0;
+    fat16_dirent_t se = *proto;
+    if (fatl_fits_83(n16, nlen, s11, &nt)) {
+        se.reserved = nt;
+    } else {
+        int tail = 1;
+        for (;; tail++) {
+            fatl_make_alias(n16, nlen, tail, s11);
+            if (!fat16_short_exists(fs, dir, s11)) break;
+            if (tail > 999999) return -1;
+        }
+        se.reserved = 0;
+        cnt = fatl_build_entries(n16, nlen, fatl_checksum(s11), set);
+    }
+    memcpy(se.name, s11, 8);
+    memcpy(se.ext, s11 + 8, 3);
+    memcpy(set[cnt], &se, 32);
+    cnt++;
+
+    uint32_t first;
+    if (fat16_dir_alloc_run(fs, dir, cnt, &first) != 0) return -1;
+    for (int k = 0; k < cnt; k++)
+        if (fat16_slot_write(fs, dir, first + (uint32_t)k, set[k]) != 0) return -1;
+    if (out) {
+        out->de = se;
+        out->slot = first + (uint32_t)cnt - 1;
+        out->first_slot = first;
+        if (fat16_slot_loc(fs, dir, out->slot, &out->sec, &out->off) != 0) return -1;
+    }
+    return 0;
+}
+
+/* Marks every slot of an entry set deleted. */
+static int fat16_dir_delete_set(fat16_t *fs, fat16_dirref_t dir, uint32_t first, uint32_t last)
+{
+    for (uint32_t s = first; s <= last; s++) {
+        uint8_t e[32];
+        if (fat16_slot_read(fs, dir, s, e) != 0) return -1;
+        e[0] = 0xE5;
+        if (fat16_slot_write(fs, dir, s, e) != 0) return -1;
+    }
+    return 0;
 }
 
 static int fat16_dir_lookup_component(fat16_t *fs, fat16_dirref_t *dir, const char *comp, fat16_dirref_t *out)
 {
-    fat16_dirent_t de;
-    if (fat16_dir_find(fs, dir->is_root, dir->cluster, comp, &de, NULL, NULL) != 0) return -1;
-    if (!(de.attr & FAT16_ATTR_DIRECTORY)) return -1;
+    fat16_loc_t loc;
+    if (fat16_dir_find(fs, *dir, comp, &loc) != 0) return -1;
+    if (!(loc.de.attr & FAT16_ATTR_DIRECTORY)) return -1;
 
-    uint32_t cl = de.cluster_low | ((uint32_t)de.cluster_high << 16);
+    uint32_t cl = loc.de.cluster_low | ((uint32_t)loc.de.cluster_high << 16);
     if (cl == 0) {
         out->is_root = 1;
         out->cluster = 0;
@@ -335,10 +428,10 @@ static int fat16_walk(fat16_t *fs, const char *path, fat16_dirref_t *out)
     while (*path == '/') path++;
     if (!*path) { *out = cur; return 0; }
 
-    char comp[13];
+    char comp[FAT16_NAME_MAX];
     while (*path) {
         int i = 0;
-        while (*path && *path != '/' && i < 12) comp[i++] = *path++;
+        while (*path && *path != '/' && i < FAT16_NAME_MAX - 1) comp[i++] = *path++;
         comp[i] = 0;
         while (*path == '/') path++;
 
@@ -520,43 +613,47 @@ static int fat16_vfs_open(void *ctx, const char *path, int flags)
     fat16_t *fs = (fat16_t *)ctx;
 
     char parent_path[256];
-    char name[13];
+    char name[FAT16_NAME_MAX];
     if (fat16_split_path(path, parent_path, sizeof(parent_path), name, sizeof(name)) != 0) return -1;
 
-    fat16_dirref_t parent;
-    if (fat16_walk(fs, parent_path, &parent) != 0) return -1;
+    fat16_dirref_t parent_cluster;
+    if (fat16_walk(fs, parent_path, &parent_cluster) != 0) return -1;
 
+    fat16_loc_t loc;
     fat16_dirent_t de;
     uint32_t sec = 0, off = 0;
-    int found = (fat16_dir_find(fs, parent.is_root, parent.cluster, name, &de, &sec, &off) == 0);
+    int found = (fat16_dir_find(fs, parent_cluster, name, &loc) == 0);
 
     if (!found) {
         if (!(flags & VFS_CREAT)) return -1;
 
         fat16_dirent_t newde;
         memset(&newde, 0, sizeof(newde));
-        char want[11];
-        fat16_name_to_83(name, want);
-        memcpy(newde.name, want, 8);
-        memcpy(newde.ext, want + 8, 3);
         newde.attr = FAT16_ATTR_ARCHIVE;
 
-        if (fat16_dir_add_entry(fs, parent.is_root, parent.cluster, &newde, &sec, &off) != 0) return -1;
-        de = newde;
-    } else if (flags & VFS_TRUNC) {
-        uint32_t cl = de.cluster_low | ((uint32_t)de.cluster_high << 16);
-        fat16_free_chain(fs, cl);
-        de.cluster_low = 0;
-        de.cluster_high = 0;
-        de.file_size = 0;
+        if (fat16_dir_add_named(fs, parent_cluster, name, &newde, &loc) != 0) return -1;
+        de = loc.de;
+        sec = loc.sec;
+        off = loc.off;
+    } else {
+        de = loc.de;
+        sec = loc.sec;
+        off = loc.off;
+        if (flags & VFS_TRUNC) {
+            uint32_t cl = de.cluster_low | ((uint32_t)de.cluster_high << 16);
+            fat16_free_chain(fs, cl);
+            de.cluster_low = 0;
+            de.cluster_high = 0;
+            de.file_size = 0;
 
-        uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
-        if (buf) {
-            if (fat16_read_sector(fs, sec, buf) == 0) {
-                memcpy(buf + off, &de, sizeof(de));
-                fat16_write_sector(fs, sec, buf);
+            uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
+            if (buf) {
+                if (fat16_read_sector(fs, sec, buf) == 0) {
+                    memcpy(buf + off, &de, sizeof(de));
+                    fat16_write_sector(fs, sec, buf);
+                }
+                free(buf);
             }
-            free(buf);
         }
     }
 
@@ -640,44 +737,34 @@ static int fat16_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, 
 {
     fat16_t *fs = (fat16_t *)ctx;
 
-    fat16_dirref_t dir;
-    if (fat16_walk(fs, path, &dir) != 0) return -1;
+    fat16_dirref_t dir_cluster;
+    if (fat16_walk(fs, path, &dir_cluster) != 0) return -1;
 
-    uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
-    if (!buf) return -1;
-
-    int entries_per_sector = fs->bytes_per_sector / sizeof(fat16_dirent_t);
+    fatl_state_t lfn;
+    fatl_reset(&lfn);
     int count = 0;
+    for (uint32_t slot = 0; count < max; slot++) {
+        uint8_t e[32];
+        if (fat16_slot_read(fs, dir_cluster, slot, e) != 0) break;
+        if (e[0] == 0x00) break;
+        if (e[0] == 0xE5) { fatl_reset(&lfn); continue; }
+        if (e[11] == FAT16_ATTR_LFN) { fatl_feed(&lfn, e); continue; }
+        if (e[11] & FAT16_ATTR_VOLUME) { fatl_reset(&lfn); continue; }
 
-    for (uint32_t n = 0; count < max; n++) {
-        uint32_t sec;
-        if (fat16_dir_nth_sector(fs, dir.is_root, dir.cluster, n, &sec) != 0) break;
-        if (fat16_read_sector(fs, sec, buf) != 0) break;
+        uint16_t nm[FATL_MAX + 1];
+        int nl = fatl_complete(&lfn, e, nm, FATL_MAX);
+        if (nl <= 0) nl = fatl_short_to_utf16(e, nm);
+        fatl_reset(&lfn);
+        if ((nl == 1 && nm[0] == '.') || (nl == 2 && nm[0] == '.' && nm[1] == '.')) continue;
 
-        int stop = 0;
-        for (int i = 0; i < entries_per_sector && count < max; i++) {
-            fat16_dirent_t *de = (fat16_dirent_t *)(buf + i * sizeof(fat16_dirent_t));
-            if (de->name[0] == 0x00) { stop = 1; break; }
-            if ((uint8_t)de->name[0] == 0xE5) continue;
-            if (de->attr == FAT16_ATTR_VOLUME || de->attr == FAT16_ATTR_LFN) continue;
-
-            char nm[13];
-            fat16_83_to_name(de, nm);
-            if (strcmp(nm, ".") == 0 || strcmp(nm, "..") == 0) continue;
-
-            int k = 0;
-            while (nm[k] && k < VFS_NAME_LEN - 1) { entries[count].name[k] = nm[k]; k++; }
-            entries[count].name[k] = 0;
-            entries[count].size = de->file_size;
-            entries[count].is_dir = (de->attr & FAT16_ATTR_DIRECTORY) ? 1 : 0;
-            entries[count].inode = de->cluster_low | ((uint32_t)de->cluster_high << 16);
-            entries[count].mode = de->attr;
-            count++;
-        }
-        if (stop) break;
+        const fat16_dirent_t *de = (const fat16_dirent_t *)e;
+        fatl_utf16_to_utf8(nm, nl, entries[count].name, VFS_NAME_LEN);
+        entries[count].size = de->file_size;
+        entries[count].is_dir = (de->attr & FAT16_ATTR_DIRECTORY) ? 1 : 0;
+        entries[count].inode = de->cluster_low | ((uint32_t)de->cluster_high << 16);
+        entries[count].mode = de->attr;
+        count++;
     }
-
-    free(buf);
     return count;
 }
 
@@ -687,21 +774,21 @@ static int fat16_vfs_mkdir(void *ctx, const char *path, uint32_t mode)
     fat16_t *fs = (fat16_t *)ctx;
 
     char parent_path[256];
-    char name[13];
+    char name[FAT16_NAME_MAX];
     if (fat16_split_path(path, parent_path, sizeof(parent_path), name, sizeof(name)) != 0) return -1;
 
-    fat16_dirref_t parent;
-    if (fat16_walk(fs, parent_path, &parent) != 0) return -1;
+    fat16_dirref_t parent_cluster;
+    if (fat16_walk(fs, parent_path, &parent_cluster) != 0) return -1;
 
-    fat16_dirent_t existing;
-    if (fat16_dir_find(fs, parent.is_root, parent.cluster, name, &existing, NULL, NULL) == 0) return -1;
+    fat16_loc_t existing;
+    if (fat16_dir_find(fs, parent_cluster, name, &existing) == 0) return -1;
 
     uint32_t new_cluster = fat16_alloc_cluster(fs);
     if (new_cluster == 0) return -1;
     fat16_set_fat_entry(fs, new_cluster, FAT16_CLUSTER_EOF);
 
     uint8_t *buf = (uint8_t *)malloc(fs->cluster_size);
-    if (!buf) return -1;
+    if (!buf) { fat16_free_chain(fs, new_cluster); return -1; }
     memset(buf, 0, fs->cluster_size);
 
     fat16_dirent_t *dot = (fat16_dirent_t *)buf;
@@ -718,9 +805,9 @@ static int fat16_vfs_mkdir(void *ctx, const char *path, uint32_t mode)
     dotdot->name[0] = '.';
     dotdot->name[1] = '.';
     dotdot->attr = FAT16_ATTR_DIRECTORY;
-    uint32_t parent_cluster = parent.is_root ? 0 : parent.cluster;
-    dotdot->cluster_low = (uint16_t)(parent_cluster & 0xFFFF);
-    dotdot->cluster_high = (uint16_t)((parent_cluster >> 16) & 0xFFFF);
+    uint32_t dotdot_cluster = parent_cluster.is_root ? 0 : parent_cluster.cluster;
+    dotdot->cluster_low = (uint16_t)(dotdot_cluster & 0xFFFF);
+    dotdot->cluster_high = (uint16_t)((dotdot_cluster >> 16) & 0xFFFF);
 
     for (uint32_t s = 0; s < fs->sectors_per_cluster; s++) {
         fat16_write_sector(fs, fat16_cluster_to_sector(fs, new_cluster) + s, buf + s * fs->bytes_per_sector);
@@ -729,40 +816,30 @@ static int fat16_vfs_mkdir(void *ctx, const char *path, uint32_t mode)
 
     fat16_dirent_t newde;
     memset(&newde, 0, sizeof(newde));
-    char want[11];
-    fat16_name_to_83(name, want);
-    memcpy(newde.name, want, 8);
-    memcpy(newde.ext, want + 8, 3);
     newde.attr = FAT16_ATTR_DIRECTORY;
     newde.cluster_low = (uint16_t)(new_cluster & 0xFFFF);
     newde.cluster_high = (uint16_t)((new_cluster >> 16) & 0xFFFF);
 
-    if (fat16_dir_add_entry(fs, parent.is_root, parent.cluster, &newde, NULL, NULL) != 0) return -1;
+    if (fat16_dir_add_named(fs, parent_cluster, name, &newde, NULL) != 0) {
+        fat16_free_chain(fs, new_cluster);
+        return -1;
+    }
     return 0;
 }
 
 /* A directory can be removed only when it holds nothing but "." and "..". */
-static int fat16_dir_is_empty(fat16_t *fs, uint32_t dir_cluster)
+static int fat16_dir_is_empty(fat16_t *fs, uint32_t dir_cluster_num)
 {
-    uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
-    if (!buf) return 0;
-    int entries_per_sector = fs->bytes_per_sector / sizeof(fat16_dirent_t);
-    for (uint32_t n = 0; ; n++) {
-        uint32_t sec;
-        if (fat16_dir_nth_sector(fs, 0, dir_cluster, n, &sec) != 0) break;
-        if (fat16_read_sector(fs, sec, buf) != 0) { free(buf); return 0; }
-        for (int i = 0; i < entries_per_sector; i++) {
-            fat16_dirent_t *de = (fat16_dirent_t *)(buf + i * sizeof(fat16_dirent_t));
-            if (de->name[0] == 0x00) { free(buf); return 1; }
-            if ((uint8_t)de->name[0] == 0xE5) continue;
-            if (de->attr == FAT16_ATTR_VOLUME || de->attr == FAT16_ATTR_LFN) continue;
-            if (de->name[0] == '.' && (de->name[1] == ' ' || (de->name[1] == '.' && de->name[2] == ' '))) continue;
-            free(buf);
-            return 0;
-        }
+    fat16_dirref_t dir_cluster = { 0, dir_cluster_num };
+    for (uint32_t slot = 0;; slot++) {
+        uint8_t e[32];
+        if (fat16_slot_read(fs, dir_cluster, slot, e) != 0) return 1;
+        if (e[0] == 0x00) return 1;
+        if (e[0] == 0xE5 || e[11] == FAT16_ATTR_LFN) continue;
+        if (e[11] & FAT16_ATTR_VOLUME) continue;
+        if (e[0] == '.' && (e[1] == ' ' || (e[1] == '.' && e[2] == ' '))) continue;
+        return 0;
     }
-    free(buf);
-    return 1;
 }
 
 static int fat16_vfs_unlink(void *ctx, const char *path)
@@ -770,27 +847,19 @@ static int fat16_vfs_unlink(void *ctx, const char *path)
     fat16_t *fs = (fat16_t *)ctx;
 
     char parent_path[256];
-    char name[13];
+    char name[FAT16_NAME_MAX];
     if (fat16_split_path(path, parent_path, sizeof(parent_path), name, sizeof(name)) != 0) return -1;
 
-    fat16_dirref_t parent;
-    if (fat16_walk(fs, parent_path, &parent) != 0) return -1;
+    fat16_dirref_t parent_cluster;
+    if (fat16_walk(fs, parent_path, &parent_cluster) != 0) return -1;
 
-    fat16_dirent_t de;
-    uint32_t sec, off;
-    if (fat16_dir_find(fs, parent.is_root, parent.cluster, name, &de, &sec, &off) != 0) return -1;
+    fat16_loc_t loc;
+    if (fat16_dir_find(fs, parent_cluster, name, &loc) != 0) return -1;
 
-    uint32_t cluster = de.cluster_low | ((uint32_t)de.cluster_high << 16);
-    if ((de.attr & FAT16_ATTR_DIRECTORY) && !fat16_dir_is_empty(fs, cluster)) return -1;
+    uint32_t cluster = loc.de.cluster_low | ((uint32_t)loc.de.cluster_high << 16);
+    if ((loc.de.attr & FAT16_ATTR_DIRECTORY) && !fat16_dir_is_empty(fs, cluster)) return -1;
     fat16_free_chain(fs, cluster);
-
-    uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
-    if (!buf) return -1;
-    if (fat16_read_sector(fs, sec, buf) != 0) { free(buf); return -1; }
-    buf[off] = 0xE5;
-    int ret = fat16_write_sector(fs, sec, buf);
-    free(buf);
-    return ret;
+    return fat16_dir_delete_set(fs, parent_cluster, loc.first_slot, loc.slot);
 }
 
 static int fat16_vfs_stat(void *ctx, const char *path, vfs_entry_t *entry)
@@ -809,22 +878,22 @@ static int fat16_vfs_stat(void *ctx, const char *path, vfs_entry_t *entry)
     }
 
     char parent_path[256];
-    char name[13];
+    char name[FAT16_NAME_MAX];
     if (fat16_split_path(path, parent_path, sizeof(parent_path), name, sizeof(name)) != 0) return -1;
 
-    fat16_dirref_t parent;
-    if (fat16_walk(fs, parent_path, &parent) != 0) return -1;
+    fat16_dirref_t parent_cluster;
+    if (fat16_walk(fs, parent_path, &parent_cluster) != 0) return -1;
 
-    fat16_dirent_t de;
-    if (fat16_dir_find(fs, parent.is_root, parent.cluster, name, &de, NULL, NULL) != 0) return -1;
+    fat16_loc_t loc;
+    if (fat16_dir_find(fs, parent_cluster, name, &loc) != 0) return -1;
 
     int k = 0;
     while (name[k] && k < VFS_NAME_LEN - 1) { entry->name[k] = name[k]; k++; }
     entry->name[k] = 0;
-    entry->size = de.file_size;
-    entry->is_dir = (de.attr & FAT16_ATTR_DIRECTORY) ? 1 : 0;
-    entry->inode = de.cluster_low | ((uint32_t)de.cluster_high << 16);
-    entry->mode = de.attr;
+    entry->size = loc.de.file_size;
+    entry->is_dir = (loc.de.attr & FAT16_ATTR_DIRECTORY) ? 1 : 0;
+    entry->inode = loc.de.cluster_low | ((uint32_t)loc.de.cluster_high << 16);
+    entry->mode = loc.de.attr;
     return 0;
 }
 
@@ -832,45 +901,38 @@ static int fat16_vfs_rename(void *ctx, const char *old, const char *new)
 {
     fat16_t *fs = (fat16_t *)ctx;
 
-    char old_parent_path[256], old_name[13];
+    char old_parent_path[256], old_name[FAT16_NAME_MAX];
     if (fat16_split_path(old, old_parent_path, sizeof(old_parent_path), old_name, sizeof(old_name)) != 0) return -1;
     fat16_dirref_t old_parent;
     if (fat16_walk(fs, old_parent_path, &old_parent) != 0) return -1;
 
-    fat16_dirent_t de;
-    uint32_t sec, off;
-    if (fat16_dir_find(fs, old_parent.is_root, old_parent.cluster, old_name, &de, &sec, &off) != 0) return -1;
+    fat16_loc_t loc;
+    if (fat16_dir_find(fs, old_parent, old_name, &loc) != 0) return -1;
 
-    char new_parent_path[256], new_name[13];
+    char new_parent_path[256], new_name[FAT16_NAME_MAX];
     if (fat16_split_path(new, new_parent_path, sizeof(new_parent_path), new_name, sizeof(new_name)) != 0) return -1;
     fat16_dirref_t new_parent;
     if (fat16_walk(fs, new_parent_path, &new_parent) != 0) return -1;
 
-    if (new_parent.is_root == old_parent.is_root && new_parent.cluster == old_parent.cluster) {
-        char want[11];
-        fat16_name_to_83(new_name, want);
-        memcpy(de.name, want, 8);
-        memcpy(de.ext, want + 8, 3);
+    /* a case-only rename of the same entry is just a delete + add of the set */
+    fat16_loc_t clash;
+    int clash_found = (fat16_dir_find(fs, new_parent, new_name, &clash) == 0);
+    if (clash_found && !(new_parent.is_root == old_parent.is_root && new_parent.cluster == old_parent.cluster && clash.slot == loc.slot)) return -1;
 
-        uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
-        if (!buf) return -1;
-        if (fat16_read_sector(fs, sec, buf) != 0) { free(buf); return -1; }
-        memcpy(buf + off, &de, sizeof(de));
-        int ret = fat16_write_sector(fs, sec, buf);
-        free(buf);
-        return ret;
+    fat16_dirent_t proto = loc.de;
+    if (clash_found) {
+        /* same entry under a differently-cased name: drop the old set first */
+        if (fat16_dir_delete_set(fs, old_parent, loc.first_slot, loc.slot) != 0) return -1;
+        if (fat16_dir_add_named(fs, new_parent, new_name, &proto, NULL) != 0) return -1;
+        return 0;
     }
 
-    char want[11];
-    fat16_name_to_83(new_name, want);
-    fat16_dirent_t newde = de;
-    memcpy(newde.name, want, 8);
-    memcpy(newde.ext, want + 8, 3);
-    if (fat16_dir_add_entry(fs, new_parent.is_root, new_parent.cluster, &newde, NULL, NULL) != 0) return -1;
+    fat16_loc_t added;
+    if (fat16_dir_add_named(fs, new_parent, new_name, &proto, &added) != 0) return -1;
 
     /* a moved directory's ".." must point at its new parent (0 for the root) */
-    if (de.attr & FAT16_ATTR_DIRECTORY) {
-        uint32_t dcl = de.cluster_low | ((uint32_t)de.cluster_high << 16);
+    if ((proto.attr & FAT16_ATTR_DIRECTORY) && !(new_parent.is_root == old_parent.is_root && new_parent.cluster == old_parent.cluster)) {
+        uint32_t dcl = proto.cluster_low | ((uint32_t)proto.cluster_high << 16);
         uint8_t *db = (uint8_t *)malloc(fs->bytes_per_sector);
         if (db) {
             uint32_t dsec = fat16_cluster_to_sector(fs, dcl);
@@ -885,15 +947,7 @@ static int fat16_vfs_rename(void *ctx, const char *old, const char *new)
         }
     }
 
-    uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
-    if (buf) {
-        if (fat16_read_sector(fs, sec, buf) == 0) {
-            buf[off] = 0xE5;
-            fat16_write_sector(fs, sec, buf);
-        }
-        free(buf);
-    }
-    return 0;
+    return fat16_dir_delete_set(fs, old_parent, loc.first_slot, loc.slot);
 }
 
 static int fat16_vfs_symlink(void *ctx, const char *target, const char *name)
