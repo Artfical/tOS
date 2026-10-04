@@ -1,6 +1,7 @@
 #include "ext4.h"
 #include "memory.h"
 #include "string.h"
+#include "klog.h"
 
 #define EXT4_SUPER_MAGIC 0xEF53
 #define EXT4_GOOD_OLD_REV 0
@@ -1174,6 +1175,16 @@ static int ext4_probe(ext4_t *fs, blockdev_t *bd)
                        sb->s_journal_blocks >= 8 && sb->s_journal_first_block != 0 &&
                        (uint64_t)sb->s_journal_first_block + sb->s_journal_blocks <= sb->s_blocks_count);
 
+    /* Features whose on-disk structures the driver does not keep up to date
+     * (64-bit group descriptors, checksums, uninitialised groups, inline
+     * data, bigalloc, ...) and a journal that still has to be replayed:
+     * writing to such a volume would corrupt it, so only reads are allowed. */
+    uint32_t incompat_ok = EXT4_FEATURE_INCOMPAT_FILETYPE | EXT4_FEATURE_INCOMPAT_EXTENTS | 0x200 /* flex_bg */;
+    uint32_t ro_ok = 0x1 /* sparse_super */ | 0x2 /* large_file */ | 0x8 /* huge_file */ | 0x20 /* dir_nlink */ | 0x40 /* extra_isize */;
+    fs->ro = ((sb->s_feature_incompat & ~incompat_ok) != 0) || ((sb->s_feature_ro_compat & ~ro_ok) != 0) ||
+             (sb->s_feature_incompat & 0x4 /* needs_recovery */) != 0;
+    if (fs->ro) klog_write("ext4: mounted read-only (volume uses features the driver cannot maintain)\n");
+
     free(sb);
 
     fs->in_txn = 0;
@@ -1199,6 +1210,7 @@ int ext4_umount(ext4_t *fs)
 static int ext4_vfs_open(void *ctx, const char *path, int flags)
 {
     ext4_t *fs = (ext4_t *)ctx;
+    if (fs->ro && (flags & (VFS_WRONLY | VFS_RDWR | VFS_CREAT | VFS_TRUNC | VFS_APPEND))) return -1;
     int do_txn = (flags & (VFS_CREAT | VFS_TRUNC)) != 0;
     if (do_txn) ext4_txn_begin(fs);
 
@@ -1301,6 +1313,7 @@ static int ext4_vfs_read(void *ctx, int fd, void *buf, uint32_t size)
 
 static int ext4_vfs_write(void *ctx, int fd, const void *buf, uint32_t size)
 {
+    if (((ext4_t *)ctx)->ro) return -1;
     ext4_t *fs = (ext4_t *)ctx;
     if (fd < 0 || fd >= VFS_MAX_FDS || !fs->fds[fd].used) return -1;
 
@@ -1382,6 +1395,7 @@ static int ext4_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, i
 
 static int ext4_vfs_mkdir(void *ctx, const char *path, uint32_t mode)
 {
+    if (((ext4_t *)ctx)->ro) return -1;
     (void)mode;
     ext4_t *fs = (ext4_t *)ctx;
     ext4_txn_begin(fs);
@@ -1459,6 +1473,7 @@ static int ext4_vfs_mkdir(void *ctx, const char *path, uint32_t mode)
 
 static int ext4_vfs_unlink(void *ctx, const char *path)
 {
+    if (((ext4_t *)ctx)->ro) return -1;
     ext4_t *fs = (ext4_t *)ctx;
     ext4_txn_begin(fs);
 
@@ -1552,6 +1567,7 @@ static int ext4_vfs_stat(void *ctx, const char *path, vfs_entry_t *entry)
 
 static int ext4_vfs_rename(void *ctx, const char *old, const char *new)
 {
+    if (((ext4_t *)ctx)->ro) return -1;
     ext4_t *fs = (ext4_t *)ctx;
     ext4_txn_begin(fs);
 
