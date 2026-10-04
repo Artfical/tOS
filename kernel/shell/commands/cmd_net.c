@@ -265,8 +265,15 @@ void cmd_wget(int argc, char **args)
         fname[fi + el] = '\0';
     }
 
+    /* The response still starts with the status line and headers; the
+     * saved file must be just the body (the headers were only needed
+     * above, for the content type). */
+    int body_off = 0;
+    for (int k = 0; k + 3 < n; k++) {
+        if (resp[k] == '\r' && resp[k + 1] == '\n' && resp[k + 2] == '\r' && resp[k + 3] == '\n') { body_off = k + 4; break; }
+    }
     if (ramfs_create(fname) == 0) {
-        ramfs_write(fname, (char *)resp, n, 0);
+        ramfs_write(fname, (char *)resp + body_off, n - body_off, 0);
         terminal_writestring("Saved to: ");
         terminal_writestring(fname);
         terminal_writestring("\n");
