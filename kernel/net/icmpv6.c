@@ -5,6 +5,7 @@
 #include "string.h"
 #include "memory.h"
 #include "terminal.h"
+#include "debugmon.h"
 
 /* -----------------------------------------------------------------------
  * NDP (Neighbor Discovery Protocol) cache — IPv6 equivalent of ARP cache
@@ -14,35 +15,44 @@ typedef struct {
     uint8_t  ip6[16];
     uint8_t  mac[6];
     int      valid;
+    uint32_t stamp;
 } ndp_entry_t;
+
+#define NDP_TTL_MS 120000
+/* target of the Neighbor Solicitation we are waiting on; only an advertisement
+ * for it may create or change a cache entry. */
+static uint8_t ndp_pending[16];
+static int ndp_pending_valid;
 static ndp_entry_t ndp_cache[NDP_CACHE_SIZE];
 
+static int ndp_fresh(const ndp_entry_t *e) {
+    return e->valid && (uint32_t)(debugmon_uptime_ms() - e->stamp) < NDP_TTL_MS;
+}
+
 static void ndp_cache_store(const uint8_t *ip6, const uint8_t *mac) {
-    /* Update existing entry */
+    uint32_t now = debugmon_uptime_ms();
     for (int i = 0; i < NDP_CACHE_SIZE; i++) {
         if (ndp_cache[i].valid && memcmp(ndp_cache[i].ip6, ip6, 16) == 0) {
             memcpy(ndp_cache[i].mac, mac, 6);
+            ndp_cache[i].stamp = now;
             return;
         }
     }
-    /* Find empty slot */
+    /* free or expired slot, else evict the oldest (not always slot 0) */
+    int victim = 0;
     for (int i = 0; i < NDP_CACHE_SIZE; i++) {
-        if (!ndp_cache[i].valid) {
-            memcpy(ndp_cache[i].ip6, ip6, 16);
-            memcpy(ndp_cache[i].mac, mac, 6);
-            ndp_cache[i].valid = 1;
-            return;
-        }
+        if (!ndp_fresh(&ndp_cache[i])) { victim = i; break; }
+        if ((uint32_t)(now - ndp_cache[i].stamp) > (uint32_t)(now - ndp_cache[victim].stamp)) victim = i;
     }
-    /* Evict slot 0 */
-    memcpy(ndp_cache[0].ip6, ip6, 16);
-    memcpy(ndp_cache[0].mac, mac, 6);
-    ndp_cache[0].valid = 1;
+    memcpy(ndp_cache[victim].ip6, ip6, 16);
+    memcpy(ndp_cache[victim].mac, mac, 6);
+    ndp_cache[victim].valid = 1;
+    ndp_cache[victim].stamp = now;
 }
 
 static int ndp_cache_lookup(const uint8_t *ip6, uint8_t *mac_out) {
     for (int i = 0; i < NDP_CACHE_SIZE; i++) {
-        if (ndp_cache[i].valid && memcmp(ndp_cache[i].ip6, ip6, 16) == 0) {
+        if (ndp_fresh(&ndp_cache[i]) && memcmp(ndp_cache[i].ip6, ip6, 16) == 0) {
             memcpy(mac_out, ndp_cache[i].mac, 6);
             return 0;
         }
@@ -155,6 +165,8 @@ static void send_echo_reply(ip6_hdr_t *req_ip6, const uint8_t *req_body, int bod
 int icmpv6_ndp_resolve(const uint8_t *dst_ip6, uint8_t *mac_out) {
     if (ndp_cache_lookup(dst_ip6, mac_out) == 0) return 0;
 
+    memcpy(ndp_pending, dst_ip6, 16);
+    ndp_pending_valid = 1;
     send_neighbor_solicitation(dst_ip6);
 
     for (int retry = 0; retry < 200; retry++) {
@@ -165,8 +177,9 @@ int icmpv6_ndp_resolve(const uint8_t *dst_ip6, uint8_t *mac_out) {
             if (ntohs(eth->type) == ETHERTYPE_IPV6)
                 ip6_handle(pkt + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
         }
-        if (ndp_cache_lookup(dst_ip6, mac_out) == 0) return 0;
+        if (ndp_cache_lookup(dst_ip6, mac_out) == 0) { ndp_pending_valid = 0; return 0; }
     }
+    ndp_pending_valid = 0;
     return -1;
 }
 
@@ -268,6 +281,9 @@ void icmpv6_handle(ip6_hdr_t *ip6, void *pkt, int len) {
     case ICMPV6_NEIGH_ADV:
         if (len >= 4 + 16) {
             uint8_t *target = msg + 4;
+            /* Only an answer to our own outstanding solicitation is accepted;
+             * unsolicited advertisements used to overwrite live entries. */
+            if (!ndp_pending_valid || memcmp(target, ndp_pending, 16) != 0) break;
             /* Look for Target Link-Layer Address option (type 2) */
             uint8_t *opt = msg + 4 + 16;
             int optrem   = len - 4 - 16;
