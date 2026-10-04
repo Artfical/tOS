@@ -299,7 +299,7 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
     } else if (strcmp(fstype, "ntfs") == 0) {
         if (ntfs_format(bd, "tOS") != 0) { seterr(err, err_len, "formatting NTFS is not supported; create the volume with mkfs.ntfs or Windows"); return -1; }
     } else if (strcmp(fstype, "btrfs") == 0) {
-        if (btrfs_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
+        if (btrfs_format(bd, "tOS") != 0) { seterr(err, err_len, "formatting btrfs is not supported; use mkfs.btrfs"); return -1; }
     } else if (strcmp(fstype, "xfs") == 0) {
         if (xfs_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
     } else if (strcmp(fstype, "zfs") == 0) {
