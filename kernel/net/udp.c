@@ -84,6 +84,7 @@ static uint16_t udp_checksum(void *pseudo, int pseudo_len, void *udp_seg, int se
 
 int udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port, void *data, int len)
 {
+    if (len < 0 || len > IP_MAX_PAYLOAD - (int)sizeof(udp_hdr_t)) return IP_ERR_TOOBIG;
     int total = sizeof(udp_hdr_t) + len;
     uint8_t *buf = (uint8_t *)malloc(total);
     if (!buf) return IP_ERR_NOMEM; /* same class of failure as ip_send()'s own OOM check */

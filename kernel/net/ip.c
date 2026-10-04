@@ -30,6 +30,10 @@ static uint16_t ip_checksum(const uint8_t *buf, int len)
 
 int ip_send(uint32_t dst_ip, uint8_t protocol, void *data, int len)
 {
+    /* A negative len would wrap into a huge malloc()/memcpy(); anything
+     * above the MTU would be sent as an oversized, unfragmented frame. */
+    if (len < 0 || len > IP_MAX_PAYLOAD) return IP_ERR_TOOBIG;
+
     /* Route lookup: resolve next-hop gateway */
     uint32_t nh = route_lookup(net_ip, dst_ip);
     if (!nh) nh = dst_ip; /* no route configured — try direct */

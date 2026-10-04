@@ -156,6 +156,7 @@ const char *dns_strerror(int err)
         case DNS_ERR_MALFORMED: return "malformed response from DNS server";
         case DNS_ERR_NO_A:      return "host has no IPv4 (A) address";
         case IP_ERR_NOMEM:      return "out of memory building packet";
+        case IP_ERR_TOOBIG:     return "packet too large";
         default:                return arp_resolve_strerror(err); /* ARP_ERR_* (couldn't send at all) */
     }
 }

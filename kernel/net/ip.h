@@ -22,6 +22,8 @@ typedef struct {
  * to arp_resolve_strerror(). IP_ERR_NOMEM is ip_send()'s own failure,
  * for the one case that isn't ARP's fault. */
 #define IP_ERR_NOMEM -3
+#define IP_ERR_TOOBIG -4   /* negative length, or payload above the 1500-byte MTU (no fragmentation on TX) */
+#define IP_MAX_PAYLOAD 1480
 
 int  ip_send(uint32_t dst_ip, uint8_t protocol, void *data, int len);
 void ip_handle(uint8_t *data, int len);
