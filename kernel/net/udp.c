@@ -48,6 +48,11 @@ int udp_listen(uint16_t port, uint8_t *resp, int max_len, uint32_t *src_ip, uint
 
 int udp_open(uint16_t port)
 {
+    /* There is no udp_close(), so callers that open the same port again
+     * (every dns_resolve() does) used to burn one of the 4 sockets each
+     * time until none were left. Reuse the existing one. */
+    for (int i = 0; i < UDP_SOCKETS; i++)
+        if (udp_sockets[i].used && udp_sockets[i].port == port) return i;
     for (int i = 0; i < UDP_SOCKETS; i++) {
         if (!udp_sockets[i].used) {
             udp_sockets[i].used = 1;
