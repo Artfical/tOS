@@ -377,6 +377,19 @@ static void ext4_bitmap_set(ext4_t *fs, uint32_t bitmap_block, uint32_t bit, int
     ext4_bytes_write_cached(fs, off, 1, &byte);
 }
 
+/* The superblock keeps filesystem-wide free counts next to the per-group
+ * ones; keep both in step so fsck does not report them wrong. */
+static void ext4_sb_adjust(ext4_t *fs, int dblocks, int dinodes)
+{
+    /* straight to the device: with 4KB blocks the superblock sits in block
+     * 0, which the transaction layer treats as invalid */
+    uint32_t v[2];
+    if (blockdev_read_bytes(fs->bd, 1024 + 12, 8, v) != 0) return;
+    v[0] = (uint32_t)((int32_t)v[0] + dblocks);
+    v[1] = (uint32_t)((int32_t)v[1] + dinodes);
+    blockdev_write_bytes(fs->bd, 1024 + 12, 8, v);
+}
+
 static uint32_t ext4_alloc_block(ext4_t *fs)
 {
     for (uint32_t g = 0; g < fs->num_groups; g++) {
@@ -393,6 +406,7 @@ static uint32_t ext4_alloc_block(ext4_t *fs)
                 ext4_bitmap_set(fs, gd.bg_block_bitmap, bit, 1);
                 gd.bg_free_blocks_count--;
                 ext4_write_group_desc(fs, g, &gd);
+                ext4_sb_adjust(fs, -1, 0);
                 uint32_t block = base + bit;
                 ext4_zalloc_block_raw(fs, block);
                 return block;
@@ -412,6 +426,7 @@ static void ext4_free_block(ext4_t *fs, uint32_t block)
     ext4_bitmap_set(fs, gd.bg_block_bitmap, bit, 0);
     gd.bg_free_blocks_count++;
     ext4_write_group_desc(fs, group, &gd);
+    ext4_sb_adjust(fs, 1, 0);
 }
 
 static uint32_t ext4_alloc_inode(ext4_t *fs, int is_dir)
@@ -429,6 +444,7 @@ static uint32_t ext4_alloc_inode(ext4_t *fs, int is_dir)
                 gd.bg_free_inodes_count--;
                 if (is_dir) gd.bg_used_dirs_count++;
                 ext4_write_group_desc(fs, g, &gd);
+                ext4_sb_adjust(fs, 0, -1);
                 return ino;
             }
         }
@@ -446,6 +462,7 @@ static void ext4_free_inode(ext4_t *fs, uint32_t ino, int is_dir)
     gd.bg_free_inodes_count++;
     if (is_dir && gd.bg_used_dirs_count > 0) gd.bg_used_dirs_count--;
     ext4_write_group_desc(fs, group, &gd);
+    ext4_sb_adjust(fs, 0, 1);
 }
 
 /* ---------- extent tree (replaces ext2/ext3's indirect-block mapping) ---------- */
