@@ -1,443 +1,371 @@
+/* XFS driver: reads real XFS volumes (v4 and v5 metadata; short-form,
+ * block, leaf and node directories; extent and B-tree data forks).
+ * Always read-only. */
+
 #include "xfs.h"
 #include "memory.h"
 #include "string.h"
+#include "klog.h"
 
-#define XFS_SB_MAGIC 0x58465342U
+#define XFS_SB_MAGIC     0x58465342u   /* "XFSB" */
+#define XFS_DINODE_MAGIC 0x494E        /* "IN" */
 
-#define XFS_DINODE_MAGIC 0x494EU
+#define XFS_DIR2_BLOCK_MAGIC   0x58443242u  /* "XD2B" */
+#define XFS_DIR2_DATA_MAGIC    0x58443244u  /* "XD2D" */
+#define XFS_DIR3_BLOCK_MAGIC   0x58444233u  /* "XDB3" */
+#define XFS_DIR3_DATA_MAGIC    0x58444433u  /* "XDD3" */
 
 #define XFS_DINODE_FMT_LOCAL   1
 #define XFS_DINODE_FMT_EXTENTS 2
 #define XFS_DINODE_FMT_BTREE   3
 
-#define XFS_DIR2_SF_HDR_SIZE   10
-#define XFS_DIR3_BLOCK_MAGIC   0x58443342U
-#define XFS_DIR2_BLOCK_MAGIC   0x58443242U
+#define XFS_INCOMPAT_FTYPE     0x01u
+#define XFS_INCOMPAT_SPINODES  0x02u
+#define XFS_INCOMPAT_META_UUID 0x04u
+#define XFS_INCOMPAT_BIGTIME   0x08u
+#define XFS_INCOMPAT_OK        (XFS_INCOMPAT_FTYPE | XFS_INCOMPAT_SPINODES | XFS_INCOMPAT_META_UUID | XFS_INCOMPAT_BIGTIME)
 
-#define XFS_INO_MASK(k) ((uint64_t)((1ULL << (k)) - 1))
+#define S_IFMT_  0170000
+#define S_IFDIR_ 0040000
 
-static uint16_t be16(uint16_t v)
-{
-    return (uint16_t)(((v & 0xFFU) << 8) | ((v >> 8) & 0xFFU));
-}
-
-static uint32_t be32(uint32_t v)
-{
-    return ((v & 0xFFU) << 24) | (((v >> 8) & 0xFFU) << 16) |
-           (((v >> 16) & 0xFFU) << 8) | ((v >> 24) & 0xFFU);
-}
-
-static uint64_t be64(uint64_t v)
-{
-    return ((uint64_t)be32((uint32_t)(v >> 32))) |
-           ((uint64_t)be32((uint32_t)(v & 0xFFFFFFFFU)) << 32);
-}
+static inline uint16_t be16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
+static inline uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+static inline uint64_t be64(const uint8_t *p) { return ((uint64_t)be32(p) << 32) | be32(p + 4); }
 
 typedef struct {
-    uint32_t sb_magicnum;
-    uint32_t sb_blocksize;
-    uint64_t sb_dblocks;
-    uint64_t sb_rblocks;
-    uint64_t sb_rextents;
-    uint8_t  sb_uuid[16];
-    uint64_t sb_logstart;
-    uint64_t sb_rootino;
-    uint64_t sb_rbmino;
-    uint64_t sb_rsumino;
-    uint32_t sb_rextsize;
-    uint32_t sb_agblocks;
-    uint32_t sb_agcount;
-    uint32_t sb_rbmblocks;
-    uint32_t sb_logblocks;
-    uint16_t sb_versionnum;
-    uint16_t sb_sectsize;
-    uint16_t sb_inodesize;
-    uint16_t sb_inopblock;
-    char     sb_fname[12];
-    uint8_t  sb_blocklog;
-    uint8_t  sb_sectlog;
-    uint8_t  sb_inodelog;
-    uint8_t  sb_inopblog;
-    uint8_t  sb_agblklog;
-    uint8_t  sb_rextslog;
-    uint8_t  sb_inprogress;
-    uint8_t  sb_imax_pct;
-    uint64_t sb_icount;
-    uint64_t sb_ifree;
-    uint64_t sb_fdblocks;
-    uint64_t sb_frextents;
-    uint64_t sb_uquotino;
-    uint64_t sb_gquotino;
-    uint16_t sb_qflags;
-    uint8_t  sb_flags;
-    uint8_t  sb_shared_vn;
-    uint32_t sb_inoalignmt;
-    uint32_t sb_unit;
-    uint32_t sb_width;
-} __attribute__((packed)) xfs_sb_t;
+    uint64_t startoff;     /* in filesystem blocks */
+    uint64_t startblock;   /* filesystem block number (AG-encoded) */
+    uint64_t blockcount;
+    int unwritten;
+} xfs_ext_t;
 
 typedef struct {
-    uint16_t di_magic;
-    uint16_t di_mode;
-    uint8_t  di_version;
-    uint8_t  di_format;
-    uint16_t di_nlinkv1;
-    uint32_t di_uid;
-    uint32_t di_gid;
-    uint32_t di_nlink;
-    uint16_t di_projid_lo;
-    uint16_t di_projid_hi;
-    uint8_t  di_pad[8];
-    uint16_t di_flushiter;
-    uint64_t di_atime;
-    uint64_t di_mtime;
-    uint64_t di_ctime;
-    uint64_t di_size;
-    uint64_t di_nblocks;
-    uint32_t di_extsize;
-    uint32_t di_nextents;
-    uint16_t di_anextents;
-    uint8_t  di_forkoff;
-    uint8_t  di_aformat;
-    uint32_t di_dmevmask;
-    uint16_t di_dmstate;
-    uint16_t di_flags;
-    uint32_t di_gen;
-    uint32_t di_next_unlinked;
-} __attribute__((packed)) xfs_dinode_t;
+    uint8_t *raw;          /* inodesize bytes */
+    uint16_t mode;
+    uint8_t version, format;
+    uint64_t size;
+    uint32_t nextents;
+    uint8_t forkoff;
+    int core_len;
+    const uint8_t *fork;
+    int fork_len;
+} xfs_inode_t;
 
-typedef struct {
-    uint32_t magic;
-    uint32_t pad;
-    uint64_t reserved1[2];
-    uint64_t lsn;
-    uint8_t  uuid[16];
-    uint64_t owner;
-    uint64_t blkno;
-    uint8_t  entries[0];
-} __attribute__((packed)) xfs_dir3_blk_hdr_t;
-
-typedef struct {
-    uint64_t ino;
-    uint8_t  namelen;
-    uint8_t  ftype;
-    char     name[0];
-} __attribute__((packed)) xfs_dir2_data_entry_t;
-
-static uint64_t xfs_ino_to_byte(xfs_t *fs, uint64_t ino)
+static uint64_t fsb_to_byte(xfs_t *fs, uint64_t fsb)
 {
-    uint64_t block = ino / fs->inopblock;
-    uint64_t off   = ino % fs->inopblock;
-    return block * (uint64_t)fs->blocksize + off * (uint64_t)fs->inodesize;
+    uint64_t agno = fsb >> fs->agblklog;
+    uint64_t agbno = fsb & (((uint64_t)1 << fs->agblklog) - 1);
+    return (agno * fs->agblocks + agbno) * fs->blocksize;
 }
 
-static int xfs_read_inode(xfs_t *fs, uint64_t ino, xfs_dinode_t *out)
+static int read_inode(xfs_t *fs, uint64_t ino, xfs_inode_t *ip)
 {
-    uint64_t byte_off = xfs_ino_to_byte(fs, ino);
-    return blockdev_read_bytes(fs->bd, byte_off, sizeof(xfs_dinode_t), out);
-}
-
-static uint64_t xfs_extent_startblock(const uint8_t ext[16])
-{
-    uint64_t hi = ((uint64_t)ext[0] << 56) | ((uint64_t)ext[1] << 48) |
-                  ((uint64_t)ext[2] << 40) | ((uint64_t)ext[3] << 32) |
-                  ((uint64_t)ext[4] << 24) | ((uint64_t)ext[5] << 16) |
-                  ((uint64_t)ext[6] << 8)  | (uint64_t)ext[7];
-    uint64_t lo = ((uint64_t)ext[8] << 56) | ((uint64_t)ext[9] << 48) |
-                  ((uint64_t)ext[10] << 40) | ((uint64_t)ext[11] << 32) |
-                  ((uint64_t)ext[12] << 24) | ((uint64_t)ext[13] << 16) |
-                  ((uint64_t)ext[14] << 8)  | (uint64_t)ext[15];
-    /* bits 126..73 = startoff (54 bits), bits 72..21 = startblock (52 bits) */
-    uint64_t startblock = (lo >> 21) & ((1ULL << 52) - 1);
-    uint64_t hi_bits = (hi >> 9) & 0x1FULL;
-    startblock |= (hi_bits << 47);
-    return startblock;
-}
-
-static uint64_t xfs_extent_startoff(const uint8_t ext[16])
-{
-    uint64_t hi = ((uint64_t)ext[0] << 56) | ((uint64_t)ext[1] << 48) |
-                  ((uint64_t)ext[2] << 40) | ((uint64_t)ext[3] << 32) |
-                  ((uint64_t)ext[4] << 24) | ((uint64_t)ext[5] << 16) |
-                  ((uint64_t)ext[6] << 8)  | (uint64_t)ext[7];
-    uint64_t lo = ((uint64_t)ext[8] << 56) | ((uint64_t)ext[9] << 48) |
-                  ((uint64_t)ext[10] << 40) | ((uint64_t)ext[11] << 32) |
-                  ((uint64_t)ext[12] << 24) | ((uint64_t)ext[13] << 16) |
-                  ((uint64_t)ext[14] << 8)  | (uint64_t)ext[15];
-    /* bits 126..73: startoff occupies bits 126-73 across hi and lo */
-    uint64_t raw = ((hi & 0x7FFFFFFFFFFFFFFFULL) >> 9);
-    raw = (raw << 9) | (lo >> 55);
-    raw >>= 1;
-    return raw & ((1ULL << 54) - 1);
-}
-
-static uint32_t xfs_extent_blockcount(const uint8_t ext[16])
-{
-    uint64_t lo = ((uint64_t)ext[8] << 56) | ((uint64_t)ext[9] << 48) |
-                  ((uint64_t)ext[10] << 40) | ((uint64_t)ext[11] << 32) |
-                  ((uint64_t)ext[12] << 24) | ((uint64_t)ext[13] << 16) |
-                  ((uint64_t)ext[14] << 8)  | (uint64_t)ext[15];
-    return (uint32_t)(lo & ((1ULL << 21) - 1));
-}
-
-static int xfs_read_extent_data(xfs_t *fs, uint64_t block, uint32_t count, uint32_t file_off,
-                                  void *buf, uint32_t size, uint32_t pos)
-{
-    uint64_t extent_byte_start = block * (uint64_t)fs->blocksize;
-    uint64_t extent_byte_size  = (uint64_t)count * fs->blocksize;
-    uint64_t file_byte_start   = (uint64_t)file_off * fs->blocksize;
-    uint64_t file_byte_end     = file_byte_start + extent_byte_size;
-
-    uint64_t copy_start = (uint64_t)pos > file_byte_start ? (uint64_t)pos : file_byte_start;
-    uint64_t copy_end   = ((uint64_t)pos + size) < file_byte_end ? ((uint64_t)pos + size) : file_byte_end;
-    if (copy_start >= copy_end) return 0;
-
-    uint64_t disk_off = extent_byte_start + (copy_start - file_byte_start);
-    uint32_t len      = (uint32_t)(copy_end - copy_start);
-    uint32_t buf_off  = (uint32_t)(copy_start - pos);
-
-    return blockdev_read_bytes(fs->bd, disk_off, len, (uint8_t *)buf + buf_off);
-}
-
-int xfs_probe_and_mount(xfs_t *fs, blockdev_t *bd)
-{
-    memset(fs, 0, sizeof(xfs_t));
-    fs->bd = bd;
-
-    xfs_sb_t *sb = (xfs_sb_t *)malloc(sizeof(xfs_sb_t));
-    if (!sb) return -1;
-
-    if (blockdev_read_bytes(bd, 0, sizeof(xfs_sb_t), sb) != 0) { free(sb); return -1; }
-
-    if (be32(sb->sb_magicnum) != XFS_SB_MAGIC) { free(sb); return -1; }
-
-    fs->blocksize  = be32(sb->sb_blocksize);
-    fs->dblocks    = be64(sb->sb_dblocks);
-    fs->rootino    = be64(sb->sb_rootino);
-    fs->agblocks   = be32(sb->sb_agblocks);
-    fs->agcount    = be32(sb->sb_agcount);
-    fs->inodesize  = be16(sb->sb_inodesize);
-    fs->inopblock  = be16(sb->sb_inopblock);
-    fs->agblklog   = sb->sb_agblklog;
-    fs->inopblog   = sb->sb_inopblog;
-    memcpy(fs->fname, sb->sb_fname, 12);
-    fs->fname[12] = 0;
-
-    if (fs->blocksize == 0) fs->blocksize = 4096;
-    if (fs->inodesize == 0) fs->inodesize = 256;
-    if (fs->inopblock == 0) fs->inopblock = fs->blocksize / fs->inodesize;
-
-    uint64_t icount = be64(sb->sb_icount);
-    uint64_t fdblocks = be64(sb->sb_fdblocks);
-    fs->next_ino   = (icount > 128) ? icount + 1 : 129;
-    fs->next_block = (fdblocks < be64(sb->sb_dblocks)) ? (be64(sb->sb_dblocks) - fdblocks + 10) : 10;
-
-    free(sb);
+    uint64_t agno = ino >> (fs->agblklog + fs->inopblog);
+    uint64_t agbno = (ino >> fs->inopblog) & (((uint64_t)1 << fs->agblklog) - 1);
+    uint64_t slot = ino & (((uint64_t)1 << fs->inopblog) - 1);
+    if (agno >= fs->agcount || agbno >= fs->agblocks) return -1;
+    uint64_t off = (agno * fs->agblocks + agbno) * fs->blocksize + slot * fs->inodesize;
+    memset(ip, 0, sizeof(*ip));
+    ip->raw = (uint8_t *)malloc(fs->inodesize);
+    if (!ip->raw) return -1;
+    if (blockdev_read_bytes(fs->bd, off, fs->inodesize, ip->raw) != 0 || be16(ip->raw) != XFS_DINODE_MAGIC) {
+        free(ip->raw);
+        ip->raw = 0;
+        return -1;
+    }
+    ip->mode = be16(ip->raw + 2);
+    ip->version = ip->raw[4];
+    ip->format = ip->raw[5];
+    ip->size = be64(ip->raw + 56);
+    ip->nextents = be32(ip->raw + 76);
+    ip->forkoff = ip->raw[82];
+    ip->core_len = ip->version >= 3 ? 176 : 100;
+    ip->fork = ip->raw + ip->core_len;
+    ip->fork_len = ip->forkoff ? (int)ip->forkoff * 8 : (int)fs->inodesize - ip->core_len;
+    if (ip->fork_len < 0 || ip->core_len + ip->fork_len > (int)fs->inodesize) { free(ip->raw); ip->raw = 0; return -1; }
     return 0;
 }
 
-int xfs_umount(xfs_t *fs)
+static void inode_free(xfs_inode_t *ip)
 {
-    (void)fs;
+    free(ip->raw);
+    ip->raw = 0;
+}
+
+/* ---------- data fork extents ---------- */
+
+typedef struct {
+    xfs_ext_t *list;
+    uint32_t n, cap;
+} ext_list_t;
+
+static int ext_add(ext_list_t *l, const uint8_t *rec)
+{
+    uint64_t hi = be64(rec), lo = be64(rec + 8);
+    if (l->n == l->cap) {
+        uint32_t nc = l->cap ? l->cap * 2 : 16;
+        xfs_ext_t *nl = (xfs_ext_t *)malloc(nc * sizeof(xfs_ext_t));
+        if (!nl) return -1;
+        if (l->n) memcpy(nl, l->list, l->n * sizeof(xfs_ext_t));
+        free(l->list);
+        l->list = nl;
+        l->cap = nc;
+    }
+    xfs_ext_t *e = &l->list[l->n++];
+    e->unwritten = (int)(hi >> 63);
+    e->startoff = (hi >> 9) & (((uint64_t)1 << 54) - 1);
+    e->startblock = ((hi & 0x1FF) << 43) | (lo >> 21);
+    e->blockcount = lo & 0x1FFFFF;
     return 0;
 }
 
-/* Forward declarations for write helpers defined later */
-static int xfs_write_inode(xfs_t *fs, uint64_t ino, const xfs_dinode_t *di, const uint8_t *fork_data, uint32_t fork_size);
-static int xfs_sf_add_entry(xfs_t *fs, uint64_t parent_ino, uint64_t child_ino, const char *name, uint8_t ftype);
-static int xfs_sf_remove_entry(xfs_t *fs, uint64_t parent_ino, uint64_t child_ino);
-static void xfs_path_split(const char *path, char *parent, char *name);
-
-static int xfs_walk_path(xfs_t *fs, const char *path, uint64_t *out_ino, int *out_is_dir)
+/* Walks a bmap btree block (long-format pointers) collecting leaf records. */
+static int bmbt_walk(xfs_t *fs, uint64_t fsb, int depth, ext_list_t *l)
 {
-    uint64_t cur_ino = fs->rootino;
-    int is_dir = 1;
-    const char *p = path;
+    if (depth > 6) return -1;
+    uint8_t *blk = (uint8_t *)malloc(fs->blocksize);
+    if (!blk) return -1;
+    int rc = -1;
+    if (blockdev_read_bytes(fs->bd, fsb_to_byte(fs, fsb), fs->blocksize, blk) != 0) goto out;
+    uint32_t magic = be32(blk);
+    if (magic != 0x424D4150u && magic != 0x424D4133u) goto out;   /* "BMAP" / "BMA3" */
+    uint16_t level = be16(blk + 4), nrecs = be16(blk + 6);
+    int hdr = (magic == 0x424D4133u) ? 72 : 24;
+    if (level == 0) {
+        if ((uint64_t)hdr + (uint64_t)nrecs * 16 > fs->blocksize) goto out;
+        for (uint16_t i = 0; i < nrecs; i++)
+            if (ext_add(l, blk + hdr + (size_t)i * 16) != 0) goto out;
+    } else {
+        uint32_t maxrecs = (fs->blocksize - (uint32_t)hdr) / 16;
+        if (nrecs > maxrecs) goto out;
+        for (uint16_t i = 0; i < nrecs; i++) {
+            uint64_t child = be64(blk + hdr + (size_t)maxrecs * 8 + (size_t)i * 8);
+            if (bmbt_walk(fs, child, depth + 1, l) != 0) goto out;
+        }
+    }
+    rc = 0;
+out:
+    free(blk);
+    return rc;
+}
 
-    while (*p) {
-        while (*p == '/') p++;
-        if (!*p) break;
+static int get_extents(xfs_t *fs, const xfs_inode_t *ip, ext_list_t *l)
+{
+    memset(l, 0, sizeof(*l));
+    if (ip->format == XFS_DINODE_FMT_EXTENTS) {
+        if ((int64_t)ip->nextents * 16 > ip->fork_len) return -1;
+        for (uint32_t i = 0; i < ip->nextents; i++)
+            if (ext_add(l, ip->fork + (size_t)i * 16) != 0) { free(l->list); return -1; }
+        return 0;
+    }
+    if (ip->format == XFS_DINODE_FMT_BTREE) {
+        uint16_t level = be16(ip->fork), nrecs = be16(ip->fork + 2);
+        uint32_t maxrecs = (uint32_t)(ip->fork_len - 4) / 16;
+        if (level == 0 || nrecs > maxrecs) return -1;
+        for (uint16_t i = 0; i < nrecs; i++) {
+            uint64_t child = be64(ip->fork + 4 + (size_t)maxrecs * 8 + (size_t)i * 8);
+            if (bmbt_walk(fs, child, 1, l) != 0) { free(l->list); l->list = 0; return -1; }
+        }
+        return 0;
+    }
+    return -1;
+}
 
-        char comp[XFS_MAX_FILENAME + 1];
-        int i = 0;
-        while (*p && *p != '/' && i < XFS_MAX_FILENAME) comp[i++] = *p++;
-        comp[i] = 0;
-        if (i == 0) continue;
+/* ---------- file contents ---------- */
 
-        if (!is_dir) return -1;
-
-        xfs_dinode_t dinode;
-        if (xfs_read_inode(fs, cur_ino, &dinode) != 0) return -1;
-        if (be16(dinode.di_magic) != XFS_DINODE_MAGIC) return -1;
-
-        uint8_t fmt = dinode.di_format;
-        uint64_t inode_byte = xfs_ino_to_byte(fs, cur_ino);
-        uint32_t inode_size = fs->inodesize;
-        uint8_t *inode_buf = (uint8_t *)malloc(inode_size);
-        if (!inode_buf) return -1;
-        if (blockdev_read_bytes(fs->bd, inode_byte, inode_size, inode_buf) != 0) {
-            free(inode_buf);
+static int read_data(xfs_t *fs, const xfs_inode_t *ip, uint64_t pos, uint8_t *buf, uint32_t len)
+{
+    if (pos >= ip->size) return 0;
+    if ((uint64_t)len > ip->size - pos) len = (uint32_t)(ip->size - pos);
+    if (ip->format == XFS_DINODE_FMT_LOCAL) {
+        if (pos + len > (uint64_t)ip->fork_len) return -1;
+        memcpy(buf, ip->fork + pos, len);
+        return (int)len;
+    }
+    ext_list_t l;
+    if (get_extents(fs, ip, &l) != 0) return -1;
+    memset(buf, 0, len);
+    for (uint32_t i = 0; i < l.n; i++) {
+        xfs_ext_t *e = &l.list[i];
+        uint64_t estart = e->startoff * fs->blocksize, eend = (e->startoff + e->blockcount) * fs->blocksize;
+        if (eend <= pos || estart >= pos + len) continue;
+        if (e->unwritten) continue;
+        uint64_t from = pos > estart ? pos : estart;
+        uint64_t to = pos + len < eend ? pos + len : eend;
+        if (blockdev_read_bytes(fs->bd, fsb_to_byte(fs, e->startblock) + (from - estart), (uint32_t)(to - from), buf + (from - pos)) != 0) {
+            free(l.list);
             return -1;
         }
-        uint8_t *fork = inode_buf + 100;
-
-        int found = 0;
-
-        if (fmt == XFS_DINODE_FMT_LOCAL) {
-            /* Shortform directory */
-            uint8_t count = fork[0];
-            uint8_t i8count = fork[1];
-            /* parent ino: 8 bytes */
-            uint8_t *ep = fork + 2 + 8;
-            for (uint8_t ei = 0; ei < count && !found; ei++) {
-                uint8_t namelen = ep[0];
-                /* offset: 2 bytes */
-                uint8_t *name_ptr = ep + 3;
-                if (namelen == (uint8_t)i && memcmp(name_ptr, comp, (size_t)i) == 0) {
-                    /* ftype: 1 byte after name */
-                    uint8_t ftype = name_ptr[namelen];
-                    uint8_t *ino_bytes = name_ptr + namelen + 1;
-                    uint64_t child_ino;
-                    if (i8count > 0) {
-                        child_ino = ((uint64_t)ino_bytes[0] << 56) | ((uint64_t)ino_bytes[1] << 48) |
-                                    ((uint64_t)ino_bytes[2] << 40) | ((uint64_t)ino_bytes[3] << 32) |
-                                    ((uint64_t)ino_bytes[4] << 24) | ((uint64_t)ino_bytes[5] << 16) |
-                                    ((uint64_t)ino_bytes[6] << 8)  | (uint64_t)ino_bytes[7];
-                    } else {
-                        child_ino = ((uint64_t)ino_bytes[0] << 24) | ((uint64_t)ino_bytes[1] << 16) |
-                                    ((uint64_t)ino_bytes[2] << 8)  | (uint64_t)ino_bytes[3];
-                    }
-                    cur_ino = child_ino;
-                    is_dir = (ftype == 2);
-                    found = 1;
-                }
-                uint32_t entry_size = 3 + namelen + 1 + (i8count > 0 ? 8 : 4);
-                ep += entry_size;
-            }
-        } else if (fmt == XFS_DINODE_FMT_EXTENTS) {
-            uint32_t nextents = be32(dinode.di_nextents);
-            uint8_t *ext_arr = fork;
-
-            uint8_t *blk_buf = (uint8_t *)malloc(fs->blocksize);
-            if (!blk_buf) { free(inode_buf); return -1; }
-
-            for (uint32_t ei = 0; ei < nextents && !found; ei++) {
-                uint8_t *ext = ext_arr + ei * 16;
-                uint64_t startblock = xfs_extent_startblock(ext);
-                uint32_t blockcount = xfs_extent_blockcount(ext);
-
-                for (uint32_t bi = 0; bi < blockcount && !found; bi++) {
-                    uint64_t disk_byte = (startblock + bi) * fs->blocksize;
-                    if (blockdev_read_bytes(fs->bd, disk_byte, fs->blocksize, blk_buf) != 0) continue;
-
-                    uint32_t blk_magic = be32(*(uint32_t *)blk_buf);
-                    uint8_t *entries;
-                    uint32_t entries_size;
-
-                    if (blk_magic == XFS_DIR3_BLOCK_MAGIC) {
-                        entries = blk_buf + sizeof(xfs_dir3_blk_hdr_t);
-                        entries_size = fs->blocksize - (uint32_t)sizeof(xfs_dir3_blk_hdr_t);
-                    } else {
-                        entries = blk_buf + 16;
-                        entries_size = fs->blocksize - 16;
-                    }
-
-                    uint8_t *ep2 = entries;
-                    uint8_t *ep_end = entries + entries_size;
-                    while (ep2 + 11 <= ep_end && !found) {
-                        uint64_t entry_ino_be;
-                        memcpy(&entry_ino_be, ep2, 8);
-                        uint64_t entry_ino = be64(entry_ino_be);
-                        uint8_t namelen = ep2[8];
-                        uint8_t ftype   = ep2[9];
-                        uint8_t *name_ptr = ep2 + 10;
-                        if (name_ptr + namelen > ep_end) break;
-                        if (namelen == (uint8_t)i && memcmp(name_ptr, comp, (size_t)i) == 0) {
-                            cur_ino = entry_ino;
-                            is_dir = (ftype == 2);
-                            found = 1;
-                        }
-                        uint32_t rec = 10 + namelen + 1;
-                        rec = (rec + 7) & ~7U;
-                        if (rec < 12) rec = 12;
-                        ep2 += rec;
-                    }
-                }
-            }
-            free(blk_buf);
-        }
-
-        free(inode_buf);
-        if (!found) return -1;
     }
+    free(l.list);
+    return (int)len;
+}
 
-    *out_ino = cur_ino;
-    if (out_is_dir) *out_is_dir = is_dir;
+/* ---------- directories ---------- */
+
+typedef int (*dir_cb)(void *ctx, uint64_t ino, const char *name, int name_len);
+
+static int dir_iter(xfs_t *fs, const xfs_inode_t *dir, dir_cb cb, void *ctx)
+{
+    if (dir->format == XFS_DINODE_FMT_LOCAL) {
+        const uint8_t *f = dir->fork;
+        int count = f[0], i8 = f[1];
+        int isz = i8 ? 8 : 4;
+        int p = 2 + isz;
+        for (int i = 0; i < count; i++) {
+            if (p + 3 > dir->fork_len) return -1;
+            int nl = f[p];
+            int q = p + 3;                         /* namelen, 2-byte offset */
+            if (q + nl + (fs->ftype ? 1 : 0) + isz > dir->fork_len) return -1;
+            const uint8_t *name = f + q;
+            q += nl + (fs->ftype ? 1 : 0);
+            uint64_t ino = isz == 8 ? be64(f + q) : be32(f + q);
+            q += isz;
+            int rc = cb(ctx, ino, (const char *)name, nl);
+            if (rc) return rc;
+            p = q;
+        }
+        return 0;
+    }
+    ext_list_t l;
+    if (get_extents(fs, dir, &l) != 0) return -1;
+    uint32_t dirblk = fs->blocksize << fs->dirblklog;
+    uint64_t leaf_off = (((uint64_t)1 << 35) / fs->blocksize);        /* XFS_DIR2_LEAF_OFFSET (32GB) */
+    uint8_t *blk = (uint8_t *)malloc(dirblk);
+    if (!blk) { free(l.list); return -1; }
+    int rc = 0;
+    for (uint32_t i = 0; i < l.n && rc == 0; i++) {
+        xfs_ext_t *e = &l.list[i];
+        if (e->startoff >= leaf_off || e->unwritten) continue;
+        for (uint64_t b = 0; b < e->blockcount && rc == 0; b += (1u << fs->dirblklog)) {
+            if (((e->startoff + b) & ((1u << fs->dirblklog) - 1)) != 0) continue;
+            if (b + (1u << fs->dirblklog) > e->blockcount) break;
+            if (blockdev_read_bytes(fs->bd, fsb_to_byte(fs, e->startblock + b), dirblk, blk) != 0) { rc = -1; break; }
+            uint32_t magic = be32(blk);
+            int single = (magic == XFS_DIR2_BLOCK_MAGIC || magic == XFS_DIR3_BLOCK_MAGIC);
+            if (!single && magic != XFS_DIR2_DATA_MAGIC && magic != XFS_DIR3_DATA_MAGIC) continue;
+            uint32_t o = (magic == XFS_DIR3_BLOCK_MAGIC || magic == XFS_DIR3_DATA_MAGIC) ? 64 : 16;
+            uint32_t end = dirblk;
+            if (single) {
+                uint32_t cnt = be32(blk + dirblk - 8);
+                if ((uint64_t)cnt * 8 + 8 > dirblk) { rc = -1; break; }
+                end = dirblk - 8 - cnt * 8;
+            }
+            while (o + 8 <= end) {
+                if (be16(blk + o) == 0xFFFF) {                 /* unused space */
+                    uint16_t len = be16(blk + o + 2);
+                    if (len < 8) { rc = -1; break; }
+                    o += len;
+                    continue;
+                }
+                uint64_t ino = be64(blk + o);
+                uint8_t nl = blk[o + 8];
+                uint32_t esz = (8u + 1 + nl + (fs->ftype ? 1u : 0u) + 2 + 7) & ~7u;
+                if (o + esz > end) { rc = -1; break; }
+                int r2 = cb(ctx, ino, (const char *)blk + o + 9, nl);
+                if (r2) { rc = r2; break; }
+                o += esz;
+            }
+        }
+    }
+    free(blk);
+    free(l.list);
+    return rc;
+}
+
+typedef struct {
+    const char *want;
+    int want_len;
+    uint64_t ino;
+    int found;
+} lookup_ctx_t;
+
+static int lookup_cb(void *ctx, uint64_t ino, const char *name, int nl)
+{
+    lookup_ctx_t *c = (lookup_ctx_t *)ctx;
+    if (nl == c->want_len && memcmp(name, c->want, (size_t)nl) == 0) {
+        c->ino = ino;
+        c->found = 1;
+        return 1;
+    }
     return 0;
 }
+
+static int walk(xfs_t *fs, const char *path, uint64_t *out_ino)
+{
+    uint64_t cur = fs->rootino;
+    const char *s = path;
+    while (*s) {
+        while (*s == '/') s++;
+        if (!*s) break;
+        const char *c = s;
+        while (*s && *s != '/') s++;
+        int n = (int)(s - c);
+        if (n == 1 && c[0] == '.') continue;
+        if (n > XFS_MAX_FILENAME) return -1;
+        xfs_inode_t d;
+        if (read_inode(fs, cur, &d) != 0) return -1;
+        if ((d.mode & S_IFMT_) != S_IFDIR_) { inode_free(&d); return -1; }
+        lookup_ctx_t lc = { c, n, 0, 0 };
+        int rc = dir_iter(fs, &d, lookup_cb, &lc);
+        inode_free(&d);
+        if (!lc.found) return rc < 0 ? -1 : -1;
+        cur = lc.ino;
+    }
+    *out_ino = cur;
+    return 0;
+}
+
+typedef struct {
+    xfs_t *fs;
+    vfs_entry_t *entries;
+    int max, count;
+} list_ctx_t;
+
+static int list_cb(void *ctx, uint64_t ino, const char *name, int nl)
+{
+    list_ctx_t *c = (list_ctx_t *)ctx;
+    if (c->count >= c->max) return 1;
+    if ((nl == 1 && name[0] == '.') || (nl == 2 && name[0] == '.' && name[1] == '.')) return 0;
+    vfs_entry_t *e = &c->entries[c->count];
+    memset(e, 0, sizeof(*e));
+    int n = nl < VFS_NAME_LEN - 1 ? nl : VFS_NAME_LEN - 1;
+    memcpy(e->name, name, (size_t)n);
+    e->name[n] = 0;
+    e->inode = (uint32_t)ino;
+    xfs_inode_t ip;
+    if (read_inode(c->fs, ino, &ip) == 0) {
+        e->size = ip.size > 0xFFFFFFFFULL ? 0xFFFFFFFFu : (uint32_t)ip.size;
+        e->is_dir = (ip.mode & S_IFMT_) == S_IFDIR_;
+        e->mode = ip.mode;
+        inode_free(&ip);
+    }
+    c->count++;
+    return 0;
+}
+
+/* ---------- VFS ---------- */
 
 static int xfs_vfs_open(void *ctx, const char *path, int flags)
 {
     xfs_t *fs = (xfs_t *)ctx;
-
+    if (flags & (VFS_WRONLY | VFS_RDWR | VFS_CREAT | VFS_TRUNC | VFS_APPEND)) return -1;
     uint64_t ino;
-    int is_dir = 0;
-    int found = (xfs_walk_path(fs, path, &ino, &is_dir) == 0);
-
-    if (!found) {
-        if (!(flags & VFS_CREAT)) return -1;
-
-        char parent[256], name[XFS_MAX_FILENAME + 1];
-        xfs_path_split(path, parent, name);
-        if (!name[0]) return -1;
-
-        uint64_t parent_ino;
-        int parent_is_dir = 0;
-        if (xfs_walk_path(fs, parent, &parent_ino, &parent_is_dir) != 0 || !parent_is_dir)
-            return -1;
-
-        ino = fs->next_ino++;
-
-        /* Create inode */
-        xfs_dinode_t di;
-        memset(&di, 0, sizeof(di));
-        di.di_magic   = be16(XFS_DINODE_MAGIC);
-        di.di_mode    = be16(0x81A4U); /* regular file 0644 */
-        di.di_version = 2;
-        di.di_format  = XFS_DINODE_FMT_LOCAL;
-        di.di_nlink   = be32(1);
-        di.di_size    = be64(0);
-        if (xfs_write_inode(fs, ino, &di, NULL, 0) != 0) return -1;
-        if (xfs_sf_add_entry(fs, parent_ino, ino, name, 1) != 0) return -1;
-        is_dir = 0;
-    } else if (is_dir) {
-        return -1;
-    } else if (flags & VFS_TRUNC) {
-        /* Truncate: overwrite with empty local format */
-        xfs_dinode_t di;
-        if (xfs_read_inode(fs, ino, &di) == 0) {
-            di.di_format  = XFS_DINODE_FMT_LOCAL;
-            di.di_size    = be64(0);
-            di.di_nextents = be32(0);
-            di.di_nblocks = be64(0);
-            xfs_write_inode(fs, ino, &di, NULL, 0);
-        }
-    }
-
-    xfs_dinode_t dinode;
-    if (xfs_read_inode(fs, ino, &dinode) != 0) return -1;
-
+    if (walk(fs, path, &ino) != 0) return -1;
+    xfs_inode_t ip;
+    if (read_inode(fs, ino, &ip) != 0) return -1;
     for (int i = 0; i < VFS_MAX_FDS; i++) {
         if (!fs->fds[i].used) {
-            fs->fds[i].used   = 1;
-            fs->fds[i].ino    = ino;
-            fs->fds[i].pos    = 0;
-            fs->fds[i].size   = (uint32_t)be64(dinode.di_size);
-            fs->fds[i].is_dir = 0;
-            fs->fds[i].dirty  = 0;
+            fs->fds[i].used = 1;
+            fs->fds[i].ino = ino;
+            fs->fds[i].pos = 0;
+            fs->fds[i].size = ip.size > 0xFFFFFFFFULL ? 0xFFFFFFFFu : (uint32_t)ip.size;
+            fs->fds[i].is_dir = (ip.mode & S_IFMT_) == S_IFDIR_;
+            inode_free(&ip);
             return i;
         }
     }
+    inode_free(&ip);
     return -1;
 }
 
@@ -452,585 +380,97 @@ static int xfs_vfs_close(void *ctx, int fd)
 static int xfs_vfs_read(void *ctx, int fd, void *buf, uint32_t size)
 {
     xfs_t *fs = (xfs_t *)ctx;
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fs->fds[fd].used) return -1;
-
-    uint32_t pos = fs->fds[fd].pos;
-    uint32_t file_size = fs->fds[fd].size;
-    if (pos >= file_size) return 0;
-    if (pos + size > file_size) size = file_size - pos;
-    if (size == 0) return 0;
-
-    uint64_t ino = fs->fds[fd].ino;
-    uint32_t inode_size = fs->inodesize;
-    uint8_t *inode_buf = (uint8_t *)malloc(inode_size);
-    if (!inode_buf) return -1;
-
-    uint64_t inode_byte = xfs_ino_to_byte(fs, ino);
-    if (blockdev_read_bytes(fs->bd, inode_byte, inode_size, inode_buf) != 0) {
-        free(inode_buf);
-        return -1;
-    }
-
-    xfs_dinode_t *dinode = (xfs_dinode_t *)inode_buf;
-    uint8_t fmt = dinode->di_format;
-    uint8_t *fork = inode_buf + 100;
-
-    memset(buf, 0, size);
-    uint32_t done = 0;
-
-    if (fmt == XFS_DINODE_FMT_LOCAL) {
-        uint64_t isize = be64(dinode->di_size);
-        uint32_t inline_size = (uint32_t)isize;
-        uint32_t copy_start = pos;
-        uint32_t copy_end   = pos + size;
-        if (copy_end > inline_size) copy_end = inline_size;
-        if (copy_start < copy_end) {
-            memcpy(buf, fork + copy_start, copy_end - copy_start);
-            done = copy_end - copy_start;
-        }
-    } else if (fmt == XFS_DINODE_FMT_EXTENTS) {
-        uint32_t nextents = be32(dinode->di_nextents);
-        uint8_t *ext_arr = fork;
-
-        for (uint32_t ei = 0; ei < nextents; ei++) {
-            uint8_t *ext = ext_arr + ei * 16;
-            uint64_t startblock = xfs_extent_startblock(ext);
-            uint64_t startoff   = xfs_extent_startoff(ext);
-            uint32_t blockcount = xfs_extent_blockcount(ext);
-
-            xfs_read_extent_data(fs, startblock, blockcount,
-                                  (uint32_t)startoff, buf, size, pos);
-        }
-        done = size;
-    }
-
-    free(inode_buf);
-    fs->fds[fd].pos += done;
-    return (int)done;
-}
-
-/* ---- XFS write helpers ---- */
-
-static int xfs_write_inode(xfs_t *fs, uint64_t ino, const xfs_dinode_t *di, const uint8_t *fork_data, uint32_t fork_size)
-{
-    uint8_t *ibuf = (uint8_t *)malloc(fs->inodesize);
-    if (!ibuf) return -1;
-    memset(ibuf, 0, fs->inodesize);
-    memcpy(ibuf, di, sizeof(xfs_dinode_t));
-    if (fork_data && fork_size > 0) {
-        uint32_t max = fs->inodesize - 100;
-        if (fork_size > max) fork_size = max;
-        memcpy(ibuf + 100, fork_data, fork_size);
-    }
-    uint64_t byte_off = xfs_ino_to_byte(fs, ino);
-    int r = blockdev_write_bytes(fs->bd, byte_off, fs->inodesize, ibuf);
-    free(ibuf);
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fs->fds[fd].used || fs->fds[fd].is_dir) return -1;
+    xfs_fd_t *f = &fs->fds[fd];
+    if (f->pos >= f->size) return 0;
+    uint32_t n = size;
+    if (n > f->size - f->pos) n = f->size - f->pos;
+    if (n == 0) return 0;
+    xfs_inode_t ip;
+    if (read_inode(fs, f->ino, &ip) != 0) return -1;
+    int r = read_data(fs, &ip, f->pos, (uint8_t *)buf, n);
+    inode_free(&ip);
+    if (r < 0) return -1;
+    f->pos += (uint32_t)r;
     return r;
-}
-
-/* Build big-endian 8-byte packed extent (128-bit = 2 x uint64 here simplified to 16 bytes) */
-static void xfs_pack_extent(uint8_t ext[16], uint64_t startoff, uint64_t startblock, uint32_t blockcount)
-{
-    memset(ext, 0, 16);
-    /* bits 127: unwritten=0, bits 126-73: startoff (54 bits), bits 72-21: startblock (52 bits), bits 20-0: blockcount */
-    /* Stored big-endian across 16 bytes */
-    uint64_t hi = (startoff >> 9) & 0x7FFFFFFFFFFFFFFFULL;
-    /* lower 9 bits of startoff go into hi bits 8..0, then startblock hi bits */
-    uint64_t hi_sb = (startblock >> 47) & 0x1FULL;
-    uint64_t hi_val = (hi << 0) | (hi_sb & 0x1FULL);  /* simplified */
-
-    /* Simpler encoding matching xfs_extent_startblock/startoff decoders */
-    /* lo: bits 72..21 = startblock, bits 20..0 = blockcount */
-    uint64_t lo = ((startblock & ((1ULL << 52) - 1)) << 21) | (blockcount & ((1ULL << 21) - 1));
-    /* hi: bit 126..73 startoff */
-    uint64_t startoff_lo9 = startoff & 0x1FFULL;
-    uint64_t startoff_hi  = startoff >> 9;
-    uint64_t hi_out = (startoff_hi << 9) | (startoff_lo9 >> 0);
-    (void)hi; (void)hi_sb; (void)hi_val;
-
-    /* Put hi_out into first 8 bytes, lo into next 8 bytes (big-endian) */
-    for (int i = 7; i >= 0; i--) { ext[i] = (uint8_t)(hi_out & 0xFF); hi_out >>= 8; }
-    for (int i = 15; i >= 8; i--) { ext[i] = (uint8_t)(lo & 0xFF); lo >>= 8; }
-}
-
-/* Add a shortform directory entry to parent inode */
-static int xfs_sf_add_entry(xfs_t *fs, uint64_t parent_ino, uint64_t child_ino, const char *name, uint8_t ftype)
-{
-    uint8_t *ibuf = (uint8_t *)malloc(fs->inodesize);
-    if (!ibuf) return -1;
-    uint64_t byte_off = xfs_ino_to_byte(fs, parent_ino);
-    if (blockdev_read_bytes(fs->bd, byte_off, fs->inodesize, ibuf) != 0) { free(ibuf); return -1; }
-
-    xfs_dinode_t *di = (xfs_dinode_t *)ibuf;
-    if (be16(di->di_magic) != XFS_DINODE_MAGIC || di->di_format != XFS_DINODE_FMT_LOCAL) {
-        free(ibuf); return -1;
-    }
-
-    uint8_t *fork = ibuf + 100;
-    uint8_t count = fork[0];
-    uint8_t i8count = fork[1];
-    int namelen = 0;
-    while (name[namelen]) namelen++;
-
-    /* entry size: 3 + namelen + 1 + (i8count?8:4) */
-    int ino_sz = (i8count > 0) ? 8 : 4;
-    int entry_sz = 3 + namelen + 1 + ino_sz;
-
-    /* Check if it fits in the fork */
-    uint64_t cur_sf_size = be64(di->di_size);
-    if (100 + (uint32_t)cur_sf_size + (uint32_t)entry_sz > fs->inodesize) {
-        free(ibuf); return -1; /* would need to convert to extents; skip for now */
-    }
-
-    /* Find end of existing entries */
-    uint8_t *ep = fork + 2 + 8;
-    for (uint8_t ei = 0; ei < count; ei++) {
-        uint8_t nlen = ep[0];
-        ep += 3 + nlen + 1 + ino_sz;
-    }
-
-    /* Write new entry */
-    ep[0] = (uint8_t)namelen;
-    ep[1] = 0; ep[2] = 0; /* offset (unused) */
-    memcpy(ep + 3, name, (size_t)namelen);
-    ep[3 + namelen] = ftype;
-    if (ino_sz == 8) {
-        uint64_t be_ino = be64(child_ino);
-        memcpy(ep + 3 + namelen + 1, &be_ino, 8);
-    } else {
-        uint32_t be_ino = be32((uint32_t)child_ino);
-        memcpy(ep + 3 + namelen + 1, &be_ino, 4);
-    }
-
-    fork[0] = count + 1;
-    di->di_size = be64(cur_sf_size + (uint64_t)entry_sz);
-    di->di_nlink = be32(be32(di->di_nlink) + 1);
-
-    int r = blockdev_write_bytes(fs->bd, byte_off, fs->inodesize, ibuf);
-    free(ibuf);
-    return r;
-}
-
-/* Remove a shortform directory entry from parent inode */
-static int xfs_sf_remove_entry(xfs_t *fs, uint64_t parent_ino, uint64_t child_ino)
-{
-    uint8_t *ibuf = (uint8_t *)malloc(fs->inodesize);
-    if (!ibuf) return -1;
-    uint64_t byte_off = xfs_ino_to_byte(fs, parent_ino);
-    if (blockdev_read_bytes(fs->bd, byte_off, fs->inodesize, ibuf) != 0) { free(ibuf); return -1; }
-
-    xfs_dinode_t *di = (xfs_dinode_t *)ibuf;
-    if (be16(di->di_magic) != XFS_DINODE_MAGIC || di->di_format != XFS_DINODE_FMT_LOCAL) {
-        free(ibuf); return -1;
-    }
-
-    uint8_t *fork = ibuf + 100;
-    uint8_t count = fork[0];
-    uint8_t i8count = fork[1];
-    int ino_sz = (i8count > 0) ? 8 : 4;
-    uint8_t *ep = fork + 2 + 8;
-
-    for (uint8_t ei = 0; ei < count; ei++) {
-        uint8_t nlen = ep[0];
-        int entry_sz = 3 + nlen + 1 + ino_sz;
-        uint8_t *ino_bytes = ep + 3 + nlen + 1;
-        uint64_t e_ino;
-        if (ino_sz == 8) {
-            uint64_t tmp; memcpy(&tmp, ino_bytes, 8); e_ino = be64(tmp);
-        } else {
-            uint32_t tmp; memcpy(&tmp, ino_bytes, 4); e_ino = be32(tmp);
-        }
-        if (e_ino == child_ino) {
-            /* Remove this entry by memmove */
-            uint8_t *entry_end = ep + entry_sz;
-            uint8_t *fork_data_end = fork + 2 + 8;
-            /* compute end of all entries */
-            uint8_t *scan = fork + 2 + 8;
-            for (uint8_t si = 0; si < count; si++) {
-                uint8_t sn = scan[0];
-                scan += 3 + sn + 1 + ino_sz;
-            }
-            uint32_t tail = (uint32_t)(scan - entry_end);
-            if (tail > 0) memmove(ep, entry_end, tail);
-            memset(ep + tail, 0, (size_t)entry_sz);
-            fork[0] = count - 1;
-            uint64_t cur_size = be64(di->di_size);
-            di->di_size = be64(cur_size - (uint64_t)entry_sz);
-            (void)fork_data_end;
-            break;
-        }
-        ep += entry_sz;
-    }
-
-    int r = blockdev_write_bytes(fs->bd, byte_off, fs->inodesize, ibuf);
-    free(ibuf);
-    return r;
-}
-
-static void xfs_path_split(const char *path, char *parent, char *name)
-{
-    const char *last = path;
-    for (const char *p = path; *p; p++)
-        if (*p == '/') last = p;
-    if (last == path) {
-        parent[0] = '/'; parent[1] = 0;
-        int i = 0;
-        const char *n = (last[0] == '/' && last[1]) ? last + 1 : last;
-        while (*n && i < XFS_MAX_FILENAME) name[i++] = *n++;
-        name[i] = 0;
-    } else {
-        int plen = (int)(last - path);
-        memcpy(parent, path, (size_t)plen);
-        parent[plen] = 0;
-        int i = 0; const char *n = last + 1;
-        while (*n && i < XFS_MAX_FILENAME) name[i++] = *n++;
-        name[i] = 0;
-    }
 }
 
 static int xfs_vfs_write(void *ctx, int fd, const void *buf, uint32_t size)
 {
-    xfs_t *fs = (xfs_t *)ctx;
-    if (fd < 0 || fd >= VFS_MAX_FDS || !fs->fds[fd].used || fs->fds[fd].is_dir) return -1;
-    if (size == 0) return 0;
-
-    uint64_t ino = fs->fds[fd].ino;
-    uint32_t pos = fs->fds[fd].pos;
-    uint32_t new_end = pos + size;
-
-    uint8_t *ibuf = (uint8_t *)malloc(fs->inodesize);
-    if (!ibuf) return -1;
-    uint64_t inode_byte = xfs_ino_to_byte(fs, ino);
-    if (blockdev_read_bytes(fs->bd, inode_byte, fs->inodesize, ibuf) != 0) { free(ibuf); return -1; }
-    xfs_dinode_t *di = (xfs_dinode_t *)ibuf;
-
-    /* Max inline (local) data fits in inode fork */
-    uint32_t max_inline = fs->inodesize - 100 - 8; /* leave 8 byte margin */
-
-    if (di->di_format == XFS_DINODE_FMT_LOCAL && new_end <= max_inline) {
-        /* Inline: update fork data directly */
-        uint8_t *fork = ibuf + 100;
-        uint64_t cur_size = be64(di->di_size);
-        memcpy(fork + pos, buf, size);
-        if (new_end > (uint32_t)cur_size) cur_size = new_end;
-        di->di_size = be64(cur_size);
-        blockdev_write_bytes(fs->bd, inode_byte, fs->inodesize, ibuf);
-    } else if (di->di_format == XFS_DINODE_FMT_LOCAL || di->di_format == XFS_DINODE_FMT_EXTENTS) {
-        /* Allocate a new block for the data */
-        uint64_t blkno = fs->next_block++;
-
-        /* Write the data to disk */
-        uint8_t *blk = (uint8_t *)malloc(fs->blocksize);
-        if (!blk) { free(ibuf); return -1; }
-        memset(blk, 0, fs->blocksize);
-        memcpy(blk + pos % fs->blocksize, buf, size);
-        blockdev_write_bytes(fs->bd, blkno * fs->blocksize, fs->blocksize, blk);
-        free(blk);
-
-        /* If was inline, copy old data to block first */
-        if (di->di_format == XFS_DINODE_FMT_LOCAL) {
-            uint64_t old_size = be64(di->di_size);
-            uint8_t *old_fork = ibuf + 100;
-            uint8_t *copy_blk = (uint8_t *)malloc(fs->blocksize);
-            if (copy_blk) {
-                memset(copy_blk, 0, fs->blocksize);
-                memcpy(copy_blk, old_fork, (uint32_t)old_size < fs->blocksize ? (uint32_t)old_size : fs->blocksize);
-                memcpy(copy_blk + pos, buf, size);
-                blockdev_write_bytes(fs->bd, blkno * fs->blocksize, fs->blocksize, copy_blk);
-                free(copy_blk);
-            }
-            di->di_format = XFS_DINODE_FMT_EXTENTS;
-            memset(ibuf + 100, 0, fs->inodesize - 100);
-            di->di_nextents = be32(0);
-        }
-
-        /* Add extent */
-        uint32_t nextents = be32(di->di_nextents);
-        if (nextents < (uint32_t)(fs->inodesize - 100) / 16U) {
-            uint8_t *fork = ibuf + 100;
-            uint8_t ext[16];
-            xfs_pack_extent(ext, (uint64_t)(pos / fs->blocksize), blkno, 1);
-            memcpy(fork + nextents * 16, ext, 16);
-            di->di_nextents = be32(nextents + 1);
-        }
-
-        uint64_t cur_size = be64(di->di_size);
-        if (new_end > (uint32_t)cur_size) cur_size = new_end;
-        di->di_size = be64(cur_size);
-        di->di_nblocks = be64(be64(di->di_nblocks) + 1);
-        blockdev_write_bytes(fs->bd, inode_byte, fs->inodesize, ibuf);
-    }
-
-    free(ibuf);
-    fs->fds[fd].pos += size;
-    if (fs->fds[fd].pos > fs->fds[fd].size)
-        fs->fds[fd].size = fs->fds[fd].pos;
-    return (int)size;
+    (void)ctx; (void)fd; (void)buf; (void)size;
+    return -1;
 }
 
 static int xfs_vfs_lseek(void *ctx, int fd, uint32_t offset, int whence)
 {
     xfs_t *fs = (xfs_t *)ctx;
     if (fd < 0 || fd >= VFS_MAX_FDS || !fs->fds[fd].used) return -1;
-    if (whence == VFS_SEEK_SET) fs->fds[fd].pos = offset;
-    else if (whence == VFS_SEEK_CUR) fs->fds[fd].pos += offset;
-    else if (whence == VFS_SEEK_END) fs->fds[fd].pos = fs->fds[fd].size + offset;
-    return (int)fs->fds[fd].pos;
+    xfs_fd_t *f = &fs->fds[fd];
+    uint64_t np;
+    if (whence == VFS_SEEK_SET) np = offset;
+    else if (whence == VFS_SEEK_CUR) np = (uint64_t)f->pos + offset;
+    else if (whence == VFS_SEEK_END) np = (uint64_t)f->size + offset;
+    else return -1;
+    if (np > f->size) np = f->size;
+    f->pos = (uint32_t)np;
+    return (int)f->pos;
 }
 
 static int xfs_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, int max)
 {
     xfs_t *fs = (xfs_t *)ctx;
-
-    uint64_t dir_ino;
-    int is_dir = 0;
-    if (xfs_walk_path(fs, path, &dir_ino, &is_dir) != 0) return -1;
-    if (!is_dir) return -1;
-
-    uint32_t inode_size = fs->inodesize;
-    uint8_t *inode_buf = (uint8_t *)malloc(inode_size);
-    if (!inode_buf) return -1;
-
-    uint64_t inode_byte = xfs_ino_to_byte(fs, dir_ino);
-    if (blockdev_read_bytes(fs->bd, inode_byte, inode_size, inode_buf) != 0) {
-        free(inode_buf);
-        return -1;
-    }
-
-    xfs_dinode_t *dinode = (xfs_dinode_t *)inode_buf;
-    uint8_t fmt = dinode->di_format;
-    uint8_t *fork = inode_buf + 100;
-    int count = 0;
-
-    if (fmt == XFS_DINODE_FMT_LOCAL) {
-        /* Unlike the XFS_DINODE_FMT_EXTENTS branch below (which
-         * checks `ep2 + 11 <= ep_end` before touching each entry),
-         * this shortform-directory path never bounded `ep`/`name_ptr`
-         * against inode_buf + inode_size. ncount/namelen/i8count are
-         * on-disk fields straight from a mounted (possibly hostile)
-         * XFS image -- a crafted inode with an oversized namelen or
-         * ncount let ftype/ino_bytes/the memcpy below read past the
-         * inode_buf heap allocation. */
-        uint8_t *fork_end = inode_buf + inode_size;
-        uint8_t ncount = fork[0];
-        uint8_t i8count = fork[1];
-        uint8_t *ep = fork + 2 + 8;
-        for (uint8_t ei = 0; ei < ncount && count < max; ei++) {
-            if (ep + 3 > fork_end) break;
-            uint8_t namelen = ep[0];
-            uint32_t esz = 3 + namelen + 1 + (i8count > 0 ? 8 : 4);
-            if (ep + esz > fork_end) break;
-            uint8_t *name_ptr = ep + 3;
-            uint8_t ftype = name_ptr[namelen];
-            uint8_t *ino_bytes = name_ptr + namelen + 1;
-
-            if (namelen == 1 && name_ptr[0] == '.') goto next_sf;
-            if (namelen == 2 && name_ptr[0] == '.' && name_ptr[1] == '.') goto next_sf;
-
-            {
-                uint64_t child_ino;
-                if (i8count > 0) {
-                    child_ino = ((uint64_t)ino_bytes[0] << 56) | ((uint64_t)ino_bytes[1] << 48) |
-                                ((uint64_t)ino_bytes[2] << 40) | ((uint64_t)ino_bytes[3] << 32) |
-                                ((uint64_t)ino_bytes[4] << 24) | ((uint64_t)ino_bytes[5] << 16) |
-                                ((uint64_t)ino_bytes[6] << 8)  | (uint64_t)ino_bytes[7];
-                } else {
-                    child_ino = ((uint64_t)ino_bytes[0] << 24) | ((uint64_t)ino_bytes[1] << 16) |
-                                ((uint64_t)ino_bytes[2] << 8)  | (uint64_t)ino_bytes[3];
-                }
-
-                int nl = namelen;
-                if (nl > VFS_NAME_LEN - 1) nl = VFS_NAME_LEN - 1;
-                memcpy(entries[count].name, name_ptr, (size_t)nl);
-                entries[count].name[nl] = 0;
-                entries[count].is_dir  = (ftype == 2);
-                entries[count].inode   = (uint32_t)child_ino;
-                entries[count].mode    = 0;
-                entries[count].size    = 0;
-
-                xfs_dinode_t child_dinode;
-                if (xfs_read_inode(fs, child_ino, &child_dinode) == 0) {
-                    entries[count].size = (uint32_t)be64(child_dinode.di_size);
-                    entries[count].mode = be16(child_dinode.di_mode);
-                }
-                count++;
-            }
-next_sf:;
-            ep += esz;
-        }
-    } else if (fmt == XFS_DINODE_FMT_EXTENTS) {
-        uint32_t nextents = be32(dinode->di_nextents);
-        uint8_t *ext_arr = fork;
-        uint8_t *blk_buf = (uint8_t *)malloc(fs->blocksize);
-        if (!blk_buf) { free(inode_buf); return -1; }
-
-        for (uint32_t ei = 0; ei < nextents && count < max; ei++) {
-            uint8_t *ext = ext_arr + ei * 16;
-            uint64_t startblock = xfs_extent_startblock(ext);
-            uint32_t blockcount = xfs_extent_blockcount(ext);
-
-            for (uint32_t bi = 0; bi < blockcount && count < max; bi++) {
-                uint64_t disk_byte = (startblock + bi) * fs->blocksize;
-                if (blockdev_read_bytes(fs->bd, disk_byte, fs->blocksize, blk_buf) != 0) continue;
-
-                uint32_t blk_magic = be32(*(uint32_t *)blk_buf);
-                uint8_t *ep2;
-                uint8_t *ep_end;
-
-                if (blk_magic == XFS_DIR3_BLOCK_MAGIC) {
-                    ep2    = blk_buf + sizeof(xfs_dir3_blk_hdr_t);
-                    ep_end = blk_buf + fs->blocksize;
-                } else {
-                    ep2    = blk_buf + 16;
-                    ep_end = blk_buf + fs->blocksize;
-                }
-
-                while (ep2 + 11 <= ep_end && count < max) {
-                    uint64_t entry_ino_be;
-                    memcpy(&entry_ino_be, ep2, 8);
-                    uint64_t entry_ino = be64(entry_ino_be);
-                    uint8_t namelen = ep2[8];
-                    uint8_t ftype   = ep2[9];
-                    uint8_t *name_ptr = ep2 + 10;
-                    if (name_ptr + namelen > ep_end) break;
-                    if (entry_ino == 0) goto next_ext;
-                    if (namelen == 1 && name_ptr[0] == '.') goto next_ext;
-                    if (namelen == 2 && name_ptr[0] == '.' && name_ptr[1] == '.') goto next_ext;
-
-                    {
-                        int nl = namelen;
-                        if (nl > VFS_NAME_LEN - 1) nl = VFS_NAME_LEN - 1;
-                        memcpy(entries[count].name, name_ptr, (size_t)nl);
-                        entries[count].name[nl] = 0;
-                        entries[count].is_dir  = (ftype == 2);
-                        entries[count].inode   = (uint32_t)entry_ino;
-                        entries[count].size    = 0;
-                        entries[count].mode    = 0;
-
-                        xfs_dinode_t child_dinode;
-                        if (xfs_read_inode(fs, entry_ino, &child_dinode) == 0) {
-                            entries[count].size = (uint32_t)be64(child_dinode.di_size);
-                            entries[count].mode = be16(child_dinode.di_mode);
-                        }
-                        count++;
-                    }
-next_ext:;
-                    uint32_t rec = 10 + namelen + 1;
-                    rec = (rec + 7) & ~7U;
-                    if (rec < 12) rec = 12;
-                    ep2 += rec;
-                }
-            }
-        }
-        free(blk_buf);
-    }
-
-    free(inode_buf);
-    return count;
+    uint64_t ino;
+    if (walk(fs, path, &ino) != 0) return -1;
+    xfs_inode_t d;
+    if (read_inode(fs, ino, &d) != 0) return -1;
+    if ((d.mode & S_IFMT_) != S_IFDIR_) { inode_free(&d); return -1; }
+    list_ctx_t lc = { fs, entries, max, 0 };
+    int rc = dir_iter(fs, &d, list_cb, &lc);
+    inode_free(&d);
+    if (rc < 0) return -1;
+    return lc.count;
 }
 
 static int xfs_vfs_mkdir(void *ctx, const char *path, uint32_t mode)
 {
-    xfs_t *fs = (xfs_t *)ctx;
-
-    uint64_t dummy;
-    int dummy_is_dir = 0;
-    if (xfs_walk_path(fs, path, &dummy, &dummy_is_dir) == 0) return -1; /* exists */
-
-    char parent[256], name[XFS_MAX_FILENAME + 1];
-    xfs_path_split(path, parent, name);
-    if (!name[0]) return -1;
-
-    uint64_t parent_ino;
-    int parent_is_dir = 0;
-    if (xfs_walk_path(fs, parent, &parent_ino, &parent_is_dir) != 0 || !parent_is_dir)
-        return -1;
-
-    uint64_t ino = fs->next_ino++;
-
-    /* Shortform dir header: count=0, i8count=0, parent_ino */
-    uint8_t sf_hdr[10];
-    memset(sf_hdr, 0, sizeof(sf_hdr));
-    uint64_t par_be = be64(ino); /* self-referential root */
-    memcpy(sf_hdr + 2, &par_be, 8);
-
-    xfs_dinode_t di;
-    memset(&di, 0, sizeof(di));
-    di.di_magic   = be16(XFS_DINODE_MAGIC);
-    di.di_mode    = be16((uint16_t)(0x41EDU & 0xFFF0U) | (uint16_t)(mode & 0x1FFU));
-    di.di_version = 2;
-    di.di_format  = XFS_DINODE_FMT_LOCAL;
-    di.di_nlink   = be32(2);
-    di.di_size    = be64(sizeof(sf_hdr));
-
-    if (xfs_write_inode(fs, ino, &di, sf_hdr, sizeof(sf_hdr)) != 0) return -1;
-    return xfs_sf_add_entry(fs, parent_ino, ino, name, 2 /* dir */);
+    (void)ctx; (void)path; (void)mode;
+    return -1;
 }
 
 static int xfs_vfs_unlink(void *ctx, const char *path)
 {
-    xfs_t *fs = (xfs_t *)ctx;
-
-    char parent[256], name[XFS_MAX_FILENAME + 1];
-    xfs_path_split(path, parent, name);
-
-    uint64_t ino, parent_ino;
-    int is_dir = 0, pid = 0;
-    if (xfs_walk_path(fs, path, &ino, &is_dir) != 0) return -1;
-    if (xfs_walk_path(fs, parent, &parent_ino, &pid) != 0) return -1;
-
-    /* Zero out the inode */
-    xfs_dinode_t di;
-    if (xfs_read_inode(fs, ino, &di) == 0) {
-        di.di_mode = 0;
-        di.di_size = 0;
-        xfs_write_inode(fs, ino, &di, NULL, 0);
-    }
-
-    return xfs_sf_remove_entry(fs, parent_ino, ino);
+    (void)ctx; (void)path;
+    return -1;
 }
 
 static int xfs_vfs_stat(void *ctx, const char *path, vfs_entry_t *entry)
 {
     xfs_t *fs = (xfs_t *)ctx;
-
     uint64_t ino;
-    int is_dir = 0;
-    if (xfs_walk_path(fs, path, &ino, &is_dir) != 0) return -1;
-
-    xfs_dinode_t dinode;
-    if (xfs_read_inode(fs, ino, &dinode) != 0) return -1;
-
-    const char *base = path;
-    const char *p = path;
-    while (*p) { if (*p == '/') base = p + 1; p++; }
-    int nl = 0;
-    while (base[nl] && nl < VFS_NAME_LEN - 1) { entry->name[nl] = base[nl]; nl++; }
+    if (walk(fs, path, &ino) != 0) return -1;
+    xfs_inode_t ip;
+    if (read_inode(fs, ino, &ip) != 0) return -1;
+    memset(entry, 0, sizeof(*entry));
+    int len = (int)strlen(path);
+    while (len > 0 && path[len - 1] == '/') len--;
+    int s = len;
+    while (s > 0 && path[s - 1] != '/') s--;
+    int nl = len - s;
+    if (nl >= VFS_NAME_LEN) nl = VFS_NAME_LEN - 1;
+    memcpy(entry->name, path + s, (size_t)nl);
     entry->name[nl] = 0;
-    entry->size   = (uint32_t)be64(dinode.di_size);
-    entry->is_dir = is_dir;
-    entry->inode  = (uint32_t)ino;
-    entry->mode   = be16(dinode.di_mode);
+    entry->size = ip.size > 0xFFFFFFFFULL ? 0xFFFFFFFFu : (uint32_t)ip.size;
+    entry->is_dir = (ip.mode & S_IFMT_) == S_IFDIR_;
+    entry->inode = (uint32_t)ino;
+    entry->mode = ip.mode;
+    inode_free(&ip);
     return 0;
 }
 
-static int xfs_vfs_rename(void *ctx, const char *old, const char *new)
+static int xfs_vfs_rename(void *ctx, const char *old, const char *new_path)
 {
-    xfs_t *fs = (xfs_t *)ctx;
-
-    char old_parent[256], old_name[XFS_MAX_FILENAME + 1];
-    char new_parent[256], new_name[XFS_MAX_FILENAME + 1];
-    xfs_path_split(old, old_parent, old_name);
-    xfs_path_split(new, new_parent, new_name);
-
-    uint64_t ino, old_parent_ino, new_parent_ino;
-    int is_dir = 0, pid = 0;
-    if (xfs_walk_path(fs, old, &ino, &is_dir) != 0) return -1;
-    if (xfs_walk_path(fs, old_parent, &old_parent_ino, &pid) != 0) return -1;
-    if (xfs_walk_path(fs, new_parent, &new_parent_ino, &pid) != 0) return -1;
-
-    xfs_sf_remove_entry(fs, old_parent_ino, ino);
-    return xfs_sf_add_entry(fs, new_parent_ino, ino, new_name, is_dir ? 2 : 1);
+    (void)ctx; (void)old; (void)new_path;
+    return -1;
 }
 
 static int xfs_vfs_symlink(void *ctx, const char *target, const char *path)
@@ -1054,96 +494,64 @@ void xfs_mount_vfs(xfs_t *fs, const char *mount_point)
         .rename  = xfs_vfs_rename,
         .symlink = xfs_vfs_symlink,
     };
+    klog_write("xfs: mounted read-only\n");
     vfs_mount(mount_point, &ops, fs);
+}
+
+/* ---------- mount ---------- */
+
+int xfs_probe_and_mount(xfs_t *fs, blockdev_t *bd)
+{
+    memset(fs, 0, sizeof(*fs));
+    fs->bd = bd;
+    uint8_t *sb = (uint8_t *)malloc(512);
+    if (!sb) return -1;
+    if (blockdev_read_bytes(bd, 0, 512, sb) != 0 || be32(sb) != XFS_SB_MAGIC) { free(sb); return -1; }
+
+    fs->blocksize = be32(sb + 4);
+    fs->dblocks = be64(sb + 8);
+    fs->rootino = be64(sb + 56);
+    fs->agblocks = be32(sb + 84);
+    fs->agcount = be32(sb + 88);
+    uint16_t versionnum = be16(sb + 100);
+    fs->inodesize = be16(sb + 104);
+    fs->inopblock = be16(sb + 106);
+    memcpy(fs->fname, sb + 108, 12);
+    fs->fname[12] = 0;
+    fs->agblklog = sb[124];
+    fs->inopblog = sb[123];
+    fs->dirblklog = sb[192];
+    fs->v5 = (versionnum & 0xF) == 5;
+    uint32_t features2 = be32(sb + 200);
+    uint32_t incompat = fs->v5 ? be32(sb + 216) : 0;
+    uint32_t rextents = (uint32_t)be64(sb + 24);
+    if (fs->v5) {
+        fs->ftype = (incompat & XFS_INCOMPAT_FTYPE) != 0;
+    } else {
+        fs->ftype = (features2 & 0x200) != 0;
+    }
+    free(sb);
+
+    if (fs->blocksize < 512 || fs->blocksize > 65536 || (fs->blocksize & (fs->blocksize - 1)) ||
+        fs->inodesize < 256 || fs->inodesize > 2048 || fs->agblocks == 0 || fs->agcount == 0 ||
+        fs->agblklog > 31 || fs->inopblog > 6 || fs->dirblklog > 4 || rextents != 0 ||
+        (fs->v5 && (incompat & ~XFS_INCOMPAT_OK))) return -1;
+
+    xfs_inode_t root;
+    if (read_inode(fs, fs->rootino, &root) != 0) return -1;
+    int ok = (root.mode & S_IFMT_) == S_IFDIR_;
+    inode_free(&root);
+    return ok ? 0 : -1;
+}
+
+int xfs_umount(xfs_t *fs)
+{
+    (void)fs;
+    return 0;
 }
 
 int xfs_format(blockdev_t *bd, const char *label)
 {
-    uint32_t blocksize  = 4096;
-    uint16_t inodesize  = 512;
-    uint16_t inopblock  = (uint16_t)(blocksize / inodesize);
-    uint64_t sector_sz  = bd->sector_size ? bd->sector_size : 512;
-    uint64_t total_bytes= bd->total_sectors * sector_sz;
-    uint64_t total_blocks = total_bytes / blocksize;
-    uint32_t agblocks   = (uint32_t)(total_blocks / 4);
-    if (agblocks < 64) agblocks = 64;
-    uint32_t agcount    = 4;
-
-    uint8_t agblklog = 0;
-    uint32_t tmp = agblocks - 1;
-    while (tmp > 0) { agblklog++; tmp >>= 1; }
-
-    uint8_t inopblog = 0;
-    tmp = inopblock;
-    while (tmp > 1) { inopblog++; tmp >>= 1; }
-
-    /* Root inode at inode 128 (block 0, slot 0 in second allocation) */
-    uint64_t rootino = 128;
-
-    xfs_sb_t *sb = (xfs_sb_t *)malloc(sizeof(xfs_sb_t));
-    if (!sb) return -1;
-    memset(sb, 0, sizeof(xfs_sb_t));
-
-    sb->sb_magicnum  = be32(XFS_SB_MAGIC);
-    sb->sb_blocksize = be32(blocksize);
-    sb->sb_dblocks   = be64(total_blocks);
-    sb->sb_rblocks   = 0;
-    sb->sb_rextents  = 0;
-    sb->sb_logstart  = be64(1ULL);
-    sb->sb_rootino   = be64(rootino);
-    sb->sb_rbmino    = be64(rootino + 1);
-    sb->sb_rsumino   = be64(rootino + 2);
-    sb->sb_rextsize  = be32(1);
-    sb->sb_agblocks  = be32(agblocks);
-    sb->sb_agcount   = be32(agcount);
-    sb->sb_rbmblocks = 0;
-    sb->sb_logblocks = be32(512);
-    sb->sb_versionnum= be16(0xB004U);
-    sb->sb_sectsize  = be16(512);
-    sb->sb_inodesize = be16(inodesize);
-    sb->sb_inopblock = be16(inopblock);
-    if (label) {
-        int k = 0;
-        while (label[k] && k < 11) { sb->sb_fname[k] = label[k]; k++; }
-        sb->sb_fname[k] = 0;
-    }
-    sb->sb_blocklog  = 12;
-    sb->sb_sectlog   = 9;
-    sb->sb_inodelog  = 9;
-    sb->sb_inopblog  = inopblog;
-    sb->sb_agblklog  = agblklog;
-    sb->sb_rextslog  = 0;
-    sb->sb_inprogress= 0;
-    sb->sb_imax_pct  = 25;
-    sb->sb_icount    = be64(1);
-    sb->sb_ifree     = 0;
-    sb->sb_fdblocks  = be64(total_blocks - 10);
-
-    blockdev_write_bytes(bd, 0, sizeof(xfs_sb_t), sb);
-    free(sb);
-
-    /* Write root inode */
-    uint8_t *inode_buf = (uint8_t *)malloc(inodesize);
-    if (!inode_buf) return -1;
-    memset(inode_buf, 0, inodesize);
-
-    xfs_dinode_t *di = (xfs_dinode_t *)inode_buf;
-    di->di_magic    = be16(XFS_DINODE_MAGIC);
-    di->di_mode     = be16(0x41EDU); /* dir | 0755 */
-    di->di_version  = 2;
-    di->di_format   = XFS_DINODE_FMT_LOCAL;
-    di->di_nlink    = be32(2);
-    di->di_size     = be64(10 + 8); /* shortform hdr */
-
-    uint8_t *fork = inode_buf + 100;
-    /* shortform dir: count=0, i8count=0, parent=rootino */
-    fork[0] = 0;
-    fork[1] = 0;
-    uint64_t parent_be = be64(rootino);
-    memcpy(fork + 2, &parent_be, 8);
-
-    uint64_t root_byte = (rootino / inopblock) * blocksize + (rootino % inopblock) * inodesize;
-    blockdev_write_bytes(bd, root_byte, inodesize, inode_buf);
-    free(inode_buf);
-    return 0;
+    (void)bd; (void)label;
+    return -1;
 }
