@@ -8,6 +8,7 @@
 #include "memory.h"
 #include "scheduler.h"
 #include "debugmon.h"
+#include "csprng.h"
 
 #define DNS_PORT 53
 
@@ -36,12 +37,12 @@ static int dns_build_name(uint8_t *buf, int cap, int *off, const char *name)
     return 0;
 }
 
-int dns_resolve(const char *hostname, uint32_t *ip_out)
+static int dns_query(const char *hostname, uint32_t *ip_out, uint16_t rx_port, uint16_t txid)
 {
     uint8_t pkt[300];
     memset(pkt, 0, sizeof(pkt));
 
-    pkt[0] = 0xAA; pkt[1] = 0xAA;
+    pkt[0] = (uint8_t)(txid >> 8); pkt[1] = (uint8_t)txid;
     pkt[2] = 0x01; pkt[3] = 0x00;
     pkt[4] = 0x00; pkt[5] = 0x01;
     pkt[6] = 0x00; pkt[7] = 0x00;
@@ -54,8 +55,8 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
     pkt[off++] = 0x00; pkt[off++] = 0x01;
 
     uint8_t resp[512];
-    int rx_port = 12345;
-    udp_open(rx_port);
+    if (udp_open(rx_port) < 0) return IP_ERR_NOMEM;
+    int qlen = off - 12;   /* name + qtype + qclass, echoed back by the server */
 
     int src = udp_send(net_dns, DNS_PORT, rx_port, pkt, off);
     if (src != 0) return src; /* propagate ip_send()/arp_resolve()'s own specific code */
@@ -77,6 +78,14 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
         uint32_t src_ip;
         uint16_t src_port;
         int n = udp_listen(rx_port, resp, sizeof(resp), &src_ip, &src_port);
+        /* Accept only a genuine answer to this query: from the DNS server we
+         * asked, on port 53, same transaction id, QR set, and the question
+         * section echoing ours. Anything else (spoofed or stale) is dropped
+         * and we keep waiting. */
+        if (n > 0 && (src_ip != net_dns || src_port != DNS_PORT || n < 12 + qlen ||
+                      resp[0] != pkt[0] || resp[1] != pkt[1] || !(resp[2] & 0x80) ||
+                      resp[4] != 0 || resp[5] != 1 || memcmp(resp + 12, pkt + 12, (size_t)qlen) != 0))
+            n = -1;
         if (n > 12 + 16) {
             /* RCODE is the low nibble of byte 3 (RA|Z|RCODE), not byte 2
              * (QR|Opcode|AA|TC|RD) -- our query always sets RD=1, and a
@@ -156,6 +165,18 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
          * the NIC directly. */
     }
     return DNS_ERR_TIMEOUT;
+}
+
+int dns_resolve(const char *hostname, uint32_t *ip_out)
+{
+    /* Unpredictable source port and transaction id: with the old constants
+     * (port 12345, id 0xAAAA) anyone could forge an answer without seeing
+     * the query. The socket is released afterwards. */
+    uint16_t port = (uint16_t)(49152 + csprng_u32() % 16384);
+    uint16_t txid = (uint16_t)csprng_u32();
+    int r = dns_query(hostname, ip_out, port, txid);
+    udp_close(port);
+    return r;
 }
 
 const char *dns_strerror(int err)

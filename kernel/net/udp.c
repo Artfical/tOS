@@ -46,6 +46,18 @@ int udp_listen(uint16_t port, uint8_t *resp, int max_len, uint32_t *src_ip, uint
     return n;
 }
 
+void udp_close(uint16_t port)
+{
+    for (int i = 0; i < UDP_SOCKETS; i++) {
+        if (udp_sockets[i].used && udp_sockets[i].port == port) {
+            if (udp_sockets[i].data) free(udp_sockets[i].data);
+            udp_sockets[i].data = 0;
+            udp_sockets[i].has_data = 0;
+            udp_sockets[i].used = 0;
+        }
+    }
+}
+
 int udp_open(uint16_t port)
 {
     /* There is no udp_close(), so callers that open the same port again
