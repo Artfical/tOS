@@ -1454,6 +1454,8 @@ static int ext4_vfs_unlink(void *ctx, const char *path)
         if (ext4_dir_remove_entry(fs, parent_ino, name) != 0) { ext4_txn_commit(fs); return -1; }
 
         ext4_free_inode_blocks(fs, &inode);
+        memset(&inode, 0, sizeof(inode));
+        ext4_write_inode(fs, loc.ino, &inode);
         ext4_free_inode(fs, loc.ino, 1);
 
         ext4_inode_t parent;
@@ -1470,6 +1472,8 @@ static int ext4_vfs_unlink(void *ctx, const char *path)
     if (inode.i_links_count > 0) inode.i_links_count--;
     if (inode.i_links_count == 0) {
         ext4_free_inode_blocks(fs, &inode);
+        memset(&inode, 0, sizeof(inode));
+        ext4_write_inode(fs, loc.ino, &inode);
         ext4_free_inode(fs, loc.ino, 0);
     } else {
         ext4_write_inode(fs, loc.ino, &inode);
