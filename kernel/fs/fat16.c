@@ -867,6 +867,23 @@ static int fat16_vfs_rename(void *ctx, const char *old, const char *new)
     memcpy(newde.ext, want + 8, 3);
     if (fat16_dir_add_entry(fs, new_parent.is_root, new_parent.cluster, &newde, NULL, NULL) != 0) return -1;
 
+    /* a moved directory's ".." must point at its new parent (0 for the root) */
+    if (de.attr & FAT16_ATTR_DIRECTORY) {
+        uint32_t dcl = de.cluster_low | ((uint32_t)de.cluster_high << 16);
+        uint8_t *db = (uint8_t *)malloc(fs->bytes_per_sector);
+        if (db) {
+            uint32_t dsec = fat16_cluster_to_sector(fs, dcl);
+            if (fat16_read_sector(fs, dsec, db) == 0) {
+                fat16_dirent_t *dd = (fat16_dirent_t *)(db + sizeof(fat16_dirent_t));
+                uint32_t nc = new_parent.is_root ? 0 : new_parent.cluster;
+                dd->cluster_low = (uint16_t)(nc & 0xFFFF);
+                dd->cluster_high = (uint16_t)(nc >> 16);
+                fat16_write_sector(fs, dsec, db);
+            }
+            free(db);
+        }
+    }
+
     uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
     if (buf) {
         if (fat16_read_sector(fs, sec, buf) == 0) {
