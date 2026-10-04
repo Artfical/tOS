@@ -1,5 +1,6 @@
 #include "https.h"
 #include "tls.h"
+#include "http.h"
 #include "tcp.h"
 #include "string.h"
 
@@ -16,15 +17,8 @@ int https_get(uint32_t ip, const char *host, uint16_t port, const char *path,
 
     /* Build HTTP/1.0 request */
     char req[1024];
-    int off = 0;
-    const char *get  = "GET ";
-    const char *ver  = " HTTP/1.0\r\nHost: ";
-    const char *conn = "\r\nConnection: close\r\n\r\n";
-    while (*get)  req[off++] = *get++;
-    while (*path) req[off++] = *path++;
-    while (*ver)  req[off++] = *ver++;
-    while (*host) req[off++] = *host++;
-    while (*conn) req[off++] = *conn++;
+    int off = http_build_request(req, sizeof(req), host, path);
+    if (off < 0) { tls_close(&g_tls); return HTTP_ERR_REQUEST; }
 
     if (tls_write(&g_tls, (const uint8_t*)req, off) != 0) {
         tls_close(&g_tls);
