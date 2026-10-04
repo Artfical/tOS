@@ -890,6 +890,17 @@ static int exfat_vfs_mkdir(void *ctx, const char *path, uint32_t mode)
     return 0;
 }
 
+/* A directory is empty when it has no in-use directory entry set. */
+static int exfat_dir_is_empty(exfat_t *fs, uint32_t dir_cluster)
+{
+    uint8_t entry[32];
+    for (uint32_t slot = 0;; slot++) {
+        if (exfat_read_slot(fs, dir_cluster, slot, entry) != 0) return 1;
+        if (entry[0] == 0x00) return 1;
+        if (entry[0] & 0x80) return 0;
+    }
+}
+
 static int exfat_vfs_unlink(void *ctx, const char *path)
 {
     exfat_t *fs = (exfat_t *)ctx;
@@ -904,7 +915,8 @@ static int exfat_vfs_unlink(void *ctx, const char *path)
     exfat_dirent_info_t info;
     if (exfat_dir_find(fs, parent_cluster, name, &info) != 0) return -1;
 
-    if (info.file_attributes & EXFAT_ATTR_DIRECTORY) return -1;
+    if ((info.file_attributes & EXFAT_ATTR_DIRECTORY) && info.first_cluster != 0 &&
+        !exfat_dir_is_empty(fs, info.first_cluster)) return -1;
 
     if (info.first_cluster != 0) exfat_free_chain(fs, info.first_cluster);
 
