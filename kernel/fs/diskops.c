@@ -63,62 +63,56 @@ int diskops_mount(const char *name, const char *mount_point, const char *fstype,
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "fat16") == 0) {
         static fat16_t fat16_instances[VFS_MAX_MOUNTS];
-        static int fat16_next = 0;
-        if (fat16_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        fat16_t *fs = &fat16_instances[fat16_next];
+        fat16_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!fat16_instances[i].bd) { fs = &fat16_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         memset(fs, 0, sizeof(*fs));
-        if (fat16_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "fat16 probe failed (not formatted?)"); return -1; }
-        fat16_next++;
+        if (fat16_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "fat16 probe failed (not formatted?)"); return -1; }
         fat16_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "fat32") == 0) {
         static fat32_t fat32_instances[VFS_MAX_MOUNTS];
-        static int fat32_next = 0;
-        if (fat32_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        fat32_t *fs = &fat32_instances[fat32_next];
+        fat32_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!fat32_instances[i].bd) { fs = &fat32_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         memset(fs, 0, sizeof(*fs));
-        if (fat32_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "fat32 probe failed (not formatted?)"); return -1; }
-        fat32_next++;
+        if (fat32_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "fat32 probe failed (not formatted?)"); return -1; }
         fat32_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "exfat") == 0) {
         static exfat_t exfat_instances[VFS_MAX_MOUNTS];
-        static int exfat_next = 0;
-        if (exfat_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        exfat_t *fs = &exfat_instances[exfat_next];
+        exfat_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!exfat_instances[i].bd) { fs = &exfat_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         memset(fs, 0, sizeof(*fs));
-        if (exfat_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "exfat probe failed (not formatted?)"); return -1; }
-        exfat_next++;
+        if (exfat_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "exfat probe failed (not formatted?)"); return -1; }
         exfat_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "ext2") == 0) {
         static ext2_t ext2_instances[VFS_MAX_MOUNTS];
-        static int ext2_next = 0;
-        if (ext2_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        ext2_t *fs = &ext2_instances[ext2_next];
+        ext2_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!ext2_instances[i].bd) { fs = &ext2_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         memset(fs, 0, sizeof(*fs));
-        if (ext2_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "ext2 probe failed (not formatted?)"); return -1; }
-        ext2_next++;
+        if (ext2_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "ext2 probe failed (not formatted?)"); return -1; }
         ext2_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "ext3") == 0) {
         static ext3_t ext3_instances[VFS_MAX_MOUNTS];
-        static int ext3_next = 0;
-        if (ext3_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        ext3_t *fs = &ext3_instances[ext3_next];
+        ext3_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!ext3_instances[i].bd) { fs = &ext3_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         memset(fs, 0, sizeof(*fs));
-        if (ext3_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "ext3 probe failed (not formatted?)"); return -1; }
-        ext3_next++;
+        if (ext3_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "ext3 probe failed (not formatted?)"); return -1; }
         ext3_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "ext4") == 0) {
         static ext4_t ext4_instances[VFS_MAX_MOUNTS];
-        static int ext4_next = 0;
-        if (ext4_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        ext4_t *fs = &ext4_instances[ext4_next];
+        ext4_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!ext4_instances[i].bd) { fs = &ext4_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         memset(fs, 0, sizeof(*fs));
-        if (ext4_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "ext4 probe failed (not formatted?)"); return -1; }
-        ext4_next++;
+        if (ext4_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "ext4 probe failed (not formatted?)"); return -1; }
         ext4_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "ntfs") == 0) {
@@ -131,42 +125,38 @@ int diskops_mount(const char *name, const char *mount_point, const char *fstype,
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "btrfs") == 0) {
         static btrfs_t btrfs_instances[VFS_MAX_MOUNTS];
-        static int btrfs_next = 0;
-        if (btrfs_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        btrfs_t *fs = &btrfs_instances[btrfs_next];
+        btrfs_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!btrfs_instances[i].bd) { fs = &btrfs_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         memset(fs, 0, sizeof(*fs));
-        if (btrfs_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "btrfs probe failed (not formatted?)"); return -1; }
-        btrfs_next++;
+        if (btrfs_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "btrfs probe failed (not formatted?)"); return -1; }
         btrfs_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "xfs") == 0) {
         static xfs_t xfs_instances[VFS_MAX_MOUNTS];
-        static int xfs_next = 0;
-        if (xfs_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        xfs_t *fs = &xfs_instances[xfs_next];
+        xfs_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!xfs_instances[i].bd) { fs = &xfs_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         memset(fs, 0, sizeof(*fs));
-        if (xfs_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "xfs probe failed (not formatted?)"); return -1; }
-        xfs_next++;
+        if (xfs_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "xfs probe failed (not formatted?)"); return -1; }
         xfs_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "zfs") == 0) {
         static zfs_t zfs_instances[VFS_MAX_MOUNTS];
-        static int zfs_next = 0;
-        if (zfs_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        zfs_t *fs = &zfs_instances[zfs_next];
+        zfs_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!zfs_instances[i].bd) { fs = &zfs_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         memset(fs, 0, sizeof(*fs));
-        if (zfs_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "zfs probe failed (not formatted?)"); return -1; }
-        zfs_next++;
+        if (zfs_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "zfs probe failed (not formatted?)"); return -1; }
         zfs_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "apfs") == 0) {
         static apfs_t apfs_instances[VFS_MAX_MOUNTS];
-        static int apfs_next = 0;
-        if (apfs_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        apfs_t *fs = &apfs_instances[apfs_next];
+        apfs_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!apfs_instances[i].bd) { fs = &apfs_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         memset(fs, 0, sizeof(*fs));
-        if (apfs_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "apfs probe failed (not formatted?)"); return -1; }
-        apfs_next++;
+        if (apfs_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "apfs probe failed (not formatted?)"); return -1; }
         apfs_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else {
@@ -258,6 +248,16 @@ int diskops_umount(const char *mount_point, char *err, int err_len)
                 ntfs_t *nfs = (ntfs_t *)bd->fs_ctx;
                 ntfs_umount(nfs);
                 memset(nfs, 0, sizeof(*nfs));
+            }
+            if (bd->fs_ctx) {
+                /* free the instance slot (a slot is in use while its bd is set) */
+                const char *ft = bd->fs_type;
+#define CLR(name, type) if (strcmp(ft, name) == 0) memset(bd->fs_ctx, 0, sizeof(type))
+                CLR("fat16", fat16_t); else CLR("fat32", fat32_t); else CLR("exfat", exfat_t);
+                else CLR("ext2", ext2_t); else CLR("ext3", ext3_t); else CLR("ext4", ext4_t);
+                else CLR("btrfs", btrfs_t); else CLR("xfs", xfs_t); else CLR("zfs", zfs_t);
+                else CLR("apfs", apfs_t);
+#undef CLR
             }
             blockdev_flush(bd);
             bd->mounted = 0;
