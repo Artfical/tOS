@@ -9,7 +9,14 @@ typedef struct {
     uint32_t ip;
     uint8_t  mac[6];
     int      valid;
+    uint32_t stamp;   /* uptime ms when last confirmed */
 } arp_cache_t;
+
+#define ARP_TTL_MS 120000   /* entries older than this are re-resolved */
+
+/* IP of the request arp_resolve() is currently waiting on (0 = none): only a
+ * reply for it may install or change a mapping. */
+static uint32_t arp_pending_ip;
 
 #define ARP_CACHE_SIZE 16
 static arp_cache_t arp_cache[ARP_CACHE_SIZE];
@@ -33,22 +40,38 @@ void arp_init(void)
         arp_cache[i].valid = 0;
 }
 
-static void arp_cache_add(uint32_t ip, uint8_t *mac)
+static int arp_entry_fresh(const arp_cache_t *e)
 {
+    return e->valid && (uint32_t)(debugmon_uptime_ms() - e->stamp) < ARP_TTL_MS;
+}
+
+/* solicited: the mapping answers a request we sent. Unsolicited packets may
+ * refresh or create a mapping, but never silently rewrite a live one (that is
+ * ARP cache poisoning). */
+static void arp_cache_add(uint32_t ip, const uint8_t *mac, int solicited)
+{
+    uint32_t now = debugmon_uptime_ms();
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
         if (arp_cache[i].valid && arp_cache[i].ip == ip) {
-            memcpy(arp_cache[i].mac, mac, 6);
+            if (memcmp(arp_cache[i].mac, mac, 6) == 0) { arp_cache[i].stamp = now; return; }
+            if (solicited || !arp_entry_fresh(&arp_cache[i])) {
+                memcpy(arp_cache[i].mac, mac, 6);
+                arp_cache[i].stamp = now;
+            }
             return;
         }
     }
+    /* New mapping: take a free or expired slot, otherwise evict the oldest
+     * (a full cache used to refuse every new host for good). */
+    int victim = 0;
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
-        if (!arp_cache[i].valid) {
-            arp_cache[i].valid = 1;
-            arp_cache[i].ip = ip;
-            memcpy(arp_cache[i].mac, mac, 6);
-            return;
-        }
+        if (!arp_entry_fresh(&arp_cache[i])) { victim = i; break; }
+        if ((uint32_t)(now - arp_cache[i].stamp) > (uint32_t)(now - arp_cache[victim].stamp)) victim = i;
     }
+    arp_cache[victim].valid = 1;
+    arp_cache[victim].ip = ip;
+    memcpy(arp_cache[victim].mac, mac, 6);
+    arp_cache[victim].stamp = now;
 }
 
 static void arp_send_request(uint32_t ip)
@@ -75,11 +98,12 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
     if (!nic_send || !nic_poll) return ARP_ERR_NO_NIC;
 
     for (int i = 0; i < ARP_CACHE_SIZE; i++) {
-        if (arp_cache[i].valid && arp_cache[i].ip == ip) {
+        if (arp_entry_fresh(&arp_cache[i]) && arp_cache[i].ip == ip) {
             memcpy(mac_out, arp_cache[i].mac, 6);
             return 0;
         }
     }
+    arp_pending_ip = ip;
     arp_send_request(ip);
     /* Wall-clock timeout, not an iteration count — how long a single
      * nic_poll() call takes varies wildly by driver/hypervisor (a VM's
@@ -97,7 +121,8 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
                 arp_handle(pkt, len);
         }
         for (int i = 0; i < ARP_CACHE_SIZE; i++) {
-            if (arp_cache[i].valid && arp_cache[i].ip == ip) {
+            if (arp_entry_fresh(&arp_cache[i]) && arp_cache[i].ip == ip) {
+                arp_pending_ip = 0;
                 memcpy(mac_out, arp_cache[i].mac, 6);
                 return 0;
             }
@@ -109,6 +134,7 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
          * reentrancy bug (see kernel/drivers/input/keyboard.c). nic_poll()
          * above already polls the NIC directly. */
     }
+    arp_pending_ip = 0;
     return ARP_ERR_TIMEOUT;
 }
 
@@ -123,12 +149,36 @@ const char *arp_resolve_strerror(int err)
 
 void arp_handle(uint8_t *data, int len)
 {
-    (void)len;
+    /* Whole packet present and describing Ethernet/IPv4 (the old code read
+     * the fields without looking at len or the address sizes at all). */
+    if (len < (int)sizeof(arp_pkt_t)) return;
     arp_pkt_t *arp = (arp_pkt_t *)data;
-    uint32_t src_ip = *(uint32_t *)arp->spa;
-    arp_cache_add(src_ip, arp->sha);
+    if (ntohs(arp->htype) != 1 || ntohs(arp->ptype) != ETHERTYPE_IP) return;
+    if (arp->hlen != 6 || arp->plen != 4) return;
+    uint16_t oper = ntohs(arp->oper);
+    if (oper != 1 && oper != 2) return;
 
-    if (ntohs(arp->oper) == 1 && *(uint32_t *)arp->tpa == net_ip) {
+    uint32_t src_ip = *(uint32_t *)arp->spa;
+    /* Never learn broadcast/zero/our own address or a multicast/zero MAC. */
+    if (src_ip == 0 || src_ip == 0xFFFFFFFFu || src_ip == net_ip) return;
+    if ((arp->sha[0] & 1) || (!arp->sha[0] && !arp->sha[1] && !arp->sha[2] &&
+                              !arp->sha[3] && !arp->sha[4] && !arp->sha[5])) return;
+
+    if (oper == 2) {
+        /* A reply only counts for the address we asked about, and only
+         * when it is addressed to us. */
+        if (src_ip != arp_pending_ip) {
+            for (int i = 0; i < ARP_CACHE_SIZE; i++)
+                if (arp_cache[i].valid && arp_cache[i].ip == src_ip &&
+                    memcmp(arp_cache[i].mac, arp->sha, 6) == 0) arp_cache[i].stamp = debugmon_uptime_ms();
+            return;
+        }
+        arp_cache_add(src_ip, arp->sha, 1);
+        return;
+    }
+
+    arp_cache_add(src_ip, arp->sha, 0);
+    if (*(uint32_t *)arp->tpa == net_ip) {
         uint8_t buf[sizeof(arp_pkt_t)];
         arp_pkt_t *reply = (arp_pkt_t *)buf;
         memset(buf, 0, sizeof(arp_pkt_t));
