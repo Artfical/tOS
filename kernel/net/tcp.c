@@ -21,6 +21,7 @@
 #include "debugmon.h"
 #include "terminal.h"
 #include "klog.h"
+#include "csprng.h"
 
 /* -- TCP Control Block ---------------------------------------------------- */
 typedef struct {
@@ -63,7 +64,6 @@ typedef struct {
 } tcp_sock_t;
 
 static tcp_sock_t socks[TCP_MAX_SOCKETS];
-static uint16_t   next_port = 49152;
 static uint16_t   tcp_ip_id = 0;
 
 /* Sequence-number arithmetic modulo 2^32 (RFC 793 / 1982): plain < and >
@@ -80,11 +80,18 @@ static tcp_sock_t *get_sock(int fd)
     return &socks[fd];
 }
 
+/* Random ephemeral port in 49152..65535 that no socket is using. A counter
+ * (the old code) lets an off-path attacker predict the 4-tuple. */
 static uint16_t alloc_port(void)
 {
-    uint16_t p = next_port++;
-    if (next_port == 0) next_port = 49152;
-    return p;
+    for (int tries = 0; tries < 64; tries++) {
+        uint16_t p = (uint16_t)(49152 + csprng_u32() % 16384);
+        int busy = 0;
+        for (int i = 0; i < TCP_MAX_SOCKETS; i++)
+            if (socks[i].used && socks[i].src_port == p) { busy = 1; break; }
+        if (!busy) return p;
+    }
+    return (uint16_t)(49152 + csprng_u32() % 16384);
 }
 
 /* Per-socket receive buffer limit. Data beyond it is not acknowledged, so
@@ -269,7 +276,7 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
     s->dst_ip   = dst_ip;
     s->dst_port = dst_port;
     s->src_port = alloc_port();
-    s->seq      = 0x1000;
+    s->seq      = csprng_u32();   /* unpredictable ISN (RFC 6528 intent) */
     s->ack      = 0;
     s->got_rst  = 0;
     s->state    = TCP_SYN_SENT;
@@ -597,7 +604,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
             ns->dst_ip   = ip_hdr->src_ip;
             ns->dst_port = src_port;
             ns->src_port = dst_port;
-            ns->seq      = 0x2000;
+            ns->seq      = csprng_u32();
             ns->ack      = pkt_seq + 1;
             ns->state    = TCP_SYN_RECEIVED;
             send_seg(ns, TCP_FLAG_SYN | TCP_FLAG_ACK, 0, 0);
