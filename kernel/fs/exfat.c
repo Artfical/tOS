@@ -341,6 +341,32 @@ static int exfat_dir_alloc_slots(exfat_t *fs, uint32_t dir_cluster, int count, u
     return 0;
 }
 
+/* Files flagged NoFatChain (secondary flags bit 1) are contiguous and their
+ * FAT entries are unused. The rest of the driver walks FAT chains, so write
+ * the chain out and clear the flag the first time such an entry is seen. */
+static void exfat_materialize_chain(exfat_t *fs, uint32_t dir_cluster, uint32_t primary_slot,
+                                    int secondary_count, uint32_t first_cluster, uint64_t length)
+{
+    if (first_cluster < 2 || first_cluster >= fs->cluster_count + 2) return;
+    uint32_t n = (uint32_t)((length + fs->cluster_size - 1) / fs->cluster_size);
+    if (n == 0) n = 1;
+    for (uint32_t i = 0; i < n; i++)
+        exfat_set_fat_entry(fs, first_cluster + i, i + 1 < n ? first_cluster + i + 1 : EXFAT_CLUSTER_EOF);
+
+    int total_slots = 1 + secondary_count;
+    uint8_t *set = (uint8_t *)malloc((size_t)(32 * total_slots));
+    if (!set) return;
+    for (int i = 0; i < total_slots; i++)
+        if (exfat_read_slot(fs, dir_cluster, primary_slot + (uint32_t)i, set + 32 * i) != 0) { free(set); return; }
+    set[32 + 1] &= (uint8_t)~0x02;
+    uint16_t checksum = exfat_set_checksum(set, 32 * total_slots);
+    set[2] = (uint8_t)(checksum & 0xFF);
+    set[3] = (uint8_t)((checksum >> 8) & 0xFF);
+    exfat_write_slot(fs, dir_cluster, primary_slot, set);
+    exfat_write_slot(fs, dir_cluster, primary_slot + 1, set + 32);
+    free(set);
+}
+
 static int exfat_dir_find(exfat_t *fs, uint32_t dir_cluster, const char *name, exfat_dirent_info_t *out)
 {
     uint32_t slot = 0;
@@ -379,6 +405,8 @@ static int exfat_dir_find(exfat_t *fs, uint32_t dir_cluster, const char *name, e
         namebuf[nb] = 0;
 
         if (exfat_name_eq(namebuf, name)) {
+            if ((stream_entry[1] & 0x02) && first_cluster != 0 && raw_data_length != 0)
+                exfat_materialize_chain(fs, dir_cluster, primary_slot, secondary_count, first_cluster, raw_data_length);
             if (out) {
                 out->dir_cluster = dir_cluster;
                 out->primary_slot = primary_slot;
