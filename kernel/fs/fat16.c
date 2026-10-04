@@ -133,6 +133,7 @@ static uint32_t fat16_alloc_cluster(fat16_t *fs)
 
 static void fat16_free_chain(fat16_t *fs, uint32_t cluster)
 {
+    fs->dc_first = 0;   /* a cached directory cursor may point into this chain */
     while (cluster != 0 && cluster < FAT16_CLUSTER_BAD) {
         uint16_t next = fat16_get_fat_entry(fs, cluster);
         fat16_set_fat_entry(fs, cluster, 0);
@@ -176,13 +177,22 @@ static int fat16_dir_nth_sector(fat16_t *fs, int is_root, uint32_t first_cluster
     uint32_t cluster = first_cluster;
     uint32_t clusters_to_skip = n / fs->sectors_per_cluster;
     uint32_t sector_in_cluster = n % fs->sectors_per_cluster;
+    uint32_t start_idx = 0;
 
-    for (uint32_t i = 0; i < clusters_to_skip; i++) {
+    /* resume from where the previous lookup in this directory stopped */
+    if (fs->dc_first == first_cluster && fs->dc_idx <= clusters_to_skip && fs->dc_cluster != 0) {
+        cluster = fs->dc_cluster;
+        start_idx = fs->dc_idx;
+    }
+    for (uint32_t i = start_idx; i < clusters_to_skip; i++) {
         uint16_t e = fat16_get_fat_entry(fs, cluster);
         if (e == 0 || e >= FAT16_CLUSTER_BAD) return -1;
         cluster = e;
     }
     if (cluster == 0 || cluster >= FAT16_CLUSTER_BAD) return -1;
+    fs->dc_first = first_cluster;
+    fs->dc_idx = clusters_to_skip;
+    fs->dc_cluster = cluster;
 
     *out_sector = fat16_cluster_to_sector(fs, cluster) + sector_in_cluster;
     return 0;
