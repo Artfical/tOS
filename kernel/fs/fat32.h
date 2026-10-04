@@ -30,6 +30,7 @@ typedef struct {
     uint32_t cluster_size;
     uint32_t fsinfo_sector;   /* 0 = none */
     int fsinfo_invalid;       /* free count already marked unknown */
+    uint32_t alloc_hint;      /* where the next free-cluster search starts */
     uint32_t dc_first, dc_idx, dc_cluster;   /* cursor into the last directory chain walked */
     fat32_fd_t fds[VFS_MAX_FDS];
 } fat32_t;

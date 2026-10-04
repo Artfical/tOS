@@ -124,6 +124,7 @@ static void fat32_fsinfo_invalidate(fat32_t *fs)
 static int fat32_set_fat_entry(fat32_t *fs, uint32_t cluster, uint32_t value)
 {
     if (cluster >= 2) fat32_fsinfo_invalidate(fs);
+    if (value == 0 && cluster >= 2 && cluster < fs->alloc_hint) fs->alloc_hint = cluster;
     uint32_t fat_offset = cluster * 4;
     uint32_t fat_sector = fs->reserved_sectors + (fat_offset / fs->bytes_per_sector);
     uint32_t sector_offset = fat_offset % fs->bytes_per_sector;
@@ -158,8 +159,16 @@ static uint32_t fat32_alloc_cluster(fat32_t *fs)
     uint32_t data_sectors = fs->total_sectors - fs->data_start_sector;
     uint32_t total_clusters = data_sectors / fs->sectors_per_cluster;
 
-    for (uint32_t c = 2; c < total_clusters + 2; c++) {
-        if (fat32_get_fat_entry(fs, c) == 0) return c;
+    /* continue from the last allocation instead of rescanning the FAT from
+     * cluster 2 every time (writing a file was quadratic in its size) */
+    uint32_t start = fs->alloc_hint >= 2 && fs->alloc_hint < total_clusters + 2 ? fs->alloc_hint : 2;
+    for (uint32_t i = 0; i < total_clusters; i++) {
+        uint32_t c = start + i;
+        if (c >= total_clusters + 2) c -= total_clusters;
+        if (fat32_get_fat_entry(fs, c) == 0) {
+            fs->alloc_hint = c + 1;
+            return c;
+        }
     }
     return 0;
 }
