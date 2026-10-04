@@ -8,6 +8,7 @@ int ata_device_count = 0;
 
 #define ATA_LBA28_LIMIT 0x10000000ULL
 #define ATA_MAX_PER_CMD 256
+#define ATA_FLUSH_EVERY 4096
 
 static void ata_delay400(ata_device_t *dev)
 {
@@ -188,9 +189,23 @@ int ata_write_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, const voi
                 outw(dev->io_base + ATA_REG_DATA, ptr[s * 256 + i]);
         }
         if (ata_poll(dev, 0)) { ata_report("ata_write", dev, lba, n); return -1; }
-        outb(dev->io_base + ATA_REG_CMD, dev->lba48 ? ATA_CMD_FLUSH_EXT : ATA_CMD_FLUSH);
-        if (ata_poll(dev, 0)) { ata_report("ata_flush", dev, lba, n); return -1; }
+        dev->unflushed += n;
+        /* FLUSH CACHE is slow (an fsync on emulated disks); batch it */
+        if (dev->unflushed >= ATA_FLUSH_EVERY && ata_flush(dev)) return -1;
         lba += n; in += n * 512; count -= n;
     }
+    return 0;
+}
+
+int ata_flush(ata_device_t *dev)
+{
+    if (!dev || !dev->present) return -1;
+    if (dev->unflushed == 0) return 0;
+    if (ata_wait(dev, 10000)) return -1;
+    outb(dev->io_base + ATA_REG_DRIVE, 0xE0 | (dev->slave ? 0x10 : 0));
+    ata_delay400(dev);
+    outb(dev->io_base + ATA_REG_CMD, dev->lba48 ? ATA_CMD_FLUSH_EXT : ATA_CMD_FLUSH);
+    if (ata_poll(dev, 0)) { ata_report("ata_flush", dev, 0, 0); return -1; }
+    dev->unflushed = 0;
     return 0;
 }

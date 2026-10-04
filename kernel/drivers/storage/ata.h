@@ -30,6 +30,7 @@ typedef struct {
     uint16_t ctrl_base;
     int present;
     int slave;
+    uint32_t unflushed;  /* sectors written since the last FLUSH CACHE */
     int lba48;
     int sectors_28;
     uint64_t sectors_48;
@@ -45,5 +46,6 @@ extern int ata_device_count;
 int ata_init(void);
 int ata_read_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, void *buf);
 int ata_write_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, const void *buf);
+int ata_flush(ata_device_t *dev);
 int ata_identify(ata_device_t *dev, int is_slave);
 #endif

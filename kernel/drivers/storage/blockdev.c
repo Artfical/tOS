@@ -159,6 +159,16 @@ static void bdc_drop(blockdev_t *bd, uint64_t lba, uint32_t count)
     }
 }
 
+int blockdev_flush(blockdev_t *bd)
+{
+    if (!bd || !bd->used) return -1;
+    if (bd->type != BLOCKDEV_ATA) return 0;
+    bd_lock();
+    int rc = ata_flush((ata_device_t *)bd->driver_data);
+    bd_unlock();
+    return rc;
+}
+
 void blockdev_cache_invalidate(blockdev_t *bd)
 {
     bd_lock();

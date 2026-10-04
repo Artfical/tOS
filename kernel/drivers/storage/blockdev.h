@@ -47,6 +47,7 @@ int blockdev_count(void);
 blockdev_t *blockdev_get(int index);
 blockdev_t *blockdev_find(const char *name);
 
+int blockdev_flush(blockdev_t *bd);           /* push the device's write cache to media */
 void blockdev_cache_invalidate(blockdev_t *bd); /* NULL = every device */
 int blockdev_read(blockdev_t *bd, uint64_t lba, uint32_t count, void *buf);
 int blockdev_write(blockdev_t *bd, uint64_t lba, uint32_t count, const void *buf);
