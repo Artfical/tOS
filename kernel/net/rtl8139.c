@@ -168,31 +168,53 @@ void rtl8139_send(void *data, int len)
     while (!(inl(io_base + tsd_off) & 0x8000) && timeout < 100000) timeout++;
 }
 
+/* Restarts the receiver after an unusable ring header, re-programming what
+ * the chip forgets when RE is toggled. */
+static void rtl8139_rx_reset(void)
+{
+    outb(io_base + RTL_REG_CR, 0x04);                       /* TE only: RE off */
+    outl(io_base + RTL_REG_RBSTART, (uint32_t)(uintptr_t)rx_buf);
+    outl(io_base + RTL_REG_RCR, 0x0000FF0E);
+    outb(io_base + RTL_REG_CR, 0x0C);                       /* RE + TE */
+    outw(io_base + RTL_REG_ISR, 0xFFFF);
+    rx_ptr = 0;
+    outw(io_base + RTL_REG_CAPR, (uint16_t)(0 - 0x10));
+}
+
 int rtl8139_poll(uint8_t *buf, int max_len)
 {
-    uint16_t status = inw(io_base + RTL_REG_ISR);
-    if (!(status & 0x0001)) return 0;
-    outw(io_base + RTL_REG_ISR, status);
+    /* The ring itself says whether a packet is waiting (CR.BUFE). The old
+     * code gated on the ISR ROK bit and cleared it on every read, so with
+     * two packets queued the second was invisible until a third arrived
+     * (acks lagged, SYN-ACKs sat unread for seconds), and it reset rx_ptr
+     * to 0 whenever the ring looked empty, desynchronising the driver from
+     * the chip's own write pointer. */
+    if (inb(io_base + RTL_REG_CR) & 0x01) return 0;        /* BUFE: ring empty */
+    outw(io_base + RTL_REG_ISR, 0x0001);                   /* ack ROK */
 
-    int empty = inb(io_base + RTL_REG_CR) & 0x01; /* BUFE: 1 = rx buffer empty */
-    if (empty) { rx_ptr = 0; return 0; }
-
+    uint16_t rx_status = *(volatile uint16_t *)(rx_buf + rx_ptr);
     uint16_t rx_size = *(volatile uint16_t *)(rx_buf + rx_ptr + 2) & 0x3FFF;
-    if (rx_size < 4) { rx_ptr = 0; return 0; }
+    /* ROK must be set and the length must be a plausible Ethernet frame
+     * (+4 CRC); anything else means rx_ptr no longer matches the chip. */
+    if (!(rx_status & 0x0001) || rx_size < 4 + 14 || rx_size > 4 + 1792) {
+        rtl8139_rx_reset();
+        return 0;
+    }
     int data_len = rx_size - 4;
     if (data_len > max_len) data_len = max_len;
-    /* Defensive clamp against a corrupted/implausible rx_size value,
-     * regardless of how much padding this buffer actually has -- never
-     * read past the real allocation (RX_BUF_SIZE + RX_PAD). */
-    if (rx_ptr + 4 + data_len > RX_BUF_SIZE + RX_PAD)
-        data_len = RX_BUF_SIZE + RX_PAD - rx_ptr - 4;
     if (data_len < 0) data_len = 0;
-    for (int i = 0; i < data_len; i++)
-        buf[i] = rx_buf[rx_ptr + 4 + i];
+    /* With RCR.WRAP clear (and always for a 64K ring) the chip splits a
+     * frame that reaches the end of the ring and continues it at the start,
+     * so the copy has to wrap too. */
+    for (int i = 0; i < data_len; i++) {
+        int p = rx_ptr + 4 + i;
+        if (p >= RX_BUF_SIZE) p -= RX_BUF_SIZE;
+        buf[i] = rx_buf[p];
+    }
 
     rx_ptr = (rx_ptr + rx_size + 4 + 3) & ~3;
-    if (rx_ptr >= RX_BUF_SIZE) rx_ptr = 0;
-    outw(io_base + RTL_REG_CAPR, rx_ptr - 0x10);
+    if (rx_ptr >= RX_BUF_SIZE) rx_ptr -= RX_BUF_SIZE;
+    outw(io_base + RTL_REG_CAPR, (uint16_t)(rx_ptr - 0x10));
 
     return data_len;
 }
