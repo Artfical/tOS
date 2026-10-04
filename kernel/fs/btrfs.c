@@ -2,7 +2,7 @@
 #include "memory.h"
 #include "string.h"
 
-#define BTRFS_MAGIC         0x4D5F53526648425FULL
+#define BTRFS_MAGIC         0x4D5F53665248425FULL  /* "_BHRfS_M" */
 #define BTRFS_SUPER_OFFSET  65536ULL
 #define BTRFS_SUPER_OFFSET2 67108864ULL
 
