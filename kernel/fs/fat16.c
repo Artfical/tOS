@@ -91,6 +91,7 @@ static uint16_t fat16_get_fat_entry(fat16_t *fs, uint32_t cluster)
 
 static int fat16_set_fat_entry(fat16_t *fs, uint32_t cluster, uint16_t value)
 {
+    if (value == 0 && cluster >= 2 && cluster < fs->alloc_hint) fs->alloc_hint = cluster;
     uint32_t fat_offset = cluster * 2;
     uint32_t fat_sector = fs->reserved_sectors + (fat_offset / fs->bytes_per_sector);
     uint32_t sector_offset = fat_offset % fs->bytes_per_sector;
@@ -125,8 +126,16 @@ static uint32_t fat16_alloc_cluster(fat16_t *fs)
     uint32_t data_sectors = fs->total_sectors - fs->data_start_sector;
     uint32_t total_clusters = data_sectors / fs->sectors_per_cluster;
 
-    for (uint32_t c = 2; c < total_clusters + 2; c++) {
-        if (fat16_get_fat_entry(fs, c) == 0) return c;
+    /* continue from the last allocation instead of rescanning the FAT from
+     * cluster 2 every time */
+    uint32_t start = fs->alloc_hint >= 2 && fs->alloc_hint < total_clusters + 2 ? fs->alloc_hint : 2;
+    for (uint32_t i = 0; i < total_clusters; i++) {
+        uint32_t c = start + i;
+        if (c >= total_clusters + 2) c -= total_clusters;
+        if (fat16_get_fat_entry(fs, c) == 0) {
+            fs->alloc_hint = c + 1;
+            return c;
+        }
     }
     return 0;
 }
