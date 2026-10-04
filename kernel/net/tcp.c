@@ -58,6 +58,8 @@ typedef struct {
      * both used to just leave state == TCP_CLOSED, indistinguishable
      * from the outside. */
     int      got_rst;
+
+    int      syn_age;   /* tcp_tick() ticks spent in SYN_RECEIVED */
 } tcp_sock_t;
 
 static tcp_sock_t socks[TCP_MAX_SOCKETS];
@@ -332,6 +334,18 @@ int tcp_send2(int fd, void *data, int len)
     return 0;
 }
 
+/* tcp_tick() had no caller at all, so retransmission (and the half-open
+ * reaper) never ran. Drive it from the loops that already poll the NIC,
+ * once per 100 ms of wall-clock time. */
+static uint32_t tcp_last_tick_ms;
+static void tcp_tick_poll(void)
+{
+    uint32_t now = debugmon_uptime_ms();
+    if (now - tcp_last_tick_ms < 100) return;
+    tcp_last_tick_ms = now;
+    tcp_tick();
+}
+
 int tcp_recv2(int fd, uint8_t *buf, int max_len)
 {
     tcp_sock_t *s = get_sock(fd);
@@ -359,6 +373,7 @@ int tcp_recv2(int fd, uint8_t *buf, int max_len)
         }
         if (s->rx_closed)           return 0;
         if (s->state == TCP_CLOSED) return -1;
+        tcp_tick_poll();
         if (debugmon_uptime_ms() >= deadline) return TCP_ERR_RECV_TIMEOUT;
         uint8_t pkt[1536];
         int plen = nic_poll(pkt, sizeof(pkt));
@@ -420,8 +435,13 @@ int tcp_accept(int fd)
         if (s->accept_head != s->accept_tail) {
             int new_fd = s->accept_queue[s->accept_head % 4];
             s->accept_head++;
+            /* The half-open socket may have been reaped (or never
+             * completed the handshake) since it was queued. */
+            tcp_sock_t *c = get_sock(new_fd);
+            if (!c || c->state != TCP_ESTABLISHED || c->src_port != s->src_port) continue;
             return new_fd;
         }
+        tcp_tick_poll();
         uint8_t pkt[1536];
         int len = nic_poll(pkt, sizeof(pkt));
         if (len > 0) {
@@ -439,6 +459,11 @@ void tcp_tick(void)
     int i;
     for (i = 0; i < TCP_MAX_SOCKETS; i++) {
         tcp_sock_t *s = &socks[i];
+        if (s->used && s->state == TCP_SYN_RECEIVED && ++s->syn_age > TCP_SYN_TIMEOUT) {
+            retx_clear(s);
+            memset(s, 0, sizeof(tcp_sock_t));
+            continue;
+        }
         if (!s->used || s->retx_len == 0 || s->state != TCP_ESTABLISHED)
             continue;
 
@@ -553,6 +578,12 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
             if (!socks[i].used) continue;
             if (socks[i].state != TCP_LISTEN) continue;
             if (socks[i].src_port != dst_port) continue;
+
+            /* Backlog full: drop the SYN. The 4-entry accept queue used to
+             * be overwritten instead, orphaning the earlier half-open
+             * sockets for good and letting a SYN flood use up every
+             * socket slot. */
+            if (socks[i].accept_tail - socks[i].accept_head >= 4) return;
 
             int new_fd = tcp_socket();
             if (new_fd < 0) return;

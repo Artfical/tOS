@@ -27,6 +27,7 @@
 #define TCP_MSS          1460
 #define TCP_RETX_TIMEOUT 50
 #define TCP_RETX_MAX     5
+#define TCP_SYN_TIMEOUT  300   /* tcp_tick() ticks (~100 ms) before a half-open connection is dropped */
 
 /* tcp_connect()/tcp_connect2()'s negative return codes -- numbered well
  * past every other layer's range (see dns.h/icmp.h) so a propagated
