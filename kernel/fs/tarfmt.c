@@ -238,6 +238,47 @@ static int ensure_parent_dirs(const char *path)
     return 0;
 }
 
+/* GNU long-name ('L') and pax extended ('x') headers describe the next
+ * entry instead of being entries themselves. Returns 1 when hdr was one of
+ * them; a path they carry goes to longname (have_long set). 'g' and 'K' are
+ * consumed and ignored. */
+static int meta_entry(const char *archive, const uint8_t *hdr, uint32_t data_pos, uint32_t fsize,
+                      char *longname, int *have_long)
+{
+    char t = (char)hdr[156];
+    if (t != 'L' && t != 'x' && t != 'g' && t != 'K') return 0;
+    if (t == 'K' || t == 'g' || fsize == 0 || fsize > 8192) return 1;
+    char *buf = (char *)malloc(fsize + 1);
+    if (!buf) return 1;
+    int n = fsbridge_read(archive, buf, fsize, data_pos);
+    if (n < 0) n = 0;
+    buf[n] = 0;
+    if (t == 'L') {
+        int k = 0;
+        while (buf[k] && k < TAR_PATH_MAX - 1) { longname[k] = buf[k]; k++; }
+        longname[k] = 0;
+        *have_long = k > 0;
+    } else {
+        /* records are "<len> key=value\n"; only path= matters */
+        char *p = buf;
+        while (*p) {
+            char *nl = p;
+            while (*nl && *nl != '\n') nl++;
+            char *kv = p;
+            while (kv < nl && *kv != ' ') kv++;
+            if (kv < nl && strncmp(kv + 1, "path=", 5) == 0) {
+                int k = 0;
+                for (char *q = kv + 6; q < nl && k < TAR_PATH_MAX - 1; q++) longname[k++] = *q;
+                longname[k] = 0;
+                *have_long = k > 0;
+            }
+            p = *nl ? nl + 1 : nl;
+        }
+    }
+    free(buf);
+    return 1;
+}
+
 /* A real ustar header sums (checksum field counted as spaces) to the value
  * stored in it; anything else is not a tar header. */
 static int header_ok(const uint8_t *hdr)
@@ -257,6 +298,8 @@ int tar_extract(const char *archive, const char *dest_dir, char *err, int err_le
     uint8_t hdr[TAR_BLOCK];
     uint32_t pos = 0;
     int count = 0;
+    char longname[TAR_PATH_MAX];
+    int have_long = 0;
 
     while (pos + TAR_BLOCK <= size) {
         if (fsbridge_read(archive, hdr, TAR_BLOCK, pos) < 0) break;
@@ -268,6 +311,11 @@ int tar_extract(const char *archive, const char *dest_dir, char *err, int err_le
         header_name(hdr, name);
         unsigned int fsize = get_octal((const char *)hdr + 124, 11);
         char typeflag = (char)hdr[156];
+        if (meta_entry(archive, hdr, pos, fsize, longname, &have_long)) {
+            pos += ((fsize + TAR_BLOCK - 1) / TAR_BLOCK) * TAR_BLOCK;
+            continue;
+        }
+        if (have_long) { strcpy(name, longname); have_long = 0; }
 
         if (unsafe_entry_name(name)) {
             /* Skip this entry (still advance past its data blocks
@@ -312,6 +360,8 @@ int tar_list(const char *archive, void (*cb)(const char *name, int is_dir, unsig
     uint8_t hdr[TAR_BLOCK];
     uint32_t pos = 0;
     int count = 0;
+    char longname[TAR_PATH_MAX];
+    int have_long = 0;
 
     while (pos + TAR_BLOCK <= size) {
         if (fsbridge_read(archive, hdr, TAR_BLOCK, pos) < 0) break;
@@ -323,6 +373,11 @@ int tar_list(const char *archive, void (*cb)(const char *name, int is_dir, unsig
         header_name(hdr, name);
         unsigned int fsize = get_octal((const char *)hdr + 124, 11);
         char typeflag = (char)hdr[156];
+        if (meta_entry(archive, hdr, pos, fsize, longname, &have_long)) {
+            pos += ((fsize + TAR_BLOCK - 1) / TAR_BLOCK) * TAR_BLOCK;
+            continue;
+        }
+        if (have_long) { strcpy(name, longname); have_long = 0; }
         int nlen = (int)strlen(name);
         int is_dir = (typeflag == '5') || (nlen > 0 && name[nlen - 1] == '/');
 
