@@ -42,10 +42,9 @@ static uint16_t udplite_checksum(uint32_t src_ip, uint32_t dst_ip,
     pseudo.len   = htons((uint16_t)seg_len);
 
     uint32_t sum = 0;
-    uint16_t *p  = (uint16_t *)&pseudo;
-    for (int i = 0; i < (int)sizeof(pseudo) / 2; i++) sum += ntohs(p[i]);
-    p = (uint16_t *)seg;
-    for (int i = 0; i < check_len / 2; i++) sum += ntohs(p[i]);
+    const uint8_t *pb = (const uint8_t *)&pseudo;
+    for (int i = 0; i + 1 < (int)sizeof(pseudo); i += 2) sum += (uint32_t)((pb[i] << 8) | pb[i + 1]);
+    for (int i = 0; i + 1 < check_len; i += 2) sum += (uint32_t)((seg[i] << 8) | seg[i + 1]);
     if (check_len & 1) sum += (uint16_t)seg[check_len - 1] << 8;
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return htons(sum == 0 ? 0xFFFF : (~sum & 0xFFFF));
