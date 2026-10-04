@@ -212,6 +212,24 @@ void icmpv6_handle(ip6_hdr_t *ip6, void *pkt, int len) {
     uint8_t *msg = (uint8_t *)pkt;
     uint8_t  type = msg[0];
 
+    /* The ICMPv6 checksum is mandatory (RFC 4443 2.3) and was never checked,
+     * so corrupted or hand-forged messages were acted on. */
+    {
+        uint16_t got = *(uint16_t *)(msg + 2);
+        uint8_t *copy = (uint8_t *)malloc((size_t)len);
+        if (!copy) return;
+        memcpy(copy, msg, (size_t)len);
+        *(uint16_t *)(copy + 2) = 0;
+        uint16_t want = icmpv6_checksum(ip6->src, ip6->dst, copy, len);
+        free(copy);
+        if (want != got) return;
+    }
+    /* Neighbor Discovery is only valid with hop limit 255 (RFC 4861 7.1):
+     * anything lower has been routed, i.e. it did not come from the link. */
+    if ((type == ICMPV6_NEIGH_SOLICIT || type == ICMPV6_NEIGH_ADV ||
+         type == ICMPV6_ROUTER_SOLICIT || type == ICMPV6_ROUTER_ADV) && ip6->hop_limit != 255)
+        return;
+
     switch (type) {
     case ICMPV6_ECHO_REQUEST:
         if (len >= 8)
