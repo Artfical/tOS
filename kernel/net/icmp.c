@@ -9,6 +9,8 @@
 #include "debugmon.h"
 
 static int ping_reply = 0;
+static uint32_t ping_dst;      /* host our outstanding echo request went to (0 = none outstanding) */
+static uint16_t ping_id = 1, ping_seq;
 
 static uint16_t icmp_checksum(uint16_t *buf, int len)
 {
@@ -35,24 +37,31 @@ void icmp_handle(ip_hdr_t *ip, void *pkt, int len)
         icmp->checksum = icmp_checksum((uint16_t *)pkt, len);
         ip_send(ip->src_ip, IPPROTO_ICMP, pkt, len);
     } else if (icmp->type == ICMP_ECHO_REPLY) {
-        ping_reply = 1;
+        /* Only the reply to our own outstanding request counts: from the host
+         * we pinged, with our id and sequence number. Any other echo reply
+         * (stale, or forged by someone else) used to report the host as up. */
+        if (ping_dst != 0 && ip->src_ip == ping_dst && icmp->code == 0 &&
+            ntohs(icmp->id) == ping_id && ntohs(icmp->seq) == ping_seq)
+            ping_reply = 1;
     }
 }
 
 int icmp_ping(uint32_t dst_ip)
 {
     ping_reply = 0;
+    ping_dst = dst_ip;
+    ping_seq++;
     uint8_t pkt[64];
     memset(pkt, 0, sizeof(pkt));
     icmp_hdr_t *icmp = (icmp_hdr_t *)pkt;
     icmp->type = ICMP_ECHO;
     icmp->code = 0;
-    icmp->id = htons(1);
-    icmp->seq = htons(1);
+    icmp->id = htons(ping_id);
+    icmp->seq = htons(ping_seq);
     icmp->checksum = icmp_checksum((uint16_t *)pkt, sizeof(pkt));
 
     int src = ip_send(dst_ip, IPPROTO_ICMP, pkt, sizeof(pkt));
-    if (src != 0) return src; /* propagate ip_send()/arp_resolve()'s own specific code */
+    if (src != 0) { ping_dst = 0; return src; } /* propagate ip_send()/arp_resolve()'s own specific code */
 
     /* Wall-clock timeout, not an iteration count — see arp_resolve()
      * for why a fixed retry count is unreliable across drivers. */
@@ -67,9 +76,10 @@ int icmp_ping(uint32_t dst_ip)
             else if (ntohs(eth->type) == ETHERTYPE_IP)
                 ip_handle(buf + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
         }
-        if (ping_reply) return 0;
+        if (ping_reply) { ping_dst = 0; return 0; }
         task_yield();
     }
+    ping_dst = 0;
     return ICMP_ERR_TIMEOUT;
 }
 
