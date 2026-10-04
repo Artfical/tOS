@@ -51,13 +51,26 @@ static MP_DEFINE_CONST_FUN_OBJ_1(mp_os_chdir_obj, mp_os_chdir);
 /* os.listdir(path='') */
 static mp_obj_t mp_os_listdir(size_t n_args, const mp_obj_t *args) {
     const char *path = (n_args > 0) ? mp_obj_str_get_str(args[0]) : cwd;
-    vfs_entry_t entries[128];
-    int n = vfs_readdir(path, entries, 128);
-    if (n < 0) mp_raise_OSError(-n);
+    /* grow the buffer until the directory fits: a fixed 128-entry array
+     * silently dropped everything past the 128th file */
+    int cap = 256;
+    vfs_entry_t *entries = m_new(vfs_entry_t, cap);
+    int n = vfs_readdir(path, entries, cap);
+    while (n == cap && cap < 65536) {
+        m_del(vfs_entry_t, entries, cap);
+        cap *= 4;
+        entries = m_new(vfs_entry_t, cap);
+        n = vfs_readdir(path, entries, cap);
+    }
+    if (n < 0) {
+        m_del(vfs_entry_t, entries, cap);
+        mp_raise_OSError(-n);
+    }
     mp_obj_t list = mp_obj_new_list(0, NULL);
     for (int i = 0; i < n; i++) {
         mp_obj_list_append(list, mp_obj_new_str(entries[i].name, strlen(entries[i].name)));
     }
+    m_del(vfs_entry_t, entries, cap);
     return list;
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_os_listdir_obj, 0, 1, mp_os_listdir);
