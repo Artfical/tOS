@@ -14,6 +14,17 @@
  * misreporting a DNS hiccup as a connection error). */
 #define HTTP_ERR_REQUEST -50   /* host/path too long or contains control characters */
 
+#define HTTP_ERR_HEADER -51    /* response headers larger than HTTP_MAX_HEADER, or malformed chunking */
+#define HTTP_MAX_HEADER 16384
+
+/* Incremental framing of a response held in r[0..total): returns 1 once the
+ * message is complete by Content-Length (*total is trimmed to it), 0 when more
+ * data is needed, HTTP_ERR_HEADER when the header block is too large. */
+int http_response_check(const uint8_t *r, int *total);
+/* Decodes a 'Transfer-Encoding: chunked' body in place (headers kept).
+ * Returns the new total length, or HTTP_ERR_HEADER if the chunking is invalid. */
+int http_dechunk(uint8_t *r, int total);
+
 int http_get(uint32_t ip, const char *host, uint16_t port, const char *path, uint8_t *response, int max_len);
 const char *http_strerror(int err);
 

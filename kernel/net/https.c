@@ -30,8 +30,11 @@ int https_get(uint32_t ip, const char *host, uint16_t port, const char *path,
         int n = tls_read(&g_tls, response + total, max_len - total);
         if (n <= 0) break;
         total += n;
+        int st = http_response_check(response, &total);
+        if (st < 0) { tls_close(&g_tls); return st; }
+        if (st == 1) break;
     }
 
     tls_close(&g_tls);
-    return total;
+    return http_dechunk(response, total);
 }
