@@ -99,7 +99,7 @@ static int raw_read(blockdev_t *bd, uint64_t lba, uint32_t count, void *buf)
 {
     switch (bd->type) {
     case BLOCKDEV_ATA:
-        return ata_read_sectors((ata_device_t *)bd->driver_data, lba, (uint8_t)count, buf);
+        return ata_read_sectors((ata_device_t *)bd->driver_data, lba, count, buf);
     case BLOCKDEV_AHCI:
         return ahci_read((ahci_hba_t *)bd->driver_data, bd->port, lba, (int)count, buf);
     case BLOCKDEV_NVME:
@@ -115,7 +115,7 @@ static int raw_write(blockdev_t *bd, uint64_t lba, uint32_t count, const void *b
 {
     switch (bd->type) {
     case BLOCKDEV_ATA:
-        return ata_write_sectors((ata_device_t *)bd->driver_data, lba, (uint8_t)count, buf);
+        return ata_write_sectors((ata_device_t *)bd->driver_data, lba, count, buf);
     case BLOCKDEV_AHCI:
         return ahci_write((ahci_hba_t *)bd->driver_data, bd->port, lba, (int)count, buf);
     case BLOCKDEV_NVME:

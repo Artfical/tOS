@@ -15,16 +15,21 @@
 #define ATA_REG_STATUS 7
 #define ATA_REG_CMD 7
 #define ATA_CMD_READ_PIO 0x20
+#define ATA_CMD_READ_PIO_EXT 0x24
 #define ATA_CMD_WRITE_PIO 0x30
+#define ATA_CMD_WRITE_PIO_EXT 0x34
 #define ATA_CMD_IDENTIFY 0xEC
 #define ATA_CMD_FLUSH 0xE7
+#define ATA_CMD_FLUSH_EXT 0xEA
 #define ATA_STATUS_ERR 0x01
 #define ATA_STATUS_DRQ 0x08
+#define ATA_STATUS_DF  0x20
 #define ATA_STATUS_BSY 0x80
 typedef struct {
     uint16_t io_base;
     uint16_t ctrl_base;
     int present;
+    int slave;
     int lba48;
     int sectors_28;
     uint64_t sectors_48;
@@ -32,11 +37,13 @@ typedef struct {
 } ata_device_t;
 #define ATA_MAX_DEVICES 4
 
+/* count is 1..256 sectors per call */
+
 extern ata_device_t ata_devices[ATA_MAX_DEVICES];
 extern int ata_device_count;
 
 int ata_init(void);
-int ata_read_sectors(ata_device_t *dev, uint64_t lba, uint8_t count, void *buf);
-int ata_write_sectors(ata_device_t *dev, uint64_t lba, uint8_t count, const void *buf);
+int ata_read_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, void *buf);
+int ata_write_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, const void *buf);
 int ata_identify(ata_device_t *dev, int is_slave);
 #endif
