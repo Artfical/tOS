@@ -535,6 +535,49 @@ static uint32_t ext4_ext_promote_and_append(ext4_t *fs, ext4_inode_t *inode, uin
     return nb;
 }
 
+/* Read-only extent lookup that handles a tree of any depth and skips
+ * unwritten (preallocated) extents, which read as zeros. Returns 0 and the
+ * physical block when mapped, 1 for a hole, -1 on a malformed tree. */
+static int ext4_ext_find(ext4_t *fs, ext4_inode_t *inode, uint32_t index, uint32_t *phys)
+{
+    uint8_t *node = (uint8_t *)inode->i_block;
+    uint8_t *buf = 0;
+    int rc = -1;
+    for (int guard = 0; guard < 8; guard++) {
+        ext4_extent_header_t *h = (ext4_extent_header_t *)node;
+        if (h->magic != EXT4_EXTENT_MAGIC) goto out;
+        uint32_t cap = (node == (uint8_t *)inode->i_block) ? EXT4_ROOT_MAX_ENTRIES : (fs->block_size - sizeof(ext4_extent_header_t)) / 12;
+        if (h->entries > cap || h->entries > h->max) goto out;
+        if (h->depth == 0) {
+            ext4_extent_t *ext = (ext4_extent_t *)(node + sizeof(ext4_extent_header_t));
+            for (uint16_t i = 0; i < h->entries; i++) {
+                uint32_t len = ext[i].ee_len > 32768 ? (uint32_t)ext[i].ee_len - 32768 : ext[i].ee_len;
+                if (index >= ext[i].ee_block && index - ext[i].ee_block < len) {
+                    if (ext[i].ee_len > 32768) { rc = 1; goto out; }       /* unwritten */
+                    *phys = ext[i].ee_start_lo + (index - ext[i].ee_block);
+                    rc = 0;
+                    goto out;
+                }
+            }
+            rc = 1;
+            goto out;
+        }
+        ext4_extent_idx_t *ix = (ext4_extent_idx_t *)(node + sizeof(ext4_extent_header_t));
+        int sel = -1;
+        for (uint16_t i = 0; i < h->entries; i++) {
+            if (ix[i].ei_block <= index) sel = i; else break;
+        }
+        if (sel < 0) { rc = 1; goto out; }
+        uint32_t child = ix[sel].ei_leaf_lo;
+        if (!buf) { buf = (uint8_t *)malloc(fs->block_size); if (!buf) goto out; }
+        if (ext4_cached_read_block(fs, child, buf) != 0) goto out;
+        node = buf;
+    }
+out:
+    free(buf);
+    return rc;
+}
+
 static uint32_t ext4_bmap(ext4_t *fs, ext4_inode_t *inode, uint32_t index, int alloc)
 {
     ext4_extent_header_t *hdr = ext4_root_hdr(inode);
@@ -544,6 +587,12 @@ static uint32_t ext4_bmap(ext4_t *fs, ext4_inode_t *inode, uint32_t index, int a
         hdr = ext4_root_hdr(inode);
     }
 
+    if (!alloc || hdr->depth >= 2) {
+        uint32_t found;
+        if (ext4_ext_find(fs, inode, index, &found) == 0) return found;
+        return 0;   /* hole, malformed tree, or a tree too deep to grow */
+    }
+
     if (hdr->depth == 0) {
         ext4_extent_t *ext = (ext4_extent_t *)ext4_root_body(inode);
         for (uint16_t i = 0; i < hdr->entries; i++) {
@@ -551,7 +600,6 @@ static uint32_t ext4_bmap(ext4_t *fs, ext4_inode_t *inode, uint32_t index, int a
                 return ext[i].ee_start_lo + (index - ext[i].ee_block);
             }
         }
-        if (!alloc) return 0;
 
         if (hdr->entries > 0) {
             ext4_extent_t *last = &ext[hdr->entries - 1];
