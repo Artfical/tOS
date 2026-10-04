@@ -1,4 +1,5 @@
 #include "tls.h"
+#include "csprng.h"
 #include "tcp.h"
 #include "arp.h"
 #include "sha256.h"
@@ -24,17 +25,18 @@
 #define TLS_HT_FINISHED        20
 #define TLS_CIPHER_RSA_AES128_CBC_SHA256  0x003C
 
-/* Simple LCG PRNG seeded from a static counter (sufficient for hobby OS) */
-static uint32_t prng_state = 0xdeadbeef;
+/* All TLS randomness (client random, premaster secret, CBC IVs, RSA padding)
+ * comes from the kernel CSPRNG. This used to be an LCG with the constant seed
+ * 0xdeadbeef, which made every one of those values predictable. */
 static uint8_t prng_byte(void)
 {
-    prng_state = prng_state * 1664525 + 1013904223;
-    return (uint8_t)(prng_state >> 16);
+    uint8_t b;
+    csprng_fill(&b, 1);
+    return b;
 }
 static void prng_fill(uint8_t *buf, int len)
 {
-    int i;
-    for (i = 0; i < len; i++) buf[i] = prng_byte();
+    csprng_fill(buf, len);
 }
 
 /* ---- Record layer helpers ---- */

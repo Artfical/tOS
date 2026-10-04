@@ -224,6 +224,7 @@ KERNEL_OBJS = \
     kernel/net/chacha20.o \
     kernel/net/wgtun.o \
     kernel/net/sha256.o \
+    kernel/net/csprng.o \
     kernel/net/aes.o \
     kernel/net/bignum.o \
     kernel/net/tls.o \
