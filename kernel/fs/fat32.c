@@ -67,6 +67,7 @@ typedef struct {
 #define FAT32_ATTR_HIDDEN    0x02
 #define FAT32_ATTR_SYSTEM    0x04
 #define FAT32_ATTR_VOLUME    0x08
+#define FAT32_ATTR_LFN       0x0F   /* long file name fragment */
 #define FAT32_ATTR_DIRECTORY 0x10
 #define FAT32_ATTR_ARCHIVE   0x20
 
@@ -270,7 +271,7 @@ static int fat32_dir_find(fat32_t *fs, uint32_t dir_cluster, const char *name,
             fat32_dirent_t *de = (fat32_dirent_t *)(buf + i * sizeof(fat32_dirent_t));
             if (de->name[0] == 0x00) { free(buf); return -1; }
             if ((uint8_t)de->name[0] == 0xE5) continue;
-            if (de->attr == FAT32_ATTR_VOLUME) continue;
+            if (de->attr == FAT32_ATTR_VOLUME || de->attr == FAT32_ATTR_LFN) continue;
 
             char cmp[11];
             memcpy(cmp, de->name, 8);
@@ -679,7 +680,7 @@ static int fat32_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, 
             fat32_dirent_t *de = (fat32_dirent_t *)(buf + i * sizeof(fat32_dirent_t));
             if (de->name[0] == 0x00) { stop = 1; break; }
             if ((uint8_t)de->name[0] == 0xE5) continue;
-            if (de->attr == FAT32_ATTR_VOLUME) continue;
+            if (de->attr == FAT32_ATTR_VOLUME || de->attr == FAT32_ATTR_LFN) continue;
 
             char nm[13];
             fat32_83_to_name(de, nm);
@@ -775,7 +776,7 @@ static int fat32_dir_is_empty(fat32_t *fs, uint32_t dir_cluster)
             fat32_dirent_t *de = (fat32_dirent_t *)(buf + i * sizeof(fat32_dirent_t));
             if (de->name[0] == 0x00) { free(buf); return 1; }
             if ((uint8_t)de->name[0] == 0xE5) continue;
-            if (de->attr == FAT32_ATTR_VOLUME) continue;
+            if (de->attr == FAT32_ATTR_VOLUME || de->attr == FAT32_ATTR_LFN) continue;
             if (de->name[0] == '.' && (de->name[1] == ' ' || (de->name[1] == '.' && de->name[2] == ' '))) continue;
             free(buf);
             return 0;
