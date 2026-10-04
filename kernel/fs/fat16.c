@@ -740,6 +740,30 @@ static int fat16_vfs_mkdir(void *ctx, const char *path, uint32_t mode)
     return 0;
 }
 
+/* A directory can be removed only when it holds nothing but "." and "..". */
+static int fat16_dir_is_empty(fat16_t *fs, uint32_t dir_cluster)
+{
+    uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
+    if (!buf) return 0;
+    int entries_per_sector = fs->bytes_per_sector / sizeof(fat16_dirent_t);
+    for (uint32_t n = 0; ; n++) {
+        uint32_t sec;
+        if (fat16_dir_nth_sector(fs, 0, dir_cluster, n, &sec) != 0) break;
+        if (fat16_read_sector(fs, sec, buf) != 0) { free(buf); return 0; }
+        for (int i = 0; i < entries_per_sector; i++) {
+            fat16_dirent_t *de = (fat16_dirent_t *)(buf + i * sizeof(fat16_dirent_t));
+            if (de->name[0] == 0x00) { free(buf); return 1; }
+            if ((uint8_t)de->name[0] == 0xE5) continue;
+            if (de->attr == FAT16_ATTR_VOLUME) continue;
+            if (de->name[0] == '.' && (de->name[1] == ' ' || (de->name[1] == '.' && de->name[2] == ' '))) continue;
+            free(buf);
+            return 0;
+        }
+    }
+    free(buf);
+    return 1;
+}
+
 static int fat16_vfs_unlink(void *ctx, const char *path)
 {
     fat16_t *fs = (fat16_t *)ctx;
@@ -755,9 +779,8 @@ static int fat16_vfs_unlink(void *ctx, const char *path)
     uint32_t sec, off;
     if (fat16_dir_find(fs, parent.is_root, parent.cluster, name, &de, &sec, &off) != 0) return -1;
 
-    if (de.attr & FAT16_ATTR_DIRECTORY) return -1;
-
     uint32_t cluster = de.cluster_low | ((uint32_t)de.cluster_high << 16);
+    if ((de.attr & FAT16_ATTR_DIRECTORY) && !fat16_dir_is_empty(fs, cluster)) return -1;
     fat16_free_chain(fs, cluster);
 
     uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
