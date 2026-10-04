@@ -523,6 +523,7 @@ static void ext3_free_inode_blocks(ext3_t *fs, ext3_inode_t *inode)
 {
     for (int i = 0; i < 12; i++) {
         if (inode->i_block[i] != 0) ext3_free_block(fs, inode->i_block[i]);
+        inode->i_block[i] = 0;
     }
     ext3_free_indirect(fs, inode->i_block[12], 1);
     ext3_free_indirect(fs, inode->i_block[13], 2);
