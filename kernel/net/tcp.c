@@ -336,14 +336,41 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
     return TCP_ERR_TIMEOUT;
 }
 
+static void tcp_tick_poll(void);
+
 int tcp_send2(int fd, void *data, int len)
 {
     tcp_sock_t *s = get_sock(fd);
-    if (!s || s->state != TCP_ESTABLISHED) return -1;
-    uint32_t seq_before = s->seq;
-    if (send_seg(s, TCP_FLAG_PSH | TCP_FLAG_ACK, data, len) != 0) return -1;
-    s->snd_una = seq_before;
-    retx_save(s, data, len);
+    if (!s || s->state != TCP_ESTABLISHED || len < 0) return -1;
+    /* send_seg() builds a single frame, so more than one MSS of payload went
+     * out as an oversized, unfragmentable packet (TLS records are up to 16 KB).
+     * Send MSS-sized segments, and wait for each to be acknowledged before the
+     * next because only one segment is kept for retransmission. */
+    const uint8_t *p = (const uint8_t *)data;
+    int off = 0;
+    do {
+        int n = len - off < TCP_MSS ? len - off : TCP_MSS;
+        uint32_t seq_before = s->seq;
+        if (send_seg(s, TCP_FLAG_PSH | TCP_FLAG_ACK, p + off, n) != 0) return -1;
+        s->snd_una = seq_before;
+        retx_save(s, p + off, n);
+        off += n;
+        if (off < len) {
+            uint32_t deadline = debugmon_uptime_ms() + 5000;
+            while (s->retx_len > 0 && s->state == TCP_ESTABLISHED && debugmon_uptime_ms() < deadline) {
+                tcp_tick_poll();
+                uint8_t pkt[1536];
+                int plen = nic_poll(pkt, sizeof(pkt));
+                if (plen > 0) {
+                    eth_hdr_t *eth = (eth_hdr_t *)pkt;
+                    if (ntohs(eth->type) == ETHERTYPE_ARP) arp_handle(pkt, plen);
+                    else if (ntohs(eth->type) == ETHERTYPE_IP)
+                        ip_handle(pkt + sizeof(eth_hdr_t), plen - sizeof(eth_hdr_t));
+                }
+            }
+            if (s->retx_len > 0) return -1;   /* peer never acknowledged the segment */
+        }
+    } while (off < len);
     return 0;
 }
 
