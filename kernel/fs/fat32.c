@@ -99,8 +99,29 @@ static uint32_t fat32_get_fat_entry(fat32_t *fs, uint32_t cluster)
     return entry;
 }
 
+/* The driver does not track the free-cluster count, so the first time it
+ * allocates or frees a cluster it marks the FSInfo count as unknown
+ * (0xFFFFFFFF) instead of leaving a stale number for other systems. */
+static void fat32_fsinfo_invalidate(fat32_t *fs)
+{
+    if (fs->fsinfo_invalid || fs->fsinfo_sector == 0) return;
+    fs->fsinfo_invalid = 1;
+    uint8_t *b = (uint8_t *)malloc(fs->bytes_per_sector);
+    if (!b) return;
+    if (blockdev_read(fs->bd, fs->fsinfo_sector, 1, b) == 0) {
+        fat32_fsinfo_t *fi = (fat32_fsinfo_t *)b;
+        if (fi->lead_sig == 0x41615252 && fi->struc_sig == 0x61417272) {
+            fi->free_count = 0xFFFFFFFF;
+            fi->next_free = 0xFFFFFFFF;
+            blockdev_write(fs->bd, fs->fsinfo_sector, 1, b);
+        }
+    }
+    free(b);
+}
+
 static int fat32_set_fat_entry(fat32_t *fs, uint32_t cluster, uint32_t value)
 {
+    if (cluster >= 2) fat32_fsinfo_invalidate(fs);
     uint32_t fat_offset = cluster * 4;
     uint32_t fat_sector = fs->reserved_sectors + (fat_offset / fs->bytes_per_sector);
     uint32_t sector_offset = fat_offset % fs->bytes_per_sector;
@@ -492,6 +513,8 @@ static int fat32_probe(fat32_t *fs, blockdev_t *bd)
     fs->fat_sectors = bs->fat_size_32;
     fs->total_sectors = bs->total_sectors_32 ? bs->total_sectors_32 : bs->total_sectors_16;
     fs->root_cluster = bs->root_cluster;
+    fs->fsinfo_sector = (bs->fs_info != 0 && bs->fs_info != 0xFFFF) ? bs->fs_info : 0;
+    fs->fsinfo_invalid = 0;
 
     fs->data_start_sector = fs->reserved_sectors + (fs->num_fats * fs->fat_sectors);
     fs->cluster_size = fs->sectors_per_cluster * fs->bytes_per_sector;

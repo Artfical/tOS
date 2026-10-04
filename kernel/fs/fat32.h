@@ -28,6 +28,8 @@ typedef struct {
     uint32_t data_start_sector;
     uint32_t root_cluster;
     uint32_t cluster_size;
+    uint32_t fsinfo_sector;   /* 0 = none */
+    int fsinfo_invalid;       /* free count already marked unknown */
     fat32_fd_t fds[VFS_MAX_FDS];
 } fat32_t;
 
