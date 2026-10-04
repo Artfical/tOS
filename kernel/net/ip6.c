@@ -103,7 +103,12 @@ int ip6_send(const uint8_t *dst_ip6, uint8_t next_header, void *data, int len) {
     if (len < 0 || len > 1280 - (int)sizeof(ip6_hdr_t)) return -1;
     /* Resolve destination MAC */
     uint8_t dst_mac[6];
-    int resolved = icmpv6_ndp_resolve(dst_ip6, dst_mac);
+    /* Multicast destinations map straight to 33:33:<low 32 bits> and must NOT
+     * go through NDP: the Neighbor Solicitation itself is sent to a multicast
+     * address, so resolving it recursed (ip6_send -> ndp_resolve -> NS ->
+     * ip6_send ...) until the kernel stack overflowed and the machine
+     * panicked on the first ping6 to a correctly parsed address. */
+    int resolved = (dst_ip6[0] == 0xFF) ? -1 : icmpv6_ndp_resolve(dst_ip6, dst_mac);
     if (resolved != 0) {
         /* Fall back to multicast MAC: 33:33:xx:xx:xx:xx */
         dst_mac[0] = 0x33; dst_mac[1] = 0x33;
