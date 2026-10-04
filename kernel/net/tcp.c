@@ -66,6 +66,12 @@ static tcp_sock_t socks[TCP_MAX_SOCKETS];
 static uint16_t   next_port = 49152;
 static uint16_t   tcp_ip_id = 0;
 
+/* Sequence-number arithmetic modulo 2^32 (RFC 793 / 1982): plain < and >
+ * misorder values once the counter wraps. */
+#define SEQ_LT(a, b)  ((int32_t)((a) - (b)) < 0)
+#define SEQ_LEQ(a, b) ((int32_t)((a) - (b)) <= 0)
+#define SEQ_GT(a, b)  ((int32_t)((a) - (b)) > 0)
+
 /* -- Helpers --------------------------------------------------------------- */
 static tcp_sock_t *get_sock(int fd)
 {
@@ -605,6 +611,15 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
     if (!s) return;
 
     if (flags & TCP_FLAG_RST) {
+        /* RFC 5961: a reset only counts when it is plausible. In SYN_SENT it
+         * must acknowledge our SYN; otherwise its sequence number must be
+         * exactly the next one we expect. Anything else (a blind, spoofed
+         * RST) is ignored instead of tearing the connection down. */
+        if (s->state == TCP_SYN_SENT) {
+            if (!(flags & TCP_FLAG_ACK) || pkt_ack != s->seq) return;
+        } else if (pkt_seq != s->ack) {
+            return;
+        }
         retx_clear(s);
         if (s->rx_buf) { free(s->rx_buf); s->rx_buf = 0; }
         s->got_rst = 1;
@@ -615,6 +630,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
     /* SYN-ACK (client side) */
     if (s->state == TCP_SYN_SENT) {
         if ((flags & TCP_FLAG_SYN) && (flags & TCP_FLAG_ACK)) {
+            if (pkt_ack != s->seq) return;   /* does not acknowledge our SYN */
             s->ack     = pkt_seq + 1;
             s->seq     = pkt_ack;
             s->snd_una = s->seq;
@@ -626,8 +642,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
 
     /* ACK of our SYN-ACK (server side) */
     if (s->state == TCP_SYN_RECEIVED) {
-        if (flags & TCP_FLAG_ACK) {
-            s->seq     = pkt_ack;
+        if ((flags & TCP_FLAG_ACK) && pkt_ack == s->seq) {
             s->snd_una = s->seq;
             s->state   = TCP_ESTABLISHED;
         }
@@ -663,14 +678,14 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
 
     /* ACK */
     if (flags & TCP_FLAG_ACK) {
-        if (pkt_ack > s->snd_una) {
+        if (SEQ_GT(pkt_ack, s->snd_una) && SEQ_LEQ(pkt_ack, s->seq)) {
             s->snd_una = pkt_ack;
             if (s->cwnd < s->ssthresh)
                 s->cwnd += TCP_MSS;
             else
                 s->cwnd += (uint32_t)(TCP_MSS * TCP_MSS) / s->cwnd;
             if (s->retx_len > 0 &&
-                pkt_ack >= s->retx_seq + (uint32_t)s->retx_len)
+                SEQ_LEQ(s->retx_seq + (uint32_t)s->retx_len, pkt_ack))
                 retx_clear(s);
         }
         if (s->state == TCP_FIN_WAIT_1) s->state = TCP_FIN_WAIT_2;
