@@ -883,7 +883,7 @@ static int exfat_vfs_mkdir(void *ctx, const char *path, uint32_t mode)
     }
 
     uint32_t slot; int secondary_count;
-    if (exfat_dir_add_entry(fs, parent_cluster, name, EXFAT_ATTR_DIRECTORY, new_cluster, 0, &slot, &secondary_count) != 0) {
+    if (exfat_dir_add_entry(fs, parent_cluster, name, EXFAT_ATTR_DIRECTORY, new_cluster, fs->cluster_size, &slot, &secondary_count) != 0) {
         exfat_free_chain(fs, new_cluster);
         return -1;
     }
