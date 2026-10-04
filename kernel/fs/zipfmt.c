@@ -146,9 +146,9 @@ static int add_recursive(zip_writer_t *w, const char *fs_path, const char *arc_n
          * tarfmt.c's add_recursive(): a 128-entry vfs_entry_t array
          * (~18KB) stacked at every recursion level overflowed the
          * 32KB kernel task stack on even a shallow directory tree. */
-        vfs_entry_t *entries = (vfs_entry_t *)malloc(128 * sizeof(vfs_entry_t));
+        int n;
+        vfs_entry_t *entries = fsbridge_list_all(fs_path, &n);
         if (!entries) return -1;
-        int n = fsbridge_list(fs_path, entries, 128);
         for (int i = 0; i < n; i++) {
             if (strcmp(entries[i].name, ".") == 0 || strcmp(entries[i].name, "..") == 0) continue;
             char child_fs[512], child_arc[ZIP_NAME_MAX];
