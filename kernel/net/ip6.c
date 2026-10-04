@@ -51,35 +51,43 @@ void ip6_fmt(const uint8_t *addr, char *buf) {
  * Parse "xxxx:xxxx:...:xxxx" into 16-byte array (simplified, no ::)
  * ----------------------------------------------------------------------- */
 int ip6_parse(const char *s, uint8_t *out) {
+    uint16_t head[8], tail[8];
+    int nh = 0, nt = 0, seen_gap = 0;
     memset(out, 0, 16);
-    int group = 0;
-    uint32_t val = 0;
-    int digits = 0;
-    while (*s && group < 8) {
-        char c = *s++;
-        if (c == ':') {
-            if (digits == 0 && *s == ':') {
-                /* :: — fill remaining with zeros (simplified) */
-                s++;
-                break;
-            }
-            out[group * 2]     = (uint8_t)((val >> 8) & 0xFF);
-            out[group * 2 + 1] = (uint8_t)(val & 0xFF);
-            group++;
-            val = 0; digits = 0;
-        } else if (c >= '0' && c <= '9') {
-            val = (val << 4) | (uint32_t)(c - '0'); digits++;
-        } else if (c >= 'a' && c <= 'f') {
-            val = (val << 4) | (uint32_t)(c - 'a' + 10); digits++;
-        } else if (c >= 'A' && c <= 'F') {
-            val = (val << 4) | (uint32_t)(c - 'A' + 10); digits++;
-        } else {
-            return -1;
+    if (s[0] == ':' && s[1] != ':') return -1;          /* single leading colon */
+    if (s[0] == ':' && s[1] == ':') { seen_gap = 1; s += 2; if (*s == 0) return 0; }
+    for (;;) {
+        uint32_t val = 0;
+        int digits = 0;
+        while (*s && *s != ':') {
+            char c = *s++;
+            int d;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else return -1;
+            if (++digits > 4) return -1;                 /* group wider than 16 bits */
+            val = (val << 4) | (uint32_t)d;
+        }
+        if (digits == 0) return -1;
+        if (seen_gap) { if (nt >= 8) return -1; tail[nt++] = (uint16_t)val; }
+        else          { if (nh >= 8) return -1; head[nh++] = (uint16_t)val; }
+        if (*s == 0) break;
+        s++;                                             /* the ':' */
+        if (*s == ':') {                                 /* "::" */
+            if (seen_gap) return -1;                     /* only one allowed */
+            seen_gap = 1;
+            s++;
+            if (*s == 0) break;                          /* trailing "::" */
+        } else if (*s == 0) {
+            return -1;                                   /* trailing single colon */
         }
     }
-    if (digits > 0 && group < 8) {
-        out[group * 2]     = (uint8_t)((val >> 8) & 0xFF);
-        out[group * 2 + 1] = (uint8_t)(val & 0xFF);
+    if (seen_gap ? (nh + nt > 7) : (nh != 8)) return -1;
+    for (int i = 0; i < nh; i++) { out[i * 2] = (uint8_t)(head[i] >> 8); out[i * 2 + 1] = (uint8_t)head[i]; }
+    for (int i = 0; i < nt; i++) {
+        int g = 8 - nt + i;
+        out[g * 2] = (uint8_t)(tail[i] >> 8); out[g * 2 + 1] = (uint8_t)tail[i];
     }
     return 0;
 }
