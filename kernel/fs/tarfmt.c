@@ -12,6 +12,7 @@
 
 #define TAR_BLOCK 512
 #define TAR_NAME_MAX 100
+#define TAR_PATH_MAX 262   /* name + ustar prefix + NUL */
 #define COPY_CHUNK 4096
 
 static void seterr(char *err, int err_len, const char *msg)
@@ -41,7 +42,23 @@ static unsigned int get_octal(const char *s, int len)
 static void write_header(uint8_t *blk, const char *name, unsigned int size, char typeflag)
 {
     memset(blk, 0, TAR_BLOCK);
-    strncpy((char *)blk, name, TAR_NAME_MAX - 1);
+    int nlen = (int)strlen(name);
+    if (nlen <= TAR_NAME_MAX) {
+        memcpy(blk, name, (size_t)nlen);
+    } else {
+        /* split at a '/' so that the tail fits the 100-byte name field and
+         * the head the 155-byte ustar prefix field */
+        int cut = -1;
+        for (int i = nlen - 2; i > 0; i--)
+            if (name[i] == '/' && i <= 155 && nlen - i - 1 <= TAR_NAME_MAX) { cut = i; break; }
+        if (cut < 0) cut = nlen > TAR_NAME_MAX ? 0 : -1;
+        if (cut > 0) {
+            memcpy(blk + 345, name, (size_t)cut);
+            memcpy(blk, name + cut + 1, (size_t)(nlen - cut - 1));
+        } else {
+            memcpy(blk, name, TAR_NAME_MAX);   /* cannot be split: truncated */
+        }
+    }
     put_octal((char *)blk + 100, 8, 0644);
     put_octal((char *)blk + 108, 8, 0);
     put_octal((char *)blk + 116, 8, 0);
@@ -58,6 +75,18 @@ static void write_header(uint8_t *blk, const char *name, unsigned int size, char
     memcpy(blk + 148, chk, 6);
     blk[154] = 0;
     blk[155] = ' ';
+}
+
+/* Full entry name: ustar prefix + '/' + name. */
+static void header_name(const uint8_t *hdr, char *out)
+{
+    int k = 0;
+    if (memcmp(hdr + 257, "ustar", 5) == 0 && hdr[345]) {
+        for (int i = 0; i < 155 && hdr[345 + i]; i++) out[k++] = (char)hdr[345 + i];
+        out[k++] = '/';
+    }
+    for (int i = 0; i < TAR_NAME_MAX && hdr[i]; i++) out[k++] = (char)hdr[i];
+    out[k] = 0;
 }
 
 static int join(char *out, int cap, const char *a, const char *b)
@@ -109,9 +138,9 @@ static int file_sink(void *ctx, const void *data, unsigned int len)
 static int add_recursive(sink_t *sink, const char *fs_path, const char *arc_name)
 {
     if (fsbridge_is_dir(fs_path)) {
-        char dirname[TAR_NAME_MAX];
+        char dirname[TAR_PATH_MAX];
         int k = 0;
-        while (arc_name[k] && k < TAR_NAME_MAX - 2) { dirname[k] = arc_name[k]; k++; }
+        while (arc_name[k] && k < TAR_PATH_MAX - 2) { dirname[k] = arc_name[k]; k++; }
         if (k == 0 || dirname[k - 1] != '/') dirname[k++] = '/';
         dirname[k] = 0;
 
@@ -130,7 +159,7 @@ static int add_recursive(sink_t *sink, const char *fs_path, const char *arc_name
         if (!entries) return -1;
         for (int i = 0; i < n; i++) {
             if (strcmp(entries[i].name, ".") == 0 || strcmp(entries[i].name, "..") == 0) continue;
-            char child_fs[512], child_arc[TAR_NAME_MAX];
+            char child_fs[512], child_arc[TAR_PATH_MAX];
             join(child_fs, sizeof(child_fs), fs_path, entries[i].name);
             join(child_arc, sizeof(child_arc), dirname, entries[i].name);
             if (add_recursive(sink, child_fs, child_arc) != 0) { free(entries); return -1; }
@@ -235,9 +264,8 @@ int tar_extract(const char *archive, const char *dest_dir, char *err, int err_le
         if (!header_ok(hdr)) break;
         pos += TAR_BLOCK;
 
-        char name[TAR_NAME_MAX + 1];
-        memcpy(name, hdr, TAR_NAME_MAX);
-        name[TAR_NAME_MAX] = 0;
+        char name[TAR_PATH_MAX];
+        header_name(hdr, name);
         unsigned int fsize = get_octal((const char *)hdr + 124, 11);
         char typeflag = (char)hdr[156];
 
@@ -291,9 +319,8 @@ int tar_list(const char *archive, void (*cb)(const char *name, int is_dir, unsig
         if (!header_ok(hdr)) break;
         pos += TAR_BLOCK;
 
-        char name[TAR_NAME_MAX + 1];
-        memcpy(name, hdr, TAR_NAME_MAX);
-        name[TAR_NAME_MAX] = 0;
+        char name[TAR_PATH_MAX];
+        header_name(hdr, name);
         unsigned int fsize = get_octal((const char *)hdr + 124, 11);
         char typeflag = (char)hdr[156];
         int nlen = (int)strlen(name);
