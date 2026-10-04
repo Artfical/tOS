@@ -108,7 +108,7 @@ static int write_file(const char *path, const void *data, size_t n, int flags, u
     return 0;
 }
 
-static ssize_t read_file(const char *path, uint8_t **out)
+static ssize_t hread_file(const char *path, uint8_t **out)
 {
     int fd = op_open(path, 0);
     if (fd < 0) return -1;
@@ -237,7 +237,7 @@ static int verify_node(node_t *n)
         for (int i = 0; i < n->nkids && !bad; i++) bad |= verify_node(n->kids[i]);
     } else {
         uint8_t *buf = 0;
-        ssize_t r = read_file(path, &buf);
+        ssize_t r = hread_file(path, &buf);
         if (r < 0) { printf("VERIFY: read %s failed\n", path); return 1; }
         if ((size_t)r != n->size) { printf("VERIFY: %s size %zd, model %zu\n", path, r, n->size); bad = 1; }
         else if (n->size && memcmp(buf, n->data, n->size) != 0) {
@@ -442,7 +442,7 @@ static int fuzz_one(int opno)
         if (!n || n->is_dir) return 0;
         node_path(n, path, sizeof(path));
         uint8_t *buf = 0;
-        ssize_t r = read_file(path, &buf);
+        ssize_t r = hread_file(path, &buf);
         if (r < 0 || (size_t)r != n->size || (n->size && memcmp(buf, n->data, n->size))) { free(buf); FAIL("spot read %s mismatch", path); }
         free(buf);
     }
@@ -464,7 +464,7 @@ static void seed_dir(node_t *d)
             char p2[2048];
             node_path(n, p2, sizeof(p2));
             uint8_t *buf = 0;
-            ssize_t r = read_file(p2, &buf);
+            ssize_t r = hread_file(p2, &buf);
             if (r >= 0) { n->data = buf; n->size = (size_t)r; }
         }
     }
@@ -511,8 +511,15 @@ int main(int argc, char **argv)
                 r = cnt;
             }
             else if (!strcmp(cmd, "cat")) {
-                uint8_t *buf = 0; ssize_t n = read_file(a, &buf);
+                uint8_t *buf = 0; ssize_t n = hread_file(a, &buf);
                 if (n >= 0) { printf("  [%zd bytes] ", n); for (ssize_t k = 0; k < n && k < 60; k++) putchar(buf[k] >= 32 && buf[k] < 127 ? buf[k] : '.'); putchar('\n'); }
+                free(buf); r = (int)n;
+            }
+            else if (!strcmp(cmd, "hash")) {
+                uint8_t *buf = 0; ssize_t n = hread_file(a, &buf);
+                uint64_t h = 1469598103934665603ULL;
+                for (ssize_t k = 0; k < n; k++) { h ^= buf[k]; h *= 1099511628211ULL; }
+                printf("HASH %s %zd %016llx\n", a, n, (unsigned long long)h);
                 free(buf); r = (int)n;
             }
             else if (!strcmp(cmd, "rm")) r = g_ops->unlink(g_ctx, a);

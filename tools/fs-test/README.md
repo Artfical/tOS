@@ -9,3 +9,7 @@ ASan/UBSan) and runs it against an image file.
 
 Check the result with the filesystem's own fsck (`e2fsck -fn`, `fsck.vfat -n`,
 `fsck.exfat -n`) on the image afterwards.
+
+`cmptree.py HARNESS IMG SRCDIR` reads every file of SRCDIR through the driver (script `hash:`
+command, FNV-1a 64) and reports any difference; use it on images made with
+`mkfs.btrfs -r`, `mkfs.ext4 -d` or a loop mount to check read support byte for byte.
