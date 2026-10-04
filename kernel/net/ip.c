@@ -80,14 +80,22 @@ void ip_handle(uint8_t *data, int len)
 {
     if (len < (int)sizeof(ip_hdr_t)) return;
     ip_hdr_t *ip = (ip_hdr_t *)data;
+    if ((ip->ver_ihl >> 4) != 4) return;
     int ihl = (ip->ver_ihl & 0x0F) * 4;
     if (ihl < 20 || len < ihl) return;
     if (ip->dst_ip != net_ip) return;
 
+    /* The header checksum covers the whole header including options, not
+     * just the fixed 20 bytes. */
     uint16_t sum = ip->checksum;
     ip->checksum = 0;
-    if (ip_checksum((uint8_t *)ip, sizeof(ip_hdr_t)) != sum) return;
+    if (ip_checksum((uint8_t *)ip, ihl) != sum) return;
     ip->checksum = sum;
+
+    /* There is no reassembly: a fragment (MF set or non-zero offset) is not
+     * a complete datagram, and handing its bytes to the UDP/TCP parsers
+     * would treat arbitrary mid-datagram data as a header. Drop them. */
+    if (ntohs(ip->flags_frag) & 0x3FFF) return;
 
     /* Use the IP header's own declared total_len, not the raw Ethernet
      * frame length -- small packets (e.g. a bare ACK, or a short data
