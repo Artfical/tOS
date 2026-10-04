@@ -133,7 +133,10 @@ int ip6_send(const uint8_t *dst_ip6, uint8_t next_header, void *data, int len) {
     ip6->ver_tc_fl   = htonl(0x60000000U);  /* version=6, TC=0, FL=0 */
     ip6->payload_len = htons((uint16_t)len);
     ip6->next_header = next_header;
-    ip6->hop_limit   = 64;
+    /* Neighbor Discovery messages (RS/RA/NS/NA/Redirect) must carry hop limit
+     * 255 (RFC 4861 7.1) or conforming neighbours discard them. */
+    ip6->hop_limit   = (next_header == 58 && len >= 1 &&
+                        ((uint8_t *)data)[0] >= 133 && ((uint8_t *)data)[0] <= 137) ? 255 : 64;
     memcpy(ip6->src, net_ip6, 16);
     memcpy(ip6->dst, dst_ip6, 16);
 
