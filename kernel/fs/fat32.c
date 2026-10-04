@@ -166,6 +166,7 @@ static uint32_t fat32_alloc_cluster(fat32_t *fs)
 
 static void fat32_free_chain(fat32_t *fs, uint32_t cluster)
 {
+    fs->dc_first = 0;   /* a cached directory cursor may point into this chain */
     while (cluster != 0 && cluster < FAT32_CLUSTER_BAD) {
         uint32_t next = fat32_get_fat_entry(fs, cluster);
         fat32_set_fat_entry(fs, cluster, 0);
@@ -203,13 +204,24 @@ static int fat32_dir_nth_sector(fat32_t *fs, uint32_t first_cluster, uint32_t n,
     uint32_t cluster = first_cluster;
     uint32_t clusters_to_skip = n / fs->sectors_per_cluster;
     uint32_t sector_in_cluster = n % fs->sectors_per_cluster;
+    uint32_t start_idx = 0;
 
-    for (uint32_t i = 0; i < clusters_to_skip; i++) {
+    /* resume from where the previous lookup in this directory stopped:
+     * scanning a directory slot by slot used to re-walk the whole chain
+     * each time (quadratic in the directory size) */
+    if (fs->dc_first == first_cluster && fs->dc_idx <= clusters_to_skip && fs->dc_cluster != 0) {
+        cluster = fs->dc_cluster;
+        start_idx = fs->dc_idx;
+    }
+    for (uint32_t i = start_idx; i < clusters_to_skip; i++) {
         uint32_t e = fat32_get_fat_entry(fs, cluster);
         if (e == 0 || e >= FAT32_CLUSTER_BAD) return -1;
         cluster = e;
     }
     if (cluster == 0 || cluster >= FAT32_CLUSTER_BAD) return -1;
+    fs->dc_first = first_cluster;
+    fs->dc_idx = clusters_to_skip;
+    fs->dc_cluster = cluster;
 
     *out_sector = fat32_cluster_to_sector(fs, cluster) + sector_in_cluster;
     return 0;
