@@ -170,7 +170,7 @@ static int ext4_txn_find(ext4_t *fs, uint32_t block)
 
 static void ext4_txn_begin(ext4_t *fs)
 {
-    fs->in_txn = 1;
+    fs->in_txn = fs->use_journal ? 1 : 0;
     fs->txn_count = 0;
 }
 
@@ -1164,6 +1164,16 @@ static int ext4_probe(ext4_t *fs, blockdev_t *bd)
     fs->journal_first_block = sb->s_journal_first_block;
     fs->journal_blocks = sb->s_journal_blocks;
 
+    /* s_journal_first_block/s_journal_blocks are not fields of the real
+     * ext4 superblock (those bytes hold other data), and the log written
+     * here is not jbd2. Only volumes made by ext4_format() (exactly its
+     * feature set) may use it; any other volume is written in place. */
+    fs->use_journal = (sb->s_feature_compat == 0 &&
+                       sb->s_feature_incompat == (EXT4_FEATURE_INCOMPAT_FILETYPE | EXT4_FEATURE_INCOMPAT_EXTENTS) &&
+                       sb->s_feature_ro_compat == 0 &&
+                       sb->s_journal_blocks >= 8 && sb->s_journal_first_block != 0 &&
+                       (uint64_t)sb->s_journal_first_block + sb->s_journal_blocks <= sb->s_blocks_count);
+
     free(sb);
 
     fs->in_txn = 0;
@@ -1174,7 +1184,7 @@ static int ext4_probe(ext4_t *fs, blockdev_t *bd)
 int ext4_probe_and_mount(ext4_t *fs, blockdev_t *bd)
 {
     if (ext4_probe(fs, bd) != 0) return -1;
-    ext4_journal_recover(fs);
+    if (fs->use_journal) ext4_journal_recover(fs);
     return 0;
 }
 

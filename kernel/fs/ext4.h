@@ -43,6 +43,7 @@ typedef struct {
     uint32_t journal_sequence;
     uint32_t journal_cursor;
 
+    int use_journal;   /* tOS's own mini journal: only on volumes ext4_format() made */
     int in_txn;
     int txn_count;
     ext4_txn_entry_t txn[EXT4_MAX_TXN_BLOCKS];
