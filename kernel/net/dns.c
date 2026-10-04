@@ -11,23 +11,34 @@
 
 #define DNS_PORT 53
 
-static void dns_build_name(uint8_t *buf, int *off, const char *name)
+/* Encodes name as DNS labels. Fails (-1) for an empty label, a label over 63
+ * bytes, a name over 253 bytes, or when it would not fit in cap bytes (the old
+ * version wrote into the fixed 256-byte packet with no check at all). */
+static int dns_build_name(uint8_t *buf, int cap, int *off, const char *name)
 {
+    if (strlen(name) > 253) return -1;
     while (*name) {
         const char *dot = name;
         while (*dot && *dot != '.') dot++;
-        int len = dot - name;
-        buf[(*off)++] = len;
-        for (int i = 0; i < len; i++) buf[(*off)++] = name[i];
+        int len = (int)(dot - name);
+        if (len == 0 || len > 63) return -1;
+        if (*off + 1 + len + 1 > cap) return -1;
+        buf[(*off)++] = (uint8_t)len;
+        for (int i = 0; i < len; i++) buf[(*off)++] = (uint8_t)name[i];
         name = dot;
-        if (*name == '.') name++;
+        if (*name == '.') {
+            name++;
+            if (*name == 0) break;   /* a single trailing dot is fine */
+        }
     }
+    if (*off + 1 > cap) return -1;
     buf[(*off)++] = 0;
+    return 0;
 }
 
 int dns_resolve(const char *hostname, uint32_t *ip_out)
 {
-    uint8_t pkt[256];
+    uint8_t pkt[300];
     memset(pkt, 0, sizeof(pkt));
 
     pkt[0] = 0xAA; pkt[1] = 0xAA;
@@ -38,7 +49,7 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
     pkt[10] = 0x00; pkt[11] = 0x00;
 
     int off = 12;
-    dns_build_name(pkt, &off, hostname);
+    if (dns_build_name(pkt, (int)sizeof(pkt) - 4, &off, hostname) != 0) return DNS_ERR_BADNAME;
     pkt[off++] = 0x00; pkt[off++] = 0x01;
     pkt[off++] = 0x00; pkt[off++] = 0x01;
 
@@ -154,6 +165,7 @@ const char *dns_strerror(int err)
         case DNS_ERR_SERVER:    return "DNS server returned an error";
         case DNS_ERR_NO_ANSWER: return "no such host (no records returned)";
         case DNS_ERR_MALFORMED: return "malformed response from DNS server";
+        case DNS_ERR_BADNAME:   return "invalid host name";
         case DNS_ERR_NO_A:      return "host has no IPv4 (A) address";
         case IP_ERR_NOMEM:      return "out of memory building packet";
         case IP_ERR_TOOBIG:     return "packet too large";

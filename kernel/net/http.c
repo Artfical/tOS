@@ -142,6 +142,6 @@ const char *http_strerror(int err)
      * arp_resolve_strerror() for those. */
     if (err == HTTP_ERR_HEADER) return "malformed or oversized HTTP response headers";
     if (err == HTTP_ERR_REQUEST) return "request too long or invalid characters in URL";
-    if (err <= -20 && err >= -24) return dns_strerror(err);
+    if (err <= -20 && err >= -25) return dns_strerror(err);
     return tcp_connect_strerror(err);
 }

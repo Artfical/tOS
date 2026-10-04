@@ -17,6 +17,7 @@
 #define DNS_ERR_SERVER    -21  /* server responded with a nonzero RCODE (e.g. SERVFAIL) */
 #define DNS_ERR_NO_ANSWER -22  /* server responded but with zero answers (e.g. NXDOMAIN) */
 #define DNS_ERR_MALFORMED -23  /* response was truncated/corrupt */
+#define DNS_ERR_BADNAME   -25  /* hostname empty/over-long label, over 253 bytes */
 #define DNS_ERR_NO_A      -24  /* got answers, but none were a usable A record */
 
 int dns_resolve(const char *hostname, uint32_t *ip_out);
