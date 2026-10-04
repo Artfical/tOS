@@ -185,6 +185,27 @@ static void ext2_sb_adjust(ext2_t *fs, int dblocks, int dinodes)
     blockdev_write_bytes(fs->bd, 1024 + 12, 8, v);
 }
 
+/* Next clear bit at or after `from` (or nbits when none): scans a whole
+ * bitmap block instead of probing one bit per I/O. */
+static uint32_t ext2_bitmap_next_free(ext2_t *fs, uint32_t bitmap_block, uint32_t from, uint32_t nbits)
+{
+    if (from >= nbits) return nbits;
+    uint8_t *buf = (uint8_t *)malloc(fs->block_size);
+    if (!buf) return from;
+    if (blockdev_read_bytes(fs->bd, (uint64_t)bitmap_block * fs->block_size, fs->block_size, buf) != 0) {
+        free(buf);
+        return from;
+    }
+    uint32_t bit = from;
+    while (bit < nbits) {
+        if ((bit & 7) == 0 && buf[bit / 8] == 0xFF) { bit += 8; continue; }
+        if (!(buf[bit / 8] & (1u << (bit % 8)))) break;
+        bit++;
+    }
+    free(buf);
+    return bit < nbits ? bit : nbits;
+}
+
 static uint32_t ext2_alloc_block(ext2_t *fs)
 {
     for (uint32_t g = 0; g < fs->num_groups; g++) {
@@ -196,7 +217,8 @@ static uint32_t ext2_alloc_block(ext2_t *fs)
         uint32_t blocks_in_group = fs->blocks_count - base;
         if (blocks_in_group > fs->blocks_per_group) blocks_in_group = fs->blocks_per_group;
 
-        for (uint32_t bit = 0; bit < blocks_in_group; bit++) {
+        for (uint32_t bit = ext2_bitmap_next_free(fs, gd.bg_block_bitmap, 0, blocks_in_group); bit < blocks_in_group;
+             bit = ext2_bitmap_next_free(fs, gd.bg_block_bitmap, bit + 1, blocks_in_group)) {
             if (!ext2_bitmap_test(fs, gd.bg_block_bitmap, bit)) {
                 ext2_bitmap_set(fs, gd.bg_block_bitmap, bit, 1);
                 gd.bg_free_blocks_count--;
@@ -231,7 +253,8 @@ static uint32_t ext2_alloc_inode(ext2_t *fs, int is_dir)
         if (ext2_read_group_desc(fs, g, &gd) != 0) continue;
         if (gd.bg_free_inodes_count == 0) continue;
 
-        for (uint32_t bit = 0; bit < fs->inodes_per_group; bit++) {
+        for (uint32_t bit = ext2_bitmap_next_free(fs, gd.bg_inode_bitmap, 0, fs->inodes_per_group); bit < fs->inodes_per_group;
+             bit = ext2_bitmap_next_free(fs, gd.bg_inode_bitmap, bit + 1, fs->inodes_per_group)) {
             uint32_t ino = g * fs->inodes_per_group + bit + 1;
             if (ino < EXT2_FIRST_NON_RESERVED_INO) continue;
             if (!ext2_bitmap_test(fs, gd.bg_inode_bitmap, bit)) {
