@@ -90,6 +90,9 @@ int ip6_parse(const char *s, uint8_t *out) {
  * For now: use the solicited-node multicast MAC for unknown targets.
  * ----------------------------------------------------------------------- */
 int ip6_send(const uint8_t *dst_ip6, uint8_t next_header, void *data, int len) {
+    /* No fragmentation on TX: keep within the IPv6 minimum MTU (1280 - 40).
+     * A negative length used to wrap into a huge malloc()/memcpy(). */
+    if (len < 0 || len > 1280 - (int)sizeof(ip6_hdr_t)) return -1;
     /* Resolve destination MAC */
     uint8_t dst_mac[6];
     int resolved = icmpv6_ndp_resolve(dst_ip6, dst_mac);
