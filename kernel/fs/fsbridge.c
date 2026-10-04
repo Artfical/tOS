@@ -1,6 +1,7 @@
 #include "fsbridge.h"
 #include "vfs.h"
 #include "ramfs.h"
+#include "memory.h"
 
 int fsbridge_exists(const char *path)
 {
@@ -90,4 +91,18 @@ int fsbridge_list(const char *path, vfs_entry_t *entries, int max)
 {
     if (vfs_path_has_mount(path)) return vfs_readdir(path, entries, max);
     return ramfs_list(path, entries, max);
+}
+
+vfs_entry_t *fsbridge_list_all(const char *path, int *n)
+{
+    int cap = 128;
+    for (;;) {
+        vfs_entry_t *e = (vfs_entry_t *)malloc((size_t)cap * sizeof(vfs_entry_t));
+        if (!e) { *n = -1; return 0; }
+        int got = fsbridge_list(path, e, cap);
+        if (got < 0) { free(e); *n = -1; return 0; }
+        if (got < cap || cap >= 65536) { *n = got; return e; }
+        free(e);
+        cap *= 4;
+    }
 }

@@ -125,9 +125,9 @@ static int add_recursive(sink_t *sink, const char *fs_path, const char *arc_name
          * on top of itself at every nesting level blew straight
          * through the 32KB kernel task stack on a tree just two
          * levels deep — page-faulted into kernel panic. */
-        vfs_entry_t *entries = (vfs_entry_t *)malloc(128 * sizeof(vfs_entry_t));
+        int n;
+        vfs_entry_t *entries = fsbridge_list_all(fs_path, &n);
         if (!entries) return -1;
-        int n = fsbridge_list(fs_path, entries, 128);
         for (int i = 0; i < n; i++) {
             if (strcmp(entries[i].name, ".") == 0 || strcmp(entries[i].name, "..") == 0) continue;
             char child_fs[512], child_arc[TAR_NAME_MAX];

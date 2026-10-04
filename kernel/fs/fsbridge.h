@@ -14,5 +14,8 @@ int fsbridge_delete(const char *path);
 int fsbridge_mkdir(const char *path);
 int fsbridge_rename(const char *old, const char *new_path);
 int fsbridge_list(const char *path, vfs_entry_t *entries, int max);
+/* Every entry of a directory in a malloc'd array (caller frees); *n gets the
+ * count, or -1 on error (then NULL is returned). */
+vfs_entry_t *fsbridge_list_all(const char *path, int *n);
 
 #endif
