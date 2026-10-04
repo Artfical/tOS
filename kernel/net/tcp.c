@@ -453,9 +453,34 @@ static void tcp_trace_hex32(char *dbg, int *di, uint32_t v) {
     for (int sh = 28; sh >= 0; sh -= 4) dbg[(*di)++] = hx[(v >> sh) & 0xF];
 }
 
+/* True when the segment's checksum (over pseudo-header + segment) is valid. */
+static int tcp_checksum_ok(const ip_hdr_t *ip_hdr, const uint8_t *seg, int len)
+{
+    uint32_t sum = 0;
+    const uint8_t *sp = (const uint8_t *)&ip_hdr->src_ip;
+    const uint8_t *dp = (const uint8_t *)&ip_hdr->dst_ip;
+    for (int j = 0; j < 4; j += 2) {
+        sum += (uint32_t)((sp[j] << 8) | sp[j + 1]);
+        sum += (uint32_t)((dp[j] << 8) | dp[j + 1]);
+    }
+    sum += IPPROTO_TCP;
+    sum += (uint32_t)len;
+    for (int j = 0; j + 1 < len; j += 2) sum += (uint32_t)((seg[j] << 8) | seg[j + 1]);
+    if (len & 1) sum += (uint32_t)seg[len - 1] << 8;
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    return sum == 0xFFFF;
+}
+
 void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
 {
     if (len < 20) return;
+    /* data offset below 5 words points inside the fixed header; beyond the
+     * segment it points past the data we actually received. */
+    {
+        int off = (*((uint8_t *)pkt + 12)) >> 4;
+        if (off < 5 || off * 4 > len) return;
+    }
+    if (!tcp_checksum_ok(ip_hdr, (const uint8_t *)pkt, len)) return;
 
     uint8_t  *tcp      = (uint8_t *)pkt;
     uint16_t  src_port = ntohs(*(uint16_t *)(tcp + 0));
