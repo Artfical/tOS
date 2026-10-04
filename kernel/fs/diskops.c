@@ -123,12 +123,10 @@ int diskops_mount(const char *name, const char *mount_point, const char *fstype,
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "ntfs") == 0) {
         static ntfs_t ntfs_instances[VFS_MAX_MOUNTS];
-        static int ntfs_next = 0;
-        if (ntfs_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        ntfs_t *fs = &ntfs_instances[ntfs_next];
-        memset(fs, 0, sizeof(*fs));
-        if (ntfs_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "ntfs probe failed (not formatted?)"); return -1; }
-        ntfs_next++;
+        ntfs_t *fs = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!ntfs_instances[i].bd) { fs = &ntfs_instances[i]; break; }
+        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
+        if (ntfs_probe_and_mount(fs, bd) != 0) { seterr(err, err_len, "ntfs probe failed (not an NTFS volume, or unsupported layout)"); return -1; }
         ntfs_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
     } else if (strcmp(fstype, "btrfs") == 0) {
@@ -200,7 +198,6 @@ const char *diskops_detect(const char *name)
     static ext4_t  det_e4;
     static ext3_t  det_e3;
     static ext2_t  det_e2;
-    static ntfs_t  det_nt;
     static btrfs_t det_btrfs;
     static xfs_t   det_xfs;
     static zfs_t   det_zfs;
@@ -230,8 +227,7 @@ const char *diskops_detect(const char *name)
     memset(&det_e2, 0, sizeof(det_e2));
     if (ext2_probe_and_mount(&det_e2, bd) == 0) return "ext2";
 
-    memset(&det_nt, 0, sizeof(det_nt));
-    if (ntfs_probe_and_mount(&det_nt, bd) == 0) return "ntfs";
+    if (ntfs_detect(bd) == 0) return "ntfs";
 
     memset(&det_btrfs, 0, sizeof(det_btrfs));
     if (btrfs_probe_and_mount(&det_btrfs, bd) == 0) return "btrfs";
@@ -253,10 +249,17 @@ int diskops_umount(const char *mount_point, char *err, int err_len)
     log3("diskops: unmounting ", mount_point, NULL);
 
     if (vfs_unmount(mount_point) != 0) { seterr(err, err_len, "umount failed (not mounted, or busy)"); return -1; }
+
     int n = blockdev_count();
     for (int i = 0; i < n; i++) {
         blockdev_t *bd = blockdev_get(i);
         if (bd && bd->mounted && strcmp(bd->mount_point, mount_point) == 0) {
+            if (strcmp(bd->fs_type, "ntfs") == 0 && bd->fs_ctx) {
+                ntfs_t *nfs = (ntfs_t *)bd->fs_ctx;
+                ntfs_umount(nfs);
+                memset(nfs, 0, sizeof(*nfs));
+            }
+            blockdev_flush(bd);
             bd->mounted = 0;
             bd->mount_point[0] = 0;
             bd->fs_type[0] = 0;
@@ -294,7 +297,7 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
     } else if (strcmp(fstype, "ext4") == 0) {
         if (ext4_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
     } else if (strcmp(fstype, "ntfs") == 0) {
-        if (ntfs_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
+        if (ntfs_format(bd, "tOS") != 0) { seterr(err, err_len, "formatting NTFS is not supported; create the volume with mkfs.ntfs or Windows"); return -1; }
     } else if (strcmp(fstype, "btrfs") == 0) {
         if (btrfs_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
     } else if (strcmp(fstype, "xfs") == 0) {
@@ -320,4 +323,25 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
     }
 
     return 0;
+}
+
+int diskops_resize(const char *name, uint32_t size_mb, char *err, int err_len)
+{
+    blockdev_t *bd = blockdev_find(name);
+    if (!bd) { seterr(err, err_len, "no such device"); return -1; }
+    if (bd->mounted) { seterr(err, err_len, "umount the device before resizing it"); return -1; }
+    blockdev_cache_invalidate(bd);
+
+    uint64_t dev_bytes = bd->total_sectors * (uint64_t)bd->sector_size;
+    uint64_t want_bytes = size_mb ? (uint64_t)size_mb * 1024 * 1024 : dev_bytes;
+    if (want_bytes > dev_bytes) { seterr(err, err_len, "requested size is larger than the device"); return -1; }
+    uint64_t sectors512 = want_bytes / 512;
+
+    const char *type = diskops_detect(name);
+    if (!type) { seterr(err, err_len, "unknown filesystem"); return -1; }
+    int rc;
+    if (strcmp(type, "ntfs") == 0) rc = ntfs_resize(bd, sectors512, err, err_len);
+    else { seterr(err, err_len, "resizing is not implemented for this filesystem"); rc = -1; }
+    blockdev_cache_invalidate(bd);
+    return rc;
 }

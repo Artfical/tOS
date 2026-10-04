@@ -1,6 +1,8 @@
 #ifndef DISKOPS_H
 #define DISKOPS_H
 
+#include <stdint.h>
+
 /* Shared disk mount/unmount/format backend used by both the `disk` shell
    command and the graphical Disk Utility app, so the two front-ends can't
    drift out of sync on what filesystem types are supported. On failure,
@@ -9,6 +11,11 @@
 int diskops_mount(const char *name, const char *mount_point, const char *fstype, char *err, int err_len);
 int diskops_umount(const char *mount_point, char *err, int err_len);
 int diskops_format(const char *name, const char *fstype, char *err, int err_len);
+
+/* Grows (or shrinks, where the filesystem allows it) the filesystem on an
+ * unmounted device to size_mb megabytes; size_mb == 0 means "fill the
+ * device". The filesystem type is auto-detected. */
+int diskops_resize(const char *name, uint32_t size_mb, char *err, int err_len);
 
 /* Probes a block device against every supported on-disk filesystem format
    (read-only, no VFS mount performed) and returns the first one whose

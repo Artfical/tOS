@@ -141,15 +141,31 @@ static int do_format(const char *name, const char *fstype)
     return 0;
 }
 
+static int do_resize(const char *name, uint32_t size_mb)
+{
+    char err[96];
+    if (diskops_resize(name, size_mb, err, sizeof(err)) != 0) {
+        terminal_writestring("disk: ");
+        terminal_writestring(err);
+        terminal_putchar('\n');
+        return -1;
+    }
+    terminal_writestring("disk: resized ");
+    terminal_writestring(name);
+    terminal_putchar('\n');
+    return 0;
+}
+
 static void disk_usage(void)
 {
-    terminal_writestring("Usage: disk <list|info|properties|mount|umount|format> [args]\n");
+    terminal_writestring("Usage: disk <list|info|properties|mount|umount|format|resize> [args]\n");
     terminal_writestring("  disk list\n");
     terminal_writestring("  disk info <device>\n");
     terminal_writestring("  disk properties\n");
     terminal_writestring("  disk mount <device> <mountpoint> <fstype>\n");
     terminal_writestring("  disk umount <mountpoint>\n");
     terminal_writestring("  disk format <device> <fstype>\n");
+    terminal_writestring("  disk resize <device> [size_mb]   (unmounted; no size = fill the device)\n");
 }
 
 void cmd_disk(int argc, char **args)
@@ -173,6 +189,9 @@ void cmd_disk(int argc, char **args)
     } else if (strcmp(sub, "format") == 0) {
         if (argc < 4) { disk_usage(); return; }
         do_format(args[2], args[3]);
+    } else if (strcmp(sub, "resize") == 0) {
+        if (argc < 3) { disk_usage(); return; }
+        do_resize(args[2], argc >= 4 ? (uint32_t)atoul(args[3]) : 0);
     } else {
         disk_usage();
     }
