@@ -103,23 +103,35 @@ int udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port, void *data, 
     return r;
 }
 
+#define UDP_MAX_DATAGRAM 65507   /* 65535 - 20 (IPv4) - 8 (UDP) */
+
 void udp_handle(ip_hdr_t *ip, void *pkt, int len)
 {
     if (len < (int)sizeof(udp_hdr_t)) return;
     udp_hdr_t *udp = (udp_hdr_t *)pkt;
-    int data_len = len - sizeof(udp_hdr_t);
+    /* The UDP length field is attacker-controlled: it must cover at least
+     * the header and not claim more than the IP layer delivered. Anything
+     * past it (e.g. Ethernet padding) is not payload. */
+    int ulen = ntohs(udp->length);
+    if (ulen < (int)sizeof(udp_hdr_t) || ulen > len) return;
+    int data_len = ulen - (int)sizeof(udp_hdr_t);
+    if (data_len > UDP_MAX_DATAGRAM) return;
     uint16_t dst_port = ntohs(udp->dst_port);
 
     for (int i = 0; i < UDP_SOCKETS; i++) {
         if (udp_sockets[i].used && udp_sockets[i].port == dst_port) {
-            udp_sockets[i].data = (uint8_t *)malloc(data_len);
-            if (udp_sockets[i].data) {
-                memcpy(udp_sockets[i].data, (uint8_t *)pkt + sizeof(udp_hdr_t), data_len);
-                udp_sockets[i].len = data_len;
-                udp_sockets[i].has_data = 1;
-                udp_sockets[i].src_ip = ip->src_ip;
-                udp_sockets[i].src_port = ntohs(udp->src_port);
-            }
+            /* One queued datagram per socket: a second one used to
+             * overwrite .data without freeing it, leaking a buffer per
+             * packet for as long as the sender kept flooding. Drop it. */
+            if (udp_sockets[i].has_data) return;
+            uint8_t *copy = (uint8_t *)malloc(data_len > 0 ? (size_t)data_len : 1);
+            if (!copy) return;
+            memcpy(copy, (uint8_t *)pkt + sizeof(udp_hdr_t), (size_t)data_len);
+            udp_sockets[i].data = copy;
+            udp_sockets[i].len = data_len;
+            udp_sockets[i].has_data = 1;
+            udp_sockets[i].src_ip = ip->src_ip;
+            udp_sockets[i].src_port = ntohs(udp->src_port);
             return;
         }
     }
