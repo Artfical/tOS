@@ -701,7 +701,12 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
      * truncating large downloads. An out-of-order FIN is simply
      * dropped here; the sender's own retransmit timer resends it once
      * the missing segments have had a chance to arrive and be ACKed. */
-    if ((flags & TCP_FLAG_FIN) && pkt_seq == s->ack) {
+    /* A FIN rides after the segment's data: its own sequence number is
+     * pkt_seq + data_len. After in-order data was accepted above, s->ack has
+     * already advanced past it, so comparing against pkt_seq alone made every
+     * data+FIN segment (HTTP/1.0 servers send the last bytes and the FIN
+     * together) look out of order and the close was never seen. */
+    if ((flags & TCP_FLAG_FIN) && pkt_seq + (uint32_t)data_len == s->ack) {
         s->ack++;
         s->rx_closed = 1;
         send_seg(s, TCP_FLAG_ACK, 0, 0);
