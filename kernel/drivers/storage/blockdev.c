@@ -1,6 +1,7 @@
 #include "blockdev.h"
 #include "memory.h"
 #include "string.h"
+#include "scheduler.h"
 
 #define BLOCKDEV_CHUNK 128
 
@@ -95,6 +96,81 @@ blockdev_t *blockdev_find(const char *name)
     return 0;
 }
 
+/* Raw device access is not reentrant (PIO command sequences, shared DMA
+ * buffers), and the GUI runs several tasks that can reach a disk at once.
+ * The scheduler is not running yet during early boot, hence the guard. */
+static void bd_lock(void)   { if (task_current()) task_preempt_disable(); }
+static void bd_unlock(void) { if (task_current()) task_preempt_enable(); }
+
+/* Write-through sector cache for 512-byte-sector devices. The filesystem
+ * drivers read single FAT entries / bitmap bytes through whole-sector PIO
+ * reads, which made multi-hundred-KB writes take minutes. Writes always go
+ * to the device first, so the cache never holds data the disk lacks. */
+#define BDC_ENTRIES 4096
+
+typedef struct { blockdev_t *bd; uint64_t lba; } bdc_tag_t;
+static bdc_tag_t *bdc_tags;
+static uint8_t *bdc_data;
+static int bdc_tried;
+
+static int bdc_ready(void)
+{
+    if (!bdc_tried) {
+        bdc_tried = 1;
+        bdc_tags = (bdc_tag_t *)malloc(BDC_ENTRIES * sizeof(bdc_tag_t));
+        bdc_data = (uint8_t *)malloc((size_t)BDC_ENTRIES * 512);
+        if (!bdc_tags || !bdc_data) {
+            if (bdc_tags) free(bdc_tags);
+            if (bdc_data) free(bdc_data);
+            bdc_tags = 0; bdc_data = 0;
+        } else {
+            memset(bdc_tags, 0, BDC_ENTRIES * sizeof(bdc_tag_t));
+        }
+    }
+    return bdc_data != 0;
+}
+
+static uint32_t bdc_slot(blockdev_t *bd, uint64_t lba)
+{
+    return (uint32_t)((lba + (uint64_t)(bd - devices) * 977) % BDC_ENTRIES);
+}
+
+static uint8_t *bdc_lookup(blockdev_t *bd, uint64_t lba)
+{
+    uint32_t i = bdc_slot(bd, lba);
+    if (bdc_tags[i].bd == bd && bdc_tags[i].lba == lba) return bdc_data + (size_t)i * 512;
+    return 0;
+}
+
+static void bdc_store(blockdev_t *bd, uint64_t lba, const uint8_t *data)
+{
+    uint32_t i = bdc_slot(bd, lba);
+    bdc_tags[i].bd = bd;
+    bdc_tags[i].lba = lba;
+    memcpy(bdc_data + (size_t)i * 512, data, 512);
+}
+
+static void bdc_drop(blockdev_t *bd, uint64_t lba, uint32_t count)
+{
+    if (!bdc_data) return;
+    for (uint32_t k = 0; k < count; k++) {
+        uint32_t i = bdc_slot(bd, lba + k);
+        if (bdc_tags[i].bd == bd && bdc_tags[i].lba == lba + k) bdc_tags[i].bd = 0;
+    }
+}
+
+void blockdev_cache_invalidate(blockdev_t *bd)
+{
+    bd_lock();
+    if (bdc_data) {
+        for (uint32_t i = 0; i < BDC_ENTRIES; i++)
+            if (!bd || bdc_tags[i].bd == bd) bdc_tags[i].bd = 0;
+    }
+    bd_unlock();
+}
+
+static int bdc_usable(blockdev_t *bd) { return bd->sector_size == 512 && bdc_ready(); }
+
 static int raw_read(blockdev_t *bd, uint64_t lba, uint32_t count, void *buf)
 {
     switch (bd->type) {
@@ -130,29 +206,58 @@ static int raw_write(blockdev_t *bd, uint64_t lba, uint32_t count, const void *b
 int blockdev_read(blockdev_t *bd, uint64_t lba, uint32_t count, void *buf)
 {
     if (!bd || !bd->used) return -1;
+    if (count == 0 || lba + count > bd->total_sectors) return -1;
     uint8_t *p = (uint8_t *)buf;
-    while (count > 0) {
-        uint32_t chunk = count > BLOCKDEV_CHUNK ? BLOCKDEV_CHUNK : count;
-        if (raw_read(bd, lba, chunk, p) != 0) return -1;
-        lba += chunk;
-        p += (uint32_t)chunk * bd->sector_size;
-        count -= chunk;
+    int rc = 0;
+    bd_lock();
+    if (!bdc_usable(bd)) {
+        while (count > 0) {
+            uint32_t chunk = count > BLOCKDEV_CHUNK ? BLOCKDEV_CHUNK : count;
+            if (raw_read(bd, lba, chunk, p) != 0) { rc = -1; break; }
+            lba += chunk;
+            p += (uint32_t)chunk * bd->sector_size;
+            count -= chunk;
+        }
+    } else {
+        uint32_t i = 0;
+        while (i < count) {
+            uint8_t *c = bdc_lookup(bd, lba + i);
+            if (c) { memcpy(p + (size_t)i * 512, c, 512); i++; continue; }
+            uint32_t j = i + 1;
+            while (j < count && (j - i) < BLOCKDEV_CHUNK && !bdc_lookup(bd, lba + j)) j++;
+            if (raw_read(bd, lba + i, j - i, p + (size_t)i * 512) != 0) { rc = -1; break; }
+            for (uint32_t k = i; k < j; k++) bdc_store(bd, lba + k, p + (size_t)k * 512);
+            i = j;
+        }
     }
-    return 0;
+    bd_unlock();
+    return rc;
 }
 
 int blockdev_write(blockdev_t *bd, uint64_t lba, uint32_t count, const void *buf)
 {
     if (!bd || !bd->used) return -1;
+    if (count == 0 || lba + count > bd->total_sectors) return -1;
     const uint8_t *p = (const uint8_t *)buf;
+    int rc = 0;
+    int cache = 0;
+    bd_lock();
+    cache = bdc_usable(bd);
     while (count > 0) {
         uint32_t chunk = count > BLOCKDEV_CHUNK ? BLOCKDEV_CHUNK : count;
-        if (raw_write(bd, lba, chunk, p) != 0) return -1;
+        if (raw_write(bd, lba, chunk, p) != 0) {
+            if (cache) bdc_drop(bd, lba, chunk);
+            rc = -1;
+            break;
+        }
+        if (cache)
+            for (uint32_t k = 0; k < chunk; k++) bdc_store(bd, lba + k, p + (size_t)k * 512);
         lba += chunk;
         p += (uint32_t)chunk * bd->sector_size;
         count -= chunk;
     }
-    return 0;
+    bd_unlock();
+    return rc;
 }
 
 int blockdev_read_bytes(blockdev_t *bd, uint64_t byte_offset, uint32_t len, void *buf)

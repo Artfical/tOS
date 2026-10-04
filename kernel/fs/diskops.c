@@ -47,6 +47,7 @@ int diskops_mount(const char *name, const char *mount_point, const char *fstype,
     blockdev_t *bd = blockdev_find(name);
     if (!bd) { seterr(err, err_len, "no such device"); return -1; }
     if (bd->mounted) { seterr(err, err_len, "device already mounted"); return -1; }
+    blockdev_cache_invalidate(bd); /* tfsk writes bypass blockdev, so drop anything cached before mounting */
 
     if (strcmp(fstype, "tfsk") == 0) {
         if (bd->type != BLOCKDEV_ATA) { seterr(err, err_len, "tfsk is currently only supported on ATA devices"); return -1; }
@@ -190,6 +191,7 @@ const char *diskops_detect(const char *name)
 {
     blockdev_t *bd = blockdev_find(name);
     if (!bd || bd->mounted) return NULL;
+    blockdev_cache_invalidate(bd);
 
     static tfsk_t  det_tfs;
     static fat32_t det_f32;
@@ -274,6 +276,7 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
     blockdev_t *bd = blockdev_find(name);
     if (!bd) { seterr(err, err_len, "no such device"); return -1; }
     if (bd->mounted) { seterr(err, err_len, "cannot format a mounted device, umount first"); return -1; }
+    blockdev_cache_invalidate(bd);
 
     if (strcmp(fstype, "tfsk") == 0) {
         if (bd->type != BLOCKDEV_ATA) { seterr(err, err_len, "tfsk is currently only supported on ATA devices"); return -1; }
