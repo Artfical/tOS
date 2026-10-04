@@ -79,22 +79,36 @@ static uint16_t alloc_port(void)
     return p;
 }
 
-static void rx_append(tcp_sock_t *s, const uint8_t *data, int len)
+/* Per-socket receive buffer limit. Data beyond it is not acknowledged, so
+ * the peer retransmits once the application has drained the buffer. */
+#define TCP_RX_MAX (64 * 1024)
+
+static int rx_free(const tcp_sock_t *s)
 {
+    return s->rx_len >= TCP_RX_MAX ? 0 : TCP_RX_MAX - s->rx_len;
+}
+
+/* Returns 1 when all of the data was queued, 0 when it did not fit (or
+ * memory ran out) and nothing was stored. */
+static int rx_append(tcp_sock_t *s, const uint8_t *data, int len)
+{
+    if (len <= 0) return 1;
+    if (len > rx_free(s)) return 0;
     if (s->rx_buf == 0) {
-        s->rx_buf = (uint8_t *)malloc(len);
-        if (!s->rx_buf) return;
-        memcpy(s->rx_buf, data, len);
+        s->rx_buf = (uint8_t *)malloc((size_t)len);
+        if (!s->rx_buf) return 0;
+        memcpy(s->rx_buf, data, (size_t)len);
         s->rx_len = len;
         s->rx_cap = len;
     } else {
-        uint8_t *tmp = (uint8_t *)krealloc(s->rx_buf, s->rx_len + len);
-        if (!tmp) return;
-        memcpy(tmp + s->rx_len, data, len);
+        uint8_t *tmp = (uint8_t *)krealloc(s->rx_buf, (size_t)s->rx_len + (size_t)len);
+        if (!tmp) return 0;
+        memcpy(tmp + s->rx_len, data, (size_t)len);
         s->rx_buf = tmp;
         s->rx_len += len;
         s->rx_cap  = s->rx_len;
     }
+    return 1;
 }
 
 /* -- Packet builder -------------------------------------------------------- */
@@ -141,7 +155,12 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     *(uint32_t *)(tcp + 8)  = htonl(s->ack);
     *(tcp + 12) = 0x50;
     *(tcp + 13) = flags;
-    *(uint16_t *)(tcp + 14) = htons(65535);
+    {
+        /* advertise the real remaining receive space */
+        int w = rx_free(s);
+        if (w > 65535) w = 65535;
+        *(uint16_t *)(tcp + 14) = htons((uint16_t)w);
+    }
     if (plen > 0) memcpy(tcp + 20, payload, plen);
 
     /* Pseudo header + checksum: built and read as plain bytes, never
@@ -594,8 +613,10 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
 
     /* Data */
     if (data_len > 0 && pkt_seq == s->ack) {
-        rx_append(s, data, data_len);
-        s->ack += (uint32_t)data_len;
+        /* Only advance (and so acknowledge) what was actually queued: when
+         * the buffer is full the segment is dropped unacknowledged and the
+         * peer retransmits it after the application has read some. */
+        if (rx_append(s, data, data_len)) s->ack += (uint32_t)data_len;
         send_seg(s, TCP_FLAG_ACK, 0, 0);
     } else if (data_len > 0) {
         /* Out-of-sequence data (usually the sender retransmitting a
