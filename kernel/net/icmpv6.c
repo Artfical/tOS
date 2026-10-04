@@ -202,10 +202,21 @@ int icmpv6_ping6(const uint8_t *dst_ip6) {
                 int ip6_len       = len - sizeof(eth_hdr_t);
                 if (ip6_len < (int)sizeof(ip6_hdr_t)) continue;
                 ip6_hdr_t *ip6   = (ip6_hdr_t *)ip6_data;
-                if (ip6->next_header == 58) {
+                if (ip6->next_header == 58 && memcmp(ip6->src, dst_ip6, 16) == 0) {
                     uint8_t *icmp    = ip6_data + sizeof(ip6_hdr_t);
-                    int icmp_len_rem = ip6_len - sizeof(ip6_hdr_t);
-                    if (icmp_len_rem >= 8 && icmp[0] == ICMPV6_ECHO_REPLY) {
+                    /* use the header's payload length, not the frame remainder
+                     * (which includes Ethernet padding), and the checksum */
+                    int icmp_len_rem = ntohs(ip6->payload_len);
+                    if (icmp_len_rem > ip6_len - (int)sizeof(ip6_hdr_t)) continue;
+                    int csum_ok = 0;
+                    if (icmp_len_rem >= 8 && icmp_len_rem <= 1500) {
+                        uint8_t tmp[1500];
+                        memcpy(tmp, icmp, (size_t)icmp_len_rem);
+                        uint16_t got = *(uint16_t *)(tmp + 2);
+                        *(uint16_t *)(tmp + 2) = 0;
+                        csum_ok = icmpv6_checksum(ip6->src, ip6->dst, tmp, icmp_len_rem) == got;
+                    }
+                    if (csum_ok && icmp[0] == ICMPV6_ECHO_REPLY) {
                         uint16_t rid = ntohs(*(uint16_t *)(icmp + 4));
                         uint16_t rseq = ntohs(*(uint16_t *)(icmp + 6));
                         if (rid == ping_id && rseq == seq) return 0;
