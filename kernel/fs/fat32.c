@@ -865,6 +865,23 @@ static int fat32_vfs_rename(void *ctx, const char *old, const char *new)
     memcpy(newde.ext, want + 8, 3);
     if (fat32_dir_add_entry(fs, new_parent, &newde, NULL, NULL) != 0) return -1;
 
+    /* a moved directory's ".." must point at its new parent (0 for the root) */
+    if (de.attr & FAT32_ATTR_DIRECTORY) {
+        uint32_t dcl = de.cluster_low | ((uint32_t)de.cluster_high << 16);
+        uint8_t *db = (uint8_t *)malloc(fs->bytes_per_sector);
+        if (db) {
+            uint32_t dsec = fat32_cluster_to_sector(fs, dcl);
+            if (fat32_read_sector(fs, dsec, db) == 0) {
+                fat32_dirent_t *dd = (fat32_dirent_t *)(db + sizeof(fat32_dirent_t));
+                uint32_t nc = (new_parent == fs->root_cluster) ? 0 : new_parent;
+                dd->cluster_low = (uint16_t)(nc & 0xFFFF);
+                dd->cluster_high = (uint16_t)(nc >> 16);
+                fat32_write_sector(fs, dsec, db);
+            }
+            free(db);
+        }
+    }
+
     uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
     if (buf) {
         if (fat32_read_sector(fs, sec, buf) == 0) {
