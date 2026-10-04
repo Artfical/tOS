@@ -30,6 +30,7 @@ typedef struct {
     uint32_t cluster_size;
     uint32_t bitmap_cluster;
     uint32_t bitmap_size_bytes;
+    uint32_t alloc_hint;
     exfat_fd_t fds[VFS_MAX_FDS];
 } exfat_t;
 

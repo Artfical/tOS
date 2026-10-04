@@ -140,14 +140,38 @@ static void exfat_bitmap_update(exfat_t *fs, uint32_t cluster, int used)
     free(buf);
 }
 
+/* Allocation is driven by the allocation bitmap, not the FAT: a file with the
+ * NoFatChain flag owns clusters whose FAT entries are all zero. The scan
+ * resumes where the last one stopped so bulk writes stay linear. */
 static uint32_t exfat_alloc_cluster(exfat_t *fs)
 {
-    for (uint32_t c = 2; c < fs->cluster_count + 2; c++) {
-        if (exfat_get_fat_entry(fs, c) == 0) {
+    uint32_t n = fs->cluster_count;
+    if (n == 0) return 0;
+    uint8_t *buf = (uint8_t *)malloc(fs->bytes_per_sector);
+    if (!buf) return 0;
+    uint32_t start = fs->alloc_hint < n ? fs->alloc_hint : 0;
+    uint32_t bits_per_sector = fs->bytes_per_sector * 8;
+    uint32_t loaded = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t idx = start + i;
+        if (idx >= n) idx -= n;
+        uint32_t si = idx / bits_per_sector;
+        if (si != loaded) {
+            uint32_t sec;
+            if (exfat_chain_nth_sector(fs, fs->bitmap_cluster, si, &sec) != 0 ||
+                exfat_read_sector(fs, sec, buf) != 0) break;
+            loaded = si;
+        }
+        uint32_t b = idx % bits_per_sector;
+        if (!(buf[b / 8] & (1u << (b % 8)))) {
+            free(buf);
+            uint32_t c = idx + 2;
             exfat_bitmap_update(fs, c, 1);
+            fs->alloc_hint = idx + 1;
             return c;
         }
     }
+    free(buf);
     return 0;
 }
 
@@ -660,6 +684,7 @@ static int exfat_probe(exfat_t *fs, blockdev_t *bd)
 
     fs->bitmap_cluster = 0;
     fs->bitmap_size_bytes = 0;
+    fs->alloc_hint = 0;
 
     uint32_t slot = 0;
     uint8_t entry[32];
