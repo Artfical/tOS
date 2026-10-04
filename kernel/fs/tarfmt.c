@@ -209,6 +209,19 @@ static int ensure_parent_dirs(const char *path)
     return 0;
 }
 
+/* A real ustar header sums (checksum field counted as spaces) to the value
+ * stored in it; anything else is not a tar header. */
+static int header_ok(const uint8_t *hdr)
+{
+    unsigned int sum = 0;
+    for (int i = 0; i < TAR_BLOCK; i++) sum += (i >= 148 && i < 156) ? ' ' : hdr[i];
+    unsigned int stored = 0;
+    int i = 148;
+    while (i < 156 && hdr[i] == ' ') i++;
+    for (; i < 156 && hdr[i] >= '0' && hdr[i] <= '7'; i++) stored = (stored << 3) | (unsigned int)(hdr[i] - '0');
+    return sum == stored;
+}
+
 int tar_extract(const char *archive, const char *dest_dir, char *err, int err_len)
 {
     uint32_t size = fsbridge_size(archive);
@@ -219,6 +232,7 @@ int tar_extract(const char *archive, const char *dest_dir, char *err, int err_le
     while (pos + TAR_BLOCK <= size) {
         if (fsbridge_read(archive, hdr, TAR_BLOCK, pos) < 0) break;
         if (hdr[0] == 0) break;
+        if (!header_ok(hdr)) break;
         pos += TAR_BLOCK;
 
         char name[TAR_NAME_MAX + 1];
@@ -274,6 +288,7 @@ int tar_list(const char *archive, void (*cb)(const char *name, int is_dir, unsig
     while (pos + TAR_BLOCK <= size) {
         if (fsbridge_read(archive, hdr, TAR_BLOCK, pos) < 0) break;
         if (hdr[0] == 0) break;
+        if (!header_ok(hdr)) break;
         pos += TAR_BLOCK;
 
         char name[TAR_NAME_MAX + 1];
