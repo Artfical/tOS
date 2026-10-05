@@ -226,6 +226,8 @@ KERNEL_OBJS = \
     kernel/net/sha256.o \
     kernel/net/sha512.o \
     kernel/net/rsa.o \
+    kernel/net/x509.o \
+    kernel/net/ca_store.o \
     kernel/net/csprng.o \
     kernel/net/aes.o \
     kernel/net/bignum.o \
