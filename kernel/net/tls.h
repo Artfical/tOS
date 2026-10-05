@@ -23,6 +23,7 @@ typedef struct {
     int      handshake_done;
     /* handshake transcript for Finished */
     uint8_t  hs_buf[8192];
+    int      hs_overflow;   /* handshake transcript did not fit in hs_buf */
     uint32_t hs_len;
     /* raw receive buffer */
     uint8_t  rx_raw[TLS_RX_BUF];

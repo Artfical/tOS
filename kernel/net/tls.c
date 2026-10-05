@@ -66,9 +66,15 @@ static int tls_send_raw(tls_ctx_t *ctx, uint8_t type, const uint8_t *data, int l
 /* Append to handshake transcript */
 static void hs_append(tls_ctx_t *ctx, const uint8_t *data, uint32_t len)
 {
-    if (ctx->hs_len + len <= sizeof(ctx->hs_buf))
+    /* hs_len used to grow even when the data did not fit, so the later
+     * sha256_hash(hs_buf, hs_len) read far past the end of hs_buf. Overflow
+     * is now sticky (hs_overflow) and fails the handshake instead. */
+    if (len <= sizeof(ctx->hs_buf) && ctx->hs_len <= sizeof(ctx->hs_buf) - len) {
         memcpy(ctx->hs_buf + ctx->hs_len, data, len);
-    ctx->hs_len += len;
+        ctx->hs_len += len;
+    } else {
+        ctx->hs_overflow = 1;
+    }
 }
 
 /* Send a handshake message (type + 3-byte length + body), also records transcript */
@@ -506,6 +512,12 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
     {
         int pos = 0;
         while (pos < hs_len_recv) {
+            /* the 4-byte handshake header and the whole body it declares must
+             * lie inside the record that was actually received */
+            if (hs_len_recv - pos < 4 || u24be(hs_data+pos+1) > (uint32_t)(hs_len_recv - pos - 4)) {
+                tls_log("handshake message length exceeds its record");
+                goto fail;
+            }
             uint8_t ht = hs_data[pos];
             uint32_t hlen = u24be(hs_data+pos+1);
             uint8_t *hbody = hs_data+pos+4;
@@ -541,6 +553,10 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
         }
         int pos = 0;
         while (pos < hs_len_recv) {
+            if (hs_len_recv - pos < 4 || u24be(hs_data+pos+1) > (uint32_t)(hs_len_recv - pos - 4)) {
+                tls_log("handshake message length exceeds its record");
+                goto fail;
+            }
             uint8_t ht = hs_data[pos];
             uint32_t hlen = u24be(hs_data+pos+1);
             uint8_t *hbody = hs_data+pos+4;
@@ -548,8 +564,12 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
             if (ht == TLS_HT_CERTIFICATE && !found_key) {
                 /* certificates_list: 3-byte total length, then each cert 3-byte length + DER */
                 int cp = 3;
-                while (cp < (int)hlen) {
+                while (cp + 3 <= (int)hlen) {
                     uint32_t clen = u24be(hbody+cp); cp += 3;
+                    if (clen > hlen - (uint32_t)cp) {          /* certificate runs past the message */
+                        tls_log("certificate length exceeds the Certificate message");
+                        goto fail;
+                    }
                     if (!found_key && parse_rsa_pubkey(hbody+cp, (int)clen, rsa_mod, &rsa_exp))
                         found_key = 1;
                     cp += (int)clen;
@@ -565,6 +585,8 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
         goto fail;
     }
     tls_log("certificate received, RSA key found");
+
+    if (ctx->hs_overflow) { tls_log("handshake transcript too large"); goto fail; }
 
     /* --- Step 4: ClientKeyExchange --- */
     uint8_t premaster[48];
