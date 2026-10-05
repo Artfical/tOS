@@ -5,13 +5,16 @@
 #include "arp.h"
 #include "sha256.h"
 #include "aes.h"
-#include "bignum.h"
+#include "x509.h"
+#include "rsa.h"
+#include "cmos.h"
 #include "string.h"
 #include "memory.h"
 #include "klog.h"
 
 /* TLS 1.2, cipher suite TLS_RSA_WITH_AES_128_CBC_SHA256 (0x003C)
- * No certificate verification (hobby OS, no CA store). */
+ * The server certificate chain is validated against the built-in CA store
+ * (see x509.c / ca_store.c) unless tls_set_verify(0) was called. */
 
 #define TLS_VER_MAJOR 3
 #define TLS_VER_MINOR 3   /* TLS 1.2 */
@@ -32,12 +35,6 @@
 /* All TLS randomness (client random, premaster secret, CBC IVs, RSA padding)
  * comes from the kernel CSPRNG. This used to be an LCG with the constant seed
  * 0xdeadbeef, which made every one of those values predictable. */
-static uint8_t prng_byte(void)
-{
-    uint8_t b;
-    csprng_fill(&b, 1);
-    return b;
-}
 static void prng_fill(uint8_t *buf, int len)
 {
     csprng_fill(buf, len);
@@ -166,94 +163,28 @@ static int recv_record(tls_ctx_t *ctx, uint8_t *type, uint8_t *data, int cap, in
     return 0;
 }
 
-/* ---- PKCS#1 v1.5 encrypt (for ClientKeyExchange) ---- */
-/* rsa_pub_encrypt: encrypt 48-byte msg using server public key (mod, mod_len bytes) */
-static int pkcs1_encrypt(const uint8_t *msg, int mlen,
-                          const uint8_t *mod, int mod_len,
-                          uint32_t pub_exp,
-                          uint8_t *out, int out_len)
-{
-    /* We only support 256-byte (2048-bit) RSA */
-    if (mod_len != 256 || out_len < 256) return -1;
-    uint8_t padded[256];
-    /* EM = 0x00 || 0x02 || PS || 0x00 || M */
-    int ps_len = 256 - 3 - mlen;
-    if (ps_len < 8) return -1;
-    padded[0] = 0x00;
-    padded[1] = 0x02;
-    int i;
-    for (i = 0; i < ps_len; i++) {
-        uint8_t r;
-        do { r = prng_byte(); } while (r == 0);
-        padded[2+i] = r;
-    }
-    padded[2+ps_len] = 0x00;
-    memcpy(padded+3+ps_len, msg, (uint32_t)mlen);
-    rsa2048_pub_encrypt(padded, mod, pub_exp, out);
-    return 0;
-}
+/* ---- Certificate verification policy ---- */
+static int g_tls_verify = 1;
+static int g_cert_err = 0;
 
-/* ---- Parse ASN.1 DER to extract RSA public key from Certificate ---- */
-/* Returns 1 if found, fills mod[256] and exp (usually 65537) */
-static int parse_rsa_pubkey(const uint8_t *cert, int clen,
-                             uint8_t mod[256], uint32_t *exp)
+void tls_set_verify(int on) { g_tls_verify = on != 0; }
+int  tls_get_verify(void)   { return g_tls_verify; }
+const char *tls_cert_error_detail(void) { return g_cert_err ? x509_strerror(g_cert_err) : "none"; }
+
+/* Current UTC time for validity checks. A clock that is clearly unset (before
+ * 2024) is reported as 'unknown' so the check fails closed instead of
+ * accepting everything or rejecting everything arbitrarily. */
+static x509_time_t tls_now(void)
 {
-    /* Scan for RSA OID: 2a 86 48 86 f7 0d 01 01 01 */
-    static const uint8_t rsa_oid[] = {0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01};
-    int i;
-    for (i = 0; i < clen - 9; i++) {
-        if (memcmp(cert+i, rsa_oid, 9) == 0) {
-            /* After OID: skip to BIT STRING containing SEQUENCE{modulus, exponent} */
-            int pos = i + 9;
-            while (pos < clen && cert[pos] != 0x03) pos++; /* find BIT STRING */
-            if (pos >= clen) return 0;
-            pos++; /* skip tag */
-            /* skip length bytes */
-            if (cert[pos] & 0x80) {
-                int lbytes = cert[pos] & 0x7f;
-                pos += 1 + lbytes;
-            } else {
-                pos++;
-            }
-            pos++; /* skip 0x00 (unused bits) */
-            /* Now at SEQUENCE */
-            if (pos >= clen || cert[pos] != 0x30) return 0;
-            pos++; /* skip SEQUENCE tag */
-            if (cert[pos] & 0x80) {
-                int lbytes = cert[pos] & 0x7f;
-                pos += 1 + lbytes;
-            } else {
-                pos++;
-            }
-            /* INTEGER: modulus */
-            if (pos >= clen || cert[pos] != 0x02) return 0;
-            pos++;
-            uint32_t mlen;
-            if (cert[pos] & 0x80) {
-                int lbytes = cert[pos] & 0x7f;
-                mlen = 0;
-                int li;
-                for (li = 0; li < lbytes; li++) mlen = (mlen << 8) | cert[pos+1+li];
-                pos += 1 + lbytes;
-            } else {
-                mlen = cert[pos++];
-            }
-            /* Skip leading zero byte if present */
-            if (mlen > 0 && cert[pos] == 0x00) { pos++; mlen--; }
-            if (mlen != 256) return 0;
-            memcpy(mod, cert+pos, 256);
-            pos += 256;
-            /* INTEGER: exponent */
-            if (pos >= clen || cert[pos] != 0x02) return 0;
-            pos++;
-            uint32_t elen = cert[pos++];
-            *exp = 0;
-            uint32_t ei;
-            for (ei = 0; ei < elen && ei < 4; ei++) *exp = (*exp << 8) | cert[pos+ei];
-            return 1;
-        }
+    cmos_time_t t;
+    x509_time_t r;
+    cmos_get_time(&t);
+    if (t.year < 2024 || t.year > 2200 || t.month < 1 || t.month > 12 || t.day < 1 || t.day > 31) {
+        r.day = INT32_MIN;
+        r.sec = 0;
+        return r;
     }
-    return 0;
+    return x509_time_from_ymdhms(t.year, t.month, t.day, t.hour, t.minute, t.second);
 }
 
 /* ---- AES-128-CBC encrypt with HMAC-SHA256 MAC (TLS 1.2 record) ---- */
@@ -632,7 +563,8 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
     }
 
     /* --- Step 3: Certificate ... ServerHelloDone (may span several records) --- */
-    uint8_t rsa_mod[256];
+    uint8_t rsa_mod[RSA_MAX_BYTES];
+    int rsa_mod_len = 0;
     uint32_t rsa_exp = 65537;
     int found_key = 0;
     int got_cert = 0;
@@ -653,18 +585,54 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
                 tls_log("Certificate list length does not match the message");
                 goto fail;
             }
+            x509_der_t chain[X509_MAX_CHAIN];
+            int nc = 0;
             uint32_t cp = 3;
             while (cp < hlen) {
                 if (hlen - cp < 3) { tls_log("truncated certificate entry"); goto fail; }
                 uint32_t clen = u24be(hbody+cp); cp += 3;
-                if (clen > hlen - cp) {                 /* certificate runs past the message */
+                if (clen == 0 || clen > hlen - cp) {    /* empty, or runs past the message */
                     tls_log("certificate length exceeds the Certificate message");
                     goto fail;
                 }
-                if (!found_key && parse_rsa_pubkey(hbody+cp, (int)clen, rsa_mod, &rsa_exp))
-                    found_key = 1;
+                if (nc >= X509_MAX_CHAIN) {
+                    if (g_tls_verify) {                 /* a validated chain is bounded */
+                        g_cert_err = X509_ERR_CHAIN_TOO_LONG;
+                        tls_log(x509_strerror(g_cert_err));
+                        rc = TLS_ERR_CERT;
+                        goto fail;
+                    }
+                    cp += clen;                         /* unverified: only the leaf matters */
+                    continue;
+                }
+                chain[nc].der = hbody + cp;
+                chain[nc].len = clen;
+                nc++;
                 cp += clen;
             }
+            if (nc == 0) { tls_log("server sent an empty certificate list"); goto fail; }
+
+            /* Authenticate the server: chain to a trusted root, valid now, and
+             * issued for the host we meant to reach. The leaf must also allow
+             * RSA key transport. (When verification was switched off the leaf
+             * is still parsed, but nothing vouches for it.) */
+            x509_cert_t leaf;
+            int xr;
+            if (g_tls_verify)
+                xr = x509_verify_chain(chain, nc, sni_host, tls_now(), X509_F_RSA_KEY_EXCHANGE, &leaf);
+            else
+                xr = x509_parse(chain[0].der, chain[0].len, &leaf);
+            if (xr == X509_OK && !leaf.has_rsa_key) xr = X509_ERR_UNSUPPORTED_KEY;
+            if (xr != X509_OK) {
+                g_cert_err = xr;
+                tls_log(x509_strerror(xr));
+                rc = TLS_ERR_CERT;
+                goto fail;
+            }
+            memcpy(rsa_mod, leaf.n, leaf.n_len);
+            rsa_mod_len = (int)leaf.n_len;
+            rsa_exp = leaf.e;
+            found_key = 1;
         } else if (ht == TLS_HT_SERVER_DONE) {
             if (!got_cert) { tls_log("ServerHelloDone before the Certificate"); goto fail; }
             if (hlen != 0) { tls_log("ServerHelloDone is not empty"); goto fail; }
@@ -681,10 +649,10 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
         }
     }
     if (!found_key) {
-        tls_log("certificate received, but no RSA key found (server likely doesn't support plain RSA key exchange)");
+        tls_log("no usable RSA key in the server certificate");
         goto fail;
     }
-    tls_log("certificate received, RSA key found");
+    tls_log(g_tls_verify ? "certificate chain verified" : "certificate accepted WITHOUT verification");
     if (ctx->hs_in_pos != ctx->hs_in_len) {
         tls_log("unexpected data after ServerHelloDone");
         goto fail;
@@ -695,16 +663,17 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
     premaster[0] = TLS_VER_MAJOR; premaster[1] = TLS_VER_MINOR;
     prng_fill(premaster+2, 46);
 
-    uint8_t enc_pm[256];
-    if (pkcs1_encrypt(premaster, 48, rsa_mod, 256, rsa_exp, enc_pm, 256) != 0) {
+    uint8_t enc_pm[RSA_MAX_BYTES];
+    if (rsa_pkcs1_encrypt(rsa_mod, rsa_mod_len, rsa_exp, premaster, 48, enc_pm) != 0) {
         tls_log("RSA encrypt of premaster secret failed");
         goto fail;
     }
 
-    uint8_t cke[258];
-    cke[0] = 0x01; cke[1] = 0x00; /* length = 256 */
-    memcpy(cke+2, enc_pm, 256);
-    if (tls_send_hs(ctx, TLS_HT_CLIENT_KEY_EX, cke, 258) != 0) {
+    uint8_t cke[2 + RSA_MAX_BYTES];
+    cke[0] = (uint8_t)(rsa_mod_len >> 8);
+    cke[1] = (uint8_t)rsa_mod_len;
+    memcpy(cke+2, enc_pm, (size_t)rsa_mod_len);
+    if (tls_send_hs(ctx, TLS_HT_CLIENT_KEY_EX, cke, 2 + rsa_mod_len) != 0) {
         tls_log("ClientKeyExchange send failed");
         goto fail;
     }
@@ -847,6 +816,16 @@ const char *tls_connect_strerror(int err)
     switch (err) {
         case TLS_ERR_ALERT:     return "server sent a fatal TLS alert (see dmesg for level/description)";
         case TLS_ERR_HANDSHAKE: return "TLS handshake failed (see dmesg for which step)";
+        case TLS_ERR_CERT: {
+            static char msg[128];
+            const char *p = "server certificate rejected: ";
+            int i = 0;
+            while (*p && i < 100) msg[i++] = *p++;
+            p = tls_cert_error_detail();
+            while (*p && i < 126) msg[i++] = *p++;
+            msg[i] = 0;
+            return msg;
+        }
         case HTTP_ERR_REQUEST:
         case HTTP_ERR_HEADER:   return http_strerror(err);   /* https_get() shares http.c's request/response checks */
         case TCP_ERR_NOSOCK:    return "no free TCP socket";

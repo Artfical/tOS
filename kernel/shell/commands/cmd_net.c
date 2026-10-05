@@ -7,6 +7,7 @@
 #include "http.h"
 #include "https.h"
 #include "tls.h"
+#include "x509.h"
 #include "tsharp.h"
 #include "micropython.h"
 #include "memory.h"
@@ -168,13 +169,19 @@ static const char *ext_for_content_type(const char *resp)
 
 void cmd_wget(int argc, char **args)
 {
-    if (argc < 2) {
-        terminal_writestring("usage: wget <url>\n");
+    const char *url = 0;
+    int insecure = 0;
+    for (int a = 1; a < argc; a++) {
+        if (strcmp(args[a], "-k") == 0 || strcmp(args[a], "--insecure") == 0) insecure = 1;
+        else if (!url) url = args[a];
+    }
+    if (!url) {
+        terminal_writestring("usage: wget [-k] <url>\n");
         terminal_writestring("  e.g. wget http://example.com/file\n");
         terminal_writestring("       wget https://example.com/file\n");
+        terminal_writestring("  -k   do not verify the HTTPS server certificate (unsafe)\n");
         return;
     }
-    const char *url = args[1];
     int use_tls = 0;
     if (strncmp(url, "https://", 8) == 0) { use_tls = 1; url += 8; }
     else if (strncmp(url, "http://", 7) == 0) { url += 7; }
@@ -231,11 +238,15 @@ void cmd_wget(int argc, char **args)
     if (!resp) { terminal_writestring("FAILED (out of memory)\n"); return; }
     int n;
     if (use_tls) {
+        int verify_before = tls_get_verify();
+        if (insecure) tls_set_verify(0);
         n = https_get(ip, host, port, path, resp, WGET_BUF_SIZE - 1);
+        tls_set_verify(verify_before);
         if (n < 0) {
             terminal_writestring("FAILED (");
             terminal_writestring(tls_connect_strerror(n));
             terminal_writestring(")\n");
+            if (n == TLS_ERR_CERT) terminal_writestring("(use wget -k to skip certificate checks)\n");
             free(resp);
             return;
         }
@@ -283,6 +294,102 @@ void cmd_wget(int argc, char **args)
         terminal_putchar('\n');
     }
     free(resp);
+}
+
+/* ---- tls: certificate trust management ---- */
+
+static int b64val(int c)
+{
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+/* Decodes the base64 text between a PEM header and footer (whitespace ignored).
+ * Returns the DER length, or -1. */
+static int pem_body_decode(const char *p, int len, uint8_t *out, int cap)
+{
+    int n = 0, acc = 0, bits = 0;
+    for (int i = 0; i < len; i++) {
+        if (p[i] == '=') break;
+        int v = b64val((unsigned char)p[i]);
+        if (v < 0) { if (p[i] == '\n' || p[i] == '\r' || p[i] == ' ' || p[i] == '\t') continue; return -1; }
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (n >= cap) return -1;
+            out[n++] = (uint8_t)(acc >> bits);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    return n;
+}
+
+static void tls_print_num(int v) { print_num(v); }
+
+void cmd_tls(int argc, char **args)
+{
+    if (argc >= 2 && strcmp(args[1], "verify") == 0) {
+        if (argc >= 3) {
+            if (strcmp(args[2], "on") == 0) tls_set_verify(1);
+            else if (strcmp(args[2], "off") == 0) tls_set_verify(0);
+            else { terminal_writestring("usage: tls verify [on|off]\n"); return; }
+        }
+        terminal_writestring(tls_get_verify() ? "certificate verification: on\n"
+                                              : "certificate verification: OFF (servers are not authenticated)\n");
+        return;
+    }
+    if (argc >= 2 && strcmp(args[1], "roots") == 0) {
+        terminal_writestring("trusted root certificates: ");
+        tls_print_num(x509_trust_count());
+        terminal_writestring("\n");
+        return;
+    }
+    if (argc >= 3 && strcmp(args[1], "trust") == 0) {
+        const char *path = args[2];
+        if (!fsbridge_exists(path) || fsbridge_is_dir(path)) { terminal_writestring("tls: file not found\n"); return; }
+        uint32_t size = fsbridge_size(path);
+        if (size == 0 || size > 256 * 1024) { terminal_writestring("tls: file is empty or too large\n"); return; }
+        char *buf = (char *)malloc(size + 1);
+        uint8_t *der = (uint8_t *)malloc(X509_MAX_CERT_LEN);
+        if (!buf || !der) { free(buf); free(der); terminal_writestring("tls: out of memory\n"); return; }
+        if (fsbridge_read(path, buf, size, 0) < 0) { terminal_writestring("tls: read failed\n"); free(buf); free(der); return; }
+        buf[size] = 0;
+        int added = 0, failed = 0;
+        static const char begin[] = "-----BEGIN CERTIFICATE-----";
+        static const char end[] = "-----END CERTIFICATE-----";
+        char *p = buf;
+        int pem = 0;
+        for (;;) {
+            char *b = strstr(p, begin);
+            if (!b) break;
+            pem = 1;
+            b += sizeof(begin) - 1;
+            char *e = strstr(b, end);
+            if (!e) { failed++; break; }
+            int dl = pem_body_decode(b, (int)(e - b), der, X509_MAX_CERT_LEN);
+            if (dl > 0 && x509_trust_add(der, (uint32_t)dl) == X509_OK) added++; else failed++;
+            p = e + sizeof(end) - 1;
+        }
+        if (!pem) {                                   /* a single DER certificate */
+            if (size <= X509_MAX_CERT_LEN && x509_trust_add((const uint8_t *)buf, size) == X509_OK) added++; else failed++;
+        }
+        terminal_writestring("tls: trusted ");
+        tls_print_num(added);
+        terminal_writestring(" certificate(s)");
+        if (failed) { terminal_writestring(", rejected "); tls_print_num(failed); terminal_writestring(" (unparsable, not RSA 2048-4096, or table full)"); }
+        terminal_writestring("\n");
+        free(buf);
+        free(der);
+        return;
+    }
+    terminal_writestring("usage: tls trust <file.pem|file.der>   trust extra root certificate(s) until reboot\n");
+    terminal_writestring("       tls verify [on|off]            show or change HTTPS certificate checking\n");
+    terminal_writestring("       tls roots                      number of trusted root certificates\n");
 }
 
 void cmd_tsharp(int argc, char **args)

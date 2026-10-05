@@ -48,6 +48,7 @@ typedef struct {
  * rejected our handshake". */
 #define TLS_ERR_ALERT     -50 /* server sent a fatal alert (see dmesg for level/description) */
 #define TLS_ERR_HANDSHAKE -51 /* handshake failed after TCP connected -- see dmesg for which step */
+#define TLS_ERR_CERT      -52 /* server certificate rejected (tls_cert_error_detail() says why) */
 
 /* Connect and perform TLS 1.2 handshake. sni_host, if non-NULL and
  * non-empty, is sent as the server_name extension -- required by
@@ -55,6 +56,15 @@ typedef struct {
  * many hostnames behind one IP and have no other way to tell which
  * one a given connection is for. Pass NULL to omit it. */
 int  tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host);
+
+/* Certificate checking is ON by default: the chain must lead to a trusted root
+ * (x509.h: built-in store + x509_trust_add()), be valid now and cover the host
+ * name passed to tls_connect(). tls_set_verify(0) turns that off (the server is
+ * then not authenticated at all); callers must restore it themselves. */
+void tls_set_verify(int on);
+int  tls_get_verify(void);
+/* Why the last TLS_ERR_CERT happened. */
+const char *tls_cert_error_detail(void);
 const char *tls_connect_strerror(int err);
 /* Write application data */
 int  tls_write(tls_ctx_t *ctx, const uint8_t *data, int len);
