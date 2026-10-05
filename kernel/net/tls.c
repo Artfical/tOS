@@ -419,6 +419,18 @@ static int tls_log_if_alert(uint8_t rec_type, const uint8_t *data, int len)
 }
 
 /* ---- TLS handshake ---- */
+
+/* IPv4 dotted quad or anything with a colon (IPv6). */
+static int host_is_ip_literal(const char *h)
+{
+    int digits_dots = 1;
+    for (const char *p = h; *p; p++) {
+        if (*p == ':') return 1;
+        if (!((*p >= '0' && *p <= '9') || *p == '.')) digits_dots = 0;
+    }
+    return digits_dots;
+}
+
 int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host)
 {
     uint8_t hs_data[8192];
@@ -438,11 +450,9 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
     tls_log("TCP connected, sending ClientHello");
 
     /* --- Step 1: ClientHello --- */
+    /* All 32 bytes random: the old code overwrote the first four with a zero
+     * "timestamp", leaving only 28 bytes of entropy in the client random. */
     prng_fill(ctx->client_rand, 32);
-    /* Timestamp in first 4 bytes */
-    uint32_t ts = 0;  /* no real time source, use 0 */
-    ctx->client_rand[0]=(uint8_t)(ts>>24); ctx->client_rand[1]=(uint8_t)(ts>>16);
-    ctx->client_rand[2]=(uint8_t)(ts>>8);  ctx->client_rand[3]=(uint8_t)ts;
 
     uint8_t ch[384];
     int cpos = 0;
@@ -460,7 +470,9 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
      * several -- a single 2-byte length up front covers all of them
      * combined, then each is its own type+length+data. */
     int name_len = sni_host ? (int)strlen(sni_host) : 0;
-    int have_sni = (name_len > 0 && name_len < 250);
+    /* RFC 6066 3: the server_name extension carries DNS host names only, never
+     * a literal IP address. */
+    int have_sni = (name_len > 0 && name_len < 250 && !host_is_ip_literal(sni_host));
     {
         int all_ext_pos = cpos;
         cpos += 2; /* combined extensions length, filled in below */
