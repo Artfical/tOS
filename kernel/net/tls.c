@@ -7,6 +7,7 @@
 #include "aes.h"
 #include "bignum.h"
 #include "string.h"
+#include "memory.h"
 #include "klog.h"
 
 /* TLS 1.2, cipher suite TLS_RSA_WITH_AES_128_CBC_SHA256 (0x003C)
@@ -67,15 +68,14 @@ static int tls_send_raw(tls_ctx_t *ctx, uint8_t type, const uint8_t *data, int l
 /* Append to handshake transcript */
 static void hs_append(tls_ctx_t *ctx, const uint8_t *data, uint32_t len)
 {
-    /* hs_len used to grow even when the data did not fit, so the later
-     * sha256_hash(hs_buf, hs_len) read far past the end of hs_buf. Overflow
-     * is now sticky (hs_overflow) and fails the handshake instead. */
-    if (len <= sizeof(ctx->hs_buf) && ctx->hs_len <= sizeof(ctx->hs_buf) - len) {
-        memcpy(ctx->hs_buf + ctx->hs_len, data, len);
-        ctx->hs_len += len;
-    } else {
-        ctx->hs_overflow = 1;
-    }
+    sha256_update(&ctx->hs_hash, data, len);
+}
+
+/* Hash of everything appended so far (the running state is left untouched). */
+static void hs_hash_now(const tls_ctx_t *ctx, uint8_t out[32])
+{
+    sha256_t t = ctx->hs_hash;
+    sha256_final(&t, out);
 }
 
 /* Send a handshake message (type + 3-byte length + body), also records transcript */
@@ -418,6 +418,64 @@ static int tls_log_if_alert(uint8_t rec_type, const uint8_t *data, int len)
     return 1;
 }
 
+/* ---- Handshake message reassembly ----
+ * A handshake message may be split over several records and one record may
+ * hold several messages. Records are appended to ctx->hs_in and complete
+ * messages are handed out one at a time (and hashed into the transcript). */
+#define TLS_HS_MAX_MSG   65536                 /* biggest handshake message accepted */
+#define TLS_HS_IN_CAP    (4 + TLS_HS_MAX_MSG + 16384)
+#define HS_ALERT         (-2)                  /* hs_next(): the server sent an alert */
+
+static int hs_read_record(tls_ctx_t *ctx)
+{
+    if (ctx->hs_in_pos > 0) {                  /* drop what was already consumed */
+        memmove(ctx->hs_in, ctx->hs_in + ctx->hs_in_pos, ctx->hs_in_len - ctx->hs_in_pos);
+        ctx->hs_in_len -= ctx->hs_in_pos;
+        ctx->hs_in_pos = 0;
+    }
+    uint8_t hdr[5];
+    if (raw_recv(ctx, hdr, 5) != 0) return -1;
+    int rlen = u16be(hdr + 3);
+    if (rlen == 0 || rlen > 16384 || (uint32_t)rlen > TLS_HS_IN_CAP - ctx->hs_in_len) return -1;
+    if (hdr[0] == TLS_RT_ALERT) {
+        uint8_t a[2] = { 0xFF, 0xFF };
+        for (int i = 0; i < rlen; i++) {      /* keep the first two bytes, discard the rest */
+            uint8_t b;
+            if (raw_recv(ctx, &b, 1) != 0) return -1;
+            if (i < 2) a[i] = b;
+        }
+        tls_log_if_alert(TLS_RT_ALERT, a, 2);
+        return HS_ALERT;
+    }
+    if (hdr[0] != TLS_RT_HANDSHAKE) return -1;
+    if (raw_recv(ctx, ctx->hs_in + ctx->hs_in_len, rlen) != 0) return -1;
+    ctx->hs_in_len += (uint32_t)rlen;
+    return 0;
+}
+
+/* The next complete handshake message. body points into hs_in and stays valid
+ * until the next call. Returns 0, HS_ALERT or -1. */
+static int hs_next(tls_ctx_t *ctx, uint8_t *type, const uint8_t **body, uint32_t *blen)
+{
+    for (;;) {
+        uint32_t avail = ctx->hs_in_len - ctx->hs_in_pos;
+        if (avail >= 4) {
+            uint32_t bl = u24be(ctx->hs_in + ctx->hs_in_pos + 1);
+            if (bl > TLS_HS_MAX_MSG) return -1;
+            if (avail - 4 >= bl) {
+                *type = ctx->hs_in[ctx->hs_in_pos];
+                *body = ctx->hs_in + ctx->hs_in_pos + 4;
+                *blen = bl;
+                hs_append(ctx, ctx->hs_in + ctx->hs_in_pos, 4 + bl);
+                ctx->hs_in_pos += 4 + bl;
+                return 0;
+            }
+        }
+        int r = hs_read_record(ctx);
+        if (r != 0) return r;
+    }
+}
+
 /* ---- TLS handshake ---- */
 
 /* IPv4 dotted quad or anything with a colon (IPv6). */
@@ -433,18 +491,20 @@ static int host_is_ip_literal(const char *h)
 
 int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host)
 {
-    uint8_t hs_data[8192];
-    int hs_len_recv;
     uint8_t rec_type;
     int rc = TLS_ERR_HANDSHAKE; /* default for the fail: label; overridden at the specific sites below */
 
     memset(ctx, 0, sizeof(*ctx));
+    sha256_init(&ctx->hs_hash);
+    ctx->hs_in = (uint8_t *)malloc(TLS_HS_IN_CAP);
+    if (!ctx->hs_in) return IP_ERR_NOMEM;
 
     ctx->fd = tcp_socket();
-    if (ctx->fd < 0) return TCP_ERR_NOSOCK;
+    if (ctx->fd < 0) { free(ctx->hs_in); ctx->hs_in = 0; return TCP_ERR_NOSOCK; }
     int trc = tcp_connect2(ctx->fd, ip, port);
     if (trc != 0) {
         tcp_close2(ctx->fd);
+        free(ctx->hs_in); ctx->hs_in = 0;
         return trc; /* propagate arp_resolve()'s/IP_ERR_NOMEM/TCP_ERR_* verbatim -- see tcp.h */
     }
     tls_log("TCP connected, sending ClientHello");
@@ -512,85 +572,56 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
     }
 
     /* --- Step 2: ServerHello --- */
-    if (recv_record(ctx, &rec_type, hs_data, (int)sizeof(hs_data), &hs_len_recv) != 0) {
-        tls_log("no reply after ClientHello (connection closed or timed out)");
-        goto fail;
-    }
-    if (tls_log_if_alert(rec_type, hs_data, hs_len_recv)) { rc = TLS_ERR_ALERT; goto fail; }
-    if (rec_type != TLS_RT_HANDSHAKE) {
-        tls_log("expected ServerHello, got a different record type");
-        goto fail;
-    }
-    tls_log("ServerHello received");
     {
-        int pos = 0;
-        while (pos < hs_len_recv) {
-            /* the 4-byte handshake header and the whole body it declares must
-             * lie inside the record that was actually received */
-            if (hs_len_recv - pos < 4 || u24be(hs_data+pos+1) > (uint32_t)(hs_len_recv - pos - 4)) {
-                tls_log("handshake message length exceeds its record");
-                goto fail;
-            }
-            uint8_t ht = hs_data[pos];
-            uint32_t hlen = u24be(hs_data+pos+1);
-            uint8_t *hbody = hs_data+pos+4;
-            hs_append(ctx, hs_data+pos, 4+(uint32_t)hlen);
-            if (ht == TLS_HT_SERVER_HELLO) {
-                /* version (2) + server_random (32) + session_id_len (1) + ... */
-                if (hlen < 35) {
-                    tls_log("ServerHello message too short to parse");
-                    goto fail;
-                }
-                memcpy(ctx->server_rand, hbody+2, 32);
-                /* check cipher suite matches (don't fail if server picks something else) */
-            }
-            pos += 4 + (int)hlen;
+        uint8_t ht; const uint8_t *hbody; uint32_t hlen;
+        int hr = hs_next(ctx, &ht, &hbody, &hlen);
+        if (hr == HS_ALERT) { rc = TLS_ERR_ALERT; goto fail; }
+        if (hr != 0) {
+            tls_log("no reply after ClientHello (connection closed or timed out)");
+            goto fail;
         }
+        if (ht != TLS_HT_SERVER_HELLO) {
+            tls_log("expected ServerHello, got a different handshake message");
+            goto fail;
+        }
+        /* version (2) + server_random (32) + session_id_len (1) + ... */
+        if (hlen < 35) {
+            tls_log("ServerHello message too short to parse");
+            goto fail;
+        }
+        memcpy(ctx->server_rand, hbody+2, 32);
+        /* check cipher suite matches (don't fail if server picks something else) */
+        tls_log("ServerHello received");
     }
 
-    /* --- Step 3: Certificate --- */
+    /* --- Step 3: Certificate ... ServerHelloDone (may span several records) --- */
     uint8_t rsa_mod[256];
     uint32_t rsa_exp = 65537;
     int found_key = 0;
-    /* May span multiple records until ServerHelloDone */
     int got_done = 0;
     while (!got_done) {
-        if (recv_record(ctx, &rec_type, hs_data, (int)sizeof(hs_data), &hs_len_recv) != 0) {
+        uint8_t ht; const uint8_t *hbody; uint32_t hlen;
+        int hr = hs_next(ctx, &ht, &hbody, &hlen);
+        if (hr == HS_ALERT) { rc = TLS_ERR_ALERT; goto fail; }
+        if (hr != 0) {
             tls_log("no reply while waiting for Certificate/ServerHelloDone");
             goto fail;
         }
-        if (tls_log_if_alert(rec_type, hs_data, hs_len_recv)) { rc = TLS_ERR_ALERT; goto fail; }
-        if (rec_type != TLS_RT_HANDSHAKE) {
-            tls_log("expected Certificate/ServerHelloDone, got a different record type");
-            goto fail;
-        }
-        int pos = 0;
-        while (pos < hs_len_recv) {
-            if (hs_len_recv - pos < 4 || u24be(hs_data+pos+1) > (uint32_t)(hs_len_recv - pos - 4)) {
-                tls_log("handshake message length exceeds its record");
-                goto fail;
-            }
-            uint8_t ht = hs_data[pos];
-            uint32_t hlen = u24be(hs_data+pos+1);
-            uint8_t *hbody = hs_data+pos+4;
-            hs_append(ctx, hs_data+pos, 4+(uint32_t)hlen);
-            if (ht == TLS_HT_CERTIFICATE && !found_key) {
-                /* certificates_list: 3-byte total length, then each cert 3-byte length + DER */
-                int cp = 3;
-                while (cp + 3 <= (int)hlen) {
-                    uint32_t clen = u24be(hbody+cp); cp += 3;
-                    if (clen > hlen - (uint32_t)cp) {          /* certificate runs past the message */
-                        tls_log("certificate length exceeds the Certificate message");
-                        goto fail;
-                    }
-                    if (!found_key && parse_rsa_pubkey(hbody+cp, (int)clen, rsa_mod, &rsa_exp))
-                        found_key = 1;
-                    cp += (int)clen;
+        if (ht == TLS_HT_CERTIFICATE && !found_key) {
+            /* certificates_list: 3-byte total length, then each cert 3-byte length + DER */
+            uint32_t cp = 3;
+            while (cp + 3 <= hlen) {
+                uint32_t clen = u24be(hbody+cp); cp += 3;
+                if (clen > hlen - cp) {                 /* certificate runs past the message */
+                    tls_log("certificate length exceeds the Certificate message");
+                    goto fail;
                 }
-            } else if (ht == TLS_HT_SERVER_DONE) {
-                got_done = 1;
+                if (!found_key && parse_rsa_pubkey(hbody+cp, (int)clen, rsa_mod, &rsa_exp))
+                    found_key = 1;
+                cp += clen;
             }
-            pos += 4 + (int)hlen;
+        } else if (ht == TLS_HT_SERVER_DONE) {
+            got_done = 1;
         }
     }
     if (!found_key) {
@@ -598,8 +629,10 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
         goto fail;
     }
     tls_log("certificate received, RSA key found");
-
-    if (ctx->hs_overflow) { tls_log("handshake transcript too large"); goto fail; }
+    if (ctx->hs_in_pos != ctx->hs_in_len) {
+        tls_log("unexpected data after ServerHelloDone");
+        goto fail;
+    }
 
     /* --- Step 4: ClientKeyExchange --- */
     uint8_t premaster[48];
@@ -657,7 +690,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
     {
         /* verify_data = PRF(master, "client finished", SHA256(all_handshake_messages))[0..11] */
         uint8_t hs_hash[32];
-        sha256_hash(ctx->hs_buf, ctx->hs_len, hs_hash);
+        hs_hash_now(ctx, hs_hash);
         uint8_t verify[12];
         tls_prf(ctx->master, 48, "client finished", 15, hs_hash, 32, verify, 12);
 
@@ -727,7 +760,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
             goto fail;
         }
         uint8_t hs_hash[32];
-        sha256_hash(ctx->hs_buf, ctx->hs_len, hs_hash);
+        hs_hash_now(ctx, hs_hash);
         uint8_t expected[12];
         tls_prf(ctx->master, 48, "server finished", 15, hs_hash, 32, expected, 12);
         if (memcmp(fin_plain+4, expected, 12) != 0) {
@@ -737,6 +770,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
     }
 
     tls_log("handshake complete");
+    free(ctx->hs_in); ctx->hs_in = 0;
     ctx->handshake_done = 1;
     tcp_set_debug_trace(0);
     return 0;
@@ -744,6 +778,7 @@ fail:
     tcp_set_debug_trace(0);
     tcp_close2(ctx->fd);
     ctx->fd = -1;
+    free(ctx->hs_in); ctx->hs_in = 0;
     return rc;
 }
 

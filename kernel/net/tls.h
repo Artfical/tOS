@@ -2,6 +2,7 @@
 #define TLS_H
 
 #include <stdint.h>
+#include "sha256.h"
 
 /* TLS 1.2 minimal client context */
 #define TLS_RX_BUF  8192
@@ -21,10 +22,14 @@ typedef struct {
     uint64_t tx_seq;
     uint64_t rx_seq;
     int      handshake_done;
-    /* handshake transcript for Finished */
-    uint8_t  hs_buf[8192];
-    int      hs_overflow;   /* handshake transcript did not fit in hs_buf */
-    uint32_t hs_len;
+    /* running SHA-256 over every handshake message, for the Finished messages
+     * (a fixed 8 KiB transcript buffer used to cap the whole server flight,
+     * certificate chain included) */
+    sha256_t hs_hash;
+    /* reassembly buffer for the server's handshake flight (heap, handshake only) */
+    uint8_t *hs_in;
+    uint32_t hs_in_len;
+    uint32_t hs_in_pos;
     /* raw receive buffer */
     uint8_t  rx_raw[TLS_RX_BUF];
     uint32_t rx_raw_len;
