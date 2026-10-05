@@ -22,6 +22,8 @@
 #define TLS_HT_CLIENT_HELLO    1
 #define TLS_HT_SERVER_HELLO    2
 #define TLS_HT_CERTIFICATE     11
+#define TLS_HT_SERVER_KEY_EX   12
+#define TLS_HT_CERT_REQUEST    13
 #define TLS_HT_SERVER_DONE     14
 #define TLS_HT_CLIENT_KEY_EX   16
 #define TLS_HT_FINISHED        20
@@ -418,6 +420,14 @@ static int tls_log_if_alert(uint8_t rec_type, const uint8_t *data, int len)
     return 1;
 }
 
+/* Comparison whose running time does not depend on where the bytes differ. */
+static int ct_equal(const uint8_t *a, const uint8_t *b, int n)
+{
+    uint8_t d = 0;
+    for (int i = 0; i < n; i++) d |= (uint8_t)(a[i] ^ b[i]);
+    return d == 0;
+}
+
 /* ---- Handshake message reassembly ----
  * A handshake message may be split over several records and one record may
  * hold several messages. Records are appended to ctx->hs_in and complete
@@ -584,13 +594,40 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
             tls_log("expected ServerHello, got a different handshake message");
             goto fail;
         }
-        /* version (2) + server_random (32) + session_id_len (1) + ... */
-        if (hlen < 35) {
+        /* version(2) random(32) session_id_len(1) session_id suite(2) compression(1)
+         * [extensions_len(2) extensions]. Every length is checked against the
+         * message, and the parameters must be what we offered: before, a
+         * different suite or version was only 'tolerated' and the handshake
+         * failed later (or worse, ran on mismatched keys). */
+        if (hlen < 38) {
             tls_log("ServerHello message too short to parse");
             goto fail;
         }
+        if (hbody[0] != TLS_VER_MAJOR || hbody[1] != TLS_VER_MINOR) {
+            tls_log("server did not negotiate TLS 1.2");
+            goto fail;
+        }
         memcpy(ctx->server_rand, hbody+2, 32);
-        /* check cipher suite matches (don't fail if server picks something else) */
+        uint32_t sid_len = hbody[34];
+        if (sid_len > 32 || 35 + sid_len + 3 > hlen) {
+            tls_log("ServerHello session id / parameters exceed the message");
+            goto fail;
+        }
+        if (u16be(hbody + 35 + sid_len) != TLS_CIPHER_RSA_AES128_CBC_SHA256) {
+            tls_log("server chose a cipher suite we did not offer");
+            goto fail;
+        }
+        if (hbody[37 + sid_len] != 0) {
+            tls_log("server chose a compression method we did not offer");
+            goto fail;
+        }
+        {
+            uint32_t rest = hlen - (38 + sid_len);
+            if (rest != 0 && (rest < 2 || (uint32_t)u16be(hbody + 38 + sid_len) != rest - 2)) {
+                tls_log("ServerHello extensions length is inconsistent");
+                goto fail;
+            }
+        }
         tls_log("ServerHello received");
     }
 
@@ -598,6 +635,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
     uint8_t rsa_mod[256];
     uint32_t rsa_exp = 65537;
     int found_key = 0;
+    int got_cert = 0;
     int got_done = 0;
     while (!got_done) {
         uint8_t ht; const uint8_t *hbody; uint32_t hlen;
@@ -607,10 +645,17 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
             tls_log("no reply while waiting for Certificate/ServerHelloDone");
             goto fail;
         }
-        if (ht == TLS_HT_CERTIFICATE && !found_key) {
+        if (ht == TLS_HT_CERTIFICATE) {
+            if (got_cert) { tls_log("duplicate Certificate message"); goto fail; }
+            got_cert = 1;
             /* certificates_list: 3-byte total length, then each cert 3-byte length + DER */
+            if (hlen < 3 || u24be(hbody) != hlen - 3) {
+                tls_log("Certificate list length does not match the message");
+                goto fail;
+            }
             uint32_t cp = 3;
-            while (cp + 3 <= hlen) {
+            while (cp < hlen) {
+                if (hlen - cp < 3) { tls_log("truncated certificate entry"); goto fail; }
                 uint32_t clen = u24be(hbody+cp); cp += 3;
                 if (clen > hlen - cp) {                 /* certificate runs past the message */
                     tls_log("certificate length exceeds the Certificate message");
@@ -621,7 +666,18 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
                 cp += clen;
             }
         } else if (ht == TLS_HT_SERVER_DONE) {
+            if (!got_cert) { tls_log("ServerHelloDone before the Certificate"); goto fail; }
+            if (hlen != 0) { tls_log("ServerHelloDone is not empty"); goto fail; }
             got_done = 1;
+        } else if (ht == TLS_HT_SERVER_KEY_EX) {
+            tls_log("server wants an ephemeral key exchange (only plain RSA is supported)");
+            goto fail;
+        } else if (ht == TLS_HT_CERT_REQUEST) {
+            tls_log("server requests a client certificate (not supported)");
+            goto fail;
+        } else {
+            tls_log("unexpected handshake message while waiting for ServerHelloDone");
+            goto fail;
         }
     }
     if (!found_key) {
@@ -734,6 +790,10 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
             tls_log("expected server ChangeCipherSpec, got a different record type");
             goto fail;
         }
+        if (ccs_len != 1 || ccs_data[0] != 1) {
+            tls_log("malformed server ChangeCipherSpec");
+            goto fail;
+        }
 
         /* Encrypted Finished */
         uint8_t ef_data[512];
@@ -754,16 +814,16 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
             goto fail;
         }
 
-        /* Verify server Finished */
-        if (fin_plen < 16) {
-            tls_log("decrypted server Finished too short");
+        /* Verify server Finished: exactly one 12-byte Finished message */
+        if (fin_plen != 16 || fin_plain[0] != TLS_HT_FINISHED || u24be(fin_plain + 1) != 12) {
+            tls_log("server Finished message is malformed");
             goto fail;
         }
         uint8_t hs_hash[32];
         hs_hash_now(ctx, hs_hash);
         uint8_t expected[12];
         tls_prf(ctx->master, 48, "server finished", 15, hs_hash, 32, expected, 12);
-        if (memcmp(fin_plain+4, expected, 12) != 0) {
+        if (!ct_equal(fin_plain+4, expected, 12)) {
             tls_log("server Finished verification failed (MAC/hash mismatch)");
             goto fail;
         }
