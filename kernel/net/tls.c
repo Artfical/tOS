@@ -1,5 +1,6 @@
 #include "tls.h"
 #include "csprng.h"
+#include "http.h"
 #include "tcp.h"
 #include "arp.h"
 #include "sha256.h"
@@ -739,6 +740,8 @@ const char *tls_connect_strerror(int err)
     switch (err) {
         case TLS_ERR_ALERT:     return "server sent a fatal TLS alert (see dmesg for level/description)";
         case TLS_ERR_HANDSHAKE: return "TLS handshake failed (see dmesg for which step)";
+        case HTTP_ERR_REQUEST:
+        case HTTP_ERR_HEADER:   return http_strerror(err);   /* https_get() shares http.c's request/response checks */
         case TCP_ERR_NOSOCK:    return "no free TCP socket";
         case TCP_ERR_REFUSED:   return "connection refused (RST received)";
         case TCP_ERR_TIMEOUT:   return "connection timed out, no reply to SYN";

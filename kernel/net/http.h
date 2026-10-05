@@ -12,9 +12,9 @@
  * independent DNS lookup right after the caller's own successful one
  * could itself fail and abort before tcp_connect() was ever reached,
  * misreporting a DNS hiccup as a connection error). */
-#define HTTP_ERR_REQUEST -50   /* host/path too long or contains control characters */
+#define HTTP_ERR_REQUEST -60   /* host/path too long or contains control characters */
 
-#define HTTP_ERR_HEADER -51    /* response headers larger than HTTP_MAX_HEADER, or malformed chunking */
+#define HTTP_ERR_HEADER -61    /* response headers larger than HTTP_MAX_HEADER, or malformed chunking */
 #define HTTP_MAX_HEADER 16384
 
 /* Incremental framing of a response held in r[0..total): returns 1 once the
