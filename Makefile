@@ -225,6 +225,7 @@ KERNEL_OBJS = \
     kernel/net/wgtun.o \
     kernel/net/sha256.o \
     kernel/net/sha512.o \
+    kernel/net/rsa.o \
     kernel/net/csprng.o \
     kernel/net/aes.o \
     kernel/net/bignum.o \
