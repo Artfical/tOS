@@ -75,6 +75,9 @@ typedef struct {
     uint16_t num_dup_tsns;
 } __attribute__((packed)) sctp_sack_t;
 
+/* sctp_recv(): nothing arrived for 10 s */
+#define SCTP_ERR_TIMEOUT -2
+
 /* Public API */
 int  sctp_connect(uint32_t dst_ip, uint16_t dst_port);
 int  sctp_send(const void *data, int len);

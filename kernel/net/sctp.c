@@ -7,6 +7,7 @@
 #include "memory.h"
 #include "terminal.h"
 #include "csprng.h"
+#include "debugmon.h"
 
 /* -----------------------------------------------------------------------
  * CRC32c (Castagnoli) — required by RFC 4960 for SCTP checksum
@@ -158,9 +159,38 @@ static int send_sack(void) {
     return sctp_send_raw(chunk, clen);
 }
 
+void sctp_handle(ip_hdr_t *ip, void *pkt, int len);   /* defined below */
+
 /* -----------------------------------------------------------------------
  * Public API — connect (client side, blocking)
  * ----------------------------------------------------------------------- */
+/* One received Ethernet frame. The old poll loops cut the SCTP packet at the end
+ * of the *frame*, but Ethernet pads short frames to 60 bytes (a 16-byte
+ * COOKIE-ACK in a 36-byte IP packet arrives with 10 extra bytes), so the CRC32c
+ * was computed over the padding too and every short packet failed it: against a
+ * real network the handshake could not complete. The packet is now bounded by
+ * the IP total length, and the usual IP sanity checks apply. */
+static void sctp_rx_frame(uint8_t *frame, int len)
+{
+    if (len < 14 + (int)sizeof(ip_hdr_t)) return;
+    eth_hdr_t *eth = (eth_hdr_t *)frame;
+    if (ntohs(eth->type) == ETHERTYPE_ARP) { arp_handle(frame, len); return; }
+    if (ntohs(eth->type) != ETHERTYPE_IP) return;
+    uint8_t *ip_data = frame + 14;
+    int ip_len = len - 14;
+    ip_hdr_t *ip = (ip_hdr_t *)ip_data;
+    if ((ip->ver_ihl >> 4) != 4) return;
+    int ihl = (ip->ver_ihl & 0x0F) * 4;
+    int total = ntohs(ip->total_len);
+    if (ihl < 20 || total < ihl + (int)sizeof(sctp_hdr_t) || total > ip_len) return;
+    uint32_t sum = 0;                                         /* IP header checksum */
+    for (int i = 0; i + 1 < ihl; i += 2) sum += (uint32_t)((ip_data[i] << 8) | ip_data[i + 1]);
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    if (sum != 0xFFFF) return;
+    if (ip->dst_ip != net_ip || ip->protocol != IPPROTO_SCTP) return;
+    sctp_handle(ip, ip_data + ihl, total - ihl);
+}
+
 int sctp_connect(uint32_t dst_ip, uint16_t dst_port) {
     if (assoc_active) return -1;
 
@@ -178,23 +208,23 @@ int sctp_connect(uint32_t dst_ip, uint16_t dst_port) {
 
     if (send_init() != 0) { assoc_active = 0; return -1; }
 
-    /* Poll for INIT-ACK then COOKIE-ACK */
-    for (int retry = 0; retry < 400; retry++) {
+    /* Poll for INIT-ACK then COOKIE-ACK, with wall-clock time and
+     * retransmission: the old loop counted 400 polls (how long that is depends on
+     * the NIC driver) and sent INIT only once, so one lost packet failed the
+     * connect. INIT / COOKIE-ECHO are resent every second for five seconds. */
+    uint32_t start = debugmon_uptime_ms();
+    uint32_t deadline = start + 5000, next_retx = start + 1000;
+    while (debugmon_uptime_ms() < deadline) {
         uint8_t pkt[1536];
         int len = nic_poll(pkt, sizeof(pkt));
-        if (len > 0) {
-            eth_hdr_t *eth = (eth_hdr_t *)pkt;
-            if (ntohs(eth->type) == ETHERTYPE_IP) {
-                uint8_t *ip_data = pkt + sizeof(eth_hdr_t);
-                int ip_len = len - sizeof(eth_hdr_t);
-                ip_hdr_t *ip = (ip_hdr_t *)ip_data;
-                int ihl = (ip->ver_ihl & 0x0F) * 4;
-                if (ip->protocol == IPPROTO_SCTP && ip->src_ip == dst_ip) {
-                    sctp_handle(ip, ip_data + ihl, ip_len - ihl);
-                }
-            }
-        }
+        if (len > 0) sctp_rx_frame(pkt, len);
         if (assoc.state == SCTP_STATE_ESTABLISHED) return 0;
+        if (!assoc_active) return -1;                 /* aborted by the peer, or unusable INIT-ACK */
+        if (debugmon_uptime_ms() >= next_retx) {
+            next_retx += 1000;
+            if (assoc.state == SCTP_STATE_COOKIE_WAIT) send_init();
+            else if (assoc.state == SCTP_STATE_COOKIE_ECHO) send_cookie_echo();
+        }
     }
     assoc_active = 0;
     return -1;
@@ -235,6 +265,7 @@ int sctp_send(const void *data, int len) {
  * ----------------------------------------------------------------------- */
 int sctp_recv(uint8_t *buf, int max_len) {
     if (!assoc_active) return -1;
+    uint32_t deadline = debugmon_uptime_ms() + 10000;   /* it used to wait forever for a silent peer */
     for (;;) {
         if (assoc.rx_len > 0) {
             int n = assoc.rx_len < max_len ? assoc.rx_len : max_len;
@@ -246,19 +277,10 @@ int sctp_recv(uint8_t *buf, int max_len) {
             return n;
         }
         if (assoc.state != SCTP_STATE_ESTABLISHED) return 0;
+        if (debugmon_uptime_ms() >= deadline) return SCTP_ERR_TIMEOUT;   /* peer went silent */
         uint8_t pkt[1536];
         int plen = nic_poll(pkt, sizeof(pkt));
-        if (plen > 0) {
-            eth_hdr_t *eth = (eth_hdr_t *)pkt;
-            if (ntohs(eth->type) == ETHERTYPE_IP) {
-                uint8_t *ip_data = pkt + sizeof(eth_hdr_t);
-                int ip_len = plen - sizeof(eth_hdr_t);
-                ip_hdr_t *ip = (ip_hdr_t *)ip_data;
-                int ihl = (ip->ver_ihl & 0x0F) * 4;
-                if (ip->protocol == IPPROTO_SCTP)
-                    sctp_handle(ip, ip_data + ihl, ip_len - ihl);
-            }
-        }
+        if (plen > 0) { deadline = debugmon_uptime_ms() + 10000; sctp_rx_frame(pkt, plen); }
     }
 }
 

@@ -8,20 +8,54 @@
 #include "nic.h"
 void (*nic_send)(void *, int);
 int (*nic_poll)(uint8_t *, int);
-uint8_t net_mac[6]; uint32_t net_ip, net_gateway, net_dns, net_netmask;
+uint8_t net_mac[6]; uint32_t fake_now_ms; void arp_handle(uint8_t *d, int l) { (void)d; (void)l; }
+uint32_t net_ip, net_gateway, net_dns, net_netmask;
 uint32_t nic_tx_packets, nic_tx_bytes;
 /* capture what sctp.c sends */
 static uint8_t sent[8][2048]; static int sent_len[8]; static int nsent;
+static int scripted_mode;
+extern int init_sent_g, echo_sent_g, drop_first_init_g, peer_silent_g, pending_reply_g;
+int init_sent_g, echo_sent_g, drop_first_init_g, peer_silent_g, pending_reply_g;
 int ip_send(uint32_t dst, uint8_t proto, void *data, int len)
 {
     (void)dst; (void)proto;
+    if (scripted_mode && len > 12) {
+        uint8_t type = ((uint8_t *)data)[12];
+        if (type == 1) { init_sent_g++; if (!peer_silent_g && !(drop_first_init_g && init_sent_g == 1)) pending_reply_g = 1; }
+        if (type == 10) { echo_sent_g++; if (!peer_silent_g) pending_reply_g = 2; }
+    }
     if (nsent < 8 && len <= 2048) { memcpy(sent[nsent], data, len); sent_len[nsent] = len; nsent++; }
     return 0;
 }
 uint32_t csprng_u32(void) { static uint32_t x = 0x12345678; x = x * 1664525 + 1013904223; return x; }
 #include "sctp.c"
 
+
+/* ---- scripted peer for sctp_connect(): every nic_poll() takes 100 ms of fake time ---- */
+#define pending_reply pending_reply_g
+static uint8_t (*vec_ptr)[1500];
+static int scripted_poll(uint8_t *buf, int max)
+{
+    (void)max;
+    fake_now_ms += 100;
+    if (!pending_reply) return 0;
+    int idx = pending_reply == 1 ? 1 : 3;
+    pending_reply = 0;
+    memset(buf, 0, 1536);
+    int l = 0; extern int pklen_g[];
+    l = pklen_g[idx];
+    memcpy(buf + 14, vec_ptr[idx], l);
+    buf[12] = 0x08; buf[13] = 0x00;
+    uint8_t *sc = buf + 14 + 20;                  /* patch ports / vtag / CRC to the live association */
+    sc[2] = (uint8_t)(assoc.src_port >> 8); sc[3] = (uint8_t)assoc.src_port;
+    uint32_t vt = htonl(assoc.local_vtag); memcpy(sc + 4, &vt, 4);
+    ((sctp_hdr_t *)sc)->checksum = 0;
+    sctp_put_crc((sctp_hdr_t *)sc, crc32c(sc, l - 20));
+    return 14 + l + (l < 46 ? 46 - l : 0);       /* short packets arrive padded to the Ethernet minimum */
+}
+
 static uint8_t pk[11][1500]; static int pklen[11]; /* IP packets */
+int pklen_g[11];
 static int bad;
 static void check(const char *label, int ok) { if (!ok) bad++; printf("%s %s\n", ok ? "PASS" : "FAIL", label); }
 static void feed(int i)   /* deliver packet i (IP header + SCTP) to the handler */
@@ -131,6 +165,51 @@ int main(void)
     sctp_handle((ip_hdr_t *)t, t + 20, pklen[10] - 20);
     check("forged ABORT (wrong tag) is ignored", assoc_active == 1 && assoc.state == SCTP_STATE_ESTABLISHED);
 
+    /* 7. Ethernet pads short frames to 60 bytes: a 16-byte COOKIE-ACK in a 36-byte IP packet arrives with 10
+     *    extra zero bytes. The receive path must cut the frame at the IP total length before the CRC check. */
+    {
+        memset(&assoc, 0, sizeof(assoc));
+        assoc.dst_ip = *(uint32_t *)(pk[0] + 16); assoc.dst_port = 5001; assoc.src_port = cport;
+        assoc.local_vtag = cvtag; assoc.local_tsn = ctsn; assoc.state = SCTP_STATE_COOKIE_ECHO; assoc_active = 1;
+        net_ip = *(uint32_t *)(pk[3] + 16);                               /* our address = the packet's destination */
+        uint8_t frame[1600]; memset(frame, 0, sizeof(frame));
+        memcpy(frame + 14, pk[3], pklen[3]);                              /* Ethernet header (zeros) + IP packet */
+        frame[12] = 0x08; frame[13] = 0x00;
+        int padded_len = 14 + 46;                                         /* minimum payload: 10 bytes of padding */
+        sctp_rx_frame(frame, padded_len);
+        check("COOKIE-ACK in a padded Ethernet frame establishes the association", assoc.state == SCTP_STATE_ESTABLISHED);
+        /* a frame shorter than its IP header claims is dropped */
+        assoc.state = SCTP_STATE_COOKIE_ECHO;
+        sctp_rx_frame(frame, 14 + pklen[3] - 4);
+        check("truncated frame is dropped", assoc.state == SCTP_STATE_COOKIE_ECHO);
+        /* an IP packet for another host */
+        memcpy(frame + 14, pk[3], pklen[3]); frame[14 + 19] ^= 0x7F;
+        sctp_rx_frame(frame, padded_len);
+        check("packet addressed to another host is ignored", assoc.state == SCTP_STATE_COOKIE_ECHO);
+    }
+    /* 8. sctp_connect() against a scripted peer: retransmission and wall-clock timeout */
+    {
+        for (int i = 0; i < 11; i++) pklen_g[i] = pklen[i];
+        vec_ptr = pk;
+        scripted_mode = 1;
+        nic_poll = scripted_poll;
+        net_ip = *(uint32_t *)(pk[1] + 16);
+        assoc_active = 0;
+        init_sent_g = echo_sent_g = 0; pending_reply = 0; peer_silent_g = 0; drop_first_init_g = 1; fake_now_ms = 1000;
+        int rc = sctp_connect(*(uint32_t *)(pk[1] + 12), 5001);
+        printf("   connect with a lost first INIT: rc=%d, INITs sent=%d, elapsed fake ms=%u\n", rc, init_sent_g, fake_now_ms - 1000);
+        check("a lost INIT is retransmitted and the association still comes up", rc == 0 && init_sent_g == 2 && assoc.state == SCTP_STATE_ESTABLISHED);
+        assoc_active = 0; sctp_close();
+        init_sent_g = 0; peer_silent_g = 1; fake_now_ms = 1000;
+        rc = sctp_connect(*(uint32_t *)(pk[1] + 12), 5001);
+        printf("   connect to a silent peer: rc=%d, INITs sent=%d, elapsed fake ms=%u\n", rc, init_sent_g, fake_now_ms - 1000);
+        check("a silent peer: gives up after about 5 s with INIT retransmissions", rc == -1 && fake_now_ms - 1000 >= 5000 && fake_now_ms - 1000 < 6000 && init_sent_g >= 4);
+        /* recv from an established but silent association must time out instead of blocking forever */
+        memset(&assoc, 0, sizeof(assoc)); assoc.state = SCTP_STATE_ESTABLISHED; assoc_active = 1; assoc.local_vtag = 7;
+        fake_now_ms = 1000; uint8_t rb[64];
+        rc = sctp_recv(rb, sizeof(rb));
+        check("sctp_recv returns SCTP_ERR_TIMEOUT after ~10 s of silence", rc == SCTP_ERR_TIMEOUT && fake_now_ms - 1000 >= 10000 && fake_now_ms - 1000 < 10500);
+    }
     printf("failures: %d\n", bad);
     return bad != 0;
 }
