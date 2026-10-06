@@ -149,6 +149,36 @@ int ip6_send(const uint8_t *dst_ip6, uint8_t next_header, void *data, int len) {
 /* -----------------------------------------------------------------------
  * Dispatch incoming IPv6 packet
  * ----------------------------------------------------------------------- */
+#define IP6_MAX_EXT_HEADERS 8   /* longest extension header chain accepted */
+
+/* Is this destination ours: our address, all-nodes, or our solicited-node group? */
+static int ip6_dst_is_ours(const uint8_t *dst)
+{
+    if (memcmp(dst, net_ip6, 16) == 0) return 1;
+    static const uint8_t all_nodes[16] = { 0xFF, 0x02, 0,0,0,0,0,0,0,0,0,0,0,0,0, 0x01 };
+    if (memcmp(dst, all_nodes, 16) == 0) return 1;
+    uint8_t sn[16] = { 0xFF, 0x02, 0,0,0,0,0,0,0,0,0, 0x01, 0xFF, net_ip6[13], net_ip6[14], net_ip6[15] };
+    return memcmp(dst, sn, 16) == 0;
+}
+
+/* Validates the TLV options of a hop-by-hop / destination options header
+ * (RFC 8200 4.2). Only Pad1/PadN are understood; an unknown option is skipped
+ * when its two high bits are 00 and makes us discard the packet otherwise. */
+static int ip6_options_ok(const uint8_t *opts, int len)
+{
+    int i = 0;
+    while (i < len) {
+        uint8_t type = opts[i];
+        if (type == 0) { i++; continue; }                    /* Pad1 */
+        if (i + 1 >= len) return 0;
+        int olen = opts[i + 1];
+        if (i + 2 + olen > len) return 0;                    /* option runs past its header */
+        if (type != 1 && (type >> 6) != 0) return 0;         /* unknown, 'discard' action */
+        i += 2 + olen;
+    }
+    return 1;
+}
+
 void ip6_handle(uint8_t *data, int len) {
     if (len < (int)sizeof(ip6_hdr_t)) return;
     ip6_hdr_t *ip6 = (ip6_hdr_t *)data;
@@ -156,16 +186,48 @@ void ip6_handle(uint8_t *data, int len) {
     /* Check version == 6 */
     if ((ntohl(ip6->ver_tc_fl) >> 28) != 6) return;
 
+    /* A zero payload length means a jumbogram (not supported); it must also fit
+     * what was actually received. */
     int payload_len = ntohs(ip6->payload_len);
-    if (payload_len > len - (int)sizeof(ip6_hdr_t)) return;
+    if (payload_len == 0 || payload_len > len - (int)sizeof(ip6_hdr_t)) return;
 
-    void *payload = data + sizeof(ip6_hdr_t);
+    if (!ip6_dst_is_ours(ip6->dst)) return;                  /* we are a host, not a router */
+    if (ip6->src[0] == 0xFF) return;                         /* a multicast source is never valid */
+    if (memcmp(ip6->src, net_ip6, 16) == 0) return;          /* our own packet echoed back */
 
-    switch (ip6->next_header) {
+    uint8_t *p = data + sizeof(ip6_hdr_t);
+    int remain = payload_len;
+    uint8_t nh = ip6->next_header;
+
+    /* Walk the extension header chain, bounded in count and by the payload
+     * length: the old code looked only at next_header, so a hop-by-hop header in
+     * front of an ICMPv6 message made the whole packet invisible. */
+    for (int n = 0; n <= IP6_MAX_EXT_HEADERS; n++) {
+        switch (nh) {
+        case 0:                                              /* hop-by-hop: only valid first */
+        case 60: {                                           /* destination options */
+            if (nh == 0 && n != 0) return;
+            if (remain < 8) return;
+            int hl = ((int)p[1] + 1) * 8;
+            if (hl > remain) return;
+            if (!ip6_options_ok(p + 2, hl - 2)) return;
+            nh = p[0]; p += hl; remain -= hl;
+            continue;
+        }
+        case 43: {                                           /* routing */
+            if (remain < 8) return;
+            int hl = ((int)p[1] + 1) * 8;
+            if (hl > remain) return;
+            if (p[3] != 0) return;                           /* segments left: not for us to process */
+            nh = p[0]; p += hl; remain -= hl;
+            continue;
+        }
         case 58: /* IPPROTO_ICMPV6 */
-            icmpv6_handle(ip6, payload, payload_len);
-            break;
+            icmpv6_handle(ip6, p, remain);
+            return;
         default:
-            break;
+            return;       /* fragments (no reassembly), AH/ESP, no-next-header, TCP/UDP: not handled over IPv6 */
+        }
     }
+    /* more extension headers than IP6_MAX_EXT_HEADERS: drop */
 }
