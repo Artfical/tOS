@@ -97,12 +97,29 @@ int ipip_send(int idx, const void *inner_ip, int inner_len)
     return 0;
 }
 
+static int ipip_depth;   /* decapsulation nesting, bounded below */
+
 void ipip_handle(ip_hdr_t *outer_ip, void *pkt, int len)
 {
+    /* The inner packet must at least hold an IPv4 header. */
+    if (len < (int)sizeof(ip_hdr_t)) return;
+    /* Only for a configured tunnel (our local end, its remote end): every
+     * IPPROTO_IPIP packet used to be unwrapped and re-injected, letting anyone
+     * smuggle in packets with forged source addresses. */
+    int matched = 0;
+    for (int i = 0; i < IPIP_MAX; i++) {
+        ipip_tunnel_t *t = &tunnels[i];
+        if (t->valid && t->remote_ip == outer_ip->src_ip && t->local_ip == outer_ip->dst_ip) { matched = 1; break; }
+    }
+    if (!matched) return;
+    if (ipip_depth >= 2) return;                    /* IPIP inside IPIP inside ...: stop */
+
     terminal_writestring("[IPIP] decap from ");
     print_ip(outer_ip->src_ip);
     terminal_putchar('\n');
     /* Re-inject inner IP packet */
     extern void ip_handle(uint8_t *data, int len);
+    ipip_depth++;
     ip_handle((uint8_t *)pkt, len);
+    ipip_depth--;
 }
