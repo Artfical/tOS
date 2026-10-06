@@ -35,19 +35,26 @@ typedef struct {
 
 /* Simplified SA (Security Association) entry */
 #define IPSEC_SA_MAX 8
+#define IPSEC_KEY_MAX 32          /* HMAC-SHA-256 key */
+#define IPSEC_AH_ICV_LEN 16       /* HMAC-SHA-256-128 (RFC 4868) */
 typedef struct {
     int      valid;
     uint32_t peer_ip;
     uint32_t spi;
     uint8_t  protocol;  /* IPPROTO_AH or IPPROTO_ESP */
-    uint32_t seq;
+    uint32_t seq;       /* highest sequence number that passed authentication */
+    uint64_t replay_window;   /* bit i set: sequence number (seq - i) was already accepted */
+    uint8_t  key[IPSEC_KEY_MAX];
+    int      key_len;   /* 0 = no key: AH packets cannot be authenticated and are dropped */
 } ipsec_sa_t;
 
 extern ipsec_sa_t ipsec_sa_table[IPSEC_SA_MAX];
 
 /* Add a Security Association entry manually */
 int  ipsec_sa_add(uint32_t peer_ip, uint32_t spi, uint8_t proto);
-void ipsec_sa_remove(uint32_t spi);
+/* HMAC-SHA-256 key (1..32 bytes) of an existing SA; AH needs one. */
+int  ipsec_sa_set_key(uint32_t peer_ip, uint32_t spi, const uint8_t *key, int key_len);
+void ipsec_sa_remove(uint32_t spi);   /* removes every SA with this SPI */
 
 /* Packet handlers — parse headers and pass inner payload to ip_handle */
 void ipsec_ah_handle(ip_hdr_t *ip, void *pkt, int len);
