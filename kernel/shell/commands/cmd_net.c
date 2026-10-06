@@ -81,19 +81,53 @@ void cmd_ifconfig(int argc, char **args)
     terminal_writestring(" bytes\n");
 }
 
-static uint32_t parse_ip(const char *s)
+/* Strict dotted-quad: exactly four decimal parts of 1-3 digits, each 0-255. The
+ * old parser masked every part with 0xFF (so '300.1.1.1' became 44.1.1.1), let a
+ * fifth part shift into undefined behaviour and accepted empty parts. Returns 0
+ * and the address in wire byte order, or -1. */
+static int parse_ipv4(const char *s, uint32_t *out)
 {
     uint32_t ip = 0;
-    int shift = 0, val = 0;
-    while (*s) {
-        if (*s == '.') { ip |= (val & 0xFF) << shift; shift += 8; val = 0; }
-        else if (*s >= '0' && *s <= '9') val = val * 10 + (*s - '0');
-        else return 0;
-        s++;
+    int part = 0, val = 0, digits = 0;
+    for (;; s++) {
+        if (*s >= '0' && *s <= '9') {
+            val = val * 10 + (*s - '0');
+            if (++digits > 3 || val > 255) return -1;
+        } else if (*s == '.' || *s == '\0') {
+            if (digits == 0 || part > 3) return -1;
+            ip |= (uint32_t)val << (8 * part);
+            part++; val = 0; digits = 0;
+            if (*s == '\0') break;
+        } else {
+            return -1;
+        }
     }
-    ip |= (val & 0xFF) << shift;
-    return ip;
+    if (part != 4) return -1;
+    *out = ip;
+    return 0;
 }
+
+/* Port number: decimal digits only, 1-65535 (0 allowed when allow_zero). The
+ * old loops multiplied whatever characters they met, so '99999' wrapped to
+ * another port and 'abc' became a random one. */
+static int parse_u16(const char *s, uint16_t *out, int allow_zero)
+{
+    uint32_t v = 0;
+    int digits = 0;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9') return -1;
+        v = v * 10 + (uint32_t)(*s - '0');
+        if (++digits > 5 || v > 65535) return -1;
+    }
+    if (digits == 0 || (v == 0 && !allow_zero)) return -1;
+    *out = (uint16_t)v;
+    return 0;
+}
+
+#define NEED_IP(var, str) uint32_t var; \
+    if (parse_ipv4((str), &(var)) != 0) { terminal_writestring("invalid IP address: "); terminal_writestring(str); terminal_putchar('\n'); return; }
+#define NEED_PORT(var, str) uint16_t var; \
+    if (parse_u16((str), &(var), 0) != 0) { terminal_writestring("invalid port (1-65535): "); terminal_writestring(str); terminal_putchar('\n'); return; }
 
 void cmd_ping(int argc, char **args)
 {
@@ -102,7 +136,9 @@ void cmd_ping(int argc, char **args)
     int is_ip = 1;
     for (char *p = args[1]; *p; p++)
         if ((*p < '0' || *p > '9') && *p != '.') { is_ip = 0; break; }
-    if (is_ip) ip = parse_ip(args[1]);
+    if (is_ip) {
+        if (parse_ipv4(args[1], &ip) != 0) { terminal_writestring("ping: invalid IP address\n"); return; }
+    }
     else {
         terminal_writestring("Resolving... ");
         int rc = dns_resolve(args[1], &ip);
@@ -193,7 +229,16 @@ void cmd_wget(int argc, char **args)
     host[i] = '\0';
 
     uint16_t port = use_tls ? 443 : 80;
-    if (*url == ':') { url++; port = 0; while (*url >= '0' && *url <= '9') { port = port * 10 + (*url - '0'); url++; } }
+    if (*url == ':') {
+        url++;
+        uint32_t pv = 0; int pd = 0;
+        while (*url >= '0' && *url <= '9') { pv = pv * 10 + (uint32_t)(*url - '0'); url++; if (++pd > 5) break; }
+        if (pd == 0 || pd > 5 || pv == 0 || pv > 65535 || (*url != '/' && *url != '\0')) {
+            terminal_writestring("wget: invalid port in the URL (1-65535)\n");
+            return;
+        }
+        port = (uint16_t)pv;
+    }
 
     if (*url == '/') { while (*url && j < 255) path[j++] = *url++; path[j] = '\0'; }
     else { path[0] = '/'; path[1] = '\0'; }
@@ -212,7 +257,7 @@ void cmd_wget(int argc, char **args)
         if ((*p < '0' || *p > '9') && *p != '.') { host_is_ip = 0; break; }
 
     if (host_is_ip) {
-        ip = parse_ip(host);
+        if (parse_ipv4(host, &ip) != 0) { terminal_writestring("wget: invalid IP address\n"); return; }
     } else {
         terminal_writestring("Resolving... ");
         int rc = dns_resolve(host, &ip);
@@ -534,9 +579,8 @@ void cmd_sctp_connect(int argc, char **args)
         terminal_writestring("usage: sctp_connect <ip> <port>\n");
         return;
     }
-    uint32_t ip = parse_ip(args[1]);
-    int port = 0;
-    for (char *p = args[2]; *p; p++) port = port * 10 + (*p - '0');
+    NEED_IP(ip, args[1]);
+    NEED_PORT(port, args[2]);
     terminal_writestring("SCTP: connecting to ");
     terminal_writestring(args[1]);
     terminal_writestring(":");
@@ -570,9 +614,8 @@ void cmd_dccp_connect(int argc, char **args)
         terminal_writestring("usage: dccp_connect <ip> <port> [service-code]\n");
         return;
     }
-    uint32_t ip = parse_ip(args[1]);
-    int port = 0;
-    for (char *p = args[2]; *p; p++) port = port * 10 + (*p - '0');
+    NEED_IP(ip, args[1]);
+    NEED_PORT(port, args[2]);
     uint32_t service = 0;                            /* DCCP servers listen for one service code */
     if (argc >= 4) for (char *p = args[3]; *p >= '0' && *p <= '9'; p++) service = service * 10 + (uint32_t)(*p - '0');
     terminal_writestring("DCCP: connecting to ");
@@ -601,12 +644,10 @@ void cmd_udplite_send(int argc, char **args)
         terminal_writestring("usage: udplite_send <ip> <port> <data> [coverage]\n");
         return;
     }
-    uint32_t ip = parse_ip(args[1]);
-    int port = 0;
-    for (char *p = args[2]; *p; p++) port = port * 10 + (*p - '0');
+    NEED_IP(ip, args[1]);
+    NEED_PORT(port, args[2]);
     uint16_t coverage = 0;
-    if (argc >= 5)
-        for (char *p = args[4]; *p; p++) coverage = coverage * 10 + (*p - '0');
+    if (argc >= 5 && parse_u16(args[4], &coverage, 1) != 0) { terminal_writestring("invalid coverage (0-65535)\n"); return; }
     if (udplite_send(ip, (uint16_t)port, 49136, args[3], strlen(args[3]), coverage) == 0)
         terminal_writestring("UDP-Lite: datagram sent\n");
     else
@@ -696,11 +737,11 @@ void cmd_ipsec(int argc, char **args)
         return;
     }
     if (argc == 6 && strcmp(args[1], "add") == 0 && strcmp(args[2], "ah") == 0) {
-        uint32_t peer = parse_ip(args[3]);
+        uint32_t peer;
+        if (parse_ipv4(args[3], &peer) != 0) { terminal_writestring("ipsec: invalid peer address\n"); return; }
         uint32_t spi;
         uint8_t key[IPSEC_KEY_MAX];
         int klen = parse_hex_bytes(args[5], key, IPSEC_KEY_MAX);
-        if (peer == 0) { terminal_writestring("ipsec: invalid peer address\n"); return; }
         if (parse_hex32(args[4], &spi) != 0 || spi == 0) { terminal_writestring("ipsec: SPI must be 1-8 hex digits, not 0\n"); return; }
         if (klen < 16) { terminal_writestring("ipsec: key must be 16-32 bytes (32-64 hex digits)\n"); return; }
         if (ipsec_sa_add(peer, spi, IPPROTO_AH) != 0) { terminal_writestring("ipsec: cannot add SA (table full or already exists)\n"); return; }
@@ -944,26 +985,13 @@ void cmd_ipx(int argc, char **args)
  * policy del <prio>
  * policy show
  * ----------------------------------------------------------------------- */
-static uint32_t parse_ip_cmd(const char *s)
-{
-    uint32_t ip = 0; int shift = 0, val = 0;
-    while (*s) {
-        if (*s == '.') { ip |= (val & 0xFF) << shift; shift += 8; val = 0; }
-        else if (*s >= '0' && *s <= '9') val = val * 10 + (*s - '0');
-        else break;
-        s++;
-    }
-    ip |= (val & 0xFF) << shift;
-    return ip;
-}
-
 static int parse_prefix(const char *s, uint32_t *dst, uint32_t *mask)
 {
     /* format: a.b.c.d/prefix or a.b.c.d (no prefix = /32) */
     char buf[20]; int i = 0;
     while (s[i] && s[i] != '/' && i < 19) { buf[i] = s[i]; i++; }
     buf[i] = '\0';
-    *dst = parse_ip_cmd(buf);
+    if (parse_ipv4(buf, dst) != 0) return -1;
     if (s[i] == '/') {
         int p = 0, digits = 0;
         const char *pp = s + i + 1;
@@ -1005,7 +1033,7 @@ void cmd_route(int argc, char **args)
         if (argc < 4) { terminal_writestring("usage: route add <dst/pfx> <gw> [metric] [table]\n"); return; }
         uint32_t dst, mask;
         if (parse_prefix(args[2], &dst, &mask) != 0) { terminal_writestring("invalid address/prefix (a.b.c.d/0-32)\n"); return; }
-        uint32_t gw = parse_ip_cmd(args[3]);
+        NEED_IP(gw, args[3]);
         int metric = (argc >= 5) ? parse_int_arg(args[4]) : 0;
         int table  = (argc >= 6) ? parse_int_arg(args[5]) : 0;
         if (route_add(dst, mask, gw, 0, metric, table) == 0)
@@ -1132,9 +1160,13 @@ void cmd_fw(int argc, char **args)
             /* heuristic: if next arg has no dots, treat as port */
             int has_dot = 0;
             for (const char *p = args[next]; *p; p++) if (*p == '.') { has_dot=1; break; }
-            if (!has_dot && argc > next + 1) { mport = (uint16_t)parse_int_arg(args[next]); next++; }
-            uint32_t new_ip = parse_ip_cmd(args[next]); next++;
-            uint16_t new_port = (argc > next) ? (uint16_t)parse_int_arg(args[next]) : 0;
+            if (!has_dot && argc > next + 1) {
+                if (parse_u16(args[next], &mport, 0) != 0) { terminal_writestring("invalid port (1-65535)\n"); return; }
+                next++;
+            }
+            NEED_IP(new_ip, args[next]); next++;
+            uint16_t new_port = 0;
+            if (argc > next && parse_u16(args[next], &new_port, 0) != 0) { terminal_writestring("invalid port (1-65535)\n"); return; }
             int idx = nat_rule_add(type, match, mmask, mport, new_ip, new_port);
             if (idx >= 0) terminal_writestring("NAT rule added\n");
             else terminal_writestring("fw nat add: failed\n");
@@ -1167,8 +1199,8 @@ void cmd_gre(int argc, char **args)
     }
     if (strcmp(args[1], "add") == 0) {
         if (argc < 4) { terminal_writestring("gre add <local> <remote> [key_hex]\n"); return; }
-        uint32_t local  = parse_ip_cmd(args[2]);
-        uint32_t remote = parse_ip_cmd(args[3]);
+        NEED_IP(local, args[2]);
+        NEED_IP(remote, args[3]);
         uint32_t key = 0; int use_key = 0;
         if (argc >= 5) {
             use_key = 1;
@@ -1197,7 +1229,9 @@ void cmd_ipip(int argc, char **args)
     }
     if (strcmp(args[1], "add") == 0) {
         if (argc < 4) { terminal_writestring("ipip add <local> <remote>\n"); return; }
-        int idx = ipip_tunnel_add(parse_ip_cmd(args[2]), parse_ip_cmd(args[3]));
+        NEED_IP(ipip_local, args[2]);
+        NEED_IP(ipip_remote, args[3]);
+        int idx = ipip_tunnel_add(ipip_local, ipip_remote);
         if (idx >= 0) { terminal_writestring("IPIP tunnel added at index "); terminal_putchar('0'+idx); terminal_putchar('\n'); }
         else terminal_writestring("ipip add: failed\n");
     } else if (strcmp(args[1], "del") == 0) {
@@ -1223,9 +1257,9 @@ void cmd_wg(int argc, char **args)
             terminal_writestring("wg add <remote_ip> <rport> <lport> <psk_hex64> <peer_id_hex>\n");
             return;
         }
-        uint32_t rip   = parse_ip_cmd(args[2]);
-        uint16_t rport = (uint16_t)parse_int_arg(args[3]);
-        uint16_t lport = (uint16_t)parse_int_arg(args[4]);
+        NEED_IP(rip, args[2]);
+        NEED_PORT(rport, args[3]);
+        NEED_PORT(lport, args[4]);
         /* Parse 64 hex chars = 32 bytes PSK */
         const char *phex = args[5];
         if (strlen(phex) != 64) { terminal_writestring("wg: PSK must be 64 hex chars\n"); return; }
