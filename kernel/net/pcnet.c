@@ -276,13 +276,25 @@ int pcnet_poll(uint8_t *buf, int max)
     if (!ok) return 0;
     int i = rxi;
     volatile pcnet_desc_t *d = &rxd[i];
-    if (d->status & 0x8000) return 0;
-    int l = d->misc & 0x0FFF;
-    if (l > BUF_SZ) l = BUF_SZ;
-    if (l > max) l = max;
-    if (l > 0) memcpy(buf, rxb[i], l);
+    if (d->status & 0x8000) return 0;                /* OWN: still the chip's */
+
+    uint16_t st = d->status;
+    int l = d->misc & 0x0FFF;                        /* message count: includes the 4-byte FCS */
+    /* A frame is delivered only when it is a single complete buffer (STP and ENP
+     * set) without the ERR summary bit (FRAM, OFLO, CRC, BUFF): the status was
+     * never looked at, so frames with CRC/framing errors and the pieces of a
+     * frame that overflowed a buffer went straight to the stack. The FCS is
+     * stripped like the RTL8139 driver does. */
+    int good = (st & 0x0300) == 0x0300 && !(st & 0x4000) && l >= 4 + 14 && l <= BUF_SZ;
+    int ret = 0;
+    if (good) {
+        l -= 4;
+        if (l > max) l = max;
+        memcpy(buf, rxb[i], l);
+        ret = l;
+    }
     d->length = (int16_t)(-BUF_SZ);
     d->status = 0x8000;
     rxi = (i + 1) % RX_RING;
-    return l;
+    return ret;
 }
