@@ -35,6 +35,7 @@ typedef struct {
     uint32_t seq;
     uint32_t ack;
     uint32_t snd_una;
+    uint32_t snd_wnd;   /* window the peer advertised in its latest valid ACK */
 
     uint8_t *rx_buf;
     int      rx_len;
@@ -350,6 +351,26 @@ int tcp_send2(int fd, void *data, int len)
     int off = 0;
     do {
         int n = len - off < TCP_MSS ? len - off : TCP_MSS;
+        /* Flow control: never send more than the peer's advertised window leaves
+         * after what is still unacknowledged. A zero window is waited out (the peer
+         * sends a window update ACK when its application reads); the window used to
+         * be ignored completely, so a slow receiver just lost our data. */
+        uint32_t wdeadline = debugmon_uptime_ms() + 5000;
+        for (;;) {
+            uint32_t inflight = s->seq - s->snd_una;
+            uint32_t usable = s->snd_wnd > inflight ? s->snd_wnd - inflight : 0;
+            if (usable > 0) { if ((uint32_t)n > usable) n = (int)usable; break; }
+            if (s->state != TCP_ESTABLISHED || debugmon_uptime_ms() >= wdeadline) return -1;
+            tcp_tick_poll();
+            uint8_t wpkt[1536];
+            int wl = nic_poll(wpkt, sizeof(wpkt));
+            if (wl > 0) {
+                eth_hdr_t *eth = (eth_hdr_t *)wpkt;
+                if (ntohs(eth->type) == ETHERTYPE_ARP) arp_handle(wpkt, wl);
+                else if (ntohs(eth->type) == ETHERTYPE_IP)
+                    ip_handle(wpkt + sizeof(eth_hdr_t), wl - sizeof(eth_hdr_t));
+            }
+        }
         uint32_t seq_before = s->seq;
         if (send_seg(s, TCP_FLAG_PSH | TCP_FLAG_ACK, p + off, n) != 0) return -1;
         s->snd_una = seq_before;
@@ -571,6 +592,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
     uint16_t  dst_port = ntohs(*(uint16_t *)(tcp + 2));
     uint32_t  pkt_seq  = ntohl(*(uint32_t *)(tcp + 4));
     uint32_t  pkt_ack  = ntohl(*(uint32_t *)(tcp + 8));
+    uint16_t  peer_win = (uint16_t)((tcp[14] << 8) | tcp[15]);
     int       data_off = (*(uint8_t *)(tcp + 12)) >> 4;
     uint8_t   flags    = *(uint8_t  *)(tcp + 13);
     int       hdr_len  = data_off * 4;
@@ -661,6 +683,15 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
         return;
     }
 
+    /* RFC 5961 4.2: a SYN on a synchronised connection must not reset it or be
+     * processed as data (the old code fell through and accepted its payload);
+     * answer with an ACK for what we expect and drop it. This also re-ACKs a
+     * retransmitted SYN-ACK whose ACK was lost. */
+    if ((flags & TCP_FLAG_SYN) && s->state != TCP_SYN_SENT && s->state != TCP_SYN_RECEIVED) {
+        send_seg(s, TCP_FLAG_ACK, 0, 0);
+        return;
+    }
+
     /* SYN-ACK (client side) */
     if (s->state == TCP_SYN_SENT) {
         if ((flags & TCP_FLAG_SYN) && (flags & TCP_FLAG_ACK)) {
@@ -668,6 +699,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
             s->ack     = pkt_seq + 1;
             s->seq     = pkt_ack;
             s->snd_una = s->seq;
+            s->snd_wnd = peer_win;
             s->state   = TCP_ESTABLISHED;
             send_seg(s, TCP_FLAG_ACK, 0, 0);
         }
@@ -678,6 +710,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
     if (s->state == TCP_SYN_RECEIVED) {
         if ((flags & TCP_FLAG_ACK) && pkt_ack == s->seq) {
             s->snd_una = s->seq;
+            s->snd_wnd = peer_win;
             s->state   = TCP_ESTABLISHED;
         }
         return;
@@ -712,6 +745,8 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
 
     /* ACK */
     if (flags & TCP_FLAG_ACK) {
+        /* the peer's window travels with every valid ACK (also pure window updates) */
+        if (SEQ_LEQ(s->snd_una, pkt_ack) && SEQ_LEQ(pkt_ack, s->seq)) s->snd_wnd = peer_win;
         if (SEQ_GT(pkt_ack, s->snd_una) && SEQ_LEQ(pkt_ack, s->seq)) {
             s->snd_una = pkt_ack;
             if (s->cwnd < s->ssthresh)
