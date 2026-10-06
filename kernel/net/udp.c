@@ -3,6 +3,7 @@
 #include "net.h"
 #include "string.h"
 #include "memory.h"
+#include "wgtun.h"
 
 typedef struct {
     int      used;
@@ -135,6 +136,32 @@ void udp_handle(ip_hdr_t *ip, void *pkt, int len)
     int data_len = ulen - (int)sizeof(udp_hdr_t);
     if (data_len > UDP_MAX_DATAGRAM) return;
     uint16_t dst_port = ntohs(udp->dst_port);
+
+    /* A non-zero UDP checksum is verified (0 means the sender did not compute one,
+     * which IPv4 allows). It was never checked, so datagrams damaged in transit
+     * were handed to DNS, the tunnel and applications as if intact. */
+    if (udp->checksum != 0) {
+        uint8_t *copy = (uint8_t *)malloc((size_t)ulen);
+        if (!copy) return;
+        memcpy(copy, pkt, (size_t)ulen);
+        ((udp_hdr_t *)copy)->checksum = 0;
+        struct { uint32_t src; uint32_t dst; uint8_t zero; uint8_t proto; uint16_t len; } __attribute__((packed)) pseudo;
+        pseudo.src = ip->src_ip;
+        pseudo.dst = ip->dst_ip;
+        pseudo.zero = 0;
+        pseudo.proto = IPPROTO_UDP;
+        pseudo.len = htons((uint16_t)ulen);
+        uint16_t want = udp_checksum(&pseudo, sizeof(pseudo), copy, ulen);
+        free(copy);
+        if (want != udp->checksum) return;
+    }
+
+    /* datagrams for an encrypted tunnel's local port belong to the tunnel (they
+     * were never handed to wgtun_rx(): the tunnel could not receive anything) */
+    if (wgtun_owns_port(dst_port)) {
+        wgtun_rx(ip->src_ip, ntohs(udp->src_port), (const uint8_t *)pkt + sizeof(udp_hdr_t), data_len);
+        return;
+    }
 
     for (int i = 0; i < UDP_SOCKETS; i++) {
         if (udp_sockets[i].used && udp_sockets[i].port == dst_port) {
