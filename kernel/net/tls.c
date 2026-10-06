@@ -42,6 +42,27 @@ static void prng_fill(uint8_t *buf, int len)
 
 /* ---- Record layer helpers ---- */
 
+/* memset() that the compiler may not drop as a dead store. */
+static void secure_zero(void *p, size_t n)
+{
+    volatile uint8_t *q = (volatile uint8_t *)p;
+    while (n--) *q++ = 0;
+}
+
+/* Erases everything that protects (or contains) the connection's data. */
+static void tls_wipe_keys(tls_ctx_t *ctx)
+{
+    secure_zero(ctx->master, sizeof(ctx->master));
+    secure_zero(ctx->client_write_key, sizeof(ctx->client_write_key));
+    secure_zero(ctx->server_write_key, sizeof(ctx->server_write_key));
+    secure_zero(ctx->client_write_iv, sizeof(ctx->client_write_iv));
+    secure_zero(ctx->server_write_iv, sizeof(ctx->server_write_iv));
+    secure_zero(ctx->client_mac, sizeof(ctx->client_mac));
+    secure_zero(ctx->server_mac, sizeof(ctx->server_mac));
+    secure_zero(ctx->rx_plain, sizeof(ctx->rx_plain));
+    ctx->rx_plain_len = ctx->rx_plain_pos = 0;
+}
+
 /* Comparison whose running time does not depend on where the bytes differ. */
 static int ct_equal(const uint8_t *a, const uint8_t *b, int n)
 {
@@ -247,6 +268,10 @@ static int tls_encrypt_record(tls_ctx_t *ctx, uint8_t type,
     memcpy(out, iv, 16);
     *out_len = 16 + total_pt;
     ctx->tx_seq++;
+    /* the stack copies of the application data and the MAC input */
+    secure_zero(plaintext, sizeof(plaintext));
+    secure_zero(mac_input, sizeof(mac_input));
+    secure_zero(mac, sizeof(mac));
     return 0;
 }
 
@@ -312,6 +337,8 @@ static int tls_decrypt_record(tls_ctx_t *ctx, uint8_t type,
     ctx->rx_seq++;
     rc = 0;
 out:
+    secure_zero(plaintext, (size_t)ct_len);
+    secure_zero(mac_input, (size_t)(8 + 1 + 2 + 2 + ct_len));
     free(plaintext);
     free(mac_input);
     return rc;
@@ -715,6 +742,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
         memcpy(seed+32, ctx->server_rand, 32);
         tls_prf(premaster, 48, "master secret", 13, seed, 64, ctx->master, 48);
     }
+    secure_zero(premaster, sizeof(premaster));          /* no longer needed */
 
     /* --- Step 6: Derive key material --- */
     {
@@ -729,6 +757,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
         memcpy(ctx->server_write_key,km+80, 16);
         memcpy(ctx->client_write_iv, km+96, 16);
         memcpy(ctx->server_write_iv, km+112,16);
+        secure_zero(km, sizeof(km));
     }
 
     /* --- Step 7: ChangeCipherSpec --- */
@@ -837,6 +866,8 @@ fail:
     tcp_close2(ctx->fd);
     ctx->fd = -1;
     free(ctx->hs_in); ctx->hs_in = 0;
+    secure_zero(premaster, sizeof(premaster));
+    tls_wipe_keys(ctx);
     return rc;
 }
 
@@ -915,6 +946,9 @@ void tls_close(tls_ctx_t *ctx)
         tcp_close2(ctx->fd);
         ctx->fd = -1;
     }
+    /* the session is over: do not leave its keys and the last plaintext in memory */
+    tls_wipe_keys(ctx);
+    ctx->handshake_done = 0;
 }
 
 /* Suppress unused warning for u32be */
