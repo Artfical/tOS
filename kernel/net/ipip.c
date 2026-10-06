@@ -5,6 +5,7 @@
 #include "string.h"
 #include "terminal.h"
 #include "memory.h"
+#include "nic.h"
 
 static ipip_tunnel_t tunnels[IPIP_MAX];
 
@@ -61,6 +62,7 @@ int ipip_send(int idx, const void *inner_ip, int inner_len)
     ipip_tunnel_t *t = &tunnels[idx];
 
     int eth_len = 14;
+    if (inner_len < 0 || inner_len > 1500 - (int)sizeof(ip_hdr_t)) return -1;   /* see gre_send() */
     int total   = eth_len + (int)sizeof(ip_hdr_t) + inner_len;
     uint8_t *buf = (uint8_t *)malloc(total);
     if (!buf) return -1;
@@ -91,8 +93,7 @@ int ipip_send(int idx, const void *inner_ip, int inner_len)
 
     memcpy(buf + eth_len + sizeof(ip_hdr_t), inner_ip, inner_len);
 
-    extern void (*nic_send)(void *, int);
-    if (nic_send) nic_send(buf, total);
+    nic_transmit(buf, total);
     free(buf);
     return 0;
 }
