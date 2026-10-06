@@ -6,6 +6,7 @@
 #include "string.h"
 #include "memory.h"
 #include "terminal.h"
+#include "csprng.h"
 
 /* -----------------------------------------------------------------------
  * CRC32c (Castagnoli) — required by RFC 4960 for SCTP checksum
@@ -165,9 +166,12 @@ int sctp_connect(uint32_t dst_ip, uint16_t dst_port) {
     memset(&assoc, 0, sizeof(assoc));
     assoc.dst_ip    = dst_ip;
     assoc.dst_port  = dst_port;
-    assoc.src_port  = 49200;
-    assoc.local_vtag = 0xA5C3F1B2U;
-    assoc.local_tsn  = 1000;
+    /* Unpredictable port, verification tag and first TSN: they were the constants
+     * 49200 / 0xA5C3F1B2 / 1000, so anybody who saw (or guessed) that we use SCTP
+     * could forge packets that pass the verification-tag check below. */
+    assoc.src_port  = (uint16_t)(49152 + csprng_u32() % 16384);
+    do { assoc.local_vtag = csprng_u32(); } while (assoc.local_vtag == 0);
+    assoc.local_tsn  = csprng_u32();
     assoc.state      = SCTP_STATE_COOKIE_WAIT;
     assoc_active     = 1;
 
@@ -291,6 +295,12 @@ void sctp_handle(ip_hdr_t *ip, void *pkt, int len) {
     sctp_put_crc(hdr, recv_crc);
     if (!crc_ok) return;
 
+    /* RFC 4960 8.5: every packet must carry the verification tag we gave the
+     * peer in our INIT (for the INIT-ACK that is the initiate tag we sent).
+     * Without this check anybody who knew the ports could inject DATA or tear
+     * the association down with a forged ABORT/SHUTDOWN. */
+    if (ntohl(hdr->vtag) != assoc.local_vtag) return;
+
     /* Walk chunks */
     uint8_t *pos = (uint8_t *)pkt + sizeof(sctp_hdr_t);
     int rem      = len - sizeof(sctp_hdr_t);
@@ -309,6 +319,7 @@ void sctp_handle(ip_hdr_t *ip, void *pkt, int len) {
             if (assoc.state == SCTP_STATE_COOKIE_WAIT && vlen >= (int)sizeof(sctp_init_t)) {
                 sctp_init_t *ia = (sctp_init_t *)val;
                 assoc.peer_vtag = ntohl(ia->initiate_tag);
+                if (assoc.peer_vtag == 0) break;                 /* 0 is not a valid tag (RFC 4960 3.3.2) */
                 /* look for State Cookie parameter (type 0x0007) */
                 uint8_t *opt = val + sizeof(sctp_init_t);
                 int optrem   = vlen - sizeof(sctp_init_t);
