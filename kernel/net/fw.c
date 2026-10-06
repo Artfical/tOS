@@ -71,6 +71,48 @@ static uint16_t ip_checksum(const uint8_t *buf, int len)
     return (uint16_t)(~sum & 0xFFFF);
 }
 
+/* RFC 1624 incremental checksum update: HC' = ~(~HC + ~m + m'). */
+static void csum_update16(uint8_t *ck, uint16_t old_w, uint16_t new_w)
+{
+    uint32_t hc = (uint32_t)((ck[0] << 8) | ck[1]);
+    uint32_t sum = (~hc & 0xFFFF) + (~(uint32_t)old_w & 0xFFFF) + new_w;
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    sum = (sum & 0xFFFF) + (sum >> 16);
+    uint16_t r = (uint16_t)(~sum & 0xFFFF);
+    ck[0] = (uint8_t)(r >> 8);
+    ck[1] = (uint8_t)r;
+}
+
+/* NAT rewrites an address (and possibly a port) inside the packet. TCP and UDP
+ * checksums cover the pseudo header (both IP addresses) and the ports, so they
+ * must be adjusted too, or the receiver drops the packet. The IP header
+ * checksum was already redone, the L4 one was not, and the port the rule asked
+ * for was recorded in conntrack but never written into the packet.
+ * port_off: 0 = source port, 2 = destination port. */
+static void nat_fix_l4(uint8_t proto, uint8_t *seg, int seg_len,
+                       uint32_t old_ip, uint32_t new_ip, int port_off, uint16_t new_port)
+{
+    if (proto != 6 && proto != 17) return;
+    if (seg_len < 4) return;
+    int ck_off = (proto == 6) ? 16 : 6;
+    int have_ck = seg_len >= ck_off + 2;
+    if (proto == 17 && have_ck && seg[ck_off] == 0 && seg[ck_off + 1] == 0) have_ck = 0;   /* UDP without checksum */
+    uint8_t *ck = seg + ck_off;
+
+    const uint8_t *o = (const uint8_t *)&old_ip, *n = (const uint8_t *)&new_ip;
+    if (old_ip != new_ip && have_ck) {
+        csum_update16(ck, (uint16_t)((o[0] << 8) | o[1]), (uint16_t)((n[0] << 8) | n[1]));
+        csum_update16(ck, (uint16_t)((o[2] << 8) | o[3]), (uint16_t)((n[2] << 8) | n[3]));
+    }
+    uint16_t old_port = (uint16_t)((seg[port_off] << 8) | seg[port_off + 1]);
+    if (new_port != old_port) {
+        if (have_ck) csum_update16(ck, old_port, new_port);
+        seg[port_off] = (uint8_t)(new_port >> 8);
+        seg[port_off + 1] = (uint8_t)new_port;
+    }
+    if (proto == 17 && have_ck && ck[0] == 0 && ck[1] == 0) { ck[0] = 0xFF; ck[1] = 0xFF; }  /* 0 means 'none' in UDP */
+}
+
 /* -----------------------------------------------------------------------
  * Conntrack
  * ----------------------------------------------------------------------- */
@@ -269,6 +311,7 @@ int fw_rx(ip_hdr_t *ip, void *payload, int payload_len)
         /* Translate destination */
         ct->nat_dst_ip   = n->new_ip;
         ct->nat_dst_port = n->new_port ? n->new_port : dp;
+        nat_fix_l4(proto, (uint8_t *)payload, payload_len, ip->dst_ip, n->new_ip, 2, ct->nat_dst_port);
         ip->dst_ip = n->new_ip;
         /* Recompute IP checksum */
         ip->checksum = 0;
@@ -312,6 +355,7 @@ void fw_tx(ip_hdr_t *ip, void *payload, int payload_len)
         ct->nat_src_ip   = n->new_ip;
         ct->nat_src_port = n->new_port ? n->new_port : sp;
         /* Translate source */
+        nat_fix_l4(ip->protocol, (uint8_t *)payload, payload_len, ip->src_ip, n->new_ip, 0, ct->nat_src_port);
         ip->src_ip = n->new_ip;
         ip->checksum = 0;
         int ihl = (ip->ver_ihl & 0xF) * 4;
