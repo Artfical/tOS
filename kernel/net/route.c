@@ -32,7 +32,11 @@ static void print_ip(uint32_t ip)
 static int mask_to_prefix(uint32_t mask)
 {
     int p = 0;
-    uint32_t m = mask;
+    /* Masks are kept in memory-byte (wire) order, so 255.255.255.0 reads as
+     * 0x00FFFFFF on this little-endian CPU. Counting leading ones of that raw
+     * value gave 0 for every mask, so 'longest prefix match' never preferred a
+     * more specific route over the default one. */
+    uint32_t m = ntohl(mask);
     while (m & 0x80000000U) { p++; m <<= 1; }
     return p;
 }
