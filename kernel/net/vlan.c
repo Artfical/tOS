@@ -56,7 +56,9 @@ int vlan_allowed(uint16_t vid)
 
 uint16_t vlan_strip(uint8_t *frame, int *len, uint16_t *out_vid)
 {
-    if (*len < 16) return 0;
+    /* A tagged frame carries 14 + 4 bytes before its payload; with only 16 or 17
+     * the tag's inner EtherType (bytes 16-17) lay beyond the frame. */
+    if (*len < 18) return 0;
     /* EtherType is at bytes 12-13 (after 6+6 MAC) */
     uint16_t etype = (uint16_t)((frame[12] << 8) | frame[13]);
     if (etype != ETHERTYPE_VLAN) return 0;
@@ -84,7 +86,9 @@ uint16_t vlan_strip(uint8_t *frame, int *len, uint16_t *out_vid)
 
 void vlan_insert(uint8_t *frame, int *len, uint16_t vid, uint8_t pcp)
 {
-    /* make room: shift everything from byte 12 onwards right by 4 */
+    /* make room: shift everything from byte 12 onwards right by 4. A frame
+     * shorter than an Ethernet header made the count negative (a huge size_t). */
+    if (*len < 14) return;
     memmove(frame + 16, frame + 12, *len - 12);
     uint16_t tci        = (uint16_t)(((pcp & 0x07) << 13) | (vid & 0x0FFF));
     uint16_t inner_type = (uint16_t)((frame[12 + 4] << 8) | frame[13 + 4]);
