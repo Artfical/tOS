@@ -43,6 +43,19 @@ typedef struct {
     uint32_t journal_sequence;
     uint32_t journal_cursor;
 
+    /* feature state of a volume made by someone else's mke2fs */
+    uint32_t desc_size;      /* group descriptor size: 32, or 64 with the 64bit feature */
+    uint32_t feat_incompat;
+    uint32_t feat_ro;
+    uint32_t reserved_gdt;   /* resize_inode: reserved GDT blocks after the descriptors */
+    uint32_t first_ino;
+    uint32_t csum_seed;      /* crc32c(~0, uuid) or the s_checksum_seed override */
+    uint8_t  uuid[16];
+    int csum_md;             /* metadata_csum: crc32c on every metadata structure */
+    int csum_gdt;            /* uninit_bg / gdt_csum: crc16 group descriptor checksums */
+    int lazy;                /* group flags (BLOCK_UNINIT/INODE_UNINIT) are meaningful */
+    uint32_t gen_counter;    /* i_generation for new inodes */
+
     int ro;            /* mounted read-only: the volume uses features this driver cannot maintain */
     int use_journal;   /* tOS's own mini journal: only on volumes ext4_format() made */
     int in_txn;
