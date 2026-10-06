@@ -117,8 +117,6 @@ static void dhcp_send(uint8_t msg_type, uint32_t xid, uint32_t requested_ip, uin
     ip->checksum = ip_checksum((uint8_t *)ip, sizeof(ip_hdr_t));
 
     int total = 14 + ip_total;
-    nic_tx_packets++;
-    nic_tx_bytes += (uint32_t)total;
     nic_transmit(pkt, total);
 }
 
