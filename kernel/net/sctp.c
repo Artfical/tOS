@@ -235,6 +235,11 @@ int sctp_connect(uint32_t dst_ip, uint16_t dst_port) {
  * ----------------------------------------------------------------------- */
 int sctp_send(const void *data, int len) {
     if (!assoc_active || assoc.state != SCTP_STATE_ESTABLISHED) return -1;
+    /* One DATA chunk per packet, no fragmentation: it must fit the 1500-byte MTU
+     * (1480 - 12 header - 16 chunk header). The chunk length field is 16 bits and
+     * ip_send() refuses anything larger, which used to happen *after* the TSN
+     * was taken. */
+    if (len < 0 || len > 1480 - 12 - 16) return -1;
 
     int total_chunk = 4 + sizeof(sctp_data_t) + len;
     int padded      = (total_chunk + 3) & ~3;
@@ -247,7 +252,7 @@ int sctp_send(const void *data, int len) {
     c->length = htons((uint16_t)total_chunk);
 
     sctp_data_t *d = (sctp_data_t *)(chunk + 4);
-    uint32_t tsn_val = assoc.local_tsn++;
+    uint32_t tsn_val = assoc.local_tsn;       /* only consumed when the packet really went out */
     d->tsn        = htonl(tsn_val);
     d->stream_id  = 0;
     d->stream_seq = 0;
@@ -257,6 +262,9 @@ int sctp_send(const void *data, int len) {
 
     int r = sctp_send_raw(chunk, padded);
     free(chunk);
+    /* A TSN that was taken but never sent leaves a permanent gap at the peer,
+     * which then waits for it forever and delivers nothing after it. */
+    if (r == 0) assoc.local_tsn = tsn_val + 1;
     return r;
 }
 

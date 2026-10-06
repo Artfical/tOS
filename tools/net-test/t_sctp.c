@@ -13,12 +13,13 @@ uint32_t net_ip, net_gateway, net_dns, net_netmask;
 uint32_t nic_tx_packets, nic_tx_bytes;
 /* capture what sctp.c sends */
 static uint8_t sent[8][2048]; static int sent_len[8]; static int nsent;
-static int scripted_mode;
+static int scripted_mode, fail_ip_send;
 extern int init_sent_g, echo_sent_g, drop_first_init_g, peer_silent_g, pending_reply_g;
 int init_sent_g, echo_sent_g, drop_first_init_g, peer_silent_g, pending_reply_g;
 int ip_send(uint32_t dst, uint8_t proto, void *data, int len)
 {
     (void)dst; (void)proto;
+    if (fail_ip_send) return -1;
     if (scripted_mode && len > 12) {
         uint8_t type = ((uint8_t *)data)[12];
         if (type == 1) { init_sent_g++; if (!peer_silent_g && !(drop_first_init_g && init_sent_g == 1)) pending_reply_g = 1; }
@@ -187,6 +188,20 @@ int main(void)
         sctp_rx_frame(frame, padded_len);
         check("packet addressed to another host is ignored", assoc.state == SCTP_STATE_COOKIE_ECHO);
     }
+    /* 7b. sctp_send: bad lengths are refused and a failed send does not consume a TSN */
+    {
+        memset(&assoc, 0, sizeof(assoc)); assoc.state = SCTP_STATE_ESTABLISHED; assoc_active = 1;
+        assoc.local_tsn = 5000; assoc.local_vtag = 1; assoc.peer_vtag = 2;
+        static uint8_t big[4000]; memset(big, 'x', sizeof(big));
+        check("oversized send is refused", sctp_send(big, 4000) == -1 && assoc.local_tsn == 5000);
+        check("negative length is refused", sctp_send(big, -5) == -1 && assoc.local_tsn == 5000);
+        fail_ip_send = 1;
+        check("a send that fails at the IP layer does not consume the TSN", sctp_send(big, 100) != 0 && assoc.local_tsn == 5000);
+        fail_ip_send = 0;
+        check("a successful send takes exactly one TSN", sctp_send(big, 100) == 0 && assoc.local_tsn == 5001);
+        check("the largest legal payload (1452) goes out", sctp_send(big, 1452) == 0 && assoc.local_tsn == 5002);
+    }
+
     /* 8. sctp_connect() against a scripted peer: retransmission and wall-clock timeout */
     {
         for (int i = 0; i < 11; i++) pklen_g[i] = pklen[i];
