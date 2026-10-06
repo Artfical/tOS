@@ -228,7 +228,12 @@ void e1000_send(void *data, int len)
 
     int idx = tx_cur;
     int timeout = 0;
-    while ((tx_ring[idx].status & 0xFF) && timeout < 100000) timeout++;
+    /* Wait until the descriptor's previous packet has been sent: it is busy while
+     * it carries a command and the DD (descriptor done) bit is not yet set. The
+     * old test waited while *any* status bit was set, i.e. precisely when the
+     * hardware had finished, so every send after the first ring cycle burned a
+     * full 100000-iteration timeout. */
+    while (tx_ring[idx].cmd && !(tx_ring[idx].status & 0x01) && timeout < 100000) timeout++;
 
     memcpy(tx_bufs[idx], data, len);
     tx_ring[idx].addr = (uint64_t)(uintptr_t)tx_bufs[idx];
@@ -248,18 +253,27 @@ int e1000_poll(uint8_t *buf, int max_len)
     if (!initialized) return 0;
 
     int idx = rx_cur;
-    if (!(rx_ring[idx].status & 0x01)) return 0;
+    if (!(rx_ring[idx].status & 0x01)) return 0;           /* DD: descriptor done */
 
     int len = rx_ring[idx].length;
-    /* Never trust the hardware-reported length past what the buffer
-     * actually holds -- see the E1000_RX_PAD comment above. */
-    if (len < 0 || len > E1000_BUF_SIZE) len = E1000_BUF_SIZE;
-    if (len > max_len) len = max_len;
-    memcpy(buf, rx_bufs[idx], len);
+    uint8_t status = rx_ring[idx].status;
+    uint8_t errors = rx_ring[idx].errors;
+    /* RCTL.SBP asks the NIC to hand up bad frames too (CRC / symbol / sequence /
+     * carrier-extension / RX data errors), and nothing looked at the error byte or
+     * at EOP: corrupt frames and runts went straight to the stack. Only a
+     * complete (EOP), error-free frame of plausible size is delivered; the
+     * descriptor is returned to the hardware either way. */
+    int good = (status & 0x02) && errors == 0 && len >= 14 && len <= E1000_BUF_SIZE;
+    int ret = 0;
+    if (good) {
+        if (len > max_len) len = max_len;
+        memcpy(buf, rx_bufs[idx], len);
+        ret = len;
+    }
 
     rx_ring[idx].status = 0;
     rx_cur = (idx + 1) % E1000_NUM_RX_DESC;
     e1000_write(E1000_RDT, idx);
 
-    return len;
+    return ret;
 }
