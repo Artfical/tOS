@@ -169,7 +169,15 @@ int fw_rule_add(uint8_t proto,
 int fw_rule_del(int index)
 {
     if (index < 0 || index >= fw_rule_count) return -1;
-    fw_rules[index].valid = 0;
+    /* Close the gap instead of only clearing 'valid': rules are evaluated in
+     * order (first match wins), so a freed middle slot cannot simply be reused,
+     * and never reclaiming it filled the table for good after FW_RULE_MAX
+     * add/delete cycles. Later rules keep their order; their indexes shift down
+     * by one, as with iptables -D. */
+    memmove(&fw_rules[index], &fw_rules[index + 1],
+            (size_t)(fw_rule_count - index - 1) * sizeof(fw_rule_t));
+    fw_rule_count--;
+    memset(&fw_rules[fw_rule_count], 0, sizeof(fw_rule_t));
     return 0;
 }
 
@@ -214,7 +222,10 @@ int nat_rule_add(nat_type_t type,
 int nat_rule_del(int index)
 {
     if (index < 0 || index >= nat_rule_count) return -1;
-    nat_rules[index].valid = 0;
+    memmove(&nat_rules[index], &nat_rules[index + 1],
+            (size_t)(nat_rule_count - index - 1) * sizeof(nat_rule_t));   /* keeps rule order, frees the slot */
+    nat_rule_count--;
+    memset(&nat_rules[nat_rule_count], 0, sizeof(nat_rule_t));
     return 0;
 }
 
