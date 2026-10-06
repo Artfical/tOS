@@ -54,6 +54,7 @@ static uint32_t sctp_get_crc(const sctp_hdr_t *hdr)
  * buffer truncated them silently, so the COOKIE-ECHO never matched and the
  * handshake could not complete against a real server. */
 #define SCTP_COOKIE_MAX 1024
+#define SCTP_RX_MAX     65536   /* received-but-unread data kept per association */
 
 /* -----------------------------------------------------------------------
  * Association state
@@ -319,6 +320,8 @@ void sctp_handle(ip_hdr_t *ip, void *pkt, int len) {
             if (assoc.state == SCTP_STATE_COOKIE_WAIT && vlen >= (int)sizeof(sctp_init_t)) {
                 sctp_init_t *ia = (sctp_init_t *)val;
                 assoc.peer_vtag = ntohl(ia->initiate_tag);
+                /* the peer's first DATA carries its initial TSN, so the last one 'received' is one before */
+                assoc.peer_cum_tsn = ntohl(ia->init_tsn) - 1;
                 if (assoc.peer_vtag == 0) break;                 /* 0 is not a valid tag (RFC 4960 3.3.2) */
                 /* look for State Cookie parameter (type 0x0007) */
                 uint8_t *opt = val + sizeof(sctp_init_t);
@@ -357,17 +360,26 @@ void sctp_handle(ip_hdr_t *ip, void *pkt, int len) {
                 uint32_t tsn   = ntohl(d->tsn);
                 int dlen       = vlen - sizeof(sctp_data_t);
                 uint8_t *data  = val + sizeof(sctp_data_t);
-                assoc.peer_cum_tsn = tsn;
-                /* append to rx buffer */
-                if (dlen > 0) {
-                    uint8_t *tmp = (uint8_t *)malloc(assoc.rx_len + dlen);
-                    if (tmp) {
-                        if (assoc.rx_len > 0) memcpy(tmp, assoc.rx_buf, assoc.rx_len);
-                        memcpy(tmp + assoc.rx_len, data, dlen);
-                        free(assoc.rx_buf);
-                        assoc.rx_buf = tmp;
-                        assoc.rx_len += dlen;
-                        assoc.rx_cap  = assoc.rx_len;
+                /* Deliver only the next TSN in sequence. The old code took any TSN as
+                 * the new cumulative ack and appended every chunk it saw, so a
+                 * retransmitted or reordered chunk was delivered twice / out of
+                 * order, and a peer could grow the buffer without bound. Anything
+                 * else (duplicate, or ahead of a gap) is just SACKed with the
+                 * current cumulative TSN and the peer retransmits. */
+                if (tsn == assoc.peer_cum_tsn + 1) {
+                    if (dlen <= 0) {
+                        assoc.peer_cum_tsn = tsn;
+                    } else if (assoc.rx_len + dlen <= SCTP_RX_MAX) {
+                        uint8_t *tmp = (uint8_t *)malloc((size_t)(assoc.rx_len + dlen));
+                        if (tmp) {
+                            if (assoc.rx_len > 0) memcpy(tmp, assoc.rx_buf, assoc.rx_len);
+                            memcpy(tmp + assoc.rx_len, data, dlen);
+                            free(assoc.rx_buf);
+                            assoc.rx_buf = tmp;
+                            assoc.rx_len += dlen;
+                            assoc.rx_cap  = assoc.rx_len;
+                            assoc.peer_cum_tsn = tsn;      /* accepted: only now does it count as received */
+                        }
                     }
                 }
                 send_sack();

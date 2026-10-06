@@ -93,6 +93,30 @@ int main(void)
     nsent = 0; feed(6);
     check("the same DATA again (duplicate) is not delivered twice", assoc.rx_len == 21);
 
+    /* a chunk ahead of a gap, and flooding beyond the buffer limit, must not be delivered/stored */
+    {
+        uint8_t t2[1500]; memcpy(t2, pk[6], pklen[6]);
+        uint32_t tsn = be32(t2 + 20 + 12 + 4);
+        uint32_t future = tsn + 5;                                  /* skips TSNs: a gap */
+        t2[20 + 16] = (uint8_t)(future >> 24); t2[20 + 17] = (uint8_t)(future >> 16); t2[20 + 18] = (uint8_t)(future >> 8); t2[20 + 19] = (uint8_t)future;
+        ((sctp_hdr_t *)(t2 + 20))->checksum = 0;
+        sctp_put_crc((sctp_hdr_t *)(t2 + 20), crc32c(t2 + 20, pklen[6] - 20));
+        int before = assoc.rx_len;
+        sctp_handle((ip_hdr_t *)t2, t2 + 20, pklen[6] - 20);
+        check("DATA ahead of a gap is not delivered", assoc.rx_len == before);
+        check("cumulative TSN did not jump over the gap", assoc.peer_cum_tsn == tsn);
+        /* consecutive new TSNs until the buffer limit: must stop at SCTP_RX_MAX */
+        uint32_t next = tsn + 1;
+        for (int i = 0; i < 4000; i++, next++) {
+            t2[20 + 16] = (uint8_t)(next >> 24); t2[20 + 17] = (uint8_t)(next >> 16); t2[20 + 18] = (uint8_t)(next >> 8); t2[20 + 19] = (uint8_t)next;
+            ((sctp_hdr_t *)(t2 + 20))->checksum = 0;
+            sctp_put_crc((sctp_hdr_t *)(t2 + 20), crc32c(t2 + 20, pklen[6] - 20));
+            sctp_handle((ip_hdr_t *)t2, t2 + 20, pklen[6] - 20);
+        }
+        printf("   rx_len after flooding 4000 chunks: %d (limit %d)\n", assoc.rx_len, SCTP_RX_MAX);
+        check("receive buffer never exceeds its limit", assoc.rx_len <= SCTP_RX_MAX);
+    }
+
     /* 6. a forged packet with the wrong verification tag is ignored */
     uint8_t t[1500]; memcpy(t, pk[10], pklen[10]);              /* SHUTDOWN-COMPLETE */
     ((sctp_hdr_t *)(t + 20))->vtag ^= 0x01000000u;
