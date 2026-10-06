@@ -963,13 +963,23 @@ static int parse_prefix(const char *s, uint32_t *dst, uint32_t *mask)
     buf[i] = '\0';
     *dst = parse_ip_cmd(buf);
     if (s[i] == '/') {
-        int p = 0;
+        int p = 0, digits = 0;
         const char *pp = s + i + 1;
-        while (*pp >= '0' && *pp <= '9') { p = p * 10 + (*pp - '0'); pp++; }
-        *mask = p == 0 ? 0 : (~0U << (32 - p));
+        while (*pp >= '0' && *pp <= '9') {
+            p = p * 10 + (*pp - '0');
+            if (++digits > 2 || p > 32) return -1;     /* '/33' used to shift by a negative count */
+            pp++;
+        }
+        if (digits == 0 || *pp != '\0') return -1;
+        /* Addresses and masks are kept in wire (memory-byte) order everywhere in
+         * the stack (IP4(255,255,255,0) == 0x00FFFFFF). The host-order value
+         * ~0U << (32-p) put the ones in the wrong bytes: '192.168.5.0/24' became
+         * destination 0.168.5.0 with mask 0.255.255.255 and matched nothing. */
+        *mask = p == 0 ? 0 : htonl(~0U << (32 - p));
     } else {
         *mask = 0xFFFFFFFFU;
     }
+    *dst &= *mask;
     return 0;
 }
 
@@ -992,7 +1002,7 @@ void cmd_route(int argc, char **args)
     } else if (strcmp(args[1], "add") == 0) {
         if (argc < 4) { terminal_writestring("usage: route add <dst/pfx> <gw> [metric] [table]\n"); return; }
         uint32_t dst, mask;
-        parse_prefix(args[2], &dst, &mask);
+        if (parse_prefix(args[2], &dst, &mask) != 0) { terminal_writestring("invalid address/prefix (a.b.c.d/0-32)\n"); return; }
         uint32_t gw = parse_ip_cmd(args[3]);
         int metric = (argc >= 5) ? parse_int_arg(args[4]) : 0;
         int table  = (argc >= 6) ? parse_int_arg(args[5]) : 0;
@@ -1003,7 +1013,7 @@ void cmd_route(int argc, char **args)
     } else if (strcmp(args[1], "del") == 0) {
         if (argc < 3) { terminal_writestring("usage: route del <dst/pfx> [table]\n"); return; }
         uint32_t dst, mask;
-        parse_prefix(args[2], &dst, &mask);
+        if (parse_prefix(args[2], &dst, &mask) != 0) { terminal_writestring("invalid address/prefix (a.b.c.d/0-32)\n"); return; }
         int table = (argc >= 4) ? parse_int_arg(args[3]) : 0;
         if (route_del(dst, mask, table) == 0)
             terminal_writestring("route deleted\n");
@@ -1026,8 +1036,8 @@ void cmd_policy(int argc, char **args)
     } else if (strcmp(args[1], "add") == 0) {
         if (argc < 6) { terminal_writestring("usage: policy add <src/pfx> <dst/pfx> <table> <prio>\n"); return; }
         uint32_t s, sm, d, dm;
-        parse_prefix(args[2], &s, &sm);
-        parse_prefix(args[3], &d, &dm);
+        if (parse_prefix(args[2], &s, &sm) != 0) { terminal_writestring("invalid address/prefix (a.b.c.d/0-32)\n"); return; }
+        if (parse_prefix(args[3], &d, &dm) != 0) { terminal_writestring("invalid address/prefix (a.b.c.d/0-32)\n"); return; }
         int table = parse_int_arg(args[4]);
         int prio  = parse_int_arg(args[5]);
         if (policy_add(s, sm, d, dm, table, prio) == 0)
@@ -1085,8 +1095,8 @@ void cmd_fw(int argc, char **args)
             }
             uint8_t proto = (uint8_t)parse_int_arg(args[3]);
             uint32_t s, sm, d, dm;
-            parse_prefix(args[4], &s, &sm);
-            parse_prefix(args[5], &d, &dm);
+            if (parse_prefix(args[4], &s, &sm) != 0) { terminal_writestring("invalid address/prefix (a.b.c.d/0-32)\n"); return; }
+            if (parse_prefix(args[5], &d, &dm) != 0) { terminal_writestring("invalid address/prefix (a.b.c.d/0-32)\n"); return; }
             uint16_t dport = 0; int action_idx = 6;
             if (argc > 7) { dport = (uint16_t)parse_int_arg(args[6]); action_idx = 7; }
             uint8_t action = FW_ACCEPT;
@@ -1114,7 +1124,7 @@ void cmd_fw(int argc, char **args)
             nat_type_t type = NAT_SNAT;
             if (strcmp(args[3], "DNAT") == 0) type = NAT_DNAT;
             uint32_t match, mmask;
-            parse_prefix(args[4], &match, &mmask);
+            if (parse_prefix(args[4], &match, &mmask) != 0) { terminal_writestring("invalid address/prefix (a.b.c.d/0-32)\n"); return; }
             int next = 5;
             uint16_t mport = 0;
             /* heuristic: if next arg has no dots, treat as port */
