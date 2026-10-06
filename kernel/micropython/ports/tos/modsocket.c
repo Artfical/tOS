@@ -9,22 +9,28 @@
 #include "../../net/dns.h"
 #include "../../net/tls.h"
 
-/* parse "a.b.c.d" into four unsigned ints; returns 4 on success */
+/* parse "a.b.c.d" into four unsigned ints; returns 4 on success. Strict: exactly
+ * four parts of 1-3 digits, each 0-255. The old parser accepted '999.1.1.1' (the
+ * octet then overflowed into the neighbouring bytes of the address), '1.2.3.'
+ * (as 1.2.3.0) and empty parts. */
 static int parse_ipv4(const char *s, unsigned *a, unsigned *b, unsigned *c, unsigned *d) {
-    *a = *b = *c = *d = 0;
     unsigned *parts[4] = { a, b, c, d };
-    int part = 0;
-    while (*s && part < 4) {
+    int part = 0, digits = 0;
+    unsigned val = 0;
+    for (;; s++) {
         if (*s >= '0' && *s <= '9') {
-            *parts[part] = *parts[part] * 10 + (unsigned)(*s - '0');
-        } else if (*s == '.') {
-            part++;
+            val = val * 10 + (unsigned)(*s - '0');
+            if (++digits > 3 || val > 255) return 0;
+        } else if (*s == '.' || *s == '\0') {
+            if (digits == 0 || part > 3) return 0;
+            *parts[part++] = val;
+            val = 0; digits = 0;
+            if (*s == '\0') break;
         } else {
             return 0;
         }
-        s++;
     }
-    return (part == 3) ? 4 : 0;
+    return part == 4 ? 4 : 0;
 }
 
 /* write uint32 as decimal into buf; returns number of chars written */
@@ -76,8 +82,18 @@ static uint32_t resolve_host(const char *host) {
     if (parse_ipv4(host, &a, &b, &c, &d) == 4)
         return IP4(a, b, c, d);
     uint32_t ip = 0;
-    dns_resolve(host, &ip);
+    int rc = dns_resolve(host, &ip);
+    /* The result was ignored: a failed lookup left ip = 0 and the caller went on to
+     * connect to 0.0.0.0 / send to it. Raise instead (OSError carrying the DNS error). */
+    if (rc != 0 || ip == 0) mp_raise_OSError(rc < 0 ? -rc : 11);
     return ip;
+}
+
+/* a TCP/UDP port from Python: 1..65535 (it was cast to uint16_t, so 70000 became 4464) */
+static uint16_t get_port(mp_obj_t o) {
+    mp_int_t p = mp_obj_get_int(o);
+    if (p < 1 || p > 65535) mp_raise_ValueError(MP_ERROR_TEXT("port must be 1-65535"));
+    return (uint16_t)p;
 }
 
 /* socket.connect((host, port)) */
@@ -87,7 +103,7 @@ static mp_obj_t sock_connect(mp_obj_t self_in, mp_obj_t addr_in) {
     mp_obj_get_array(addr_in, &n, &items);
     if (n < 2) mp_raise_TypeError(MP_ERROR_TEXT("addr must be (host, port)"));
     const char *host = mp_obj_str_get_str(items[0]);
-    uint16_t port    = (uint16_t)mp_obj_get_int(items[1]);
+    uint16_t port    = get_port(items[1]);
 
     if (self->type == SOCK_STREAM) {
         uint32_t ip = resolve_host(host);
@@ -100,9 +116,9 @@ static mp_obj_t sock_connect(mp_obj_t self_in, mp_obj_t addr_in) {
         if (r < 0) mp_raise_OSError(-r);
         self->connected = 1;
     } else {
-        /* UDP: just remember remote addr would need sendto; connect() on UDP
-           is "default destination" — we store it as local port */
-        self->port = port;
+        /* UDP connect() ("default destination") is not implemented. It used to store the
+         * *remote* port as the local one, so recvfrom() then listened on the wrong port. */
+        mp_raise_OSError(38); /* ENOSYS: use sendto()/recvfrom() */
     }
     return mp_const_none;
 }
@@ -114,8 +130,8 @@ static mp_obj_t sock_bind(mp_obj_t self_in, mp_obj_t addr_in) {
     mp_obj_t *items; size_t n;
     mp_obj_get_array(addr_in, &n, &items);
     if (n < 2) mp_raise_TypeError(MP_ERROR_TEXT("addr must be (host, port)"));
-    self->port = (uint16_t)mp_obj_get_int(items[1]);
-    udp_open(self->port);
+    self->port = get_port(items[1]);
+    if (udp_open(self->port) < 0) mp_raise_OSError(98);       /* EADDRINUSE-ish: no socket slot left */
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(sock_bind_obj, sock_bind);
@@ -129,10 +145,10 @@ static mp_obj_t sock_send(mp_obj_t self_in, mp_obj_t data_in) {
         ? tls_write(&g_tls_sock, (const uint8_t *)data, (int)len)
         : tcp_send((void *)data, (int)len);
     if (r < 0) mp_raise_OSError(-r);
-    /* tls_write() returns 0 on success (all-or-nothing), unlike
-     * tcp_send()'s byte count -- report the full length either way so
-     * callers checking "did everything go out" see a consistent API. */
-    return mp_obj_new_int(self->use_tls ? (int)len : r);
+    /* tcp_send() and tls_write() both return 0 on success (all-or-nothing), not a byte
+     * count. send() used to return that 0 for TCP, so the usual
+     * 'while sent < len: sent += sock.send(...)' loop never advanced. */
+    return mp_obj_new_int((mp_int_t)len);
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(sock_send_obj, sock_send);
 
@@ -146,7 +162,8 @@ static mp_obj_t sock_recv(mp_obj_t self_in, mp_obj_t size_in) {
     if (!buf) mp_raise_OSError(12);
     int n = self->use_tls ? tls_read(&g_tls_sock, buf, sz) : tcp_recv(buf, sz);
     if (n < 0) { m_free(buf); mp_raise_OSError(-n); }
-    mp_obj_t ret = mp_obj_new_str((char *)buf, (size_t)n);
+    /* bytes, like CPython: a str made from binary data counts UTF-8 characters, not bytes */
+    mp_obj_t ret = mp_obj_new_bytes(buf, (size_t)n);
     m_free(buf);
     return ret;
 }
@@ -161,7 +178,7 @@ static mp_obj_t sock_sendto(size_t n_args, const mp_obj_t *args) {
     mp_obj_get_array(args[2], &alen, &addr);
     if (alen < 2) mp_raise_TypeError(MP_ERROR_TEXT("addr must be (host, port)"));
     const char *host = mp_obj_str_get_str(addr[0]);
-    uint16_t dport   = (uint16_t)mp_obj_get_int(addr[1]);
+    uint16_t dport   = get_port(addr[1]);
     uint32_t ip      = resolve_host(host);
     uint16_t sport   = self->port ? self->port : 49152;
     int r = udp_send(ip, dport, sport, (void *)data, (int)dlen);
@@ -181,7 +198,7 @@ static mp_obj_t sock_recvfrom(mp_obj_t self_in, mp_obj_t size_in) {
     uint32_t src_ip = 0; uint16_t src_port = 0;
     int n = udp_listen(self->port, buf, sz, &src_ip, &src_port);
     if (n < 0) { m_free(buf); mp_raise_OSError(-n); }
-    mp_obj_t data = mp_obj_new_str((char *)buf, (size_t)n);
+    mp_obj_t data = mp_obj_new_bytes(buf, (size_t)n);
     m_free(buf);
     /* format IP string */
     char ip_s[20];
@@ -202,6 +219,10 @@ static mp_obj_t sock_close(mp_obj_t self_in) {
             tcp_close();
         }
         self->connected = 0;
+    }
+    if (self->type == SOCK_DGRAM && self->port) {
+        udp_close(self->port);              /* the bound UDP slot was never released */
+        self->port = 0;
     }
     return mp_const_none;
 }
@@ -263,7 +284,7 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(mp_socket_socket_obj, 0, 3, mp_socket
 /* socket.getaddrinfo(host, port) -> [(AF_INET, SOCK_STREAM, 0, '', (ip, port))] */
 static mp_obj_t mp_socket_getaddrinfo(mp_obj_t host_in, mp_obj_t port_in) {
     const char *host = mp_obj_str_get_str(host_in);
-    int port = mp_obj_get_int(port_in);
+    int port = get_port(port_in);
     uint32_t ip = resolve_host(host);
     char ip_s[20];
     format_ip(ip_s, ip);
