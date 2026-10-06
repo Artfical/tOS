@@ -58,7 +58,13 @@ void ipx_handle(void *pkt, int len)
     for (int i = 0; i < 6; i++) if (h->dst_node[i] != 0xFF) { is_broadcast = 0; break; }
     int is_ours = (memcmp(h->dst_node, net_mac, 6) == 0);
 
-    if ((is_ours || is_broadcast) &&
+    /* Never answer to a group address: a request whose source node is broadcast/
+     * multicast (spoofed) made the echo go out as a link-layer broadcast, which
+     * other hosts answer in turn: a reflection/amplification storm. */
+    int src_is_group = (h->src_node[0] & 0x01) != 0;
+    (void)is_broadcast;
+
+    if (is_ours && !src_is_group &&
         (uint16_t)((h->dst_sock >> 8) | (h->dst_sock << 8)) == IPX_SOCK_ECHO) {
         uint8_t *payload = (uint8_t *)pkt + sizeof(ipx_hdr_t);
         int plen = total - sizeof(ipx_hdr_t);
@@ -75,7 +81,8 @@ int ipx_send(const uint8_t *dst_node, const uint8_t *dst_net,
              uint16_t dst_sock, uint16_t src_sock,
              uint8_t ptype, const void *data, int data_len)
 {
-    if (data_len < 0) return -1;
+    /* one Ethernet frame: 1500 bytes of IPX packet (30-byte header + data) */
+    if (data_len < 0 || data_len > 1500 - (int)sizeof(ipx_hdr_t)) return -1;
     int frame_len = (int)sizeof(eth_hdr_t) + (int)sizeof(ipx_hdr_t) + data_len;
     uint8_t *frame = (uint8_t *)malloc(frame_len);
     if (!frame) return -1;
@@ -104,7 +111,7 @@ int ipx_send(const uint8_t *dst_node, const uint8_t *dst_net,
     if (data_len > 0)
         memcpy(frame + sizeof(eth_hdr_t) + sizeof(ipx_hdr_t), data, data_len);
 
-    if (nic_send) nic_send(frame, frame_len);
+    nic_transmit(frame, frame_len);          /* pads short frames to the Ethernet minimum (the 44-byte IPX echo was not padded) */
     free(frame);
     return 0;
 }
