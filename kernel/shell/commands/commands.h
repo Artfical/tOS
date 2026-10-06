@@ -43,6 +43,7 @@ void cmd_udplite_send(int argc, char **args);
 void cmd_ping6(int argc, char **args);
 void cmd_ip6addr(int argc, char **args);
 void cmd_ipsec_sa(int argc, char **args);
+void cmd_ipsec(int argc, char **args);
 void cmd_vlan(int argc, char **args);
 void cmd_bridge(int argc, char **args);
 void cmd_bond(int argc, char **args);

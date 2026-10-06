@@ -649,6 +649,75 @@ void cmd_ipsec_sa(int argc, char **args)
     ipsec_dump_sa();
 }
 
+static int hex_digit(int ch)
+{
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+/* up to 8 hex digits -> *out; 0 on success */
+static int parse_hex32(const char *s, uint32_t *out)
+{
+    uint32_t v = 0;
+    int n = 0;
+    for (; *s; s++, n++) {
+        int d = hex_digit((unsigned char)*s);
+        if (d < 0 || n >= 8) return -1;
+        v = (v << 4) | (uint32_t)d;
+    }
+    if (n == 0) return -1;
+    *out = v;
+    return 0;
+}
+
+/* even number of hex digits -> bytes; returns the byte count or -1 */
+static int parse_hex_bytes(const char *s, uint8_t *out, int max)
+{
+    int n = 0;
+    while (s[0]) {
+        int hi = hex_digit((unsigned char)s[0]);
+        int lo = s[1] ? hex_digit((unsigned char)s[1]) : -1;
+        if (hi < 0 || lo < 0 || n >= max) return -1;
+        out[n++] = (uint8_t)((hi << 4) | lo);
+        s += 2;
+    }
+    return n > 0 ? n : -1;
+}
+
+/* ipsec add ah <peer-ip> <spi-hex> <key-hex> / ipsec del <spi-hex> / ipsec list */
+void cmd_ipsec(int argc, char **args)
+{
+    if (argc >= 2 && (strcmp(args[1], "list") == 0 || strcmp(args[1], "sa") == 0)) {
+        ipsec_dump_sa();
+        return;
+    }
+    if (argc == 6 && strcmp(args[1], "add") == 0 && strcmp(args[2], "ah") == 0) {
+        uint32_t peer = parse_ip(args[3]);
+        uint32_t spi;
+        uint8_t key[IPSEC_KEY_MAX];
+        int klen = parse_hex_bytes(args[5], key, IPSEC_KEY_MAX);
+        if (peer == 0) { terminal_writestring("ipsec: invalid peer address\n"); return; }
+        if (parse_hex32(args[4], &spi) != 0 || spi == 0) { terminal_writestring("ipsec: SPI must be 1-8 hex digits, not 0\n"); return; }
+        if (klen < 16) { terminal_writestring("ipsec: key must be 16-32 bytes (32-64 hex digits)\n"); return; }
+        if (ipsec_sa_add(peer, spi, IPPROTO_AH) != 0) { terminal_writestring("ipsec: cannot add SA (table full or already exists)\n"); return; }
+        if (ipsec_sa_set_key(peer, spi, key, klen) != 0) { ipsec_sa_remove(spi); terminal_writestring("ipsec: setting the key failed\n"); return; }
+        terminal_writestring("ipsec: AH SA added (HMAC-SHA-256-128)\n");
+        return;
+    }
+    if (argc == 3 && strcmp(args[1], "del") == 0) {
+        uint32_t spi;
+        if (parse_hex32(args[2], &spi) != 0) { terminal_writestring("ipsec: invalid SPI\n"); return; }
+        ipsec_sa_remove(spi);
+        terminal_writestring("ipsec: SA removed\n");
+        return;
+    }
+    terminal_writestring("usage: ipsec add ah <peer-ip> <spi-hex> <key-hex>   (HMAC-SHA-256 key, 16-32 bytes)\n");
+    terminal_writestring("       ipsec del <spi-hex>\n");
+    terminal_writestring("       ipsec list\n");
+}
+
 /* -----------------------------------------------------------------------
  * VLAN commands
  * vlan add <vid>  /  vlan rm <vid>  /  vlan list

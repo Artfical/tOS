@@ -162,7 +162,7 @@ static int parse_args(char *cmd, char **args)
 static const char *builtin_names[] = {
     "help", "man", "echo", "clear", "pwd", "ls", "cd", "mkdir", "rmdir", "rm",
     "touch", "cat", "mv", "cp", "edit", "reboot", "shutdown",
-    "version", "about", "uname", "ping", "ifconfig", "wget", "tls", "tpkg", "python", "tsharp", "run",
+    "version", "about", "uname", "ping", "ifconfig", "wget", "tls", "ipsec", "tpkg", "python", "tsharp", "run",
     "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
     "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
     "basename", "dirname", "which", "env", "uptime", "ps", "log", "kill",
@@ -579,6 +579,8 @@ static void shell_exec_line(char *cmd_line)
             cmd_udplite_send(argc, args);
         } else if (strcmp(c, "ipsec_sa") == 0) {
             cmd_ipsec_sa(argc, args);
+        } else if (strcmp(c, "ipsec") == 0) {
+            cmd_ipsec(argc, args);
         } else if (strcmp(c, "vlan") == 0) {
             cmd_vlan(argc, args);
         } else if (strcmp(c, "bridge") == 0) {
