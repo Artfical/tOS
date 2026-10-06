@@ -49,6 +49,11 @@ static uint32_t sctp_get_crc(const sctp_hdr_t *hdr)
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
+/* Real stacks send state cookies of ~260 bytes (Linux) or more: the old 64-byte
+ * buffer truncated them silently, so the COOKIE-ECHO never matched and the
+ * handshake could not complete against a real server. */
+#define SCTP_COOKIE_MAX 1024
+
 /* -----------------------------------------------------------------------
  * Association state
  * ----------------------------------------------------------------------- */
@@ -61,7 +66,7 @@ static struct {
     uint32_t peer_vtag;      /* peer's verification tag from INIT-ACK */
     uint32_t local_tsn;      /* next TSN to send */
     uint32_t peer_cum_tsn;   /* last cumulative TSN received from peer */
-    uint8_t  cookie[64];     /* cookie echoed back from INIT-ACK */
+    uint8_t  cookie[SCTP_COOKIE_MAX];   /* state cookie echoed back from INIT-ACK */
     int      cookie_len;
     /* rx ring buffer */
     uint8_t *rx_buf;
@@ -128,10 +133,13 @@ static int send_init(void) {
  * Send COOKIE-ECHO
  * ----------------------------------------------------------------------- */
 static int send_cookie_echo(void) {
-    uint8_t chunk[128];
+    uint8_t *chunk = (uint8_t *)malloc((size_t)assoc.cookie_len + 8);
+    if (!chunk) return -1;
     int clen = build_chunk(SCTP_CHUNK_COOKIE_ECHO, 0,
                            assoc.cookie, assoc.cookie_len, chunk);
-    return sctp_send_raw(chunk, clen);
+    int r = sctp_send_raw(chunk, clen);
+    free(chunk);
+    return r;
 }
 
 /* -----------------------------------------------------------------------
@@ -310,7 +318,11 @@ void sctp_handle(ip_hdr_t *ip, void *pkt, int len) {
                     if (olen < 4 || olen > optrem) break;
                     if (otype == 0x0007) { /* State Cookie */
                         int cl = olen - 4;
-                        if (cl > (int)sizeof(assoc.cookie)) cl = sizeof(assoc.cookie);
+                        if (cl > (int)sizeof(assoc.cookie)) {       /* cannot echo it: give up, do not send a truncated one */
+                            assoc.state = SCTP_STATE_CLOSED;
+                            assoc_active = 0;
+                            return;
+                        }
                         memcpy(assoc.cookie, opt + 4, cl);
                         assoc.cookie_len = cl;
                     }

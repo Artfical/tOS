@@ -73,7 +73,9 @@ int main(void)
     /* 2. the real INIT-ACK is accepted and answered with a COOKIE-ECHO identical to Linux's */
     nsent = 0; feed(1);
     check("real INIT-ACK accepted (state COOKIE-ECHO)", assoc.state == SCTP_STATE_COOKIE_ECHO);
-    check("260-byte cookie kept whole", assoc.cookie_len == 260);
+    int real_cookie = ((pk[2][20 + 14] << 8) | pk[2][20 + 15]) - 4;   /* the client echoed the whole cookie */
+    printf("   (real cookie: %d bytes, the old buffer held 64)\n", real_cookie);
+    check("the real cookie is kept whole", assoc.cookie_len == real_cookie);
     check("COOKIE-ECHO sent by sctp.c is byte-identical to Linux's", nsent >= 1 && sent_len[0] == pklen[2] - 20 && memcmp(sent[0], pk[2] + 20, sent_len[0]) == 0);
 
     /* 3. COOKIE-ACK -> established */
