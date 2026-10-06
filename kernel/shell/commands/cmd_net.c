@@ -567,18 +567,20 @@ void cmd_sctp_close(int argc, char **args)
 void cmd_dccp_connect(int argc, char **args)
 {
     if (argc < 3) {
-        terminal_writestring("usage: dccp_connect <ip> <port>\n");
+        terminal_writestring("usage: dccp_connect <ip> <port> [service-code]\n");
         return;
     }
     uint32_t ip = parse_ip(args[1]);
     int port = 0;
     for (char *p = args[2]; *p; p++) port = port * 10 + (*p - '0');
+    uint32_t service = 0;                            /* DCCP servers listen for one service code */
+    if (argc >= 4) for (char *p = args[3]; *p >= '0' && *p <= '9'; p++) service = service * 10 + (uint32_t)(*p - '0');
     terminal_writestring("DCCP: connecting to ");
     terminal_writestring(args[1]);
     terminal_writestring(":");
     terminal_writestring(args[2]);
     terminal_writestring(" ...\n");
-    if (dccp_connect(ip, (uint16_t)port) == 0)
+    if (dccp_connect_service(ip, (uint16_t)port, service) == 0)
         terminal_writestring("DCCP: connection open\n");
     else
         terminal_writestring("DCCP: connection failed\n");

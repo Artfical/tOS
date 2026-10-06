@@ -29,33 +29,17 @@
 #define DCCP_STATE_CLOSING     6
 #define DCCP_STATE_TIMEWAIT    7
 
-/* DCCP generic header (short form, X=0, 12 bytes) */
-typedef struct {
-    uint16_t src_port;
-    uint16_t dst_port;
-    uint8_t  data_offset;  /* in 32-bit words */
-    uint8_t  ccval_cscov;  /* upper 4: CCVal, lower 4: CsCov */
-    uint16_t checksum;
-    uint8_t  res_type_x;   /* bits 7-3: reserved, bits 2-0: type (upper), X=0 */
-    uint8_t  type_seq_hi;  /* type (lower), seq_hi */
-    uint16_t seq_lo;
-} __attribute__((packed)) dccp_hdr_t;
-
-/* DCCP extended seq (X=1, 16 bytes) */
-typedef struct {
-    uint16_t src_port;
-    uint16_t dst_port;
-    uint8_t  data_offset;
-    uint8_t  ccval_cscov;
-    uint16_t checksum;
-    uint8_t  res_type_x;
-    uint8_t  reserved;
-    uint32_t seq_hi;
-    uint16_t seq_lo;
-} __attribute__((packed)) dccp_hdr_ext_t;
+/* Packets are built and parsed byte-wise (see dccp.c): the generic header is 16
+ * bytes with X=1 (48-bit sequence numbers, mandatory for Request/Response/Close/
+ * Reset, RFC 4340 5.1) or 12 bytes with X=0 (24-bit, Data/Ack/DataAck only),
+ * followed by the type-specific part (acknowledgement number subheader, service
+ * code, reset code) and options. */
 
 /* Public API */
-int  dccp_connect(uint32_t dst_ip, uint16_t dst_port);
+int  dccp_connect(uint32_t dst_ip, uint16_t dst_port);          /* service code 0 */
+int  dccp_connect_service(uint32_t dst_ip, uint16_t dst_port, uint32_t service_code);
+/* dccp_recv(): nothing arrived for 10 s */
+#define DCCP_ERR_TIMEOUT -2
 int  dccp_send(const void *data, int len);
 int  dccp_recv(uint8_t *buf, int max_len);
 void dccp_close(void);
