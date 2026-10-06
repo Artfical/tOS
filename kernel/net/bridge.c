@@ -30,6 +30,9 @@ static fdb_entry_t fdb[FDB_SIZE];
  * ----------------------------------------------------------------------- */
 static void fdb_learn(const uint8_t *mac, const char *port)
 {
+    /* A source address with the group bit set is not a station (and all-zero is
+     * not valid either): learning it let one malformed frame take an entry. */
+    if ((mac[0] & 0x01) || (!mac[0] && !mac[1] && !mac[2] && !mac[3] && !mac[4] && !mac[5])) return;
     /* update existing */
     for (int i = 0; i < FDB_SIZE; i++) {
         if (fdb[i].valid && memcmp(fdb[i].mac, mac, 6) == 0) {
@@ -65,8 +68,16 @@ static bridge_t *find_bridge_by_name(const char *name)
 int bridge_create(const char *name)
 {
     if (find_bridge_by_name(name)) return -1; /* already exists */
-    if (bridge_count >= BRIDGE_MAX) return -1;
-    bridge_t *br = &bridges[bridge_count++];
+    /* bridge_destroy() only clears 'active', so the slot has to be found again
+     * here: always appending used the table up for good after BRIDGE_MAX
+     * create/destroy cycles. */
+    int slot = -1;
+    for (int i = 0; i < bridge_count; i++) if (!bridges[i].active) { slot = i; break; }
+    if (slot < 0) {
+        if (bridge_count >= BRIDGE_MAX) return -1;
+        slot = bridge_count++;
+    }
+    bridge_t *br = &bridges[slot];
     memset(br, 0, sizeof(*br));
     strncpy(br->name, name, BRIDGE_NAME_LEN - 1);
     br->active = 1;
