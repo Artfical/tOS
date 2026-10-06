@@ -125,22 +125,61 @@ int gre_send(int idx, const void *inner_data, int inner_len)
     return 0;
 }
 
+/* ones-complement checksum over the whole GRE packet (RFC 2784 2.1); a packet
+ * whose stored checksum is right sums to 0xFFFF */
+static int gre_checksum_ok(const uint8_t *p, int len)
+{
+    uint32_t sum = 0;
+    for (int i = 0; i + 1 < len; i += 2) sum += (uint32_t)((p[i] << 8) | p[i + 1]);
+    if (len & 1) sum += (uint32_t)p[len - 1] << 8;
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    return sum == 0xFFFF;
+}
+
+static int gre_depth;   /* decapsulation nesting, bounded below */
+
 void gre_handle(ip_hdr_t *outer_ip, void *pkt, int len)
 {
     if (len < (int)sizeof(gre_hdr_t)) return;
     gre_hdr_t *gre = (gre_hdr_t *)pkt;
     uint16_t flags = ntohs(gre->flags);
     uint16_t proto = ntohs(gre->proto);
+    const uint8_t *b = (const uint8_t *)pkt;
     int offset = sizeof(gre_hdr_t);
 
+    /* RFC 2784: version must be 0; the routing bit (source routing) is not
+     * supported and such packets must be discarded. */
+    if (flags & 0x0007) return;
+    if (flags & 0x4000) return;
+
+    int has_ck = (flags & 0x8000) != 0;
+    int has_key = (flags & GRE_FLAG_KEY) != 0;
     /* Skip optional checksum+reserved */
-    if (flags & 0x8000) offset += 4;
+    if (has_ck) offset += 4;
+    int key_off = offset;
     /* Skip key */
-    if (flags & GRE_FLAG_KEY) offset += 4;
+    if (has_key) offset += 4;
     /* Skip seq */
     if (flags & GRE_FLAG_SEQ) offset += 4;
 
     if (offset >= len) return;
+
+    /* Only decapsulate for a tunnel that was configured: it must be this
+     * host's local end, come from its remote end and use the same key (or none).
+     * Anyone on the network could previously wrap a packet with a forged
+     * source address in GRE and have it injected into the stack. */
+    uint32_t key = 0;
+    if (has_key) key = ((uint32_t)b[key_off] << 24) | ((uint32_t)b[key_off + 1] << 16) |
+                       ((uint32_t)b[key_off + 2] << 8) | b[key_off + 3];
+    int matched = 0;
+    for (int i = 0; i < GRE_TUNNEL_MAX; i++) {
+        gre_tunnel_t *t = &tunnels[i];
+        if (!t->valid || t->remote_ip != outer_ip->src_ip || t->local_ip != outer_ip->dst_ip) continue;
+        if (t->use_key ? (has_key && key == t->key) : !has_key) { matched = 1; break; }
+    }
+    if (!matched) return;
+    if (has_ck && !gre_checksum_ok(b, len)) return;
+    if (gre_depth >= 2) return;                     /* GRE inside GRE inside GRE ...: stop */
 
     terminal_writestring("[GRE] decap from ");
     print_ip(outer_ip->src_ip);
@@ -155,6 +194,8 @@ void gre_handle(ip_hdr_t *outer_ip, void *pkt, int len)
     if (proto == GRE_PROTO_IP) {
         /* re-inject inner IP packet */
         extern void ip_handle(uint8_t *data, int len);
+        gre_depth++;
         ip_handle((uint8_t *)pkt + offset, len - offset);
+        gre_depth--;
     }
 }
