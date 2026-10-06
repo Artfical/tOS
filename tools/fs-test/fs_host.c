@@ -515,6 +515,11 @@ int main(int argc, char **argv)
                 if (n >= 0) { printf("  [%zd bytes] ", n); for (ssize_t k = 0; k < n && k < 60; k++) putchar(buf[k] >= 32 && buf[k] < 127 ? buf[k] : '.'); putchar('\n'); }
                 free(buf); r = (int)n;
             }
+            else if (!strcmp(cmd, "dump")) {
+                uint8_t *buf = 0; ssize_t n = hread_file(a, &buf);
+                if (n >= 0 && b) { FILE *o = fopen(b, "wb"); if (o) { fwrite(buf, 1, (size_t)n, o); fclose(o); } }
+                free(buf); r = (int)n;
+            }
             else if (!strcmp(cmd, "hash")) {
                 uint8_t *buf = 0; ssize_t n = hread_file(a, &buf);
                 uint64_t h = 1469598103934665603ULL;
