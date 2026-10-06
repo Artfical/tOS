@@ -88,33 +88,44 @@ int diskops_mount(const char *name, const char *mount_point, const char *fstype,
         if (exfat_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "exfat probe failed (not formatted?)"); return -1; }
         exfat_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
-    } else if (strcmp(fstype, "ext2") == 0) {
-        static ext2_t ext2_instances[VFS_MAX_MOUNTS];
-        ext2_t *fs = 0;
-        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!ext2_instances[i].bd) { fs = &ext2_instances[i]; break; }
-        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        memset(fs, 0, sizeof(*fs));
-        if (ext2_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "ext2 probe failed (not formatted?)"); return -1; }
-        ext2_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
-    } else if (strcmp(fstype, "ext3") == 0) {
-        static ext3_t ext3_instances[VFS_MAX_MOUNTS];
-        ext3_t *fs = 0;
-        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!ext3_instances[i].bd) { fs = &ext3_instances[i]; break; }
-        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        memset(fs, 0, sizeof(*fs));
-        if (ext3_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "ext3 probe failed (not formatted?)"); return -1; }
-        ext3_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
-    } else if (strcmp(fstype, "ext4") == 0) {
+    } else if (strcmp(fstype, "ext2") == 0 || strcmp(fstype, "ext3") == 0 || strcmp(fstype, "ext4") == 0) {
+        /* The ext4 driver serves every ext2/3/4 volume made by Linux's mke2fs;
+         * it declines volumes in tOS's own ext2/ext3 layout, which the older
+         * drivers keep (their journal is not jbd2). */
         static ext4_t ext4_instances[VFS_MAX_MOUNTS];
-        ext4_t *fs = 0;
-        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!ext4_instances[i].bd) { fs = &ext4_instances[i]; break; }
-        if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
-        memset(fs, 0, sizeof(*fs));
-        if (ext4_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "ext4 probe failed (not formatted?)"); return -1; }
-        ext4_mount_vfs(fs, mount_point);
-        bd->fs_ctx = fs;
+        ext4_t *fs4 = 0;
+        for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!ext4_instances[i].bd) { fs4 = &ext4_instances[i]; break; }
+        if (!fs4) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
+        memset(fs4, 0, sizeof(*fs4));
+        if (ext4_probe_and_mount(fs4, bd) == 0) {
+            ext4_mount_vfs(fs4, mount_point);
+            bd->fs_ctx = fs4;
+            fstype = "ext4";
+        } else if (strcmp(fstype, "ext2") == 0) {
+            memset(fs4, 0, sizeof(*fs4));
+            static ext2_t ext2_instances[VFS_MAX_MOUNTS];
+            ext2_t *fs = 0;
+            for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!ext2_instances[i].bd) { fs = &ext2_instances[i]; break; }
+            if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
+            memset(fs, 0, sizeof(*fs));
+            if (ext2_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "ext2 probe failed (not formatted?)"); return -1; }
+            ext2_mount_vfs(fs, mount_point);
+            bd->fs_ctx = fs;
+        } else if (strcmp(fstype, "ext3") == 0) {
+            memset(fs4, 0, sizeof(*fs4));
+            static ext3_t ext3_instances[VFS_MAX_MOUNTS];
+            ext3_t *fs = 0;
+            for (int i = 0; i < VFS_MAX_MOUNTS; i++) if (!ext3_instances[i].bd) { fs = &ext3_instances[i]; break; }
+            if (!fs) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
+            memset(fs, 0, sizeof(*fs));
+            if (ext3_probe_and_mount(fs, bd) != 0) { memset(fs, 0, sizeof(*fs)); seterr(err, err_len, "ext3 probe failed (not formatted?)"); return -1; }
+            ext3_mount_vfs(fs, mount_point);
+            bd->fs_ctx = fs;
+        } else {
+            memset(fs4, 0, sizeof(*fs4));
+            seterr(err, err_len, "ext4 probe failed (not formatted?)");
+            return -1;
+        }
     } else if (strcmp(fstype, "ntfs") == 0) {
         static ntfs_t ntfs_instances[VFS_MAX_MOUNTS];
         ntfs_t *fs = 0;
@@ -209,7 +220,7 @@ const char *diskops_detect(const char *name)
     if (exfat_probe_and_mount(&det_ef, bd) == 0) return "exfat";
 
     memset(&det_e4, 0, sizeof(det_e4));
-    if (ext4_probe_and_mount(&det_e4, bd) == 0) return "ext4";
+    if (ext4_probe_only(&det_e4, bd) == 0) return ext4_flavor(&det_e4);
 
     memset(&det_e3, 0, sizeof(det_e3));
     if (ext3_probe_and_mount(&det_e3, bd) == 0) return "ext3";
@@ -291,11 +302,11 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
     } else if (strcmp(fstype, "exfat") == 0) {
         if (exfat_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
     } else if (strcmp(fstype, "ext2") == 0) {
-        if (ext2_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
+        if (ext4_mkfs(bd, 2, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
     } else if (strcmp(fstype, "ext3") == 0) {
-        if (ext3_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
+        if (ext4_mkfs(bd, 3, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
     } else if (strcmp(fstype, "ext4") == 0) {
-        if (ext4_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
+        if (ext4_mkfs(bd, 4, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
     } else if (strcmp(fstype, "ntfs") == 0) {
         if (ntfs_format(bd, "tOS") != 0) { seterr(err, err_len, "formatting NTFS is not supported; create the volume with mkfs.ntfs or Windows"); return -1; }
     } else if (strcmp(fstype, "btrfs") == 0) {

@@ -726,6 +726,13 @@ static int ext2_probe(ext2_t *fs, blockdev_t *bd)
 
     if (sb->s_magic != EXT2_SUPER_MAGIC) { free(sb); return -1; }
 
+    /* only tOS's own ext2 layout: volumes made by mke2fs are the ext4 driver's */
+    if (sb->s_feature_compat != 0 || sb->s_feature_incompat != EXT2_FEATURE_INCOMPAT_FILETYPE || sb->s_feature_ro_compat != 0 ||
+        sb->s_log_block_size > 6) {
+        free(sb);
+        return -1;
+    }
+
     fs->block_size = 1024u << sb->s_log_block_size;
     fs->blocks_count = sb->s_blocks_count;
     fs->inodes_count = sb->s_inodes_count;

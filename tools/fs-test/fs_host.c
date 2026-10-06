@@ -60,6 +60,9 @@ static fs_t g_fs;
 #define FS_PROBE CAT(FS,_probe_and_mount)
 #define FS_MOUNT_VFS CAT(FS,_mount_vfs)
 #define FS_UMOUNT CAT(FS,_umount)
+#if defined(FS_HAS_FORMAT)
+#define FS_FORMAT CAT(FS,_format)
+#endif
 #ifdef FS_IS_NTFS
 #define FS_RW(f) ((f)->rw)
 #else
@@ -492,6 +495,20 @@ int main(int argc, char **argv)
     if (argc < 3) { fprintf(stderr, "usage: %s IMAGE fuzz SEED NOPS | script CMD...\n", argv[0]); return 2; }
     setvbuf(stdout, 0, _IONBF, 0);
     if (open_image(argv[1])) return 2;
+#ifdef FS_HAS_MKFS
+    if (strcmp(argv[2], "mkfs") == 0) {               /* IMAGE mkfs 2|3|4: Linux-compatible ext mkfs */
+        int fr = ext4_mkfs(&g_bd, argc > 3 ? atoi(argv[3]) : 4, "tOS");
+        printf("mkfs -> %d\n", fr);
+        return fr != 0;
+    }
+#endif
+#ifdef FS_FORMAT
+    if (strcmp(argv[2], "format") == 0) {            /* IMAGE format [LABEL]: the driver's own mkfs */
+        int fr = FS_FORMAT(&g_bd, argc > 3 ? argv[3] : "tOS");
+        printf("format -> %d\n", fr);
+        return fr != 0;
+    }
+#endif
     if (getenv("NTFS_VERBOSE")) g_verbose = 1;
     if (getenv("NTFS_TRACE")) g_trace = 1;
     if (do_mount()) return 2;

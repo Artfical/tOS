@@ -1007,6 +1007,15 @@ static int ext3_probe(ext3_t *fs, blockdev_t *bd)
 
     if (sb->s_magic != EXT3_SUPER_MAGIC) { free(sb); return -1; }
 
+    /* only tOS's own ext3 layout (its private journal): any other volume,
+     * including every ext3 made by mke2fs, is the ext4 driver's */
+    if (sb->s_feature_compat != 0 || sb->s_feature_incompat != EXT3_FEATURE_INCOMPAT_FILETYPE || sb->s_feature_ro_compat != 0 ||
+        sb->s_journal_blocks < 8 || sb->s_journal_first_block == 0 ||
+        (uint64_t)sb->s_journal_first_block + sb->s_journal_blocks > sb->s_blocks_count || sb->s_log_block_size > 6) {
+        free(sb);
+        return -1;
+    }
+
     fs->block_size = 1024u << sb->s_log_block_size;
     fs->blocks_count = sb->s_blocks_count;
     fs->inodes_count = sb->s_inodes_count;

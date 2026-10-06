@@ -45,6 +45,7 @@ typedef struct {
 
     /* feature state of a volume made by someone else's mke2fs */
     uint32_t desc_size;      /* group descriptor size: 32, or 64 with the 64bit feature */
+    uint32_t feat_compat;
     uint32_t feat_incompat;
     uint32_t feat_ro;
     uint32_t reserved_gdt;   /* resize_inode: reserved GDT blocks after the descriptors */
@@ -67,8 +68,11 @@ typedef struct {
 } ext4_t;
 
 int ext4_probe_and_mount(ext4_t *fs, blockdev_t *bd);
+int ext4_probe_only(ext4_t *fs, blockdev_t *bd);   /* like ext4_probe_and_mount, but never writes (no journal replay) */
 int ext4_umount(ext4_t *fs);
+const char *ext4_flavor(const ext4_t *fs);   /* "ext2", "ext3" or "ext4" by feature set */
 void ext4_mount_vfs(ext4_t *fs, const char *mount_point);
 int ext4_format(blockdev_t *bd, const char *label);
+int ext4_mkfs(blockdev_t *bd, int flavor, const char *label);   /* Linux-compatible ext2 (2), ext3 (3) or ext4 (4) */
 
 #endif
