@@ -37,8 +37,14 @@ static void print_uint(int n)
 int bond_create(const char *name, bond_mode_t mode)
 {
     if (find_bond(name)) return -1;
-    if (bond_count >= BOND_MAX) return -1;
-    bond_t *b = &bonds[bond_count++];
+    /* reuse a slot freed by bond_destroy() (it only clears 'active') */
+    int slot = -1;
+    for (int i = 0; i < bond_count; i++) if (!bonds[i].active) { slot = i; break; }
+    if (slot < 0) {
+        if (bond_count >= BOND_MAX) return -1;
+        slot = bond_count++;
+    }
+    bond_t *b = &bonds[slot];
     memset(b, 0, sizeof(*b));
     strncpy(b->name, name, BOND_NAME_LEN - 1);
     b->mode   = mode;
