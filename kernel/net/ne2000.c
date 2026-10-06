@@ -214,7 +214,10 @@ int ne2000_poll(uint8_t *buf, int max_len)
     uint8_t next_page = hdr[1];
     uint16_t pkt_len = hdr[2] | (hdr[3] << 8);
 
-    if (pkt_len < 4 || pkt_len > 1518 + 4 || next_page < NE_RX_START || next_page >= NE_RX_STOP) {
+    /* bit 0 of the receive status is PRX (received intact); the header's length and
+     * next-page fields must also be consistent, otherwise the ring pointers are
+     * resynchronised instead of trusting garbage. */
+    if (!(status & 0x01) || pkt_len < 4 + 14 || pkt_len > 1518 + 4 || next_page < NE_RX_START || next_page >= NE_RX_STOP) {
         outb(io_base + NE_BNRY, curr - 1 >= NE_RX_START ? curr - 1 : NE_RX_STOP - 1);
         next_pkt = curr;
         return 0;
@@ -237,6 +240,5 @@ int ne2000_poll(uint8_t *buf, int max_len)
     outb(io_base + NE_BNRY, (next_page == NE_RX_START) ? (NE_RX_STOP - 1) : (next_page - 1));
     outb(io_base + NE_ISR, ISR_PRX);
 
-    (void)status;
     return data_len;
 }
