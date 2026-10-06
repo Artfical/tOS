@@ -118,6 +118,23 @@ int main(void)
     for (int i = 0; i < CT_MAX; i++) if (ct_table[i].valid) n++;
     printf("conntrack entries after 6 minutes idle: %d (want 1: the stale one expired)\n", n);
     if (n != 1) bad++;
+    /* a full table evicts the least recently used entry, not slot 0 */
+    fw_init();
+    fake_now_ms = 10000;
+    for (int i = 0; i < CT_MAX; i++) {            /* fill: entry i seen at 10000 + i */
+        fake_now_ms = 10000 + (uint32_t)i;
+        make_pkt(&ip, seg, 24, 6, IP4(3,3,(uint8_t)(i >> 8),(uint8_t)i), IP4(10,0,2,15), 7, 80);
+        fw_rx(&ip, seg, 24);
+    }
+    fake_now_ms = 20000;
+    make_pkt(&ip, seg, 24, 6, IP4(3,3,0,0), IP4(10,0,2,15), 7, 80);   /* slot 0's connection is active again */
+    fw_rx(&ip, seg, 24);
+    fake_now_ms = 20001;
+    make_pkt(&ip, seg, 24, 6, IP4(9,9,9,9), IP4(10,0,2,15), 7, 80);   /* new connection: table is full */
+    fw_rx(&ip, seg, 24);
+    int slot0_alive = ct_table[0].valid && ct_table[0].src_ip == IP4(3,3,0,0);
+    printf("active connection in slot 0 survived eviction: %s\n", slot0_alive ? "yes" : "NO");
+    if (!slot0_alive) bad++;
     printf("total failures: %d\n", bad);
     return bad != 0;
 }

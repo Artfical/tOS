@@ -4,6 +4,7 @@
 #include "string.h"
 #include "terminal.h"
 #include "memory.h"
+#include "debugmon.h"
 
 static fw_rule_t  fw_rules[FW_RULE_MAX];
 static int        fw_rule_count = 0;
@@ -116,26 +117,43 @@ static void nat_fix_l4(uint8_t proto, uint8_t *seg, int seg_len,
 /* -----------------------------------------------------------------------
  * Conntrack
  * ----------------------------------------------------------------------- */
+static int ct_expired(const ct_entry_t *c, uint32_t now)
+{
+    return (uint32_t)(now - c->last_seen) > CT_TIMEOUT_MS;
+}
+
 static ct_entry_t *ct_lookup(uint8_t proto,
                               uint32_t sip, uint16_t sp,
                               uint32_t dip, uint16_t dp)
 {
+    uint32_t now = debugmon_uptime_ms();
     for (int i = 0; i < CT_MAX; i++) {
         ct_entry_t *c = &ct_table[i];
         if (!c->valid || c->proto != proto) continue;
         if (c->src_ip == sip && c->src_port == sp &&
-            c->dst_ip == dip && c->dst_port == dp) return c;
+            c->dst_ip == dip && c->dst_port == dp) {
+            if (ct_expired(c, now)) { c->valid = 0; return 0; }   /* stale: start a fresh entry */
+            c->last_seen = now;
+            return c;
+        }
     }
     return 0;
 }
 
+/* A free slot, else an expired one, else the least recently used. Entries used
+ * to live forever and a full table always overwrote slot 0, however active the
+ * connection tracked there was. */
 static ct_entry_t *ct_alloc(void)
 {
-    for (int i = 0; i < CT_MAX; i++)
-        if (!ct_table[i].valid) return &ct_table[i];
-    /* evict slot 0 */
-    memset(&ct_table[0], 0, sizeof(ct_entry_t));
-    return &ct_table[0];
+    uint32_t now = debugmon_uptime_ms();
+    ct_entry_t *oldest = &ct_table[0];
+    for (int i = 0; i < CT_MAX; i++) {
+        ct_entry_t *c = &ct_table[i];
+        if (!c->valid || ct_expired(c, now)) { memset(c, 0, sizeof(*c)); return c; }
+        if ((uint32_t)(now - c->last_seen) > (uint32_t)(now - oldest->last_seen)) oldest = c;
+    }
+    memset(oldest, 0, sizeof(*oldest));
+    return oldest;
 }
 
 static ct_entry_t *ct_track(uint8_t proto,
@@ -149,6 +167,7 @@ static ct_entry_t *ct_track(uint8_t proto,
     c->src_ip    = sip; c->src_port = sp;
     c->dst_ip    = dip; c->dst_port = dp;
     c->valid     = 1;
+    c->last_seen = debugmon_uptime_ms();
     return c;
 }
 
@@ -156,9 +175,10 @@ void ct_dump(void)
 {
     terminal_writestring("Conntrack table:\n");
     int any = 0;
+    uint32_t now = debugmon_uptime_ms();
     for (int i = 0; i < CT_MAX; i++) {
         ct_entry_t *c = &ct_table[i];
-        if (!c->valid) continue;
+        if (!c->valid || ct_expired(c, now)) continue;
         any = 1;
         terminal_writestring("  proto="); print_int(c->proto);
         terminal_writestring(" "); print_ip(c->src_ip);

@@ -34,6 +34,7 @@ typedef struct {
  * Tracks established TCP/UDP sessions for stateful filtering and NAT.
  * ----------------------------------------------------------------------- */
 #define CT_MAX 64
+#define CT_TIMEOUT_MS 120000   /* idle connections are forgotten after two minutes */
 
 typedef struct {
     uint8_t  proto;
@@ -43,6 +44,7 @@ typedef struct {
     uint32_t nat_src_ip,  nat_dst_ip;
     uint16_t nat_src_port, nat_dst_port;
     int      valid;
+    uint32_t last_seen;   /* debugmon_uptime_ms() of the last packet */
 } ct_entry_t;
 
 /* -----------------------------------------------------------------------
