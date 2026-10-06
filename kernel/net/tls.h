@@ -5,7 +5,8 @@
 #include "sha256.h"
 
 /* TLS 1.2 minimal client context */
-#define TLS_RX_BUF  8192
+#define TLS_RX_BUF  16384             /* TLS plaintext limit per record (RFC 5246 6.2.1) */
+#define TLS_REC_MAX (16384 + 2048)    /* largest ciphertext record a peer may send */
 #define TLS_TX_BUF  4096
 
 typedef struct {
@@ -30,9 +31,6 @@ typedef struct {
     uint8_t *hs_in;
     uint32_t hs_in_len;
     uint32_t hs_in_pos;
-    /* raw receive buffer */
-    uint8_t  rx_raw[TLS_RX_BUF];
-    uint32_t rx_raw_len;
     /* decrypted plaintext buffer */
     uint8_t  rx_plain[TLS_RX_BUF];
     uint32_t rx_plain_len;

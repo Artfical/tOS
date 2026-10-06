@@ -42,6 +42,15 @@ static void prng_fill(uint8_t *buf, int len)
 
 /* ---- Record layer helpers ---- */
 
+/* Comparison whose running time does not depend on where the bytes differ. */
+static int ct_equal(const uint8_t *a, const uint8_t *b, int n)
+{
+    uint8_t d = 0;
+    for (int i = 0; i < n; i++) d |= (uint8_t)(a[i] ^ b[i]);
+    return d == 0;
+}
+
+
 static uint16_t u16be(const uint8_t *p) { return ((uint16_t)p[0]<<8)|p[1]; }
 static uint32_t u24be(const uint8_t *p) { return ((uint32_t)p[0]<<16)|((uint32_t)p[1]<<8)|p[2]; }
 static uint32_t u32be(const uint8_t *p)
@@ -190,8 +199,12 @@ static x509_time_t tls_now(void)
 /* ---- AES-128-CBC encrypt with HMAC-SHA256 MAC (TLS 1.2 record) ---- */
 static int tls_encrypt_record(tls_ctx_t *ctx, uint8_t type,
                                const uint8_t *data, int dlen,
-                               uint8_t *out, int *out_len)
+                               uint8_t *out, int out_cap, int *out_len)
 {
+    /* The record must fit TLS's 16384-byte plaintext limit and the caller's
+     * output buffer (IV + data + MAC + up to 16 bytes of padding); neither
+     * was checked, so a long dlen overran the stack buffers below. */
+    if (dlen < 0 || dlen > 16384 || out_cap < 16 + dlen + 32 + 16) return -1;
     /* MAC = HMAC-SHA256(client_mac, seq || type || version || length || data) */
     uint8_t mac_input[8+1+2+2+16384];
     int mi = 0;
@@ -240,15 +253,20 @@ static int tls_encrypt_record(tls_ctx_t *ctx, uint8_t type,
 /* ---- AES-128-CBC decrypt (TLS 1.2 record from server) ---- */
 static int tls_decrypt_record(tls_ctx_t *ctx, uint8_t type,
                                const uint8_t *in, int in_len,
-                               uint8_t *out, int *out_len)
+                               uint8_t *out, int out_cap, int *out_len)
 {
-    if (in_len < 16 + 16) return -1;
+    if (in_len < 16 + 16 || in_len > TLS_REC_MAX) return -1;
     const uint8_t *iv = in;
     const uint8_t *ct = in + 16;
     int ct_len = in_len - 16;
     if (ct_len % 16 != 0) return -1;
 
-    uint8_t plaintext[TLS_RX_BUF];
+    /* Scratch space on the heap: two ~16 KiB arrays on the stack came to more
+     * than a 32 KiB kernel task stack can take once a record can be 16 KiB. */
+    uint8_t *plaintext = (uint8_t *)malloc((size_t)ct_len);
+    uint8_t *mac_input = (uint8_t *)malloc((size_t)(8 + 1 + 2 + 2 + ct_len));
+    if (!plaintext || !mac_input) { free(plaintext); free(mac_input); return -1; }
+
     uint8_t prev[16];
     memcpy(prev, iv, 16);
     int i;
@@ -260,13 +278,14 @@ static int tls_decrypt_record(tls_ctx_t *ctx, uint8_t type,
     }
     /* Remove PKCS#7 padding */
     uint8_t pad = plaintext[ct_len-1];
-    if (pad >= 16 || ct_len - 1 - (int)pad < 0) return -1;
+    int rc = -1;
+    if (pad >= 16 || ct_len - 1 - (int)pad < 0) goto out;
     int data_mac_len = ct_len - 1 - pad;
-    if (data_mac_len < 32) return -1;
+    if (data_mac_len < 32) goto out;
     int data_len = data_mac_len - 32;
+    if (data_len > out_cap || data_len > TLS_RX_BUF) goto out;   /* the caller's buffer is the limit */
 
     /* Verify MAC */
-    uint8_t mac_input[8+1+2+2+16384];
     int mi = 0;
     for (i = 7; i >= 0; i--) mac_input[mi++] = (uint8_t)(ctx->rx_seq >> (i*8));
     mac_input[mi++] = type;
@@ -275,41 +294,48 @@ static int tls_decrypt_record(tls_ctx_t *ctx, uint8_t type,
     memcpy(mac_input+mi, plaintext, (uint32_t)data_len); mi += data_len;
     uint8_t expected_mac[32];
     hmac_sha256(ctx->server_mac, 32, mac_input, (uint32_t)mi, expected_mac);
-    /* Compare (timing-safe enough for hobby OS) */
-    int bad = 0;
-    for (i = 0; i < 32; i++) bad |= (expected_mac[i] ^ plaintext[data_len+i]);
-    if (bad) return -1;
+    if (!ct_equal(expected_mac, plaintext + data_len, 32)) goto out;
 
     memcpy(out, plaintext, (uint32_t)data_len);
     *out_len = data_len;
     ctx->rx_seq++;
-    return 0;
+    rc = 0;
+out:
+    free(plaintext);
+    free(mac_input);
+    return rc;
 }
 
 /* ---- Receive encrypted TLS record, decrypt into rx_plain ---- */
 static int recv_encrypted_record(tls_ctx_t *ctx)
 {
-    uint8_t hdr[5], data[TLS_RX_BUF];
+    uint8_t hdr[5];
     if (raw_recv(ctx, hdr, 5) != 0) return -1;
     uint8_t type = hdr[0];
     int rlen = u16be(hdr+3);
-    if (rlen <= 0 || rlen > TLS_RX_BUF) return -1;
-    if (raw_recv(ctx, data, rlen) != 0) return -1;
+    /* Servers send full 16 KiB records (ciphertext up to 16384 + 2048). The old
+     * 8 KiB limit made every such record look like a dead connection, so large
+     * HTTPS downloads came back empty. */
+    if (rlen <= 0 || rlen > TLS_REC_MAX) return -1;
+    uint8_t *data = (uint8_t *)malloc((size_t)rlen);
+    if (!data) return -1;
+    int rc = -1;
+    if (raw_recv(ctx, data, rlen) != 0) goto out;
 
-    if (type == TLS_RT_ALERT) return -1;
-    if (type != TLS_RT_DATA && type != TLS_RT_HANDSHAKE) return -1;
-
-    int plain_len = 0;
-    uint8_t plain[TLS_RX_BUF];
-    if (tls_decrypt_record(ctx, type, data, rlen, plain, &plain_len) != 0) return -1;
+    if (type == TLS_RT_ALERT) goto out;
+    if (type != TLS_RT_DATA && type != TLS_RT_HANDSHAKE) goto out;
 
     if (ctx->rx_plain_pos >= ctx->rx_plain_len) {
         ctx->rx_plain_len = 0; ctx->rx_plain_pos = 0;
     }
-    if (ctx->rx_plain_len + (uint32_t)plain_len > TLS_RX_BUF) return -1;
-    memcpy(ctx->rx_plain + ctx->rx_plain_len, plain, (uint32_t)plain_len);
+    int plain_len = 0;
+    if (tls_decrypt_record(ctx, type, data, rlen, ctx->rx_plain + ctx->rx_plain_len,
+                           (int)(TLS_RX_BUF - ctx->rx_plain_len), &plain_len) != 0) goto out;
     ctx->rx_plain_len += (uint32_t)plain_len;
-    return 0;
+    rc = 0;
+out:
+    free(data);
+    return rc;
 }
 
 /* ---- Handshake diagnostics ----
@@ -349,14 +375,6 @@ static int tls_log_if_alert(uint8_t rec_type, const uint8_t *data, int len)
     buf[i] = '\0';
     tls_log(buf);
     return 1;
-}
-
-/* Comparison whose running time does not depend on where the bytes differ. */
-static int ct_equal(const uint8_t *a, const uint8_t *b, int n)
-{
-    uint8_t d = 0;
-    for (int i = 0; i < n; i++) d |= (uint8_t)(a[i] ^ b[i]);
-    return d == 0;
 }
 
 /* ---- Handshake message reassembly ----
@@ -733,7 +751,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
         /* Encrypt and send */
         uint8_t enc[512];
         int enc_len = 0;
-        if (tls_encrypt_record(ctx, TLS_RT_HANDSHAKE, fin_hs, 16, enc, &enc_len) != 0) {
+        if (tls_encrypt_record(ctx, TLS_RT_HANDSHAKE, fin_hs, 16, enc, (int)sizeof(enc), &enc_len) != 0) {
             tls_log("encrypting client Finished failed");
             goto fail;
         }
@@ -778,7 +796,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
 
         uint8_t fin_plain[256];
         int fin_plen = 0;
-        if (tls_decrypt_record(ctx, TLS_RT_HANDSHAKE, ef_data, ef_len, fin_plain, &fin_plen) != 0) {
+        if (tls_decrypt_record(ctx, TLS_RT_HANDSHAKE, ef_data, ef_len, fin_plain, (int)sizeof(fin_plain), &fin_plen) != 0) {
             tls_log("decrypting server Finished failed");
             goto fail;
         }
@@ -838,10 +856,20 @@ const char *tls_connect_strerror(int err)
 
 int tls_write(tls_ctx_t *ctx, const uint8_t *data, int len)
 {
-    uint8_t enc[TLS_TX_BUF + 256];
-    int enc_len = 0;
-    if (tls_encrypt_record(ctx, TLS_RT_DATA, data, len, enc, &enc_len) != 0) return -1;
-    if (tls_send_raw(ctx, TLS_RT_DATA, enc, enc_len) != 0) return -1;
+    /* The whole buffer used to go into one record encrypted into a 4352-byte
+     * stack array, so any send above ~4 KB (Python's socket.send() over TLS,
+     * for one) smashed the stack. Send it as records of at most TLS_TX_BUF
+     * bytes instead. */
+    if (!ctx || ctx->fd < 0 || !ctx->handshake_done || len < 0) return -1;
+    int off = 0;
+    while (off < len) {
+        int n = len - off < TLS_TX_BUF ? len - off : TLS_TX_BUF;
+        uint8_t enc[TLS_TX_BUF + 256];
+        int enc_len = 0;
+        if (tls_encrypt_record(ctx, TLS_RT_DATA, data + off, n, enc, (int)sizeof(enc), &enc_len) != 0) return -1;
+        if (tls_send_raw(ctx, TLS_RT_DATA, enc, enc_len) != 0) return -1;
+        off += n;
+    }
     return 0;
 }
 
@@ -871,7 +899,7 @@ void tls_close(tls_ctx_t *ctx)
         /* Send close_notify alert */
         uint8_t alert[2] = {1, 0};
         uint8_t enc[256]; int enc_len = 0;
-        tls_encrypt_record(ctx, TLS_RT_ALERT, alert, 2, enc, &enc_len);
+        tls_encrypt_record(ctx, TLS_RT_ALERT, alert, 2, enc, (int)sizeof(enc), &enc_len);
         tls_send_raw(ctx, TLS_RT_ALERT, enc, enc_len);
         tcp_close2(ctx->fd);
         ctx->fd = -1;
