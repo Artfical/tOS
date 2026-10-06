@@ -33,6 +33,22 @@ static uint32_t crc32c(const uint8_t *buf, int len) {
     return crc ^ 0xFFFFFFFFU;
 }
 
+/* The CRC32c travels in the checksum field in little-endian byte order on the
+ * wire (RFC 4960 appendix B / what Linux and every other stack does), not in
+ * network order: storing htonl(crc) made every checksum we sent differ from the
+ * real one, so no other implementation could talk to us. */
+static void sctp_put_crc(sctp_hdr_t *hdr, uint32_t crc)
+{
+    uint8_t *p = (uint8_t *)&hdr->checksum;
+    p[0] = (uint8_t)crc; p[1] = (uint8_t)(crc >> 8); p[2] = (uint8_t)(crc >> 16); p[3] = (uint8_t)(crc >> 24);
+}
+
+static uint32_t sctp_get_crc(const sctp_hdr_t *hdr)
+{
+    const uint8_t *p = (const uint8_t *)&hdr->checksum;
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
 /* -----------------------------------------------------------------------
  * Association state
  * ----------------------------------------------------------------------- */
@@ -73,7 +89,7 @@ static int sctp_send_raw(void *payload, int payload_len) {
     memcpy(buf + sizeof(sctp_hdr_t), payload, payload_len);
 
     /* CRC32c over the whole SCTP packet (header + chunks, checksum=0) */
-    hdr->checksum = htonl(crc32c(buf, total));
+    sctp_put_crc(hdr, crc32c(buf, total));
 
     int r = ip_send(assoc.dst_ip, IPPROTO_SCTP, buf, total);
     free(buf);
@@ -261,13 +277,11 @@ void sctp_handle(ip_hdr_t *ip, void *pkt, int len) {
     if (ip->src_ip != assoc.dst_ip) return;
 
     /* Validate CRC32c */
-    uint32_t recv_crc = ntohl(hdr->checksum);
-    hdr->checksum = 0;
-    if (crc32c((uint8_t *)pkt, len) != recv_crc) {
-        hdr->checksum = htonl(recv_crc);
-        return;
-    }
-    hdr->checksum = htonl(recv_crc);
+    uint32_t recv_crc = sctp_get_crc(hdr);
+    sctp_put_crc(hdr, 0);
+    int crc_ok = crc32c((uint8_t *)pkt, len) == recv_crc;
+    sctp_put_crc(hdr, recv_crc);
+    if (!crc_ok) return;
 
     /* Walk chunks */
     uint8_t *pos = (uint8_t *)pkt + sizeof(sctp_hdr_t);
