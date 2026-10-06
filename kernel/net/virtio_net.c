@@ -42,6 +42,11 @@
  * misbehaving backend. */
 #define RX_PAD 128
 
+/* The rings are shared with the device through plain (non-volatile) pointers: without a
+ * compiler barrier the store of the new 'idx' may be emitted before the ring entry it
+ * publishes, and the device could then read a stale descriptor index. */
+#define VQ_BARRIER() __asm__ volatile("" ::: "memory")
+
 typedef struct {
     uint64_t addr;
     uint32_t len;
@@ -99,8 +104,13 @@ static int virtq_setup(int idx, virtq_t *q)
     uint32_t pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
     uint32_t base = alloc_physical_page();
     if (!base) return -1;
+    /* The ring must be physically contiguous. The allocator hands out single
+     * pages, which are consecutive only when nothing else allocates in between;
+     * assuming that silently put the used ring in somebody else's page. Check it
+     * and refuse to use the device instead. */
     for (uint32_t i = 1; i < pages; i++) {
-        if (!alloc_physical_page()) return -1;
+        uint32_t p = alloc_physical_page();
+        if (!p || p != base + i * PAGE_SIZE) return -1;
     }
     memset((void *)(uintptr_t)base, 0, (size_t)pages * PAGE_SIZE);
 
@@ -202,7 +212,9 @@ void virtio_net_send(void *data, int len)
 
     uint16_t avail_idx = txq.avail->idx;
     txq.avail->ring[avail_idx % txq.num] = (uint16_t)slot;
+    VQ_BARRIER();
     txq.avail->idx = avail_idx + 1;
+    VQ_BARRIER();
 
     outw(io_base + VIRTIO_PCI_QUEUE_NOTIFY, TX_QUEUE);
 
@@ -218,6 +230,7 @@ int virtio_net_poll(uint8_t *buf, int max_len)
     if (!ready) return 0;
     if (rxq.used->idx == rxq.last_used) return 0;
 
+    VQ_BARRIER();                      /* read the entry only after seeing the new used index */
     virtq_used_elem_t elem = rxq.used->ring[rxq.last_used % rxq.num];
     rxq.last_used++;
 
@@ -233,7 +246,9 @@ int virtio_net_poll(uint8_t *buf, int max_len)
 
     uint16_t avail_idx = rxq.avail->idx;
     rxq.avail->ring[avail_idx % rxq.num] = (uint16_t)desc_id;
+    VQ_BARRIER();
     rxq.avail->idx = avail_idx + 1;
+    VQ_BARRIER();
     outw(io_base + VIRTIO_PCI_QUEUE_NOTIFY, RX_QUEUE);
 
     return data_len;
