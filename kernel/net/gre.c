@@ -6,6 +6,7 @@
 #include "string.h"
 #include "terminal.h"
 #include "memory.h"
+#include "nic.h"
 
 static gre_tunnel_t tunnels[GRE_TUNNEL_MAX];
 
@@ -72,6 +73,10 @@ int gre_send(int idx, const void *inner_data, int inner_len)
 
     int key_len = t->use_key ? 4 : 0;
     int gre_len = (int)sizeof(gre_hdr_t) + key_len;
+    /* A negative length wrapped into a huge malloc()/memcpy(), and anything that
+     * does not fit one 1500-byte frame together with the outer IP and GRE
+     * headers went out oversized (there is no fragmentation). */
+    if (inner_len < 0 || inner_len > 1500 - (int)sizeof(ip_hdr_t) - gre_len) return -1;
     int outer_ip_len = (int)sizeof(ip_hdr_t);
     int eth_len      = 14;
     int total = eth_len + outer_ip_len + gre_len + inner_len;
@@ -119,8 +124,7 @@ int gre_send(int idx, const void *inner_data, int inner_len)
     /* Inner payload */
     memcpy(buf + eth_len + outer_ip_len + gre_len, inner_data, inner_len);
 
-    extern void (*nic_send)(void *, int);
-    if (nic_send) nic_send(buf, total);
+    nic_transmit(buf, total);       /* pads short frames to the Ethernet minimum, unlike raw nic_send */
     free(buf);
     return 0;
 }
