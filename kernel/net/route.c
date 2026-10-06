@@ -82,9 +82,17 @@ void route_init(void)
 int route_add(uint32_t dst, uint32_t mask, uint32_t gw, uint32_t src,
               int metric, int table)
 {
-    if (route_count >= ROUTE_MAX) return -1;
     if (table < 0 || table >= ROUTE_TABLE_MAX) return -1;
-    route_entry_t *r = &routes[route_count++];
+    /* Reuse a slot freed by route_del(); route_del() only clears 'valid', so
+     * always appending used up the table for good after ROUTE_MAX add/delete
+     * cycles. */
+    int slot = -1;
+    for (int i = 0; i < route_count; i++) if (!routes[i].valid) { slot = i; break; }
+    if (slot < 0) {
+        if (route_count >= ROUTE_MAX) return -1;
+        slot = route_count++;
+    }
+    route_entry_t *r = &routes[slot];
     r->dst    = dst & mask;
     r->mask   = mask;
     r->gw     = gw;
@@ -180,9 +188,14 @@ int policy_add(uint32_t src_ip, uint32_t src_mask,
                uint32_t dst_ip, uint32_t dst_mask,
                int table, int priority)
 {
-    if (policy_count >= POLICY_MAX) return -1;
     if (table < 0 || table >= ROUTE_TABLE_MAX) return -1;
-    policy_rule_t *p = &policies[policy_count++];
+    int slot = -1;
+    for (int i = 0; i < policy_count; i++) if (!policies[i].valid) { slot = i; break; }
+    if (slot < 0) {
+        if (policy_count >= POLICY_MAX) return -1;
+        slot = policy_count++;
+    }
+    policy_rule_t *p = &policies[slot];
     p->src_ip   = src_ip;
     p->src_mask = src_mask;
     p->dst_ip   = dst_ip;
