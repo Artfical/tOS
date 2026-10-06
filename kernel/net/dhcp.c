@@ -6,6 +6,7 @@
 #include "string.h"
 #include "scheduler.h"
 #include "debugmon.h"
+#include "csprng.h"
 
 #define DHCP_CLIENT_PORT 68
 #define DHCP_SERVER_PORT 67
@@ -148,6 +149,10 @@ static uint8_t dhcp_wait(uint32_t xid, uint32_t deadline_ms, uint32_t *yiaddr,
         dhcp_hdr_t *dhcp = (dhcp_hdr_t *)((uint8_t *)udp + sizeof(udp_hdr_t));
         if (dhcp->xid != xid) continue;
         if (ntohl(dhcp->magic) != DHCP_MAGIC) continue;
+        /* must be a BOOTREPLY addressed to our hardware address (our own
+         * broadcast looping back, or a reply meant for another client that
+         * happens to carry the same transaction id, used to be accepted) */
+        if (dhcp->op != 2 || memcmp(dhcp->chaddr, net_mac, 6) != 0) continue;
 
         uint8_t *opts = (uint8_t *)dhcp + sizeof(dhcp_hdr_t);
         int opt_len = len - (14 + (int)sizeof(ip_hdr_t) + (int)sizeof(udp_hdr_t) + (int)sizeof(dhcp_hdr_t));
@@ -166,11 +171,28 @@ static uint8_t dhcp_wait(uint32_t xid, uint32_t deadline_ms, uint32_t *yiaddr,
     return 0;
 }
 
+/* usable unicast host address (network byte order in memory: a.b.c.d) */
+static int dhcp_addr_ok(uint32_t ip)
+{
+    uint8_t a = ((uint8_t *)&ip)[0];
+    return ip != 0 && ip != 0xFFFFFFFFU && a >= 1 && a < 224 && a != 127;
+}
+
+/* contiguous netmask: ones then zeros, not all zero */
+static int dhcp_mask_ok(uint32_t mask)
+{
+    uint32_t m = ntohl(mask);
+    uint32_t inv = ~m;
+    return m != 0 && (inv & (inv + 1)) == 0;
+}
+
 int dhcp_configure(void)
 {
     if (!nic_send || !nic_poll) return DHCP_ERR_NO_NIC;
 
-    uint32_t xid = 0x44484350U ^ debugmon_uptime_ms(); /* "DHCP" xor'd with uptime -- just needs to be unlikely to collide, not cryptographically random */
+    /* Unpredictable transaction id: derived from the uptime it could be guessed
+     * by anyone on the segment and used to forge an OFFER/ACK. */
+    uint32_t xid = csprng_u32();
 
     dhcp_send(DHCPDISCOVER, xid, 0, 0);
 
@@ -178,14 +200,21 @@ int dhcp_configure(void)
     uint32_t deadline = debugmon_uptime_ms() + 4000;
     uint8_t mtype = dhcp_wait(xid, deadline, &offered_ip, &server_id, &gw, &dns, &mask);
     if (mtype != DHCPOFFER) return DHCP_ERR_TIMEOUT;
+    if (!dhcp_addr_ok(offered_ip) || server_id == 0) return DHCP_ERR_TIMEOUT;   /* unusable offer */
 
     dhcp_send(DHCPREQUEST, xid, offered_ip, server_id);
 
-    uint32_t final_ip = 0, final_gw = 0, final_dns = 0, final_mask = 0;
+    uint32_t final_ip = 0, final_gw = 0, final_dns = 0, final_mask = 0, ack_server = 0;
     deadline = debugmon_uptime_ms() + 4000;
-    mtype = dhcp_wait(xid, deadline, &final_ip, &server_id, &final_gw, &final_dns, &final_mask);
+    mtype = dhcp_wait(xid, deadline, &final_ip, &ack_server, &final_gw, &final_dns, &final_mask);
     if (mtype == DHCPNAK) return DHCP_ERR_NAK;
     if (mtype != DHCPACK) return DHCP_ERR_TIMEOUT;
+    /* The lease must come from the server we asked and name a sane address:
+     * 0.0.0.0, broadcast, loopback or multicast used to be installed as our IP,
+     * and a mask that is not a run of ones followed by zeros broke routing. */
+    if (ack_server != 0 && ack_server != server_id) return DHCP_ERR_TIMEOUT;
+    if (!dhcp_addr_ok(final_ip)) return DHCP_ERR_TIMEOUT;
+    if (final_mask && !dhcp_mask_ok(final_mask)) final_mask = 0;
 
     net_ip = final_ip;
     if (final_mask) net_netmask = final_mask;
