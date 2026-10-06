@@ -255,7 +255,7 @@ static int tls_decrypt_record(tls_ctx_t *ctx, uint8_t type,
                                const uint8_t *in, int in_len,
                                uint8_t *out, int out_cap, int *out_len)
 {
-    if (in_len < 16 + 16 || in_len > TLS_REC_MAX) return -1;
+    if (in_len < 16 + 48 || in_len > TLS_REC_MAX) return -1;       /* IV + at least MAC and one padding byte, block aligned */
     const uint8_t *iv = in;
     const uint8_t *ct = in + 16;
     int ct_len = in_len - 16;
@@ -276,14 +276,25 @@ static int tls_decrypt_record(tls_ctx_t *ctx, uint8_t type,
         for (j = 0; j < 16; j++) plaintext[i+j] ^= prev[j];
         memcpy(prev, ct+i, 16);
     }
-    /* Remove PKCS#7 padding */
-    uint8_t pad = plaintext[ct_len-1];
+    /* Remove the padding without telling the peer (or a timer) whether it was
+     * the padding or the MAC that was wrong (RFC 5246 6.2.3.2): bad padding is
+     * treated as 'no padding' so the MAC is still computed, and both failures
+     * end in the same -1. Previously the padding bytes were not checked at all
+     * (only the last one), pad values of 16..255 that the RFC allows were
+     * refused, and invalid padding returned before any MAC work. */
     int rc = -1;
-    if (pad >= 16 || ct_len - 1 - (int)pad < 0) goto out;
-    int data_mac_len = ct_len - 1 - pad;
-    if (data_mac_len < 32) goto out;
-    int data_len = data_mac_len - 32;
-    if (data_len > out_cap || data_len > TLS_RX_BUF) goto out;   /* the caller's buffer is the limit */
+    uint8_t pad = plaintext[ct_len-1];
+    int padlen = pad;
+    int good = 1;
+    if (ct_len < 32 + 1 + padlen) {
+        good = 0;
+        padlen = 0;
+    } else {
+        for (i = 0; i <= padlen; i++)                       /* padding bytes + the length byte itself */
+            if (plaintext[ct_len - 1 - i] != pad) good = 0;
+    }
+    int data_len = ct_len - 1 - padlen - 32;
+    if (data_len < 0 || data_len > out_cap || data_len > TLS_RX_BUF) goto out;   /* the caller's buffer is the limit */
 
     /* Verify MAC */
     int mi = 0;
@@ -294,7 +305,7 @@ static int tls_decrypt_record(tls_ctx_t *ctx, uint8_t type,
     memcpy(mac_input+mi, plaintext, (uint32_t)data_len); mi += data_len;
     uint8_t expected_mac[32];
     hmac_sha256(ctx->server_mac, 32, mac_input, (uint32_t)mi, expected_mac);
-    if (!ct_equal(expected_mac, plaintext + data_len, 32)) goto out;
+    if (!ct_equal(expected_mac, plaintext + data_len, 32) || !good) goto out;
 
     memcpy(out, plaintext, (uint32_t)data_len);
     *out_len = data_len;
