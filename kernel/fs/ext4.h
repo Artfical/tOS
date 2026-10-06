@@ -56,6 +56,7 @@ typedef struct {
     int lazy;                /* group flags (BLOCK_UNINIT/INODE_UNINIT) are meaningful */
     uint32_t gen_counter;    /* i_generation for new inodes */
 
+    int ro_dirty_only;       /* read-only only because the journal needs replaying */
     int ro;            /* mounted read-only: the volume uses features this driver cannot maintain */
     int use_journal;   /* tOS's own mini journal: only on volumes ext4_format() made */
     int in_txn;

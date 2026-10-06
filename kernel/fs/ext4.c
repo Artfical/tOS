@@ -1834,10 +1834,13 @@ static int ext4_probe(ext4_t *fs, blockdev_t *bd)
                            0x200 /* flex_bg */ | 0x2000 /* csum_seed */ | 0x4000 /* largedir */;
     uint32_t ro_ok = 0x1 /* sparse_super */ | 0x2 /* large_file */ | 0x8 /* huge_file */ | 0x10 /* gdt_csum */ |
                      0x20 /* dir_nlink */ | 0x40 /* extra_isize */ | 0x400 /* metadata_csum */;
-    fs->ro = ((sb->s_feature_compat & ~compat_ok) != 0) || ((sb->s_feature_incompat & ~incompat_ok) != 0) ||
-             ((sb->s_feature_ro_compat & ~ro_ok) != 0) ||
-             (sb->s_feature_incompat & 0x4 /* needs_recovery */) != 0 || blocks_hi != 0 || bad_desc || bad_csum;
-    if (fs->ro) klog_write("ext4: mounted read-only (volume uses features the driver cannot maintain)\n");
+    int unsupported = ((sb->s_feature_compat & ~compat_ok) != 0) || ((sb->s_feature_incompat & ~(incompat_ok | 0x4)) != 0) ||
+                      ((sb->s_feature_ro_compat & ~ro_ok) != 0) || blocks_hi != 0 || bad_desc || bad_csum ||
+                      rd32(raw + 0xE8) != 0 /* orphan inodes still to be processed */;
+    int dirty = (sb->s_feature_incompat & 0x4 /* needs_recovery */) != 0;
+    fs->ro_dirty_only = dirty && !unsupported && (sb->s_feature_compat & 0x4);
+    fs->ro = unsupported || dirty;
+    if (fs->ro && !fs->ro_dirty_only) klog_write("ext4: mounted read-only (volume uses features the driver cannot maintain)\n");
 
     free(sb);
 
@@ -1846,10 +1849,212 @@ static int ext4_probe(ext4_t *fs, blockdev_t *bd)
     return 0;
 }
 
+/* ---------- jbd2 journal replay (volumes made by Linux) ---------- */
+
+#define JBD2_MAGIC 0xC03B3998u
+#define JBD2_DESCRIPTOR 1u
+#define JBD2_COMMIT 2u
+#define JBD2_SB_V1 3u
+#define JBD2_SB_V2 4u
+#define JBD2_REVOKE 5u
+#define JBD2_FLAG_ESCAPE 1u
+#define JBD2_FLAG_SAME_UUID 2u
+#define JBD2_FLAG_LAST_TAG 8u
+#define JBD2_INC_REVOKE 0x1u
+#define JBD2_INC_64BIT 0x2u
+#define JBD2_INC_ASYNC_COMMIT 0x4u
+#define JBD2_INC_CSUM_V2 0x8u
+#define JBD2_INC_CSUM_V3 0x10u
+
+static uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+static uint16_t be16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
+static void put_be32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+
+typedef struct {
+    ext4_t *fs;
+    ext4_inode_t jino;
+    uint32_t jino_num;
+    uint32_t maxlen, first, start, seq;
+    uint32_t incompat;
+    uint32_t tag_bytes;
+    uint32_t *rev_blk, *rev_seq;
+    uint32_t rev_n, rev_cap;
+} ext4_jbd_t;
+
+static int ext4_jbd_read(ext4_jbd_t *j, uint32_t jblk, uint8_t *buf)
+{
+    uint32_t phys = ext4_bmap(j->fs, j->jino_num, &j->jino, jblk, 0);
+    if (phys == 0) return -1;
+    return ext4_raw_read_block(j->fs, phys, buf);
+}
+
+static uint32_t ext4_jbd_next(ext4_jbd_t *j, uint32_t blk)
+{
+    blk++;
+    return blk >= j->maxlen ? j->first : blk;
+}
+
+/* number of data blocks a descriptor block announces; optionally replays them */
+static int ext4_jbd_descriptor(ext4_jbd_t *j, uint32_t blk, const uint8_t *desc, uint32_t seq, int replay, uint32_t *ndata)
+{
+    ext4_t *fs = j->fs;
+    uint32_t tail = (j->incompat & (JBD2_INC_CSUM_V2 | JBD2_INC_CSUM_V3)) ? 4 : 0;
+    uint32_t off = 12, n = 0;
+    uint8_t *data = replay ? (uint8_t *)malloc(fs->block_size) : 0;
+    if (replay && !data) return -1;
+    while (off + j->tag_bytes <= fs->block_size - tail) {
+        uint32_t target = be32(desc + off);
+        uint32_t flags = (j->incompat & JBD2_INC_CSUM_V3) ? be32(desc + off + 4) : be16(desc + off + 6);
+        uint32_t hi = (j->incompat & JBD2_INC_64BIT) ? be32(desc + off + 8) : 0;
+        off += j->tag_bytes;
+        if (!(flags & JBD2_FLAG_SAME_UUID)) off += 16;
+        blk = ext4_jbd_next(j, blk);
+        n++;
+        if (replay) {
+            int revoked = 0;
+            for (uint32_t i = 0; i < j->rev_n; i++)
+                if (j->rev_blk[i] == target && seq <= j->rev_seq[i]) { revoked = 1; break; }
+            if (!revoked && hi == 0 && target >= fs->first_data_block && target < fs->blocks_count && target != 0) {
+                if (ext4_jbd_read(j, blk, data) != 0) { free(data); return -1; }
+                if (flags & JBD2_FLAG_ESCAPE) put_be32(data, JBD2_MAGIC);
+                if (ext4_raw_write_block(fs, target, data) != 0) { free(data); return -1; }
+            }
+        }
+        if (flags & JBD2_FLAG_LAST_TAG) break;
+    }
+    free(data);
+    *ndata = n;
+    return 0;
+}
+
+/* One walk over the log. mode 0: find where valid transactions end (*end_seq);
+ * 1: collect revoke records; 2: replay data blocks. */
+static int ext4_jbd_walk(ext4_jbd_t *j, int mode, uint32_t *end_seq)
+{
+    ext4_t *fs = j->fs;
+    uint8_t *buf = (uint8_t *)malloc(fs->block_size);
+    if (!buf) return -1;
+    uint32_t blk = j->start, seq = j->seq;
+    uint32_t guard = 0;
+    int rc = 0;
+    /* a transaction counts only once its commit block has been seen; pending
+     * work between two commits is applied at the commit */
+    while (guard++ < j->maxlen) {
+        if (mode != 0 && seq >= *end_seq) break;
+        if (ext4_jbd_read(j, blk, buf) != 0) break;
+        if (be32(buf) != JBD2_MAGIC || be32(buf + 8) != seq) break;
+        uint32_t type = be32(buf + 4);
+        if (type == JBD2_DESCRIPTOR) {
+            uint32_t nd = 0;
+            if (ext4_jbd_descriptor(j, blk, buf, seq, mode == 2, &nd) != 0) { rc = -1; break; }
+            for (uint32_t i = 0; i <= nd; i++) blk = ext4_jbd_next(j, blk);
+            guard += nd;
+        } else if (type == JBD2_REVOKE) {
+            if (mode == 1) {
+                uint32_t used = be32(buf + 12), sz = (j->incompat & JBD2_INC_64BIT) ? 8 : 4;
+                if (used > fs->block_size) used = fs->block_size;
+                for (uint32_t o = 16; o + sz <= used; o += sz) {
+                    if (j->rev_n == j->rev_cap) {
+                        uint32_t nc = j->rev_cap ? j->rev_cap * 2 : 256;
+                        uint32_t *nb = (uint32_t *)malloc(nc * 4), *ns = (uint32_t *)malloc(nc * 4);
+                        if (!nb || !ns) { free(nb); free(ns); rc = -1; break; }
+                        if (j->rev_n) { memcpy(nb, j->rev_blk, j->rev_n * 4); memcpy(ns, j->rev_seq, j->rev_n * 4); }
+                        free(j->rev_blk); free(j->rev_seq);
+                        j->rev_blk = nb; j->rev_seq = ns; j->rev_cap = nc;
+                    }
+                    uint32_t b = be32(buf + o), k;
+                    for (k = 0; k < j->rev_n; k++) if (j->rev_blk[k] == b) break;
+                    if (k == j->rev_n) { j->rev_blk[k] = b; j->rev_seq[k] = seq; j->rev_n++; }
+                    else if (seq > j->rev_seq[k]) j->rev_seq[k] = seq;
+                }
+                if (rc) break;
+            }
+            blk = ext4_jbd_next(j, blk);
+        } else if (type == JBD2_COMMIT) {
+            seq++;
+            blk = ext4_jbd_next(j, blk);
+        } else {
+            break;
+        }
+    }
+    if (mode == 0) *end_seq = seq;
+    free(buf);
+    return rc;
+}
+
+/* Replays a journal that was left dirty (needs_recovery). Returns 0 when the
+ * log is consistent with the file system afterwards, -1 when it could not be
+ * replayed (the volume then stays read-only). */
+static int ext4_jbd_recover(ext4_t *fs)
+{
+    uint8_t *sb = (uint8_t *)malloc(1024);
+    uint8_t *jsb = (uint8_t *)malloc(fs->block_size);
+    ext4_jbd_t *j = (ext4_jbd_t *)malloc(sizeof(*j));
+    int rc = -1;
+    if (!sb || !jsb || !j) goto out;
+    memset(j, 0, sizeof(*j));
+    j->fs = fs;
+    if (blockdev_read_bytes(fs->bd, 1024, 1024, sb) != 0) goto out;
+    if (!(rd32(sb + 0x5C) & 0x4) || (fs->feat_incompat & 0x8 /* external journal device */)) goto out;
+    j->jino_num = rd32(sb + 0xE0);
+    if (j->jino_num == 0) j->jino_num = 8;
+    if (ext4_read_inode(fs, j->jino_num, &j->jino) != 0) goto out;
+    if (ext4_jbd_read(j, 0, jsb) != 0) goto out;
+    uint32_t bt = be32(jsb + 4);
+    if (be32(jsb) != JBD2_MAGIC || (bt != JBD2_SB_V1 && bt != JBD2_SB_V2)) goto out;
+    if (be32(jsb + 12) != fs->block_size) goto out;
+    j->maxlen = be32(jsb + 16);
+    j->first = be32(jsb + 20);
+    j->seq = be32(jsb + 24);
+    j->start = be32(jsb + 28);
+    j->incompat = bt == JBD2_SB_V2 ? be32(jsb + 40) : 0;
+    if (j->incompat & ~(JBD2_INC_REVOKE | JBD2_INC_64BIT | JBD2_INC_CSUM_V2 | JBD2_INC_CSUM_V3)) goto out;   /* async commit, fast commit */
+    if (j->first == 0 || j->first >= j->maxlen) goto out;
+    if (j->incompat & JBD2_INC_CSUM_V3) j->tag_bytes = 16;
+    else {
+        j->tag_bytes = 12 + ((j->incompat & JBD2_INC_CSUM_V2) ? 2 : 0);
+        if (!(j->incompat & JBD2_INC_64BIT)) j->tag_bytes -= 4;
+    }
+
+    if (j->start != 0) {
+        uint32_t end_seq = j->seq;
+        if (ext4_jbd_walk(j, 0, &end_seq) != 0) goto out;
+        if (ext4_jbd_walk(j, 1, &end_seq) != 0) goto out;
+        if (ext4_jbd_walk(j, 2, &end_seq) != 0) goto out;
+        j->seq = end_seq;
+    }
+    /* the log is empty now; whatever was replayed may include the superblock, so re-read it */
+    put_be32(jsb + 24, j->seq);
+    put_be32(jsb + 28, 0);
+    if (j->incompat & (JBD2_INC_CSUM_V2 | JBD2_INC_CSUM_V3)) {
+        put_be32(jsb + 252, 0);
+        put_be32(jsb + 252, crc32c_update(0xFFFFFFFFu, jsb, 1024));
+    }
+    uint32_t phys = ext4_bmap(fs, j->jino_num, &j->jino, 0, 0);
+    if (phys == 0 || ext4_raw_write_block(fs, phys, jsb) != 0) goto out;
+    if (blockdev_read_bytes(fs->bd, 1024, 1024, sb) != 0) goto out;
+    wr32(sb + 0x60, rd32(sb + 0x60) & ~0x4u);
+    if (fs->csum_md) wr32(sb + 0x3FC, crc32c_update(0xFFFFFFFFu, sb, 0x3FC));
+    if (blockdev_write_bytes(fs->bd, 1024, 1024, sb) != 0) goto out;
+    rc = 0;
+out:
+    if (j) { free(j->rev_blk); free(j->rev_seq); }
+    free(j);
+    free(jsb);
+    free(sb);
+    return rc;
+}
+
 int ext4_probe_and_mount(ext4_t *fs, blockdev_t *bd)
 {
     if (ext4_probe(fs, bd) != 0) return -1;
-    if (fs->use_journal) ext4_journal_recover(fs);
+    if (fs->use_journal) { ext4_journal_recover(fs); return 0; }
+    if ((fs->feat_incompat & 0x4) && fs->ro_dirty_only) {
+        if (ext4_jbd_recover(fs) == 0) {
+            if (ext4_probe(fs, bd) != 0) return -1;
+            klog_write("ext4: journal replayed\n");
+        }
+    }
     return 0;
 }
 
