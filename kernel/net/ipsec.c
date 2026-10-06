@@ -85,22 +85,22 @@ void ipsec_ah_handle(ip_hdr_t *outer_ip, void *pkt, int len) {
         return;
     }
 
-    /* Locate (or record) the SA */
+    /* Only a Security Association that was configured on purpose may be used.
+     * Learning one from the first packet that mentions an unknown SPI let any
+     * host fill the (8 entry) table with junk, and then use the fake SA's
+     * sequence state to make real traffic look like a replay. */
     ipsec_sa_t *sa = sa_lookup(spi, outer_ip->src_ip);
-    if (!sa) {
-        /* Auto-learn inbound SA (no key material — just track it) */
-        ipsec_sa_add(outer_ip->src_ip, spi, IPPROTO_AH);
-        sa = sa_lookup(spi, outer_ip->src_ip);
+    if (!sa || sa->protocol != IPPROTO_AH) {
+        terminal_writestring("[IPsec AH] no SA for this SPI/peer, dropped\n");
+        return;
     }
 
-    if (sa) {
-        /* Anti-replay: accept if seq is newer */
-        if (seq <= sa->seq && sa->seq > 0) {
-            terminal_writestring("[IPsec AH] replay attack detected\n");
-            return;
-        }
-        sa->seq = seq;
+    /* (anti-replay state is updated only after the packet is authenticated) */
+    if (seq <= sa->seq && sa->seq > 0) {
+        terminal_writestring("[IPsec AH] replay attack detected\n");
+        return;
     }
+    sa->seq = seq;
 
     /* Pass inner payload to IP stack */
     uint8_t *inner  = (uint8_t *)pkt + ah_size;
@@ -146,18 +146,13 @@ void ipsec_esp_handle(ip_hdr_t *ip, void *pkt, int len) {
     uint32_t spi = ntohl(esp->spi);
     uint32_t seq = ntohl(esp->seq_num);
 
+    /* No auto-learning (see ipsec_ah_handle()), and no sequence state is
+     * touched: the packet cannot be authenticated here (no ESP crypto), so
+     * nothing it says may change what we remember. */
     ipsec_sa_t *sa = sa_lookup(spi, ip->src_ip);
-    if (!sa) {
-        ipsec_sa_add(ip->src_ip, spi, IPPROTO_ESP);
-        sa = sa_lookup(spi, ip->src_ip);
-    }
-
-    if (sa) {
-        if (seq <= sa->seq && sa->seq > 0) {
-            terminal_writestring("[IPsec ESP] replay detected\n");
-            return;
-        }
-        sa->seq = seq;
+    if (!sa || sa->protocol != IPPROTO_ESP) {
+        terminal_writestring("[IPsec ESP] no SA for this SPI/peer, dropped\n");
+        return;
     }
 
     terminal_writestring("[IPsec ESP] encrypted payload SPI=0x");
