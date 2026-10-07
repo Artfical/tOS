@@ -31,6 +31,8 @@ typedef struct {
     uint32_t bitmap_cluster;
     uint32_t bitmap_size_bytes;
     uint32_t alloc_hint;
+    uint16_t *upcase;        /* up-case table of the volume (identity beyond upcase_n) */
+    uint32_t upcase_n;
     exfat_fd_t fds[VFS_MAX_FDS];
 } exfat_t;
 

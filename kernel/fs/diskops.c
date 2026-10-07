@@ -260,6 +260,7 @@ int diskops_umount(const char *mount_point, char *err, int err_len)
                 ntfs_umount(nfs);
                 memset(nfs, 0, sizeof(*nfs));
             }
+            if (strcmp(bd->fs_type, "exfat") == 0 && bd->fs_ctx) exfat_umount((exfat_t *)bd->fs_ctx);
             if (bd->fs_ctx) {
                 /* free the instance slot (a slot is in use while its bd is set) */
                 const char *ft = bd->fs_type;
