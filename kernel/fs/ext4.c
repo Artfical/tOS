@@ -3176,3 +3176,186 @@ out:
     free(fs); free(zero); free(bm); free(gdt); free(sb);
     return rc;
 }
+
+/* ---------- offline growing ---------- */
+
+static void ext4_grow_err(char *err, int err_len, const char *msg)
+{
+    if (!err || err_len <= 0) return;
+    int i = 0;
+    while (msg[i] && i < err_len - 1) { err[i] = msg[i]; i++; }
+    err[i] = 0;
+}
+
+/* Grows an unmounted ext2/3/4 volume to new_bytes. New block groups need descriptor
+ * slots: they must fit in the descriptor blocks the volume already has (resize2fs
+ * would use the reserved GDT blocks; here the resize inode's backup lists are kept up
+ * to date instead, so such volumes stay consistent for e2fsck and for Linux). */
+int ext4_grow(blockdev_t *bd, uint64_t new_bytes, char *err, int err_len)
+{
+    int rc = -1;
+    ext4_t *fs = (ext4_t *)malloc(sizeof(ext4_t));
+    uint8_t *bm = (uint8_t *)malloc(65536);
+    uint8_t *zero = (uint8_t *)malloc(65536);
+    uint8_t *sb = (uint8_t *)malloc(1024);
+    uint8_t *gdt = 0;
+    if (!fs || !bm || !zero || !sb) { ext4_grow_err(err, err_len, "out of memory"); goto out; }
+    memset(fs, 0, sizeof(*fs));
+    memset(zero, 0, 65536);
+    if (ext4_probe_only(fs, bd) != 0) { ext4_grow_err(err, err_len, "not an ext2/3/4 volume"); goto out; }
+    if (fs->ro) { ext4_grow_err(err, err_len, "volume needs a journal replay or uses unsupported features"); goto out; }
+
+    uint32_t bs = fs->block_size, bpg = fs->blocks_per_group, fdb = fs->first_data_block;
+    uint64_t want = new_bytes / bs;
+    if (want > 0xFFFFFFFFull) want = 0xFFFFFFFFull;
+    uint32_t new_total = (uint32_t)want;
+    if (new_total <= fs->blocks_count) { ext4_grow_err(err, err_len, "volume is already that large (shrinking is not supported)"); goto out; }
+
+    uint32_t old_total = fs->blocks_count, old_groups = fs->num_groups;
+    uint32_t itb = (fs->inodes_per_group * fs->inode_size + bs - 1) / bs;
+    uint32_t new_groups;
+    for (;;) {
+        new_groups = (new_total - fdb + bpg - 1) / bpg;
+        uint32_t last = new_total - fdb - (new_groups - 1) * bpg;
+        uint32_t over = ext4_group_has_super(fs, new_groups - 1) ? 1 + fs->gdt_blocks + fs->reserved_gdt : 0;
+        if (new_groups > old_groups && last < over + 2 + itb + 50) { new_total -= last; continue; }
+        break;
+    }
+    if (new_total <= old_total) { ext4_grow_err(err, err_len, "the extra space is too small to use"); goto out; }
+    uint32_t old_gdt = fs->gdt_blocks, need_gdt = (new_groups * fs->desc_size + bs - 1) / bs;
+    if (need_gdt > old_gdt) {
+        /* the descriptor table grows into the blocks resize_inode reserved behind it */
+        if (need_gdt - old_gdt > fs->reserved_gdt) {
+            ext4_grow_err(err, err_len, "no room for the new group descriptors (no reserved GDT blocks left)");
+            goto out;
+        }
+        fs->reserved_gdt -= need_gdt - old_gdt;
+        fs->gdt_blocks = need_gdt;
+    }
+
+    uint32_t free_add = 0;
+    /* 1. the old last group gets the new blocks it can hold */
+    {
+        uint32_t g = old_groups - 1, base = fdb + g * bpg;
+        uint32_t old_in = old_total - base, new_in = new_total - base;
+        if (new_in > bpg) new_in = bpg;
+        if (new_in > old_in) {
+            ext4_gd_t gd;
+            if (ext4_read_group_desc(fs, g, &gd) != 0 || gd.bg_block_bitmap == 0) { ext4_grow_err(err, err_len, "bad group descriptor"); goto out; }
+            if (ext4_load_block_bitmap(fs, g, &gd, bm) != 0) { ext4_grow_err(err, err_len, "cannot read block bitmap"); goto out; }
+            for (uint32_t b = old_in; b < new_in; b++) bm[b >> 3] &= (uint8_t)~(1u << (b & 7));
+            ext4_bitmap_pad(bm, new_in, bs * 8);
+            if (ext4_cached_write_block(fs, gd.bg_block_bitmap, bm) != 0) { ext4_grow_err(err, err_len, "write failed"); goto out; }
+            gd.bg_free_blocks_count = (uint16_t)(gd.bg_free_blocks_count + (new_in - old_in));
+            gd.bg_flags &= (uint16_t)~EXT4_BG_BLOCK_UNINIT;
+            ext4_gd_bitmap_csum(fs, &gd, 0, bm);
+            if (ext4_write_group_desc(fs, g, &gd) != 0) { ext4_grow_err(err, err_len, "write failed"); goto out; }
+            free_add += new_in - old_in;
+        }
+    }
+
+    /* 3. resize inode: drop the reserved blocks the descriptor table took over and
+     * record the reserved-GDT backups of the new backup groups */
+    if ((fs->feat_compat & 0x10) && (new_groups > old_groups || need_gdt > old_gdt)) {
+        uint8_t ri[128];
+        if (ext4_read_inode_raw(fs, 7, ri) != 0) { ext4_grow_err(err, err_len, "cannot read the resize inode"); goto out; }
+        uint32_t dind = rd32(ri + 0x28 + 13 * 4);
+        uint8_t *db = (uint8_t *)malloc(bs), *gb = (uint8_t *)malloc(bs);
+        if (!db || !gb) { free(db); free(gb); ext4_grow_err(err, err_len, "out of memory"); goto out; }
+        int bad = dind == 0 || ext4_cached_read_block(fs, dind, db) != 0;
+        uint32_t added = 0, removed = 0, ddirty = 0;
+        for (uint32_t e = 0; !bad && e < bs / 4; e++) {
+            uint32_t p = rd32(db + e * 4);
+            if (p == 0) continue;
+            if (ext4_cached_read_block(fs, p, gb) != 0) { bad = 1; break; }
+            if (p < fdb + 1 + fs->gdt_blocks) {              /* now a descriptor block */
+                removed++;
+                for (uint32_t k = 0; k < bs / 4; k++) if (rd32(gb + k * 4)) removed++;
+                wr32(db + e * 4, 0);
+                ddirty = 1;
+                continue;
+            }
+            uint32_t idx = 0, dirty = 0;
+            for (uint32_t g = 1; g < new_groups; g++) {
+                if (!ext4_group_has_super(fs, g)) continue;
+                if (g >= old_groups && idx < bs / 4 && rd32(gb + idx * 4) == 0) {
+                    wr32(gb + idx * 4, p + g * bpg);
+                    dirty = 1; added++;
+                }
+                idx++;
+            }
+            if (dirty && ext4_cached_write_block(fs, p, gb) != 0) { bad = 1; break; }
+        }
+        if (!bad && ddirty && ext4_cached_write_block(fs, dind, db) != 0) bad = 1;
+        free(db); free(gb);
+        if (bad) { ext4_grow_err(err, err_len, "resize inode is damaged"); goto out; }
+        wr32(ri + 0x1C, rd32(ri + 0x1C) + (added - removed) * (bs / 512));
+        if (ext4_write_inode_raw(fs, 7, ri) != 0) { ext4_grow_err(err, err_len, "write failed"); goto out; }
+    }
+
+    for (uint32_t b = old_gdt; b < need_gdt; b++)               /* blocks that now hold descriptors start clean */
+        if (ext4_cached_write_block(fs, fdb + 1 + b, zero) != 0) { ext4_grow_err(err, err_len, "write failed"); goto out; }
+
+    /* 2. brand-new groups */
+    for (uint32_t g = old_groups; g < new_groups; g++) {
+        uint32_t base = fdb + g * bpg;
+        uint32_t in_group = new_total - base;
+        if (in_group > bpg) in_group = bpg;
+        uint32_t cur = base + (ext4_group_has_super(fs, g) ? 1 + fs->gdt_blocks + fs->reserved_gdt : 0);
+        uint32_t bb = cur++, ib = cur++, it = cur;
+        uint32_t meta = it + itb - base;
+        ext4_gd_t gd;
+        memset(&gd, 0, sizeof(gd));
+        gd.bg_block_bitmap = bb;
+        gd.bg_inode_bitmap = ib;
+        gd.bg_inode_table = it;
+        gd.bg_free_blocks_count = (uint16_t)(in_group - meta);
+        gd.bg_free_inodes_count = (uint16_t)fs->inodes_per_group;
+        free_add += in_group - meta;
+
+        memset(bm, 0, bs);
+        for (uint32_t b = 0; b < meta; b++) ext4_bit_set(bm, b);
+        ext4_bitmap_pad(bm, in_group, bs * 8);
+        if (blockdev_write_bytes(bd, (uint64_t)bb * bs, bs, bm) != 0) { ext4_grow_err(err, err_len, "write failed"); goto out; }
+        ext4_gd_bitmap_csum(fs, &gd, 0, bm);
+        memset(bm, 0, bs);
+        ext4_bitmap_pad(bm, fs->inodes_per_group, bs * 8);
+        if (blockdev_write_bytes(bd, (uint64_t)ib * bs, bs, bm) != 0) { ext4_grow_err(err, err_len, "write failed"); goto out; }
+        ext4_gd_bitmap_csum(fs, &gd, 1, bm);
+        for (uint32_t b = 0; b < itb; b++)
+            if (blockdev_write_bytes(bd, (uint64_t)(it + b) * bs, bs, zero) != 0) { ext4_grow_err(err, err_len, "write failed"); goto out; }
+        /* reserved GDT blocks of a backup group are plain zero blocks until a backup lands there */
+        if (ext4_group_has_super(fs, g) && fs->reserved_gdt)
+            for (uint32_t b = 0; b < fs->reserved_gdt; b++)
+                if (blockdev_write_bytes(bd, (uint64_t)(base + 1 + fs->gdt_blocks + b) * bs, bs, zero) != 0) { ext4_grow_err(err, err_len, "write failed"); goto out; }
+        if (ext4_write_group_desc(fs, g, &gd) != 0) { ext4_grow_err(err, err_len, "write failed"); goto out; }
+    }
+
+    /* 4. superblock, then every backup of it and of the descriptor table */
+    if (blockdev_read_bytes(bd, 1024, 1024, sb) != 0) goto out;
+    if (fs->feat_compat & 0x10) wr16(sb + 0xCE, (uint16_t)fs->reserved_gdt);
+    wr32(sb + 0x00, fs->inodes_count + (new_groups - old_groups) * fs->inodes_per_group);
+    wr32(sb + 0x04, new_total);
+    wr32(sb + 0x0C, rd32(sb + 0x0C) + free_add);
+    wr32(sb + 0x10, rd32(sb + 0x10) + (new_groups - old_groups) * fs->inodes_per_group);
+    if (fs->csum_md) wr32(sb + 0x3FC, crc32c_update(0xFFFFFFFFu, sb, 0x3FC));
+    if (blockdev_write_bytes(bd, 1024, 1024, sb) != 0) { ext4_grow_err(err, err_len, "write failed"); goto out; }
+
+    gdt = (uint8_t *)malloc((size_t)fs->gdt_blocks * bs);
+    if (!gdt) goto out;
+    if (blockdev_read_bytes(bd, (uint64_t)fs->gdt_block * bs, fs->gdt_blocks * bs, gdt) != 0) goto out;
+    for (uint32_t g = 1; g < new_groups; g++) {
+        if (!ext4_group_has_super(fs, g)) continue;
+        uint32_t base = fdb + g * bpg;
+        uint8_t copy[1024];
+        memcpy(copy, sb, 1024);
+        wr16(copy + 0x5A, (uint16_t)g);
+        if (fs->csum_md) wr32(copy + 0x3FC, crc32c_update(0xFFFFFFFFu, copy, 0x3FC));
+        if (blockdev_write_bytes(bd, (uint64_t)base * bs, 1024, copy) != 0) goto out;
+        if (blockdev_write_bytes(bd, (uint64_t)(base + 1) * bs, fs->gdt_blocks * bs, gdt) != 0) goto out;
+    }
+    rc = 0;
+out:
+    free(fs); free(bm); free(zero); free(sb); free(gdt);
+    return rc;
+}

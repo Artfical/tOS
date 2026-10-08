@@ -354,6 +354,11 @@ int diskops_resize(const char *name, uint32_t size_mb, char *err, int err_len)
     if (!type) { seterr(err, err_len, "unknown filesystem"); return -1; }
     int rc;
     if (strcmp(type, "ntfs") == 0) rc = ntfs_resize(bd, sectors512, err, err_len);
+    else if (!strcmp(type, "ext2") || !strcmp(type, "ext3") || !strcmp(type, "ext4")) {
+        char e2[100] = "";
+        rc = ext4_grow(bd, want_bytes, e2, sizeof(e2));
+        if (rc) seterr(err, err_len, e2[0] ? e2 : "ext grow failed");
+    }
     else { seterr(err, err_len, "resizing is not implemented for this filesystem"); rc = -1; }
     blockdev_cache_invalidate(bd);
     return rc;

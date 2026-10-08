@@ -509,6 +509,14 @@ int main(int argc, char **argv)
         return fr != 0;
     }
 #endif
+#ifdef FS_GROW
+    if (strcmp(argv[2], "grow") == 0) {              /* IMAGE grow BYTES: offline grow (the image must already be that large) */
+        char err[100] = "";
+        int gr = FS_GROW(&g_bd, argc > 3 ? strtoull(argv[3], 0, 10) : g_bd.total_sectors * 512, err, sizeof(err));
+        printf("grow -> %d %s\n", gr, err);
+        return gr != 0;
+    }
+#endif
     if (getenv("NTFS_VERBOSE")) g_verbose = 1;
     if (getenv("NTFS_TRACE")) g_trace = 1;
     if (do_mount()) return 2;

@@ -73,6 +73,7 @@ int ext4_umount(ext4_t *fs);
 const char *ext4_flavor(const ext4_t *fs);   /* "ext2", "ext3" or "ext4" by feature set */
 void ext4_mount_vfs(ext4_t *fs, const char *mount_point);
 int ext4_format(blockdev_t *bd, const char *label);
+int ext4_grow(blockdev_t *bd, uint64_t new_bytes, char *err, int err_len);   /* offline: grows an ext2/3/4 volume */
 int ext4_mkfs(blockdev_t *bd, int flavor, const char *label);   /* Linux-compatible ext2 (2), ext3 (3) or ext4 (4) */
 
 #endif
