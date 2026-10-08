@@ -283,6 +283,16 @@ Use `disk list` to see detected block devices, `disk mount <device> <mountpoint>
 
 > **tFS source:** [git.artfical.com/Artfical/tfs](https://git.artfical.com/Artfical/tfs)
 
+### Users, permissions and `/system`
+
+tOS has Linux-style accounts. The installer asks for a computer name, the root password and the first user (who joins the `sudo` group). Accounts live in `/etc/passwd`, `/etc/shadow` (PBKDF2-HMAC-SHA256, mode 0600) and `/etc/group`. The kernel and everything it starts run as root (uid 0); a login prompt then drops the shell to the user who signed in.
+
+- `su`, `sudo`, `passwd`, `useradd`, `userdel`, `id`, `groups`, `whoami`, `chmod`, `chown`, `chgrp`, `umask`, `stat` behave as on Linux. `sudo` is allowed for root and members of `sudo`/`wheel`; the password is cached for 5 minutes.
+- Every task has a uid/gid. The VFS checks owner/group/other rwx bits, directory search (x) and the sticky bit on filesystems that store ownership (tFS, ramfs, ext2/3/4, XFS, Btrfs). FAT, exFAT and NTFS have no ownership model and are not checked.
+- The disk root holds a Windows-style `/system` folder: `programs/` (tpkg packages), `apps/*.t` (launchers for the terminal, WM and other built-in apps), `kernel/` and `config/`. Deleting or moving anything under `/system` needs root **and** the password, once per command. `tpkg install` requires root.
+- Note: the terminal and WM implementations are still compiled into the kernel image; the `.t` files in `/system/apps` are real launchers that open them. Native `.t` programs run without address-space isolation, so permissions are not a hard boundary against hostile native code.
+
+
 ## Networking
 
 The network stack is implemented from scratch in `kernel/net/`. It supports both IPv4 and IPv6 and spans the following protocols:

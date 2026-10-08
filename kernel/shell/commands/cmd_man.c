@@ -64,18 +64,19 @@ static const man_page_t man_pages[] = {
 {"ls",
 "ls - list directory contents\n\n"
 "With no argument, lists the current directory. With a path\n"
-"argument, lists that directory instead. Directories and files are\n"
-"both shown; there is no hidden-file convention in tOS's VFS.\n\n"
+"argument, lists that directory instead.\n"
+"  -l   long format: mode, owner, group, size (drwxr-xr-x root root ...)\n"
+"  -a   also show . and ..\n\n"
 "Examples:\n"
-"  /> ls\n"
-"  /> ls /programs\n"
+"  $ ls\n"
+"  $ ls -l /system\n"
 },
 {"cd",
 "cd - change the current working directory\n\n"
 "Usage: cd <path>\n"
-"Accepts absolute paths ('/programs') or relative ones ('..',\n"
-"'subdir'). With no argument it is a no-op (there is no home\n"
-"directory concept yet).\n\n"
+"Accepts absolute paths ('/system') or relative ones ('..',\n"
+"'subdir'). You need search (x) permission on every directory on\n"
+"the way. You start in your home directory, /home/<name>.\n\n"
 "Examples:\n"
 "  /> cd /programs\n"
 "  /> cd ..\n"
@@ -275,15 +276,19 @@ static const man_page_t man_pages[] = {
 "  /> uname\n"
 },
 {"whoami",
-"whoami - print the current user name\n\n"
-"tOS is currently single-user; this always prints the same name.\n\n"
+"whoami - print the name of the user the shell runs as\n\n"
+"After login this is your account; inside 'su' or 'sudo' it is the\n"
+"account the commands run as (usually root).\n\n"
 "Example:\n"
 "  /> whoami\n"
 },
 {"hostname",
-"hostname - print the system hostname\n\n"
+"hostname - print (or, as root, set) the computer name\n\n"
+"Usage: hostname [name]\n"
+"The name is stored in /etc/hostname and shows in the prompt.\n\n"
 "Example:\n"
-"  /> hostname\n"
+"  $ hostname\n"
+"  # hostname mybox\n"
 },
 {"date",
 "date - print the current date and time\n\n"
@@ -484,11 +489,90 @@ static const man_page_t man_pages[] = {
 },
 {"chmod",
 "chmod - change a file's permission bits\n\n"
-"Usage: chmod <mode> <path>\n"
-"'mode' is an octal permission value, same convention as Unix\n"
-"(e.g. 644, 755).\n\n"
+"Usage: chmod <mode> <path>...\n"
+"'mode' is octal (644, 755, 1777) or symbolic (u+x, go-w, a=r). Only the\n"
+"owner of a file, or root, may change it.\n\n"
 "Example:\n"
-"  /> chmod 644 /notes/todo.txt\n"
+"  $ chmod 600 secret.txt\n"
+"  $ chmod g+w notes.txt\n"
+},
+{"chown",
+"chown - change who owns a file\n\n"
+"Usage: chown <user>[:<group>] <path>...\n"
+"Only root may give files away; an owner may only change the group, to\n"
+"one of his own groups.\n\n"
+"Example:\n"
+"  # chown alice:users /home/alice/report.txt\n"
+},
+{"chgrp",
+"chgrp - change the group of a file\n\n"
+"Usage: chgrp <group> <path>...\n\n"
+"Example:\n"
+"  $ chgrp users report.txt\n"
+},
+{"umask",
+"umask - show or set the permissions removed from new files\n\n"
+"Usage: umask [mask]\n"
+"The default 022 makes new files 644 and new directories 755.\n\n"
+"Example:\n"
+"  $ umask 077\n"
+},
+{"id",
+"id - print the user and group ids of a user\n\n"
+"Usage: id [user]\n\n"
+"Example:\n"
+"  $ id\n"
+"  uid=1000(alice) gid=1000(alice) groups=1000(alice),27(sudo)\n"
+},
+{"groups",
+"groups - print the groups a user belongs to\n\n"
+"Usage: groups [user]\n"
+},
+{"passwd",
+"passwd - change a password\n\n"
+"Usage: passwd [user]\n"
+"You are asked for the current password (root is not), then the new one\n"
+"twice. Passwords are stored salted and hashed in /etc/shadow, which only\n"
+"root can read.\n"
+},
+{"useradd",
+"useradd - create a user account (root)\n\n"
+"Usage: useradd [-G sudo] <name>\n"
+"Asks for the new password, makes /home/<name> and a private group.\n"
+"With -G sudo the user may use sudo.\n\n"
+"Example:\n"
+"  # useradd -G sudo bob\n"
+},
+{"userdel",
+"userdel - remove a user account (root)\n\n"
+"Usage: userdel <name>\n"
+"The home directory and its files are kept.\n"
+},
+{"su",
+"su - start a shell as another user\n\n"
+"Usage: su [-] [user]\n"
+"Without a name you become root. You must give that user's password\n"
+"unless you are root already. 'exit' returns to your own shell.\n"
+},
+{"sudo",
+"sudo - run one command as root (or another user)\n\n"
+"Usage: sudo [-u user] <command> [args...]\n"
+"       sudo -i        a root shell\n"
+"       sudo -k        forget the password for now\n"
+"Allowed for root and for members of the 'sudo' group; you give your own\n"
+"password, which is remembered for five minutes. The password also\n"
+"counts as the confirmation that deleting files under /system needs.\n\n"
+"Example:\n"
+"  $ sudo tpkg install git\n"
+},
+{"stat",
+"stat - show a file's size, permissions and owner\n\n"
+"Usage: stat <path>\n"
+},
+{"exit",
+"exit - leave the current shell (also: logout)\n\n"
+"In your login shell this returns to the login prompt; inside su or sudo -i\n"
+"it returns to the shell you came from.\n"
 },
 {"hexdump",
 "hexdump - show a file's raw bytes in hex\n\n"

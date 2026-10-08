@@ -73,6 +73,13 @@ void cmd_help(int argc, char **args)
     terminal_writestring("  about      - about tOS\n");
     terminal_writestring("  uname      - system info\n");
     terminal_writestring("  whoami     - current user\n");
+    terminal_writestring("  id/groups  - user and group ids\n");
+    terminal_writestring("  su/sudo    - run as another user / as root\n");
+    terminal_writestring("  passwd     - change a password\n");
+    terminal_writestring("  useradd/userdel - manage accounts (root)\n");
+    terminal_writestring("  chmod/chown/chgrp/umask - permissions and owners\n");
+    terminal_writestring("  stat       - file size, mode and owner\n");
+    terminal_writestring("  exit       - leave this shell (logout)\n");
     terminal_writestring("  hostname   - system hostname\n");
     terminal_writestring("  date       - show date/time\n");
     terminal_writestring("  cal        - show calendar\n");
