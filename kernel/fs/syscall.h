@@ -22,6 +22,7 @@
 /* tOS-specific extensions -- deliberately numbered well above the
  * Linux-i386-compatible range above (highest real one there is 108)
  * so a future real syscall never collides with these. */
+#define SYS_OPEN_APP     250 /* a=app name -- opens a built-in window-manager app (what the programs in /system/apps do); -1 without a GUI */
 #define SYS_NET_RESOLVE  200
 #define SYS_NET_CONNECT  201
 #define SYS_NET_SEND     202

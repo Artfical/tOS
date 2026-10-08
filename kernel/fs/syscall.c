@@ -18,6 +18,8 @@
 #include "png.h"
 #include "debugmon.h"
 #include "vga.h"
+#include "tos_api.h"
+#include "gui.h"
 
 /* Fixed-layout argument structs for the crypto syscalls -- mirrored
  * by hand in the SDK's tos.h (there's no shared kernel/userspace
@@ -416,6 +418,15 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
                 return 0;
             }
             return -1;
+        }
+
+        case SYS_OPEN_APP: {
+            if (!user_cstr_ok(a)) return (uint32_t)-1;
+            if (!gui_is_active()) return (uint32_t)-1;
+            char app[FS_NAME_LEN];
+            strncpy(app, (const char *)a, sizeof(app) - 1);
+            app[sizeof(app) - 1] = 0;
+            return (uint32_t)tos_open_app(app);
         }
 
         case SYS_NET_RESOLVE: {

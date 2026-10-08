@@ -952,6 +952,7 @@ int wm_open_app(const char *name)
     else if (strcmp(name, "notes") == 0 || strcmp(name, "stickynotes") == 0) wm_open_stickynotes();
     else if (strcmp(name, "doom") == 0) wm_open_doom();
     else if (strcmp(name, "terminal") == 0) wm_open_window("");
+    else if (strcmp(name, "wm") == 0) { /* the window manager is what is running: nothing to start */ }
     else return -1;
     return 0;
 }

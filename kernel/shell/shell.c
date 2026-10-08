@@ -78,8 +78,15 @@ static int path_fallback_exec(const char *cmd, int argc, char **args)
         }
     }
 
-    /* the system's own programs, then the legacy initrd location (predates path.tmbl) */
+    /* the applications in /system/apps, the system's own programs, then the legacy initrd location */
     char path[160];
+    strcpy(path, "/system/apps/");
+    strcat(path, cmd);
+    strcat(path, ".t");
+    if (ramfs_exists(path)) {
+        path_run_file(path, argc, args);
+        return 1;
+    }
     strcpy(path, "/system/programs/");
     strcat(path, cmd);
     strcat(path, "/");
