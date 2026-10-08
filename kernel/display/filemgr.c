@@ -8,6 +8,7 @@
 #include "memory.h"
 #include "fsbridge.h"
 #include "vfs.h"
+#include "auth.h"
 
 #define FM_COLS 79
 #define FM_ROWS 22
@@ -570,16 +571,25 @@ static void draw_list(void)
             line[3] = ' ';
             int k = 4;
             int j = 0;
-            while (e->name[j] && k < FM_COLS - 14) line[k++] = e->name[j++];
+            while (e->name[j] && k < FM_COLS - 34) line[k++] = e->name[j++];
 
-            char right[16];
-            int rk;
+            /* rwxr-xr-x  owner  size */
+            char right[40];
+            int rk = 0;
+            for (int b = 0; b < 9; b++) right[rk++] = (e->mode & (0400u >> b)) ? "rwxrwxrwx"[b] : '-';
+            right[rk++] = ' ';
+            {
+                const char *on = auth_name_of(e->uid);
+                int oc = 0;
+                while (on[oc] && oc < 8) right[rk++] = on[oc++];
+                while (oc++ < 8) right[rk++] = ' ';
+            }
+            right[rk++] = ' ';
             if (e->is_dir) {
                 const char *tag = "<DIR>";
-                rk = 0;
-                while (tag[rk]) { right[rk] = tag[rk]; rk++; }
+                for (int t = 0; tag[t]; t++) right[rk++] = tag[t];
             } else {
-                rk = fmt_uint(right, e->size);
+                rk += fmt_uint(right + rk, e->size);
                 right[rk++] = 'B';
             }
             right[rk] = 0;
