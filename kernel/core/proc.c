@@ -96,7 +96,16 @@ int proc_spawn(const char *path)
     for (const char *c = path; *c; c++) if (*c == '/') base = c + 1;
     strncpy(p->name, base, sizeof(p->name) - 1);
 
-    int pid = task_spawn_proc(proc_entry, p->name, p, dir);
+    /* a setuid / setgid program runs as its owner / group, provided nobody but the owner can have changed it */
+    uint32_t run_uid = 0xFFFFFFFFu, run_gid = 0xFFFFFFFFu;
+    {
+        vfs_entry_t st;
+        if (vfs_stat(path, &st) == 0 && vfs_chmod_supported(path) && !(st.mode & 022)) {
+            if (st.mode & 04000) run_uid = st.uid;
+            if (st.mode & 02000) run_gid = st.gid;
+        }
+    }
+    int pid = task_spawn_proc(proc_entry, p->name, p, dir, run_uid, run_gid);
     if (pid < 0) {
         p->used = 0;
         paging_destroy_dir(dir);

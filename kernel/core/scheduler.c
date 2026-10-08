@@ -89,7 +89,7 @@ void scheduler_init(void)
     terminal_writestring("[OK] Scheduler initialized\n");
 }
 
-static int task_spawn_internal(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir)
+static int task_spawn_internal(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir, uint32_t uid, uint32_t gid)
 {
     int slot = find_free_slot();
     if (slot < 0) return -1;
@@ -103,6 +103,8 @@ static int task_spawn_internal(void (*entry)(void), const char *name, void *proc
     t->in_use = 1;
     t->state = TASK_STATE_READY;
     if (current) { t->uid = current->uid; t->gid = current->gid; }   /* children run as their parent */
+    if (uid != 0xFFFFFFFFu) t->uid = uid;
+    if (gid != 0xFFFFFFFFu) t->gid = gid;
     t->kernel_stack = malloc(KERNEL_STACK_SZ);
     if (!t->kernel_stack) {
         t->in_use = 0;
@@ -130,12 +132,12 @@ static int task_spawn_internal(void (*entry)(void), const char *name, void *proc
 
 int task_spawn(void (*entry)(void), const char *name)
 {
-    return task_spawn_internal(entry, name, 0, 0);
+    return task_spawn_internal(entry, name, 0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu);
 }
 
-int task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir)
+int task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir, uint32_t uid, uint32_t gid)
 {
-    return task_spawn_internal(entry, name, proc, pgdir);
+    return task_spawn_internal(entry, name, proc, pgdir, uid, gid);
 }
 
 task_t *task_by_pid(uint32_t pid)

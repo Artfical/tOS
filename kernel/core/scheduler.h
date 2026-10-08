@@ -33,7 +33,7 @@ void scheduler_init(void);
 int  task_spawn(void (*entry)(void), const char *name);
 /* Starts a task that is a user process: it gets its own address space, inherits the spawner's credentials and
  * terminal window, and is fully set up before the scheduler can first pick it. */
-int  task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir);
+int  task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir, uint32_t uid, uint32_t gid);   /* uid/gid 0xFFFFFFFF = the spawner's */
 task_t *task_by_pid(uint32_t pid);
 void task_yield(void);
 void task_exit(void);
