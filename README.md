@@ -277,9 +277,13 @@ The `disk` shell command can probe, mount, and format the following on-disk file
 | ext4 | `ext4.c` | Extents |
 | NTFS | `ntfs.c` | |
 | **Btrfs** | `btrfs.c` | B-tree leaf, inline + regular extents, CRC32 checksums |
-| **XFS** | `xfs.c` | Shortform dirs, B-tree extents |
+| **XFS** | `xfs.c` | v5 (CRC) volumes: allocation/inode B-trees of any depth, bmap-btree files and directories; `disk format` makes a Linux-compatible volume |
 
 Use `disk list` to see detected block devices, `disk mount <device> <mountpoint> <fstype>` to mount one, and `disk format <device> <fstype>` to format it. The graphical Disk Manager app (see [GUI Mode](#gui-mode)) exposes the same operations visually.
+
+### Growing a filesystem
+
+`disk resize <device> [size_mb]` (unmounted device, root only) grows the filesystem to the given size, or to the whole device when no size is given. ext2/3/4 (new block groups, reserved GDT blocks, resize inode), btrfs, NTFS, FAT16/32 and exFAT are supported. FAT and exFAT keep their allocation table in front of the data, so they can only grow as far as the table already has room: volumes formatted by tOS leave room for several times their size, volumes from other tools may not. Shrinking is not implemented.
 
 > **tFS source:** [git.artfical.com/Artfical/tfs](https://git.artfical.com/Artfical/tfs)
 
