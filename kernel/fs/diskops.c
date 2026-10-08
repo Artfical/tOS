@@ -16,6 +16,7 @@
 #include "zfs.h"
 #include "apfs.h"
 #include "klog.h"
+#include "auth.h"
 
 const char *diskops_fstypes[] = { "tfsk", "fat16", "fat32", "exfat", "ext2", "ext3", "ext4", "ntfs", "btrfs", "xfs", "zfs", "apfs" };
 const int diskops_fstypes_count = 12;
@@ -42,6 +43,7 @@ static void log3(const char *a, const char *b, const char *c)
 
 int diskops_mount(const char *name, const char *mount_point, const char *fstype, char *err, int err_len)
 {
+    if (!auth_is_root()) { seterr(err, err_len, "permission denied (needs root; try sudo)"); return -1; }
     log3("diskops: mounting ", name, NULL);
 
     blockdev_t *bd = blockdev_find(name);
@@ -247,6 +249,7 @@ const char *diskops_detect(const char *name)
 
 int diskops_umount(const char *mount_point, char *err, int err_len)
 {
+    if (!auth_is_root()) { seterr(err, err_len, "permission denied (needs root; try sudo)"); return -1; }
     log3("diskops: unmounting ", mount_point, NULL);
 
     if (vfs_unmount(mount_point) != 0) { seterr(err, err_len, "umount failed (not mounted, or busy)"); return -1; }
@@ -285,6 +288,7 @@ int diskops_umount(const char *mount_point, char *err, int err_len)
 
 int diskops_format(const char *name, const char *fstype, char *err, int err_len)
 {
+    if (!auth_is_root()) { seterr(err, err_len, "permission denied (needs root; try sudo)"); return -1; }
     log3("diskops: formatting ", name, " as...");
     klog_write(fstype);
     klog_write("\n");
@@ -340,6 +344,7 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
 
 int diskops_resize(const char *name, uint32_t size_mb, char *err, int err_len)
 {
+    if (!auth_is_root()) { seterr(err, err_len, "permission denied (needs root; try sudo)"); return -1; }
     blockdev_t *bd = blockdev_find(name);
     if (!bd) { seterr(err, err_len, "no such device"); return -1; }
     if (bd->mounted) { seterr(err, err_len, "umount the device before resizing it"); return -1; }
