@@ -2273,6 +2273,10 @@ static int ext4_vfs_lseek(void *ctx, int fd, uint32_t offset, int whence)
     return (int)fs->fds[fd].pos;
 }
 
+/* owner of an inode: the 16-bit fields plus their high halves (osd2 bytes 4..7) */
+static uint32_t ext4_inode_uid(const ext4_inode_t *in) { return (uint32_t)in->i_uid | ((uint32_t)rd16(in->osd2 + 4) << 16); }
+static uint32_t ext4_inode_gid(const ext4_inode_t *in) { return (uint32_t)in->i_gid | ((uint32_t)rd16(in->osd2 + 6) << 16); }
+
 static int ext4_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, int max)
 {
     ext4_t *fs = (ext4_t *)ctx;
@@ -2314,6 +2318,8 @@ static int ext4_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, i
                     entries[count].is_dir = (hdr->file_type == EXT4_FT_DIR);
                     entries[count].inode = hdr->ino;
                     entries[count].mode = child.i_mode;
+                    entries[count].uid = ext4_inode_uid(&child);
+                    entries[count].gid = ext4_inode_gid(&child);
                     count++;
                 }
             }
@@ -2504,7 +2510,27 @@ static int ext4_vfs_stat(void *ctx, const char *path, vfs_entry_t *entry)
     entry->is_dir = (file_type == EXT4_FT_DIR);
     entry->inode = ino;
     entry->mode = inode.i_mode;
+    entry->uid = ext4_inode_uid(&inode);
+    entry->gid = ext4_inode_gid(&inode);
     return 0;
+}
+
+static int ext4_vfs_setattr(void *ctx, const char *path, uint32_t mode, uint32_t uid, uint32_t gid)
+{
+    ext4_t *fs = (ext4_t *)ctx;
+    if (fs->ro) return -1;
+    ext4_txn_begin(fs);
+    uint32_t ino;
+    ext4_inode_t inode;
+    int rc = -1;
+    if (ext4_walk(fs, path, &ino) == 0 && ext4_read_inode(fs, ino, &inode) == 0) {
+        if (mode != VFS_KEEP) inode.i_mode = (uint16_t)((inode.i_mode & 0xF000) | (mode & 07777));
+        if (uid != VFS_KEEP) { inode.i_uid = (uint16_t)uid; wr16(inode.osd2 + 4, (uint16_t)(uid >> 16)); }
+        if (gid != VFS_KEEP) { inode.i_gid = (uint16_t)gid; wr16(inode.osd2 + 6, (uint16_t)(gid >> 16)); }
+        rc = ext4_write_inode(fs, ino, &inode);
+    }
+    ext4_txn_commit(fs);
+    return rc;
 }
 
 static int ext4_vfs_rename(void *ctx, const char *old, const char *new)
@@ -2603,6 +2629,7 @@ void ext4_mount_vfs(ext4_t *fs, const char *mount_point)
         .stat = ext4_vfs_stat,
         .rename = ext4_vfs_rename,
         .symlink = ext4_vfs_symlink,
+        .setattr = ext4_vfs_setattr,
     };
     vfs_mount(mount_point, &ext4_vfs_ops, fs);
 }

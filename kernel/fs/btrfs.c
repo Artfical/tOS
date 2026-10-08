@@ -2387,6 +2387,14 @@ static int btrfs_vfs_lseek(void *ctx, int fd, uint32_t offset, int whence)
     return (int)f->pos;
 }
 
+/* owner of an inode, from the full inode item */
+static void bt_owner(btrfs_t *fs, uint64_t ino, uint32_t *uid, uint32_t *gid)
+{
+    uint8_t it[160];
+    *uid = 0; *gid = 0;
+    if (inode_load(fs, ino, it) == 0) { *uid = rd32(it + 44); *gid = rd32(it + 48); }
+}
+
 static int btrfs_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, int max)
 {
     btrfs_t *fs = (btrfs_t *)ctx;
@@ -2421,6 +2429,7 @@ static int btrfs_vfs_readdir(void *ctx, const char *path, vfs_entry_t *entries, 
                 if (get_inode(fs, e.location.objectid, &isz, &imode) == 0) {
                     out->size = isz > 0xFFFFFFFFULL ? 0xFFFFFFFFu : (uint32_t)isz;
                     out->mode = imode;
+                    bt_owner(fs, e.location.objectid, &out->uid, &out->gid);
                 }
             } else {
                 out->is_dir = 1;       /* a subvolume */
@@ -2488,6 +2497,7 @@ static int btrfs_vfs_stat(void *ctx, const char *path, vfs_entry_t *entry)
     entry->is_dir = is_dir;
     entry->inode = (uint32_t)ino;
     entry->mode = mode;
+    bt_owner(fs, ino, &entry->uid, &entry->gid);
     return 0;
 }
 
@@ -2512,6 +2522,27 @@ static int dir_is_under(btrfs_t *fs, uint64_t anc, uint64_t dir)
         cur = parent;
     }
     return 1;
+}
+
+static int btrfs_vfs_setattr(void *ctx, const char *path, uint32_t mode, uint32_t uid, uint32_t gid)
+{
+    btrfs_t *fs = (btrfs_t *)ctx;
+    if (!fs->rw) return -1;
+    bt_flush_all(fs);
+    uint64_t ino;
+    int is_dir;
+    if (walk(fs, path, &ino, &is_dir) != 0) return -1;
+    if (bt_txn_begin(fs) != 0) return -1;
+    uint8_t it[160];
+    int rc = inode_load(fs, ino, it);
+    if (rc == 0) {
+        if (mode != VFS_KEEP) wr32(it + 52, (rd32(it + 52) & 0170000u) | (mode & 07777u));
+        if (uid != VFS_KEEP) wr32(it + 44, uid);
+        if (gid != VFS_KEEP) wr32(it + 48, gid);
+        rc = inode_store(fs, ino, it);
+    }
+    int rc2 = bt_txn_commit(fs);
+    return (rc != 0 || rc2 != 0) ? -1 : 0;
 }
 
 static int btrfs_vfs_rename(void *ctx, const char *old, const char *new_path)
@@ -2564,6 +2595,7 @@ void btrfs_mount_vfs(btrfs_t *fs, const char *mount_point)
         .stat    = btrfs_vfs_stat,
         .rename  = btrfs_vfs_rename,
         .symlink = btrfs_vfs_symlink,
+        .setattr = btrfs_vfs_setattr,
     };
     klog_write(fs->rw ? "btrfs: mounted read-write\n" : "btrfs: mounted read-only\n");
     vfs_mount(mount_point, &ops, fs);

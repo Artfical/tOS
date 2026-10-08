@@ -1752,6 +1752,8 @@ static int list_cb(void *ctx, uint64_t ino, const char *name, int nl)
     e->inode = (uint32_t)ino;
     xfs_inode_t ip;
     if (read_inode(c->fs, ino, &ip) == 0) {
+        e->uid = be32(ip.raw + 8);
+        e->gid = be32(ip.raw + 12);
         e->size = ip.size > 0xFFFFFFFFULL ? 0xFFFFFFFFu : (uint32_t)ip.size;
         e->is_dir = (ip.mode & S_IFMT_) == S_IFDIR_;
         e->mode = ip.mode;
@@ -2122,8 +2124,26 @@ static int xfs_vfs_stat(void *ctx, const char *path, vfs_entry_t *entry)
     entry->is_dir = (ip.mode & S_IFMT_) == S_IFDIR_;
     entry->inode = (uint32_t)ino;
     entry->mode = ip.mode;
+    entry->uid = be32(ip.raw + 8);
+    entry->gid = be32(ip.raw + 12);
     inode_free(&ip);
     return 0;
+}
+
+static int xfs_vfs_setattr(void *ctx, const char *path, uint32_t mode, uint32_t uid, uint32_t gid)
+{
+    xfs_t *fs = (xfs_t *)ctx;
+    if (!fs->rw) return -1;
+    uint64_t ino;
+    if (walk(fs, path, &ino) != 0) return -1;
+    xfs_inode_t ip;
+    if (read_inode(fs, ino, &ip) != 0) return -1;
+    if (mode != VFS_KEEP) put16(ip.raw + 2, (uint16_t)((ip.mode & S_IFMT_) | (mode & 07777)));
+    if (uid != VFS_KEEP) put32(ip.raw + 8, uid);
+    if (gid != VFS_KEEP) put32(ip.raw + 12, gid);
+    int rc = write_inode(fs, ino, &ip);
+    inode_free(&ip);
+    return rc;
 }
 
 /* is `anc` the directory `dir` or above it? (walks the ".." chain) */
@@ -2219,6 +2239,7 @@ void xfs_mount_vfs(xfs_t *fs, const char *mount_point)
         .stat    = xfs_vfs_stat,
         .rename  = xfs_vfs_rename,
         .symlink = xfs_vfs_symlink,
+        .setattr = xfs_vfs_setattr,
     };
     klog_write(fs->rw ? "xfs: mounted read-write\n" : "xfs: mounted read-only\n");
     vfs_mount(mount_point, &ops, fs);
