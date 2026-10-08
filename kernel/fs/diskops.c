@@ -261,6 +261,7 @@ int diskops_umount(const char *mount_point, char *err, int err_len)
                 memset(nfs, 0, sizeof(*nfs));
             }
             if (strcmp(bd->fs_type, "exfat") == 0 && bd->fs_ctx) exfat_umount((exfat_t *)bd->fs_ctx);
+            if (strcmp(bd->fs_type, "btrfs") == 0 && bd->fs_ctx) btrfs_umount((btrfs_t *)bd->fs_ctx);
             if (bd->fs_ctx) {
                 /* free the instance slot (a slot is in use while its bd is set) */
                 const char *ft = bd->fs_type;
@@ -311,7 +312,7 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
     } else if (strcmp(fstype, "ntfs") == 0) {
         if (ntfs_format(bd, "tOS") != 0) { seterr(err, err_len, "formatting NTFS is not supported; create the volume with mkfs.ntfs or Windows"); return -1; }
     } else if (strcmp(fstype, "btrfs") == 0) {
-        if (btrfs_format(bd, "tOS") != 0) { seterr(err, err_len, "formatting btrfs is not supported; use mkfs.btrfs"); return -1; }
+        if (btrfs_format(bd, "tOS") != 0) { seterr(err, err_len, "btrfs format failed (device too small? needs 48 MiB)"); return -1; }
     } else if (strcmp(fstype, "xfs") == 0) {
         if (xfs_format(bd, "tOS") != 0) { seterr(err, err_len, "formatting XFS is not supported; use mkfs.xfs"); return -1; }
     } else if (strcmp(fstype, "zfs") == 0) {
