@@ -95,6 +95,25 @@ static void install_system_layout(void)
     }
 }
 
+/* programs have to be executable to run: the ones copied by the installer or an older tpkg are not yet */
+static void fix_program_modes(const char *dir, int depth)
+{
+    vfs_entry_t *e = (vfs_entry_t *)malloc(sizeof(vfs_entry_t) * 128);
+    if (!e) return;
+    int n = vfs_readdir(dir, e, 128);
+    for (int i = 0; i < n; i++) {
+        char path[VFS_NAME_LEN];
+        if (strlen(dir) + strlen(e[i].name) + 2 >= sizeof(path)) continue;
+        strcpy(path, dir);
+        strcat(path, "/");
+        strcat(path, e[i].name);
+        size_t l = strlen(e[i].name);
+        if (e[i].is_dir) { if (depth < 3) fix_program_modes(path, depth + 1); continue; }
+        if (l > 2 && e[i].name[l - 2] == '.' && e[i].name[l - 1] == 't' && !(e[i].mode & 0111)) vfs_chmod(path, 0755);
+    }
+    free(e);
+}
+
 void sysdirs_setup(int have_disk)
 {
     /* programs are copied in once: when the system folder is first made, or on every live boot */
@@ -120,5 +139,7 @@ void sysdirs_setup(int have_disk)
     ensure_dir("/tmp", 01777);
     vfs_chown("/programs", 0, 0);
     if (seed) seed_programs();
+    fix_program_modes("/system/programs", 0);
+    fix_program_modes("/programs", 0);
     klog_write("sysdirs: /system /etc /home /root ready\n");
 }

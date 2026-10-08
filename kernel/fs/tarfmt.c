@@ -7,6 +7,7 @@
 
 #include "tarfmt.h"
 #include "fsbridge.h"
+#include "vfs.h"
 #include "string.h"
 #include "memory.h"
 
@@ -342,6 +343,11 @@ int tar_extract(const char *archive, const char *dest_dir, char *err, int err_le
                     if (fsbridge_read(archive, chunk, n, pos + off) < 0) break;
                     fsbridge_write(full, chunk, n, off);
                     off += n;
+                }
+                /* programs have to be executable to run: honour the archive's x bits, and every .t is a program */
+                {
+                    unsigned int tmode = get_octal((const char *)hdr + 100, 7);
+                    if ((tmode & 0111) || (flen > 2 && full[flen - 2] == '.' && full[flen - 1] == 't')) vfs_chmod(full, 0755);
                 }
             }
             count++;

@@ -83,23 +83,13 @@ void __attribute__((noreturn)) sys_exit_longjmp(void)
 
 void usermode_init(void)
 {
-    for (int i = 1; i <= USER_STACK_PAGES; i++) {
-        uint32_t page = alloc_physical_page();
-        if (!page) {
-            terminal_writestring("usermode: failed to allocate stack page\n");
-            return;
-        }
-        paging_map(USER_STACK_TOP - i * 4096, page, PTE_USER | PTE_WRITABLE);
-    }
-    terminal_writestring("[OK] User mode stack ready\n");
+    /* every process gets its own stack when it is started (see proc_spawn()) */
+    terminal_writestring("[OK] User mode ready\n");
 }
 
 __attribute__((noreturn)) void enter_user_mode(uint32_t entry, uint32_t user_stack_top)
 {
-    uint32_t kernel_esp;
-    asm volatile("mov %%esp, %0" : "=r"(kernel_esp));
-    tss_set_kernel_stack(kernel_esp);
-
+    /* the kernel stack ring 3 returns to (TSS.esp0) is the running task's own, set by the scheduler */
     asm volatile(
         "cli\n"
         "pushl %0\n"

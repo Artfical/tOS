@@ -24,4 +24,15 @@ uint32_t *paging_create_dir(void);
 void paging_destroy_dir(uint32_t *dir);
 uint32_t paging_virt_to_phys(uint32_t *dir, uint32_t virt);
 
+/* User address space: [PAGING_USER_START, PAGING_USER_END) belongs to the process whose directory is loaded;
+ * everything else is the kernel's (identity-mapped RAM, device memory) and shared by all directories. */
+#define PAGING_USER_START 0x80000000u
+#define PAGING_USER_END   0xC0000000u
+
+uint32_t *paging_kernel_dir(void);
+uint32_t *paging_current_dir(void);                     /* page directory loaded in CR3 */
+int  paging_map_in(uint32_t *dir, uint32_t virt, uint32_t phys, uint32_t flags);   /* 0 = ok */
+/* Is [virt, virt+len) mapped user-accessible (and writable when `write`) in the loaded directory? */
+int  paging_user_range_ok(uint32_t virt, uint32_t len, int write);
+
 #endif

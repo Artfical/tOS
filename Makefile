@@ -150,6 +150,7 @@ KERNEL_OBJS = \
     kernel/core/paging.o \
     kernel/core/tss.o \
     kernel/core/usermode.o \
+    kernel/core/proc.o \
     kernel/shell/shell.o \
     kernel/shell/commands/cmd_file.o \
     kernel/shell/commands/cmd_fs.o \

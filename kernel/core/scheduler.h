@@ -25,10 +25,16 @@ typedef struct task {
     char name[TASK_NAME_MAX];
     void *user_data;
     uint32_t uid, gid;      /* whose credentials the task runs with (0 = root / kernel) */
+    uint32_t *pgdir;        /* the address space of a user process (NULL = the kernel's) */
+    void *proc;             /* the process this task is, if any (see proc.h) */
 } task_t;
 
 void scheduler_init(void);
 int  task_spawn(void (*entry)(void), const char *name);
+/* Starts a task that is a user process: it gets its own address space, inherits the spawner's credentials and
+ * terminal window, and is fully set up before the scheduler can first pick it. */
+int  task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir);
+task_t *task_by_pid(uint32_t pid);
 void task_yield(void);
 void task_exit(void);
 void task_sleep(uint32_t ms);

@@ -22,6 +22,7 @@
 /* tOS-specific extensions -- deliberately numbered well above the
  * Linux-i386-compatible range above (highest real one there is 108)
  * so a future real syscall never collides with these. */
+#define SYS_SPAWN        251 /* a=path of a .t program -- starts it as a new process (credentials of the caller); returns its pid or -1 */
 #define SYS_OPEN_APP     250 /* a=app name -- opens a built-in window-manager app (what the programs in /system/apps do); -1 without a GUI */
 #define SYS_NET_RESOLVE  200
 #define SYS_NET_CONNECT  201
@@ -96,5 +97,9 @@ struct tos_stat {
 
 void syscall_init(void);
 uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+
+
+struct proc;
+void syscall_proc_cleanup(struct proc *p);   /* closes a finished process's files and display mode */
 
 #endif

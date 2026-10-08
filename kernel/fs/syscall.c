@@ -20,6 +20,10 @@
 #include "vga.h"
 #include "tos_api.h"
 #include "gui.h"
+#include "proc.h"
+#include "vfs.h"
+#include "scheduler.h"
+#include "auth.h"
 
 /* Fixed-layout argument structs for the crypto syscalls -- mirrored
  * by hand in the SDK's tos.h (there's no shared kernel/userspace
@@ -129,20 +133,11 @@ static int gfx_ready = 0;
  * kernel itself from touching any address a ring3 program hands it
  * through a syscall -- that check has to happen here, explicitly, per
  * syscall that takes a buffer pointer. */
-#define USER_BRK_BASE 0x800000
-static uint32_t program_break = USER_BRK_BASE;
-
-static int user_range_ok(uint32_t ptr, uint32_t len)
-{
-    if (len == 0) return 0;
-    uint32_t end = ptr + len;
-    if (end < ptr) return 0; /* overflow */
-    if (ptr >= USER_CODE_BASE && end <= USER_CODE_BASE + USER_CODE_MAX_SIZE) return 1;
-    if (ptr >= USER_BRK_BASE && end <= program_break) return 1;
-    uint32_t stack_bottom = USER_STACK_TOP - USER_STACK_PAGES * 4096;
-    if (ptr >= stack_bottom && end <= USER_STACK_TOP) return 1;
-    return 0;
-}
+/* The kernel runs with the calling process's page directory loaded, so a user pointer can simply be followed
+ * once every page it covers is known to be mapped for the process: these walk the page tables (a pointer into
+ * kernel memory, or into a hole, is refused). */
+static int user_range_ok(uint32_t ptr, uint32_t len) { return paging_user_range_ok(ptr, len, 0); }
+static int user_wr_ok(uint32_t ptr, uint32_t len)    { return paging_user_range_ok(ptr, len, 1); }
 
 /* Same restore sequence cmd_vgatest() uses. Shared by SYS_GFX_EXIT
  * (explicit) and SYS_EXIT's safety net (implicit, for a program that
@@ -170,18 +165,6 @@ static void gfx_leave_if_active(void)
     asm volatile("pushl %0; popfl" :: "r"(flags));
 }
 
-#define FD_MAX 64
-#define FD_FREE 0
-#define FD_FILE 1
-#define FD_CONSOLE 2
-
-typedef struct {
-    int type;
-    fs_file_t file;
-} fd_entry_t;
-
-static fd_entry_t fd_table[FD_MAX];
-
 static int user_cstr_ok(uint32_t ptr)
 {
     for (uint32_t i = 0; i < FS_NAME_LEN; i++) {
@@ -191,12 +174,18 @@ static int user_cstr_ok(uint32_t ptr)
     return 0;
 }
 
-static int fd_alloc(void)
+/* user descriptors 3.. map to slots of the process's own table, which hold VFS descriptors */
+static int proc_vfd(proc_t *p, int fd)
 {
-    for (int i = 3; i < FD_MAX; i++) {
-        if (fd_table[i].type == FD_FREE) return i;
-    }
-    return -1;
+    if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS) return -1;
+    return p->fd[fd - 3];
+}
+
+void syscall_proc_cleanup(struct proc *p)
+{
+    for (int i = 0; i < PROC_MAX_FDS; i++)
+        if (p->fd[i] >= 0) { vfs_close(p->fd[i]); p->fd[i] = -1; }
+    if (p->gfx) { p->gfx = 0; gfx_leave_if_active(); }
 }
 
 static void syscall_stub(registers_t *regs)
@@ -211,18 +200,8 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
 
     switch (syscall) {
         case SYS_EXIT:
-            /* If the exiting program left Bochs/VBE graphics mode
-             * active (crashed, forgot, or just never called
-             * SYS_GFX_EXIT), restore VGA text mode before handing
-             * control back to the shell -- returning to the shell
-             * mid-graphics-mode with no restore is exactly the bug
-             * class DOOM/vgatest/wolf3d all had to solve explicitly
-             * (see the kernel README's Linear framebuffer graphics
-             * section); reproduced here directly by a video player
-             * that never called any restore path at all, causing a
-             * page fault right after "done." on return to the shell. */
-            gfx_leave_if_active();
-            sys_exit_longjmp();
+            /* the process's files and any graphics mode are released by proc_exit() */
+            proc_exit((int)a);
 
         case SYS_FORK:
             return -1;
@@ -232,7 +211,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             char *buf = (char *)b;
             int count = (int)c;
             if (count <= 0) return 0;
-            if (!user_range_ok(b, (uint32_t)count)) return -1;
+            if (!user_wr_ok(b, (uint32_t)count)) return -1;
             if (fd == 0) {
                 int i;
                 for (i = 0; i < count; i++) {
@@ -248,23 +227,10 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
                 }
                 return i;
             }
-            if (fd >= 0 && fd < FD_MAX && fd_table[fd].type == FD_FILE) {
-                /* ramfs_read()/ramfs_write() return a byte count on
-                 * success (or negative on failure), not a 0/-1 status
-                 * -- checking `== 0` here always failed (to_read is
-                 * essentially never exactly 0), so file reads through
-                 * this syscall never actually worked before. */
-                fs_file_t *f = &fd_table[fd].file;
-                uint32_t to_read = count;
-                if (f->offset >= f->size) return 0;
-                if (to_read > f->size - f->offset)
-                    to_read = f->size - f->offset;
-                int n = ramfs_read(f->name, buf, to_read, f->offset);
-                if (n < 0) return -1;
-                f->offset += n;
-                return n;
-            }
-            return -1;
+            int vfd = proc_vfd(proc_current(), fd);
+            if (vfd < 0) return -1;
+            int n = vfs_read(vfd, buf, (uint32_t)count);
+            return n < 0 ? -1 : n;
         }
 
         case SYS_WRITE: {
@@ -282,67 +248,65 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
                 }
                 return count;
             }
-            if (fd >= 0 && fd < FD_MAX && fd_table[fd].type == FD_FILE) {
-                fs_file_t *f = &fd_table[fd].file;
-                int n = ramfs_write(f->name, buf, count, f->offset);
-                if (n < 0) return -1;
-                f->offset += n;
-                if (f->offset > f->size) f->size = f->offset;
-                return n;
-            }
-            return -1;
+            int vfd = proc_vfd(proc_current(), fd);
+            if (vfd < 0) return -1;
+            int n = vfs_write(vfd, buf, (uint32_t)count);
+            return n < 0 ? -1 : n;
         }
 
         case SYS_OPEN: {
-            /* Deliberately does NOT go through fs_open()/fs.c -- that's
-             * a separate, never-initialized static file table
-             * (fs_init() is never called anywhere in the boot path)
-             * left over from before ramfs existed, always empty, so
-             * SYS_OPEN silently failed for every path until now. ramfs
-             * is the filesystem everything else in tOS actually uses. */
-            const char *path = (const char *)a;
+            /* Every file goes through the VFS with the credentials of the process (those of whoever started
+             * it), so the owner/group/other permission bits and the /system rules apply exactly as they do
+             * for the shell. */
+            proc_t *p = proc_current();
             int flags = (int)b;
-            if (!user_cstr_ok(a)) return -1;
-            if (!ramfs_exists(path)) {
-                if (!(flags & TOS_O_CREAT)) return -1;
-                if (ramfs_create(path) != 0) return -1;
-            }
-            int fd = fd_alloc();
-            if (fd < 0) return -1;
-            fs_file_t *f = &fd_table[fd].file;
-            int i = 0;
-            while (path[i] && i < FS_NAME_LEN - 1) { f->name[i] = path[i]; i++; }
-            f->name[i] = 0;
-            f->size = ramfs_size(path);
-            f->offset = 0;
-            f->exists = 1;
-            fd_table[fd].type = FD_FILE;
-            return fd;
+            if (!p || !user_cstr_ok(a)) return -1;
+            char path[FS_NAME_LEN];
+            strncpy(path, (const char *)a, sizeof(path) - 1);
+            path[sizeof(path) - 1] = 0;
+            int slot = -1;
+            for (int i = 0; i < PROC_MAX_FDS; i++) if (p->fd[i] < 0) { slot = i; break; }
+            if (slot < 0) return -1;
+            int vflags = (flags & TOS_O_RDWR) ? VFS_RDWR : (flags & TOS_O_WRONLY) ? VFS_WRONLY : VFS_RDONLY;
+            if (flags & TOS_O_CREAT) vflags |= VFS_CREAT;
+            if (flags & TOS_O_TRUNC) vflags |= VFS_TRUNC;
+            if (flags & 0x400) vflags |= VFS_APPEND;
+            int vfd = vfs_open(path, vflags);
+            if (vfd < 0) return -1;
+            p->fd[slot] = vfd;
+            strncpy(p->fdpath[slot], path, VFS_NAME_LEN - 1);
+            p->fdpath[slot][VFS_NAME_LEN - 1] = 0;
+            return slot + 3;
         }
 
         case SYS_CLOSE: {
             int fd = (int)a;
-            if (fd >= 0 && fd < FD_MAX) {
-                fd_table[fd].type = FD_FREE;
+            proc_t *p = proc_current();
+            if (p && fd >= 3 && fd - 3 < PROC_MAX_FDS && p->fd[fd - 3] >= 0) {
+                vfs_close(p->fd[fd - 3]);
+                p->fd[fd - 3] = -1;
                 return 0;
             }
             return -1;
         }
 
-        case SYS_WAITPID:
-            return -1;
+        case SYS_WAITPID: {
+            proc_t *child = proc_by_pid(a);
+            if (!child || child->ppid != task_get_pid()) return -1;
+            return (uint32_t)proc_wait(a);
+        }
 
-        /* ELF loading/exec support has been removed: the loader wrote
-         * PT_LOAD segment data straight to phdr->p_vaddr with no
-         * bounds check, and this kernel's paging_init() maps *all*
-         * physical RAM (including kernel memory) with PTE_USER from
-         * boot -- so any user-supplied binary could point a segment
-         * at kernel memory and overwrite it via a plain memcpy(), a
-         * straightforward privilege-escalation primitive. Fixing that
-         * properly needs real per-process address space isolation
-         * (kernel pages not user-accessible, non-identity per-process
-         * mappings), which is a much larger change than a point fix,
-         * so exec is disabled rather than shipped half-fixed. */
+        case SYS_SPAWN: {
+            if (!user_cstr_ok(a)) return -1;
+            char path[FS_NAME_LEN];
+            strncpy(path, (const char *)a, sizeof(path) - 1);
+            path[sizeof(path) - 1] = 0;
+            int pid = proc_spawn(path);
+            return pid < 0 ? -1 : pid;
+        }
+
+        /* execve replacing the running image is still not offered: SYS_SPAWN starts a program as a new
+         * process in its own address space instead. */
         case SYS_EXECVE:
             (void)a;
             return -1;
@@ -351,49 +315,42 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             return 0;
 
         case SYS_BRK: {
+            proc_t *p = proc_current();
+            if (!p) return -1;
             uint32_t addr = a;
-            if (addr == 0)
-                return program_break;
-            if (addr < 0x800000)
-                addr = 0x800000;
-            uint32_t old = program_break;
-            for (uint32_t p = old; p < addr; p += 0x1000) {
-                if (!paging_virt_to_phys(NULL, p)) {
-                    uint32_t phys = alloc_physical_page();
-                    if (!phys) return -1;
-                    paging_map(p, phys, PTE_USER | PTE_WRITABLE);
-                }
+            if (addr == 0) return p->brk;
+            if (addr < PROC_BRK_BASE) addr = PROC_BRK_BASE;
+            if (addr > PROC_BRK_LIMIT) return -1;
+            uint32_t old = p->brk;
+            for (uint32_t pg = (old + 0xFFF) & ~0xFFFu; pg < ((addr + 0xFFF) & ~0xFFFu); pg += 0x1000) {
+                uint32_t phys = alloc_physical_page();
+                if (!phys) return -1;
+                if (paging_map_in(p->pgdir, pg, phys, PTE_USER | PTE_WRITABLE) != 0) { free_physical_page(phys); return -1; }
             }
-            program_break = addr;
+            p->brk = addr;
             return old;
         }
 
         case SYS_LSEEK: {
-            int fd = (int)a;
-            int offset = (int)b;
-            int whence = (int)c;
-            if (fd >= 0 && fd < FD_MAX && fd_table[fd].type == FD_FILE) {
-                fs_file_t *f = &fd_table[fd].file;
-                uint32_t new_off;
-                if (whence == 0) new_off = offset;
-                else if (whence == 1) new_off = f->offset + offset;
-                else if (whence == 2) new_off = f->size + offset;
-                else return -1;
-                if (new_off > f->size) new_off = f->size;
-                f->offset = new_off;
-                return new_off;
-            }
-            return -1;
+            int vfd = proc_vfd(proc_current(), (int)a);
+            if (vfd < 0) return -1;
+            int r = vfs_lseek(vfd, (uint32_t)b, (int)c);
+            return r < 0 ? (uint32_t)-1 : (uint32_t)r;
         }
 
         case SYS_GETPID:
-            return 1;
+            return task_get_pid();
 
-        case SYS_KILL:
-            if (b == 15 || b == 9) {
-                sys_exit_longjmp();
-            }
-            return -1;
+        case SYS_KILL: {
+            uint32_t pid = a;
+            if (b != 15 && b != 9) return -1;
+            if (pid == task_get_pid()) proc_exit(128 + (int)b);
+            proc_t *t = proc_by_pid(pid);
+            if (!t || t->done) return -1;
+            /* only your own processes, unless you are root */
+            if (!auth_is_root() && task_get_uid(pid) != auth_uid()) return -1;
+            return proc_kill(pid, 128 + (int)b) == 0 ? 0 : (uint32_t)-1;
+        }
 
         case SYS_ISATTY: {
             int fd = (int)a;
@@ -404,15 +361,18 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
         case SYS_FSTAT: {
             int fd = (int)a;
             struct tos_stat *st = (struct tos_stat *)b;
-            if (!user_range_ok(b, sizeof(*st))) return -1;
+            if (!user_wr_ok(b, sizeof(*st))) return -1;
             memset(st, 0, sizeof(*st));
             if (fd >= 0 && fd <= 2) {
                 st->st_mode = 0x2000;
                 return 0;
             }
-            if (fd >= 0 && fd < FD_MAX && fd_table[fd].type == FD_FILE) {
-                st->st_mode = 0x8000;
-                st->st_size = fd_table[fd].file.size;
+            proc_t *p = proc_current();
+            if (proc_vfd(p, fd) >= 0) {
+                vfs_entry_t e;
+                if (vfs_stat(p->fdpath[fd - 3], &e) != 0) return -1;
+                st->st_mode = (e.is_dir ? 0x4000 : 0x8000) | (e.mode & 07777);
+                st->st_size = e.size;
                 st->st_blksize = 512;
                 st->st_blocks = (st->st_size + 511) / 512;
                 return 0;
@@ -462,7 +422,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
         case SYS_NET_RECV: {
             uint8_t *buf = (uint8_t *)a;
             int max_len = (int)b;
-            if (max_len <= 0 || !user_range_ok(a, (uint32_t)max_len)) return -1;
+            if (max_len <= 0 || !user_wr_ok(a, (uint32_t)max_len)) return -1;
             return tcp_recv(buf, max_len);
         }
 
@@ -508,6 +468,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
                 paging_map(addr, addr, PTE_PRESENT | PTE_WRITABLE);
             }
             gfx_ready = 1;
+            { proc_t *gp = proc_current(); if (gp) gp->gfx = 1; }
             bochs_set_graphics_active(1);
             asm volatile("pushl %0; popfl" :: "r"(flags));
             return 0;
@@ -602,8 +563,8 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             if (!user_range_ok(a, sizeof(struct inflate_args))) return (uint32_t)-1;
             struct inflate_args *args = (struct inflate_args *)a;
             if (!user_range_ok((uint32_t)(unsigned long)args->src, args->src_len)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->out, args->out_cap)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->out_len, sizeof(uint32_t))) return (uint32_t)-1;
+            if (!user_wr_ok((uint32_t)(unsigned long)args->out, args->out_cap)) return (uint32_t)-1;
+            if (!user_wr_ok((uint32_t)(unsigned long)args->out_len, sizeof(uint32_t))) return (uint32_t)-1;
             uint32_t out_len = 0;
             int rc = inflate_raw_buffer(args->src, args->src_len, args->out, args->out_cap, &out_len);
             if (rc != 0) return (uint32_t)-1;
@@ -626,7 +587,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
          * without also breaking SHA-256 preimage resistance. Hardened
          * all five regardless while already auditing this file. */
         case SYS_CRYPTO_RANDOM: {
-            if ((int)b < 0 || !user_range_ok(a, b)) return (uint32_t)-1;
+            if ((int)b < 0 || !user_wr_ok(a, b)) return (uint32_t)-1;
             uint8_t *buf = (uint8_t *)a;
             int len = (int)b;
             for (int i = 0; i < len; i++) buf[i] = prng_syscall_byte();
@@ -637,7 +598,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             if (!user_range_ok(a, sizeof(struct crypto_hash_args))) return (uint32_t)-1;
             struct crypto_hash_args *args = (struct crypto_hash_args *)a;
             if (!user_range_ok((uint32_t)(unsigned long)args->data, args->len)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->out, 32)) return (uint32_t)-1;
+            if (!user_wr_ok((uint32_t)(unsigned long)args->out, 32)) return (uint32_t)-1;
             sha256_hash(args->data, args->len, args->out);
             return 0;
         }
@@ -647,7 +608,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             struct crypto_hmac_args *args = (struct crypto_hmac_args *)a;
             if (!user_range_ok((uint32_t)(unsigned long)args->key, args->klen)) return (uint32_t)-1;
             if (!user_range_ok((uint32_t)(unsigned long)args->msg, args->mlen)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->out, 32)) return (uint32_t)-1;
+            if (!user_wr_ok((uint32_t)(unsigned long)args->out, 32)) return (uint32_t)-1;
             hmac_sha256(args->key, args->klen, args->msg, args->mlen, args->out);
             return 0;
         }
@@ -658,7 +619,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             if (!user_range_ok((uint32_t)(unsigned long)args->key16, 16)) return (uint32_t)-1;
             if (!user_range_ok((uint32_t)(unsigned long)args->iv16, 16)) return (uint32_t)-1;
             if (!user_range_ok((uint32_t)(unsigned long)args->in, args->len)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->out, args->len)) return (uint32_t)-1;
+            if (!user_wr_ok((uint32_t)(unsigned long)args->out, args->len)) return (uint32_t)-1;
             aes128_ctr_crypt(args->key16, args->iv16, args->in, args->out, args->len);
             return 0;
         }
@@ -669,7 +630,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             if (!user_range_ok((uint32_t)(unsigned long)args->base256, 256)) return (uint32_t)-1;
             if (!user_range_ok((uint32_t)(unsigned long)args->exp, args->exp_len)) return (uint32_t)-1;
             if (!user_range_ok((uint32_t)(unsigned long)args->mod256, 256)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->out256, 256)) return (uint32_t)-1;
+            if (!user_wr_ok((uint32_t)(unsigned long)args->out256, 256)) return (uint32_t)-1;
             bignum_modexp(args->base256, args->exp, args->exp_len, args->mod256, args->out256);
             return 0;
         }
@@ -681,10 +642,5 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
 
 void syscall_init(void)
 {
-    for (int i = 0; i < FD_MAX; i++)
-        fd_table[i].type = FD_FREE;
-    fd_table[0].type = FD_CONSOLE;
-    fd_table[1].type = FD_CONSOLE;
-    fd_table[2].type = FD_CONSOLE;
     isr_register_handler(0x80, syscall_stub);
 }

@@ -3,6 +3,7 @@
 #include "io.h"
 #include "debugmon.h"
 #include "scheduler.h"
+#include "proc.h"
 
 isr_handler_t interrupt_handlers[256];
 static const char *exception_messages[] = {
@@ -116,6 +117,19 @@ void isr_handler(registers_t *regs)
     if (interrupt_handlers[regs->int_no]) {
         interrupt_handlers[regs->int_no](regs);
         return;
+    }
+
+    if (regs->int_no < 32 && (regs->cs & 3) == 3 && proc_current()) {
+        /* a user program misbehaved: that program ends, the system carries on */
+        proc_t *p = proc_current();
+        uint32_t cr2 = 0;
+        if (regs->int_no == 14) asm volatile("mov %%cr2, %0" : "=r"(cr2));
+        terminal_writestring("\n");
+        terminal_writestring(p->name);
+        terminal_writestring(": ");
+        terminal_writestring(regs->int_no == 14 ? "segmentation fault" : exception_messages[regs->int_no]);
+        terminal_writestring(" (killed)\n");
+        proc_exit(-(int)regs->int_no - 128);
     }
 
     if (regs->int_no < 32) {

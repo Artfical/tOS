@@ -1,4 +1,6 @@
 #include "commands.h"
+#include "proc.h"
+#include "auth.h"
 #include "terminal.h"
 #include "string.h"
 #include "ramfs.h"
@@ -460,96 +462,36 @@ void cmd_python(int argc, char **args)
 void cmd_run(int argc, char **args)
 {
     if (argc < 2) {
-        terminal_writestring("usage: run <file.t>\n");
+        terminal_writestring("usage: run <file.t> [&]\n");
         return;
     }
     const char *path = args[1];
+    int background = argc > 2 && strcmp(args[argc - 1], "&") == 0;
 
-    if (!fsbridge_exists(path) || fsbridge_is_dir(path)) {
-        terminal_writestring("run: file not found: ");
-        terminal_writestring(path);
+    int pid = proc_spawn(path);
+    if (pid < 0) {
+        terminal_writestring("run: ");
+        switch (pid) {
+        case -1: terminal_writestring("file not found: "); terminal_writestring(path); break;
+        case -2: terminal_writestring("bad program file"); break;
+        case -3: terminal_writestring("out of memory"); break;
+        case -4: terminal_writestring("too many processes"); break;
+        case -5: terminal_writestring("permission denied: "); terminal_writestring(path); break;
+        default: terminal_writestring("failed"); break;
+        }
         terminal_writestring("\n");
         return;
     }
-
-    uint32_t size = fsbridge_size(path);
-    if (size <= 4 || size > USER_CODE_MAX_SIZE) {
-        terminal_writestring("run: bad file size\n");
+    if (background) {
+        terminal_writestring("[process ");
+        char num[12];
+        sprintf_u32(num, (uint32_t)pid);
+        terminal_writestring(num);
+        terminal_writestring("]\n");
         return;
     }
-
-    char *buf = (char *)malloc(size);
-    if (!buf) {
-        terminal_writestring("run: out of memory\n");
-        return;
-    }
-    if (fsbridge_read(path, buf, size, 0) < 0) {
-        terminal_writestring("run: read failed\n");
-        free(buf);
-        return;
-    }
-
-    /* Last 4 bytes are a little-endian footer (added by the SDK's
-     * build.sh) giving the program's real total memory size --
-     * objcopy -O binary doesn't reliably pad .bss into the flat
-     * image, so the file's own on-disk length can undercount how
-     * much memory a program with more than a trivial amount of .bss
-     * actually needs (see Desktop/tos_sdk/user.ld's comment). The
-     * content actually copied into memory is everything except this
-     * footer; the rest of the mapped pages stay zero from the fresh
-     * page allocation below, covering .bss correctly regardless of
-     * whether objcopy wrote real bytes for it or not. */
-    uint32_t content_size = size - 4;
-    uint32_t mem_size = (uint32_t)(uint8_t)buf[content_size] |
-                         ((uint32_t)(uint8_t)buf[content_size + 1] << 8) |
-                         ((uint32_t)(uint8_t)buf[content_size + 2] << 16) |
-                         ((uint32_t)(uint8_t)buf[content_size + 3] << 24);
-    if (mem_size < content_size) mem_size = content_size;
-    if (mem_size > USER_CODE_MAX_SIZE) {
-        terminal_writestring("run: program's memory footer is implausibly large\n");
-        free(buf);
-        return;
-    }
-
-    uint32_t pages = (mem_size + 4095) / 4096;
-    for (uint32_t i = 0; i < pages; i++) {
-        uint32_t phys = alloc_physical_page();
-        if (!phys) {
-            terminal_writestring("run: out of memory mapping program\n");
-            free(buf);
-            return;
-        }
-        paging_map(USER_CODE_BASE + i * 4096, phys, PTE_USER | PTE_WRITABLE);
-    }
-    memcpy((void *)USER_CODE_BASE, buf, content_size);
-    free(buf);
-
-    /* Minimal setjmp/longjmp pair: capture where to resume (this call
-     * site) before dropping to ring3, so the SYS_EXIT/SYS_KILL syscall
-     * handlers can jump straight back here instead of the kernel
-     * needing real process teardown, which doesn't exist yet.
-     *
-     * ebp/ebx/esi/edi (this function's own callee-saved registers)
-     * must be captured for real, not passed as placeholder 0s --
-     * enter_user_mode() is noreturn and never returns the normal way,
-     * so the compiler doesn't preserve them across that call the way
-     * an ordinary function return would guarantee, and this function's
-     * own -O2 code addresses spilled locals ebp-relative at `resume:`.
-     * Confirmed via a reproducible page fault right after a real .t
-     * program's clean exit (CR2 landing exactly on the ring3 stack's
-     * upper boundary -- leftover garbage from deep in the syscall
-     * handler's own call chain, previously landing somewhere
-     * "accidentally" mapped for every earlier, simpler .t program). */
-    uint32_t esp, ebp, ebx, esi, edi;
-    asm volatile("mov %%esp, %0" : "=r"(esp));
-    asm volatile("mov %%ebp, %0" : "=r"(ebp));
-    asm volatile("mov %%ebx, %0" : "=r"(ebx));
-    asm volatile("mov %%esi, %0" : "=r"(esi));
-    asm volatile("mov %%edi, %0" : "=r"(edi));
-    sys_exit_set_jmp(esp, ebp, ebx, esi, edi, (uint32_t)&&resume);
-    enter_user_mode(USER_CODE_BASE, USER_STACK_TOP);
-
-resume:
+    int code = proc_wait((uint32_t)pid);
+    (void)code;
     terminal_writestring("\n");
 }
 

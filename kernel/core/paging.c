@@ -5,6 +5,18 @@
 
 static uint32_t *kernel_dir = NULL;
 
+#define PAGING_MAX_DIRS 40
+static uint32_t *live_dirs[PAGING_MAX_DIRS];
+
+uint32_t *paging_kernel_dir(void) { return kernel_dir; }
+
+uint32_t *paging_current_dir(void)
+{
+    uint32_t cr3;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    return (uint32_t *)(cr3 & 0xFFFFF000);
+}
+
 void paging_init(void)
 {
     kernel_dir = (uint32_t *)alloc_physical_page();
@@ -70,6 +82,10 @@ void paging_map(uint32_t virt, uint32_t phys, uint32_t flags)
         }
         memset(pt, 0, PAGE_SIZE);
         kernel_dir[pd_idx] = ((uint32_t)pt) | PDE_PRESENT | PDE_WRITABLE | (flags & PDE_USER);
+        /* a page table the kernel just added is part of every process's view of the kernel half */
+        if (virt < PAGING_USER_START || virt >= PAGING_USER_END)
+            for (int i = 0; i < PAGING_MAX_DIRS; i++)
+                if (live_dirs[i]) live_dirs[i][pd_idx] = kernel_dir[pd_idx];
     }
 
     uint32_t *pt = (uint32_t *)(kernel_dir[pd_idx] & 0xFFFFF000);
@@ -101,32 +117,75 @@ void paging_switch(uint32_t *dir)
     asm volatile("mov %0, %%cr0" : : "r"(cr0));
 }
 
+/* A new address space: the kernel half is shared with every other directory, the user half starts empty. */
 uint32_t *paging_create_dir(void)
 {
     uint32_t *dir = (uint32_t *)alloc_physical_page();
+    if (!dir) return NULL;
     memset(dir, 0, PAGE_SIZE);
 
     for (int i = 0; i < 1024 && kernel_dir; i++) {
-        if (kernel_dir[i] & PDE_PRESENT) {
-            uint32_t phys = kernel_dir[i] & 0xFFFFF000;
-            uint32_t flags = kernel_dir[i] & 0xFFF;
-            dir[i] = phys | flags;
-        }
+        uint32_t base = (uint32_t)i << 22;
+        if ((kernel_dir[i] & PDE_PRESENT) && !(kernel_dir[i] & PDE_USER)) dir[i] = kernel_dir[i];   /* kernel mappings only */
+        (void)base;
     }
-
+    uint32_t flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    for (int i = 0; i < PAGING_MAX_DIRS; i++)
+        if (!live_dirs[i]) { live_dirs[i] = dir; break; }
+    asm volatile("pushl %0; popfl" : : "r"(flags));
     return dir;
 }
 
+/* Frees a directory made by paging_create_dir() and every page in its user half. */
 void paging_destroy_dir(uint32_t *dir)
 {
-    if (!dir || dir == kernel_dir) return;
-    for (int i = 0; i < 1024; i++) {
-        if (dir[i] & PDE_PRESENT) {
-            uint32_t pt_phys = dir[i] & 0xFFFFF000;
-            free_physical_page(pt_phys);
-        }
+    if (!dir || dir == kernel_dir || paging_current_dir() == dir) return;
+    uint32_t flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    for (int i = 0; i < PAGING_MAX_DIRS; i++)
+        if (live_dirs[i] == dir) live_dirs[i] = NULL;
+    asm volatile("pushl %0; popfl" : : "r"(flags));
+    for (uint32_t i = PAGING_USER_START >> 22; i < (PAGING_USER_END >> 22); i++) {
+        if (!(dir[i] & PDE_PRESENT)) continue;
+        uint32_t *pt = (uint32_t *)(dir[i] & 0xFFFFF000);
+        for (int j = 0; j < 1024; j++)
+            if ((pt[j] & PTE_PRESENT) && (pt[j] & PTE_USER)) free_physical_page(pt[j] & 0xFFFFF000);
+        free_physical_page((uint32_t)pt);
     }
     free_physical_page((uint32_t)dir);
+}
+
+/* Maps one page in an arbitrary directory (user half: its own page table, user-accessible). */
+int paging_map_in(uint32_t *dir, uint32_t virt, uint32_t phys, uint32_t flags)
+{
+    uint32_t pd_idx = virt >> 22, pt_idx = (virt >> 12) & 0x3FF;
+    if (!(dir[pd_idx] & PDE_PRESENT)) {
+        uint32_t *pt = (uint32_t *)alloc_physical_page();
+        if (!pt) return -1;
+        dir[pd_idx] = ((uint32_t)pt) | PDE_PRESENT | PDE_WRITABLE | PDE_USER;
+    }
+    uint32_t *pt = (uint32_t *)(dir[pd_idx] & 0xFFFFF000);
+    pt[pt_idx] = (phys & 0xFFFFF000) | PTE_PRESENT | (flags & 0xFFF);
+    if (dir == paging_current_dir()) asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
+    return 0;
+}
+
+int paging_user_range_ok(uint32_t virt, uint32_t len, int write)
+{
+    if (len == 0) return 0;
+    uint32_t end = virt + len;
+    if (end < virt || virt < PAGING_USER_START || end > PAGING_USER_END) return 0;
+    uint32_t *dir = paging_current_dir();
+    for (uint32_t page = virt & ~0xFFFu; page < end; page += PAGE_SIZE) {
+        uint32_t pde = dir[page >> 22];
+        if (!(pde & PDE_PRESENT) || !(pde & PDE_USER)) return 0;
+        uint32_t pte = ((uint32_t *)(pde & 0xFFFFF000))[(page >> 12) & 0x3FF];
+        if (!(pte & PTE_PRESENT) || !(pte & PTE_USER)) return 0;
+        if (write && !(pte & PTE_WRITABLE)) return 0;
+        if (page + PAGE_SIZE < page) break;
+    }
+    return 1;
 }
 
 uint32_t paging_virt_to_phys(uint32_t *dir, uint32_t virt)

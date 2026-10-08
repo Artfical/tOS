@@ -6,6 +6,8 @@
 #include "memory.h"
 #include "string.h"
 #include "debugmon.h"
+#include "paging.h"
+#include "tss.h"
 
 static task_t tasks[MAX_TASKS];
 static task_t *current = 0;
@@ -35,9 +37,14 @@ static void idle_entry(void)
 
 static int find_free_slot(void)
 {
-    for (int i = 0; i < MAX_TASKS; i++)
-        if (tasks[i].state == TASK_STATE_ZOMBIE || !tasks[i].in_use)
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (&tasks[i] == current) continue;
+        if (tasks[i].state == TASK_STATE_ZOMBIE || !tasks[i].in_use) {
+            /* the finished task's kernel stack is nobody's now */
+            if (tasks[i].in_use && tasks[i].kernel_stack && i > 1) { free(tasks[i].kernel_stack); tasks[i].kernel_stack = 0; }
             return i;
+        }
+    }
     return -1;
 }
 
@@ -82,13 +89,16 @@ void scheduler_init(void)
     terminal_writestring("[OK] Scheduler initialized\n");
 }
 
-int task_spawn(void (*entry)(void), const char *name)
+static int task_spawn_internal(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir)
 {
     int slot = find_free_slot();
     if (slot < 0) return -1;
 
     task_t *t = &tasks[slot];
     memset(t, 0, sizeof(task_t));
+    t->proc = proc;
+    t->pgdir = pgdir;
+    if (proc && current) t->user_data = current->user_data;      /* output goes to the spawner's window */
     t->pid = next_pid++;
     t->in_use = 1;
     t->state = TASK_STATE_READY;
@@ -116,6 +126,23 @@ int task_spawn(void (*entry)(void), const char *name)
     last->next = t;
     task_count_val++;
     return t->pid;
+}
+
+int task_spawn(void (*entry)(void), const char *name)
+{
+    return task_spawn_internal(entry, name, 0, 0);
+}
+
+int task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir)
+{
+    return task_spawn_internal(entry, name, proc, pgdir);
+}
+
+task_t *task_by_pid(uint32_t pid)
+{
+    for (int i = 0; i < MAX_TASKS; i++)
+        if (tasks[i].in_use && tasks[i].pid == pid) return &tasks[i];
+    return 0;
 }
 
 uint32_t timer_handler(uint32_t esp)
@@ -155,6 +182,13 @@ uint32_t timer_handler(uint32_t esp)
 
     current = next;
     current->state = TASK_STATE_RUNNING;
+    /* each user process runs in its own address space; kernel tasks run in the kernel's (all of them see
+     * the kernel half, so a kernel task does not care which one is loaded) */
+    {
+        uint32_t *want = current->pgdir ? current->pgdir : paging_kernel_dir();
+        if (want && paging_current_dir() != want) asm volatile("mov %0, %%cr3" : : "r"(want) : "memory");
+        if (current->kernel_stack) tss_set_kernel_stack((uint32_t)current->kernel_stack + KERNEL_STACK_SZ);
+    }
     return current->esp;
 }
 
