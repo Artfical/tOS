@@ -2363,8 +2363,226 @@ int xfs_umount(xfs_t *fs)
     return 0;
 }
 
+static uint32_t xfs_mk_rand(void)
+{
+    static uint32_t x;
+    uint32_t tsc;
+    __asm__ volatile("rdtsc" : "=a"(tsc) : : "edx");
+    x ^= tsc + 0x9E3779B9u;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    return x;
+}
+
+typedef struct { uint32_t start, len; } xfs_mk_ext_t;
+
+/* sets the fields every v3 inode has: magic, version, free-list link, number, uuid */
+static void xfs_mk_inode_base(const uint8_t *uuid, uint8_t *ip, uint64_t ino)
+{
+    put16(ip, XFS_DINODE_MAGIC);
+    ip[4] = 3;
+    put32(ip + 0x60, 0xFFFFFFFFu);
+    put64(ip + 0x98, ino);
+    memcpy(ip + 0xA0, uuid, 16);
+}
+
+static int xfs_mk_btree_block(blockdev_t *bd, const uint8_t *uuid, uint32_t magic, uint64_t daddr, uint32_t agno,
+                              uint32_t nrecs, const uint8_t *recs, uint32_t reclen)
+{
+    uint8_t *b = (uint8_t *)malloc(4096);
+    if (!b) return -1;
+    memset(b, 0, 4096);
+    put32(b, magic);
+    put16(b + 6, (uint16_t)nrecs);
+    put32(b + 8, 0xFFFFFFFFu);
+    put32(b + 12, 0xFFFFFFFFu);
+    put64(b + 16, daddr);
+    memcpy(b + 32, uuid, 16);
+    put32(b + 48, agno);
+    if (nrecs) memcpy(b + XFS_BTBLOCK_HDR, recs, (size_t)nrecs * reclen);
+    xfs_cksum_update(b, 4096, XFS_BTBLOCK_CRC_OFF);
+    int rc = blockdev_write_bytes(bd, daddr * 512, 4096, b);
+    free(b);
+    return rc;
+}
+
+/* A fresh version 5 volume like `mkfs.xfs -m crc=1,finobt=1,reflink=0,rmapbt=0 -i sparse=0`: 4 KiB blocks,
+ * 512-byte inodes, one root directory inode (plus the two real-time inodes every mkfs creates), an internal
+ * log written as clean, and one-block allocation btrees in every allocation group. */
 int xfs_format(blockdev_t *bd, const char *label)
 {
-    (void)bd; (void)label;
-    return -1;
+    const uint32_t bs = 4096, isz = 512, ipb = 8;
+    if ((bd->sector_size ? bd->sector_size : 512) != 512) return -1;
+    uint64_t dblocks = bd->total_sectors * 512 / bs;
+    if (dblocks > 0xFFFFFFF0ull) dblocks = 0xFFFFFFF0ull;
+    if (dblocks < 4096) return -1;
+
+    uint32_t agcount, agblocks;
+    if (dblocks < 16384) { agcount = (uint32_t)(dblocks / 4096); agblocks = (uint32_t)((dblocks + agcount - 1) / agcount); }
+    else {
+        agcount = 4;
+        agblocks = (uint32_t)((dblocks + 3) / 4);
+        if (agblocks > (1u << 20)) { agblocks = 1u << 20; agcount = (uint32_t)((dblocks + agblocks - 1) / agblocks); }
+    }
+    if (agcount > 1 && dblocks - (uint64_t)(agcount - 1) * agblocks < 4096) { agcount--; dblocks = (uint64_t)agcount * agblocks; }
+    if (agcount == 0) return -1;
+    uint32_t agblklog = 0;
+    while ((1u << agblklog) < agblocks) agblklog++;
+    uint32_t last_len = (uint32_t)(dblocks - (uint64_t)(agcount - 1) * agblocks);
+
+    uint32_t logblocks = (uint32_t)(dblocks / 64);
+    if (logblocks < 1024) logblocks = 1024;
+    if (logblocks > 8192) logblocks = 8192;
+    if (logblocks > agblocks / 2) logblocks = agblocks / 2;
+    uint32_t logag = agcount / 2;
+    uint64_t logstart = ((uint64_t)logag << agblklog) | 5;
+
+    uint8_t uuid[16];
+    for (int i = 0; i < 16; i += 4) put32(uuid + i, xfs_mk_rand());
+    uuid[6] = (uint8_t)((uuid[6] & 0x0F) | 0x40);
+    uuid[8] = (uint8_t)((uuid[8] & 0x3F) | 0x80);
+
+    uint8_t *blk = (uint8_t *)malloc(bs);
+    uint8_t *zero = (uint8_t *)malloc(bs);
+    if (!blk || !zero) { free(blk); free(zero); return -1; }
+    memset(zero, 0, bs);
+    int rc = -1;
+
+    uint64_t total_free = 0;
+    uint32_t chunk_agbno = 0;
+    uint64_t rootino = 0;
+
+    for (uint32_t ag = 0; ag < agcount; ag++) {
+        uint32_t aglen = ag == agcount - 1 ? last_len : agblocks;
+        uint64_t ag_byte = (uint64_t)ag * agblocks * bs;
+        uint32_t cur = 5, fl[4];
+        xfs_mk_ext_t fr[2];
+        int nfr = 0;
+        if (ag == logag) cur += logblocks;
+        for (int i = 0; i < 4; i++) fl[i] = cur++;
+        if (ag == 0) {
+            chunk_agbno = (cur + 3) & ~3u;
+            if (chunk_agbno > cur) { fr[nfr].start = cur; fr[nfr].len = chunk_agbno - cur; nfr++; }
+            cur = chunk_agbno + 8;
+            rootino = (uint64_t)chunk_agbno * ipb;
+        }
+        if (cur > aglen) goto out;
+        fr[nfr].start = cur; fr[nfr].len = aglen - cur; nfr++;
+        uint32_t freeblks = 0, longest = 0;
+        for (int i = 0; i < nfr; i++) { freeblks += fr[i].len; if (fr[i].len > longest) longest = fr[i].len; }
+        total_free += freeblks + 4;
+
+        /* sector 0: superblock (written last); 1: AGF; 2: AGI; 3: AGFL; the rest of block 0 stays zero */
+        memset(blk, 0, bs);
+        uint8_t *agf = blk + 512, *agi = blk + 1024, *agfl = blk + 1536;
+        put32(agf, XFS_AGF_MAGIC); put32(agf + 4, 1); put32(agf + 8, ag); put32(agf + 12, aglen);
+        put32(agf + 16, 1); put32(agf + 20, 2); put32(agf + 28, 1); put32(agf + 32, 1);
+        put32(agf + 40, 1); put32(agf + 44, 4); put32(agf + 48, 4);
+        put32(agf + 52, freeblks); put32(agf + 56, longest);
+        memcpy(agf + 64, uuid, 16);
+        put32(agi, XFS_AGI_MAGIC); put32(agi + 4, 1); put32(agi + 8, ag); put32(agi + 12, aglen);
+        put32(agi + 16, ag == 0 ? 64 : 0); put32(agi + 20, 3); put32(agi + 24, 1);
+        put32(agi + 28, ag == 0 ? 61 : 0); put32(agi + 32, ag == 0 ? chunk_agbno * ipb : 0xFFFFFFFFu);
+        put32(agi + 36, 0xFFFFFFFFu);
+        for (int i = 0; i < 64; i++) put32(agi + 40 + 4 * i, 0xFFFFFFFFu);
+        memcpy(agi + 296, uuid, 16);
+        put32(agi + 328, 4); put32(agi + 332, 1);
+        put32(agfl, XFS_AGFL_MAGIC); put32(agfl + 4, ag); memcpy(agfl + 8, uuid, 16);
+        for (int i = 0; i < 119; i++) put32(agfl + 36 + 4 * i, 0xFFFFFFFFu);
+        for (int i = 0; i < 4; i++) put32(agfl + 36 + 4 * (1 + i), fl[i]);
+        xfs_cksum_update(agf, 512, XFS_AGF_CRC_OFF);
+        xfs_cksum_update(agi, 512, XFS_AGI_CRC_OFF);
+        xfs_cksum_update(agfl, 512, 32);
+        if (blockdev_write_bytes(bd, ag_byte + 512, 3 * 512, blk + 512) != 0) goto out;
+
+        /* the four btree roots: free space by block, by size, inodes, free inodes */
+        uint8_t recs[2 * 8];
+        uint32_t n = (uint32_t)nfr;
+        for (uint32_t i = 0; i < n; i++) { put32(recs + 8 * i, fr[i].start); put32(recs + 8 * i + 4, fr[i].len); }
+        uint64_t d0 = ag_byte / 512;
+        if (xfs_mk_btree_block(bd, uuid, XFS_ABTB_CRC_MAGIC, d0 + 1 * 8, ag, n, recs, 8) != 0) goto out;
+        if (n == 2 && (fr[1].len < fr[0].len || (fr[1].len == fr[0].len && fr[1].start < fr[0].start))) {
+            uint8_t t[8]; memcpy(t, recs, 8); memcpy(recs, recs + 8, 8); memcpy(recs + 8, t, 8);
+        }
+        if (xfs_mk_btree_block(bd, uuid, XFS_ABTC_CRC_MAGIC, d0 + 2 * 8, ag, n, recs, 8) != 0) goto out;
+        uint8_t ir[16];
+        memset(ir, 0, sizeof(ir));
+        if (ag == 0) { put32(ir, chunk_agbno * ipb); put32(ir + 4, 61); put64(ir + 8, 0xFFFFFFFFFFFFFFF8ull); }
+        if (xfs_mk_btree_block(bd, uuid, XFS_IBT_CRC_MAGIC, d0 + 3 * 8, ag, ag == 0 ? 1 : 0, ir, 16) != 0) goto out;
+        if (xfs_mk_btree_block(bd, uuid, XFS_FIBT_CRC_MAGIC, d0 + 4 * 8, ag, ag == 0 ? 1 : 0, ir, 16) != 0) goto out;
+    }
+
+    /* the first inode chunk: root directory, the two real-time inodes, 61 free inodes */
+    {
+        uint8_t *chunk = (uint8_t *)malloc(8 * bs);
+        if (!chunk) goto out;
+        memset(chunk, 0, 8 * bs);
+        for (uint32_t i = 0; i < 64; i++) {
+            uint8_t *ip = chunk + (size_t)i * isz;
+            xfs_mk_inode_base(uuid, ip, rootino + i);
+            if (i == 0) {
+                put16(ip + 2, 040755); ip[5] = XFS_DINODE_FMT_LOCAL; put32(ip + 0x10, 2);
+                put64(ip + 0x38, 6); ip[0x53] = 2; put64(ip + 0x68, 2);
+                put32(ip + 176 + 2, (uint32_t)rootino);                     /* shortform header: no entries, parent = itself */
+            } else if (i < 3) {
+                put16(ip + 2, 0100000); ip[5] = XFS_DINODE_FMT_EXTENTS; put32(ip + 0x10, 1);
+                ip[0x53] = 2; put64(ip + 0x68, 2);
+                if (i == 1) put16(ip + 0x5A, 4);                             /* XFS_DIFLAG_NEWRTBM */
+            }
+            xfs_cksum_update(ip, isz, 100);
+        }
+        int wrc = blockdev_write_bytes(bd, (uint64_t)chunk_agbno * bs, 8 * bs, chunk);
+        free(chunk);
+        if (wrc != 0) goto out;
+    }
+
+    /* the log: zeroed (cycle 0), with one record at the start saying "unmounted cleanly" */
+    {
+        uint64_t lb = (uint64_t)((logstart >> agblklog) * agblocks + (logstart & ((1u << agblklog) - 1))) * bs;
+        for (uint32_t i = 0; i < logblocks; i++)
+            if (blockdev_write_bytes(bd, lb + (uint64_t)i * bs, bs, zero) != 0) goto out;
+        uint8_t h[1024];
+        memset(h, 0, sizeof(h));
+        put32(h, 0xFEEDBABEu); put32(h + 4, 1); put32(h + 8, 2); put32(h + 12, 512);
+        put32(h + 16, 1); put32(h + 24, 1);
+        put32(h + 0x24, 0xFFFFFFFFu); put32(h + 0x28, 1);
+        put32(h + 0x2C, 0xB0C0D0D0u);                                       /* original first word of the data, moved here */
+        put32(h + 0x12C, 1);
+        memcpy(h + 0x130, uuid, 16);
+        put32(h + 0x140, 32768);
+        put32(h + 512, 1);                                                  /* cycle number replaces that first word */
+        put32(h + 512 + 4, 8);
+        h[512 + 8] = 0xAA; h[512 + 9] = 0x20;
+        h[512 + 12] = 0x6E; h[512 + 13] = 0x55;                             /* unmount record */
+        if (blockdev_write_bytes(bd, lb, 1024, h) != 0) goto out;
+    }
+
+    /* superblock in every group, now that the totals are known */
+    {
+        for (uint32_t ag = 0; ag < agcount; ag++) {
+            uint64_t ag_byte = (uint64_t)ag * agblocks * bs;
+            memset(blk, 0, bs);
+            uint8_t *sb = blk;
+            put32(sb, XFS_SB_MAGIC); put32(sb + 4, bs); put64(sb + 8, dblocks);
+            memcpy(sb + 32, uuid, 16);
+            put64(sb + 48, logstart);
+            put64(sb + 56, rootino); put64(sb + 64, rootino + 1); put64(sb + 72, rootino + 2);
+            put32(sb + 80, 1);
+            put32(sb + 84, agblocks); put32(sb + 88, agcount); put32(sb + 96, logblocks);
+            put16(sb + 100, 0xB4A5); put16(sb + 102, 512); put16(sb + 104, (uint16_t)isz); put16(sb + 106, (uint16_t)ipb);
+            if (label) for (int i = 0; i < 12 && label[i]; i++) sb[108 + i] = (uint8_t)label[i];
+            sb[120] = 12; sb[121] = 9; sb[122] = 9; sb[123] = 3; sb[124] = (uint8_t)agblklog; sb[127] = 25;
+            put64(sb + 128, 64); put64(sb + 136, 61); put64(sb + 144, total_free);
+            put32(sb + 180, 4);
+            put32(sb + 196, 1);
+            put32(sb + 200, 0x18A); put32(sb + 204, 0x18A);
+            put32(sb + 212, 1); put32(sb + 216, 1);
+            xfs_cksum_update(sb, 512, XFS_SB_CRC_OFF);
+            /* only sector 0 is written: AGF/AGI/AGFL are already in place */
+            if (blockdev_write_bytes(bd, ag_byte, 512, sb) != 0) goto out;
+        }
+    }
+    rc = 0;
+out:
+    free(blk); free(zero);
+    return rc;
 }

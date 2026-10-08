@@ -314,7 +314,7 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
     } else if (strcmp(fstype, "btrfs") == 0) {
         if (btrfs_format(bd, "tOS") != 0) { seterr(err, err_len, "btrfs format failed (device too small? needs 48 MiB)"); return -1; }
     } else if (strcmp(fstype, "xfs") == 0) {
-        if (xfs_format(bd, "tOS") != 0) { seterr(err, err_len, "formatting XFS is not supported; use mkfs.xfs"); return -1; }
+        if (xfs_format(bd, "tOS") != 0) { seterr(err, err_len, "xfs format failed (device too small? needs 16 MiB)"); return -1; }
     } else if (strcmp(fstype, "zfs") == 0) {
         if (zfs_format(bd, "tOS") != 0) { seterr(err, err_len, "format failed"); return -1; }
     } else if (strcmp(fstype, "apfs") == 0) {

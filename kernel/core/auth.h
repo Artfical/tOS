@@ -37,6 +37,7 @@ uint32_t auth_uid(void);                    /* credentials of the running task *
 uint32_t auth_gid(void);
 int  auth_is_root(void);
 void auth_set_session(uint32_t uid, uint32_t gid);           /* becomes this user (login, su) */
+void auth_session(uint32_t *uid, uint32_t *gid);             /* who is logged in on this console */
 void auth_become(uint32_t uid, uint32_t gid, auth_saved_t *saved);   /* temporary switch (sudo, kernel work) */
 void auth_restore(const auth_saved_t *saved);
 

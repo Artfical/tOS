@@ -14,6 +14,8 @@ typedef struct {
     void *private_data;
     int is_bind;                       /* another name for the tree at bind_target */
     char bind_target[VFS_NAME_LEN];
+    int synth;                         /* the file system keeps no owners: the mounting user owns everything */
+    uint32_t s_uid, s_gid;
 } mount_t;
 
 typedef struct {
@@ -63,6 +65,10 @@ int vfs_mount(const char *path, vfs_ops_t *ops, void *private_data)
     m->path_len = i;
     m->ops = ops;
     m->private_data = private_data;
+    if (m->path_len > 1 && ops && !ops->setattr) {
+        m->synth = 1;
+        auth_session(&m->s_uid, &m->s_gid);
+    }
     m->used = 1;
     if (slot >= mount_count) mount_count = slot + 1;
     return 0;
@@ -168,14 +174,25 @@ static void abspath_into(const char *path, char *out)
 
 static int has_perms(mount_t *m)
 {
-    return m && m->ops && m->ops->setattr != 0;
+    return m && m->ops && (m->ops->setattr != 0 || m->synth);
+}
+
+/* owner and mode of an entry on a file system without ownership (like mounting vfat with uid=, umask=022) */
+static void synth_owner(mount_t *m, vfs_entry_t *e)
+{
+    if (!m->synth) return;
+    e->uid = m->s_uid;
+    e->gid = m->s_gid;
+    e->mode = e->is_dir ? 0755u : 0644u;
 }
 
 static int stat_abs(mount_t *m, const char *abs, vfs_entry_t *e)
 {
     if (!m->ops || !m->ops->stat) return -1;
     memset(e, 0, sizeof(*e));
-    return m->ops->stat(m->private_data, strip_mount(abs, m), e);
+    int rc = m->ops->stat(m->private_data, strip_mount(abs, m), e);
+    if (rc == 0) synth_owner(m, e);
+    return rc;
 }
 
 static void parent_of(const char *abs, char *out)
@@ -248,7 +265,7 @@ static int sticky_ok(mount_t *m, const char *abs)
 /* a new file or directory belongs to whoever made it */
 static void own_new(mount_t *m, const char *abs, int is_dir)
 {
-    if (!has_perms(m)) return;
+    if (!has_perms(m) || !m->ops->setattr) return;
     uint32_t base = is_dir ? 0777u : 0666u;
     m->ops->setattr(m->private_data, strip_mount(abs, m), base & ~perm_umask(), auth_uid(), auth_gid());
 }
@@ -343,7 +360,9 @@ int vfs_readdir(const char *path, vfs_entry_t *entries, int max)
     mount_t *m = resolve_mount(abs);
     if (!m || !m->ops || !m->ops->readdir) return -1;
     if (!may_access(m, abs, VFS_ACC_R)) return -1;
-    return m->ops->readdir(m->private_data, strip_mount(abs, m), entries, max);
+    int n = m->ops->readdir(m->private_data, strip_mount(abs, m), entries, max);
+    if (n > 0 && m->synth) for (int i = 0; i < n; i++) synth_owner(m, &entries[i]);
+    return n;
 }
 
 int vfs_mkdir(const char *path, uint32_t mode)
@@ -391,7 +410,9 @@ int vfs_stat(const char *path, vfs_entry_t *entry)
     mount_t *m = resolve_mount(abs);
     if (!m || !m->ops || !m->ops->stat) return -1;
     if (has_perms(m) && !auth_is_root() && !walk_ok(m, abs)) return -1;
-    return m->ops->stat(m->private_data, strip_mount(abs, m), entry);
+    int rc = m->ops->stat(m->private_data, strip_mount(abs, m), entry);
+    if (rc == 0) synth_owner(m, entry);
+    return rc;
 }
 
 int vfs_rename(const char *old, const char *new_path)

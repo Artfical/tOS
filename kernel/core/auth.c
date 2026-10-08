@@ -36,7 +36,7 @@ static acct_t accts[AUTH_MAX_USERS];
 static int nacct;
 static group_t groups[AUTH_MAX_GROUPS];
 static int ngroup;
-static uint32_t session_uid;
+static uint32_t session_uid, session_gid;
 static int confirmed;
 static char hostname[40] = "tos";
 
@@ -52,7 +52,10 @@ void auth_set_session(uint32_t uid, uint32_t gid)
 {
     task_set_cred(uid, gid);
     session_uid = uid;
+    session_gid = gid;
 }
+
+void auth_session(uint32_t *uid, uint32_t *gid) { *uid = session_uid; *gid = session_gid; }
 
 void auth_become(uint32_t uid, uint32_t gid, auth_saved_t *saved)
 {
