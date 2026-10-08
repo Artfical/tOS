@@ -8,6 +8,15 @@
 #include "tfsk.h"
 #include "ramfs.h"
 #include "vfs.h"
+#include "auth.h"
+#include "fsbridge.h"
+
+static void strncat_safe(char *dst, const char *src, size_t cap)
+{
+    size_t n = strlen(dst);
+    while (*src && n + 1 < cap) dst[n++] = *src++;
+    dst[n] = 0;
+}
 
 static uint64_t sectors_to_mb(uint64_t sectors)
 {
@@ -162,11 +171,16 @@ int installer_run(void)
     terminal_setpos(0, y++);
     terminal_writestring("Creating directory structure...");
 
-    tfsk_mkdir(&fs, TFSK_ROOT_INODE, "bin");
+    /* the system's own files live under /system (programs inside), owned by root */
+    tfsk_mkdir(&fs, TFSK_ROOT_INODE, "system");
+    {
+        uint32_t sys_ino;
+        if (tfsk_walk(&fs, "/system", &sys_ino) == 0) tfsk_mkdir(&fs, sys_ino, "programs");
+    }
     tfsk_mkdir(&fs, TFSK_ROOT_INODE, "etc");
     tfsk_mkdir(&fs, TFSK_ROOT_INODE, "home");
+    tfsk_mkdir(&fs, TFSK_ROOT_INODE, "root");
     tfsk_mkdir(&fs, TFSK_ROOT_INODE, "mnt");
-    tfsk_mkdir(&fs, TFSK_ROOT_INODE, "usr");
     tfsk_mkdir(&fs, TFSK_ROOT_INODE, "tmp");
 
     terminal_setpos(0, y++);
@@ -203,7 +217,10 @@ int installer_run(void)
             vfs_close(fd);
 
             if (rd > 0) {
-                int fd2 = tfsk_vfs_open(&fs, entries[i].name, 2);
+                char dst_path[VFS_NAME_LEN];
+                strcpy(dst_path, "/system/programs/");
+                strncat_safe(dst_path, entries[i].name, sizeof(dst_path));
+                int fd2 = tfsk_vfs_open(&fs, dst_path, 2);
                 if (fd2 >= 0) {
                     tfsk_vfs_write(&fs, fd2, buf, rd);
                     tfsk_vfs_close(&fs, fd2);
@@ -227,7 +244,7 @@ int installer_run(void)
     terminal_setpos(0, y++);
     terminal_writestring("  tOS installation complete!");
     terminal_setpos(0, y++);
-    terminal_writestring("  Reboot to start using tOS.");
+    terminal_writestring("  Next: choose a computer name, a root password and your user account.");
     terminal_setpos(0, y++);
     terminal_writestring("============================================");
     y++;
@@ -235,5 +252,69 @@ int installer_run(void)
     terminal_writestring("Press any key to continue...");
     keyboard_getchar();
 
+    return 0;
+}
+
+/* A valid computer name: letters, digits and '-' only. */
+static int hostname_ok(const char *s)
+{
+    size_t n = strlen(s);
+    if (n == 0 || n > 30) return 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = s[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return 0;
+    }
+    return 1;
+}
+
+static int ask_new_password(const char *what, char *out, int max)
+{
+    for (;;) {
+        char again[64];
+        char prompt[64];
+        strcpy(prompt, what);
+        strcat(prompt, " password: ");
+        if (auth_prompt_password(prompt, out, max) < 0) continue;
+        if (out[0] == 0) { terminal_writestring("The password cannot be empty.\n"); continue; }
+        if (auth_prompt_password("Retype password: ", again, sizeof(again)) < 0) continue;
+        if (strcmp(out, again) != 0) { terminal_writestring("The passwords do not match, try again.\n"); continue; }
+        memset(again, 0, sizeof(again));
+        return 0;
+    }
+}
+
+/* The account questions of a fresh installation, in the way Linux installers ask them:
+ * computer name, root password, then the first user (who may use sudo). */
+int installer_setup_accounts(void)
+{
+    terminal_writestring("\n=== tOS first-time setup ===\n");
+    char host[40], pw[64], user[AUTH_NAME_MAX], full[48];
+
+    for (;;) {
+        if (auth_read_line("Computer name [tos]: ", host, sizeof(host), 1) < 0) continue;
+        if (host[0] == 0) strcpy(host, "tos");
+        if (hostname_ok(host)) break;
+        terminal_writestring("Use only lowercase letters, digits and '-'.\n");
+    }
+    auth_set_hostname(host);
+
+    terminal_writestring("\nSet the password of the administrator account (root).\n");
+    ask_new_password("Root", pw, sizeof(pw));
+    auth_set_root_password(pw);
+    memset(pw, 0, sizeof(pw));
+
+    terminal_writestring("\nNow create your own user account.\n");
+    for (;;) {
+        if (auth_read_line("Username: ", user, sizeof(user), 1) < 0) continue;
+        if (user[0] == 0) continue;
+        if (auth_lookup(user, 0) == 0) { terminal_writestring("That name is taken.\n"); continue; }
+        auth_read_line("Full name (optional): ", full, sizeof(full), 1);
+        ask_new_password("User", pw, sizeof(pw));
+        uint32_t uid;
+        if (auth_add_user(user, pw, full[0] ? full : user, 1, &uid) == 0) break;
+        terminal_writestring("Could not create that account (use lowercase letters, digits, '_' or '-', starting with a letter).\n");
+    }
+    memset(pw, 0, sizeof(pw));
+    terminal_writestring("\nAccounts created. This user may use sudo.\n");
     return 0;
 }

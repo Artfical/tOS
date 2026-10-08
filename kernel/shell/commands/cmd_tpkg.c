@@ -1,4 +1,5 @@
 #include "commands.h"
+#include "auth.h"
 #include "terminal.h"
 #include "string.h"
 #include "memory.h"
@@ -12,7 +13,7 @@
  * `tpkg list` hits /api/list (plain text, one
  * "name|version|license|desc" per line); `tpkg install <name>` hits
  * /api/download/<name> (a raw ustar .tar), saves it to ramfs, and
- * extracts it into /programs/<name>/ with the tar support this
+ * extracts it into /system/programs/<name>/ with the tar support this
  * kernel already has. */
 #define TPKG_HOST "pkg.artfical.com"
 #define TPKG_PORT 80
@@ -28,9 +29,9 @@ static void print_uint(uint32_t n)
     terminal_writestring(buf + i);
 }
 
-#define TPKG_PATH_FILE "/sys/path.tmbl"
-#define TPKG_DB_FILE "/sys/tpkg_db.tmbl"     /* installed packages: name|version|destdir */
-#define TPKG_CACHE_FILE "/sys/tpkg_cache.tmbl" /* last `tpkg update`: raw server list body */
+#define TPKG_PATH_FILE "/system/path.tmbl"
+#define TPKG_DB_FILE "/system/tpkg_db.tmbl"     /* installed packages: name|version|destdir */
+#define TPKG_CACHE_FILE "/system/tpkg_cache.tmbl" /* last `tpkg update`: raw server list body */
 
 /* Reads a whole file into a malloc'd, NUL-terminated buffer. NULL if
  * missing/empty/OOM. *len_out (if given) is the byte count, not
@@ -57,7 +58,7 @@ static char *tpkg_read_whole(const char *path, int *len_out)
  * semantic. */
 static void tpkg_write_whole(const char *path, const char *content, int len)
 {
-    if (!ramfs_exists("/sys")) ramfs_mkdir("/sys");
+    if (!ramfs_exists("/system")) ramfs_mkdir("/system");
     if (ramfs_exists(path)) ramfs_delete(path);
     if (ramfs_create(path) != 0) return;
     if (len > 0) ramfs_write(path, content, (uint32_t)len, 0);
@@ -69,7 +70,7 @@ static void tpkg_write_whole(const char *path, const char *content, int len)
  * package version doesn't grow the file forever. */
 static void tpkg_path_register(const char *cmdname, const char *fullpath)
 {
-    if (!ramfs_exists("/sys")) ramfs_mkdir("/sys");
+    if (!ramfs_exists("/system")) ramfs_mkdir("/system");
 
     char line[224];
     int i = 0;
@@ -681,7 +682,7 @@ static void tpkg_install(uint32_t ip, const char *name)
 
     char destdir[160];
     pi = 0;
-    const char *dprefix = "/programs/";
+    const char *dprefix = "/system/programs/";
     while (*dprefix) destdir[pi++] = *dprefix++;
     p = name;
     while (*p && pi < 150) destdir[pi++] = *p++;
@@ -749,7 +750,7 @@ static void tpkg_remove(const char *name)
          * fall back to the standard convention so removal still
          * works for it. */
         int p = 0;
-        const char *prefix = "/programs/";
+        const char *prefix = "/system/programs/";
         while (prefix[p]) { destdir[p] = prefix[p]; p++; }
         int q = 0;
         while (name[q] && p < 120) destdir[p++] = name[q++];
@@ -864,6 +865,14 @@ void cmd_tpkg(int argc, char **args)
             "  remove <name>    uninstall a package (no network)\n"
             "  upgrade          reinstall any installed package with a newer server version\n"
         );
+        return;
+    }
+
+    /* Everything that changes the system -- install, remove, update, upgrade -- is for root. */
+    if (strcmp(args[1], "list") != 0 && strcmp(args[1], "look") != 0 && !auth_is_root()) {
+        terminal_writestring("tpkg: permission denied: package management needs root (try: sudo tpkg ");
+        terminal_writestring(args[1]);
+        terminal_writestring(" ...)\n");
         return;
     }
 

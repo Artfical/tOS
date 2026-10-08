@@ -24,6 +24,8 @@ typedef struct vfs_entry {
     int is_dir;
     uint32_t inode;
     uint32_t mode;
+    uint32_t uid;
+    uint32_t gid;
 } vfs_entry_t;
 
 typedef struct vfs_ops {
@@ -38,7 +40,17 @@ typedef struct vfs_ops {
     int   (*stat)(void *ctx, const char *path, vfs_entry_t *entry);
     int   (*rename)(void *ctx, const char *oldpath, const char *newpath);
     int   (*symlink)(void *ctx, const char *target, const char *path);
+    /* change permission bits (mode != VFS_KEEP) and/or owner (uid/gid != VFS_KEEP); a file system that
+     * stores no ownership leaves this NULL and is then not subject to permission checks */
+    int   (*setattr)(void *ctx, const char *path, uint32_t mode, uint32_t uid, uint32_t gid);
 } vfs_ops_t;
+
+#define VFS_KEEP 0xFFFFFFFFu
+
+/* permission bits asked of vfs_access() */
+#define VFS_ACC_R 4
+#define VFS_ACC_W 2
+#define VFS_ACC_X 1
 
 int  vfs_init(void);
 int  vfs_mount(const char *path, vfs_ops_t *ops, void *private_data);
@@ -54,6 +66,15 @@ int  vfs_unlink(const char *path);
 int  vfs_stat(const char *path, vfs_entry_t *entry);
 int  vfs_rename(const char *oldpath, const char *newpath);
 int  vfs_symlink(const char *target, const char *path);
+int  vfs_denied(void);                       /* was the last refused call a permission refusal? */
+int  vfs_chmod_supported(const char *path);  /* does the file system under path keep owners and modes? */
+int  vfs_check_remove(const char *path);     /* 0 = the current user may remove this entry */
+int  vfs_chmod(const char *path, uint32_t mode);
+int  vfs_chown(const char *path, uint32_t uid, uint32_t gid);
+/* may the current user do `want` (VFS_ACC_*) to this file/directory? 0 = yes */
+int  vfs_access(const char *path, int want);
+/* makes `path` another name for the tree at `target` (a bind mount) */
+int  vfs_bind(const char *path, const char *target);
 int  vfs_exists(const char *path);
 char *vfs_abspath(const char *path);
 void vfs_chdir(const char *path);

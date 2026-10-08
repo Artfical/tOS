@@ -92,6 +92,7 @@ int task_spawn(void (*entry)(void), const char *name)
     t->pid = next_pid++;
     t->in_use = 1;
     t->state = TASK_STATE_READY;
+    if (current) { t->uid = current->uid; t->gid = current->gid; }   /* children run as their parent */
     t->kernel_stack = malloc(KERNEL_STACK_SZ);
     if (!t->kernel_stack) {
         t->in_use = 0;
@@ -183,6 +184,26 @@ void task_sleep(uint32_t ms)
 }
 
 task_t *task_current(void) { return current; }
+
+void task_get_cred(uint32_t *uid, uint32_t *gid)
+{
+    *uid = current ? current->uid : 0;
+    *gid = current ? current->gid : 0;
+}
+
+void task_set_cred(uint32_t uid, uint32_t gid)
+{
+    if (!current) return;
+    current->uid = uid;
+    current->gid = gid;
+}
+
+uint32_t task_get_uid(uint32_t pid)
+{
+    for (int i = 0; i < MAX_TASKS; i++)
+        if (tasks[i].in_use && tasks[i].pid == pid) return tasks[i].uid;
+    return 0;
+}
 void     task_set_userdata(void *p) { current->user_data = p; }
 void    *task_get_userdata(void)    { return current ? current->user_data : 0; }
 uint32_t task_count(void)  { return task_count_val; }

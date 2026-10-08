@@ -146,6 +146,7 @@ KERNEL_OBJS = \
     kernel/core/debugmon.o \
     kernel/core/sound.o \
     kernel/core/scheduler.o \
+    kernel/core/auth.o \
     kernel/core/paging.o \
     kernel/core/tss.o \
     kernel/core/usermode.o \
@@ -159,9 +160,12 @@ KERNEL_OBJS = \
     kernel/shell/commands/cmd_htop.o \
     kernel/shell/commands/cmd_disk.o \
     kernel/shell/commands/cmd_archive.o \
+    kernel/shell/commands/cmd_user.o \
     kernel/shell/commands/cmd_tpkg.o \
     kernel/core/klog.o \
     kernel/fs/ramfs.o \
+    kernel/fs/perm.o \
+    kernel/fs/sysdirs.o \
     kernel/fs/tfsk.o \
     kernel/fs/fat16.o \
     kernel/fs/fat32.o \

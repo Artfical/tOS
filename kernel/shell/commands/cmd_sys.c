@@ -1,4 +1,5 @@
 #include "commands.h"
+#include "auth.h"
 #include "terminal.h"
 #include "string.h"
 #include "version.h"
@@ -446,18 +447,6 @@ void cmd_uname(int argc, char **args)
     terminal_writestring("tOS\n");
 }
 
-void cmd_whoami(int argc, char **args)
-{
-    (void)argc; (void)args;
-    terminal_writestring("root\n");
-}
-
-void cmd_hostname(int argc, char **args)
-{
-    (void)argc; (void)args;
-    terminal_writestring("tOS\n");
-}
-
 void cmd_date(int argc, char **args)
 {
     (void)argc; (void)args;
@@ -692,13 +681,15 @@ static void ps_callback(uint32_t pid, const char *name, uint32_t state)
     else if (state == 2) s = "SLP";
     else if (state == 3) s = "ZOMB";
     terminal_writestring(s);
+    terminal_writestring("  ");
+    terminal_writestring(auth_name_of(task_get_uid(pid)));
     terminal_putchar('\n');
 }
 
 void cmd_ps(int argc, char **args)
 {
     (void)argc; (void)args;
-    terminal_writestring(" PID  NAME         STATE\n");
+    terminal_writestring(" PID  NAME         STATE USER\n");
     task_foreach(ps_callback);
 }
 
@@ -706,7 +697,7 @@ void cmd_log(int argc, char **args)
 {
     (void)argc; (void)args;
     terminal_writestring("=== Running tasks ===\n");
-    terminal_writestring(" PID  NAME         STATE\n");
+    terminal_writestring(" PID  NAME         STATE USER\n");
     task_foreach(ps_callback);
 
     terminal_writestring("\n=== Kernel / operation log (boot, disk ops, hex dumps) ===\n");
@@ -727,6 +718,10 @@ void cmd_kill(int argc, char **args)
         terminal_writestring("kill: Cannot kill that process\n");
         return;
     }
+    if (!auth_is_root() && task_get_uid(pid) != auth_uid()) {
+        terminal_writestring("kill: Operation not permitted\n");
+        return;
+    }
     if (task_kill(pid) == 0) {
         terminal_writestring("Process ");
         print_num(pid);
@@ -735,31 +730,4 @@ void cmd_kill(int argc, char **args)
         terminal_writestring("kill: No such process\n");
     }
 }
-
-void cmd_chmod(int argc, char **args)
-{
-    if (argc < 3) {
-        terminal_writestring("usage: chmod <mode> <file>\n");
-        terminal_writestring("  mode: 3-digit octal (e.g. 644, 755)\n");
-        return;
-    }
-    uint32_t mode = 0;
-    const char *m = args[1];
-    while (*m >= '0' && *m <= '9') {
-        mode = (mode << 3) | (unsigned long)(*m - '0');
-        m++;
-    }
-    if (ramfs_exists(args[2])) {
-        if (ramfs_is_dir(args[2]))
-            mode |= S_IFDIR;
-        else
-            mode |= S_IFREG;
-    }
-    if (ramfs_chmod(args[2], mode) == 0) {
-        terminal_writestring("Mode changed\n");
-    } else {
-        terminal_writestring("chmod: Failed\n");
-    }
-}
-
 

@@ -27,6 +27,9 @@
 #define TFSK_FT_DIR      2
 #define TFSK_FT_SYMLINK  3
 
+/* inode.flags: the low 12 bits of inode.mode are real permission bits (older volumes hold placeholder bits) */
+#define TFSK_INODE_PERM 0x8000
+
 #define TFSK_STATE_CLEAN 0
 #define TFSK_STATE_DIRTY 1
 #define TFSK_STATE_ERROR 2

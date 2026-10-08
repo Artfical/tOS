@@ -29,6 +29,8 @@
 #include "ramfs.h"
 #include "tfsk.h"
 #include "installer.h"
+#include "sysdirs.h"
+#include "auth.h"
 #include "ata.h"
 #include "io.h"
 #include "ahci.h"
@@ -430,6 +432,14 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         }
     }
 
+    /* the folder layout and the accounts (root's file system comes before any login) */
+    sysdirs_setup(tfs_instance.mounted);
+    auth_init();
+    if (tfs_instance.mounted && !auth_have_accounts()) {
+        installer_setup_accounts();
+        auth_init();
+    }
+
     int sel = 0;
     terminal_writestring("\nGUI? <[No] Yes>  (arrows/y/n, Enter)");
     for (;;) {
@@ -458,6 +468,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     scheduler_init();
     terminal_writestring("[OK] Scheduler initialized\n");
     klog_write("[OK] Scheduler initialized\n");
+
+    /* from here on everything runs as whoever logs in; what the kernel started so far stays root */
+    shell_login();
 
     shell_init();
 

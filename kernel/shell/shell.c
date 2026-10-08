@@ -9,9 +9,12 @@
 #include "vfs.h"
 #include "scheduler.h"
 #include "micropython.h"
+#include "fsbridge.h"
 #include "memory.h"
+#include "auth.h"
+#include "perm.h"
 
-#define PATH_FILE "/sys/path.tmbl"
+#define PATH_FILE "/system/path.tmbl"
 
 /* Runs whatever `fullpath` is, dispatching on its extension --
  * shared by the "cmdname=fullpath" lookup below and the legacy
@@ -75,8 +78,17 @@ static int path_fallback_exec(const char *cmd, int argc, char **args)
         }
     }
 
-    /* legacy fallback, predates path.tmbl */
+    /* the system's own programs, then the legacy initrd location (predates path.tmbl) */
     char path[160];
+    strcpy(path, "/system/programs/");
+    strcat(path, cmd);
+    strcat(path, "/");
+    strcat(path, cmd);
+    strcat(path, ".py");
+    if (ramfs_exists(path)) {
+        micropython_run_file_argv(path, argc, args);
+        return 1;
+    }
     strcpy(path, "/programs/");
     strcat(path, cmd);
     strcat(path, "/");
@@ -168,6 +180,8 @@ static const char *builtin_names[] = {
     "basename", "dirname", "which", "env", "uptime", "ps", "log", "kill",
     "chmod", "hexdump", "tee", "alias", "history", "font", "htop",
     "disk", "rev", "uniq", "tar", "zip", "unzip",
+    "id", "groups", "passwd", "useradd", "userdel", "chown", "chgrp", "umask", "stat",
+    "su", "sudo", "exit", "logout",
     NULL
 };
 
@@ -434,6 +448,8 @@ void shell_init(void)
     terminal_writestring("Type 'help' for commands\n\n");
 }
 
+void shell_dispatch(int argc, char **args);
+
 static void shell_exec_line(char *cmd_line)
 {
     char *args[MAX_ARGS];
@@ -448,7 +464,13 @@ static void shell_exec_line(char *cmd_line)
     int argc = parse_args(cmd_line, args);
 
     if (argc == 0) return;
+    auth_command_begin();
+    shell_dispatch(argc, args);
+}
 
+/* Runs one already-split command (also used by sudo for its argument list). */
+void shell_dispatch(int argc, char **args)
+{
     const char *c = args[0];
 
         if (strcmp(c, "help") == 0) {
@@ -639,6 +661,30 @@ static void shell_exec_line(char *cmd_line)
             cmd_zip(argc, args);
         } else if (strcmp(c, "unzip") == 0) {
             cmd_unzip(argc, args);
+        } else if (strcmp(c, "id") == 0) {
+            cmd_id(argc, args);
+        } else if (strcmp(c, "groups") == 0) {
+            cmd_groups(argc, args);
+        } else if (strcmp(c, "passwd") == 0) {
+            cmd_passwd(argc, args);
+        } else if (strcmp(c, "useradd") == 0) {
+            cmd_useradd(argc, args);
+        } else if (strcmp(c, "userdel") == 0) {
+            cmd_userdel(argc, args);
+        } else if (strcmp(c, "chown") == 0) {
+            cmd_chown(argc, args);
+        } else if (strcmp(c, "chgrp") == 0) {
+            cmd_chgrp(argc, args);
+        } else if (strcmp(c, "umask") == 0) {
+            cmd_umask(argc, args);
+        } else if (strcmp(c, "stat") == 0) {
+            cmd_stat(argc, args);
+        } else if (strcmp(c, "su") == 0) {
+            cmd_su(argc, args);
+        } else if (strcmp(c, "sudo") == 0) {
+            cmd_sudo(argc, args);
+        } else if (strcmp(c, "exit") == 0 || strcmp(c, "logout") == 0) {
+            cmd_exit(argc, args);
         } else {
             if (!path_fallback_exec(c, argc, args)) {
                 terminal_writestring("Unknown command: ");
@@ -665,27 +711,107 @@ void shell_exec_capture(const char *cmd, char *out, int max)
     terminal_capture_stop();
 }
 
-void shell_run(void)
+static int exit_requested;
+static int in_window;
+
+void shell_request_exit(void)
+{
+    if (in_window) {
+        terminal_writestring("(close the window to leave this terminal)\n");
+        return;
+    }
+    exit_requested = 1;
+}
+
+static void print_prompt(void)
+{
+    uint32_t uid = auth_uid();
+    const char *cwd = ramfs_getcwd();
+    auth_user_t me;
+    terminal_writestring(auth_name_of(uid));
+    terminal_putchar('@');
+    terminal_writestring(auth_hostname());
+    terminal_putchar(':');
+    if (auth_lookup_uid(uid, &me) == 0 && me.home[0] && strncmp(cwd, me.home, strlen(me.home)) == 0 &&
+        (cwd[strlen(me.home)] == 0 || cwd[strlen(me.home)] == '/')) {
+        terminal_putchar('~');
+        terminal_writestring(cwd + strlen(me.home));
+    } else {
+        terminal_writestring(cwd);
+    }
+    terminal_writestring(uid == 0 ? "# " : "$ ");
+}
+
+/* commands until `exit`: the login shell, or a nested one started by su / sudo -i */
+static void session_loop(void)
 {
     char cmd_line[MAX_CMD_LEN];
-
-    for (;;) {
+    exit_requested = 0;
+    while (!exit_requested) {
         gui_poll();
-        terminal_writestring(ramfs_getcwd());
-        terminal_writestring("> ");
-
+        print_prompt();
         shell_readline(cmd_line, MAX_CMD_LEN);
         shell_exec_line(cmd_line);
+    }
+    exit_requested = 0;
+}
+
+void shell_subshell(void)
+{
+    session_loop();
+}
+
+/* Asks who is there. A system without accounts (booted live, nothing installed) lets
+ * root in directly; an installed one wants a name and a password. */
+void shell_login(void)
+{
+    auth_init();
+    if (!auth_have_accounts()) {
+        auth_set_session(0, 0);
+        ramfs_chdir("/");
+        terminal_writestring("\nLive session: no accounts are set up, you are root.\n");
+        return;
+    }
+    auth_set_session(0, 0);
+    for (;;) {
+        char name[AUTH_NAME_MAX], pw[64];
+        terminal_writestring("\n");
+        terminal_writestring(auth_hostname());
+        if (auth_read_line(" login: ", name, sizeof(name), 1) < 0 || name[0] == 0) continue;
+        if (auth_prompt_password("Password: ", pw, sizeof(pw)) < 0) continue;
+        int bad = auth_check_password(name, pw) != 0;
+        memset(pw, 0, sizeof(pw));
+        auth_user_t u;
+        if (bad || auth_lookup(name, &u) != 0) {
+            task_sleep(1500);                       /* slow down guessing */
+            terminal_writestring("Login incorrect\n");
+            continue;
+        }
+        auth_set_session(u.uid, u.gid);
+        if (!fsbridge_exists(u.home) || ramfs_chdir(u.home) != 0) ramfs_chdir("/");
+        terminal_writestring("\nWelcome, ");
+        terminal_writestring(u.name);
+        terminal_writestring("\n");
+        return;
+    }
+}
+
+void shell_run(void)
+{
+    for (;;) {
+        session_loop();
+        terminal_writestring("logout\n");
+        shell_login();
     }
 }
 
 void shell_run_windowed(const char *initial_cmd)
 {
     char cmd_line[MAX_CMD_LEN];
+    in_window = 1;
 
     if (initial_cmd && initial_cmd[0]) {
-        terminal_writestring(ramfs_getcwd());
-        terminal_writestring("> ");
+        print_prompt();
         terminal_writestring(initial_cmd);
         terminal_putchar('\n');
         int i = 0;
@@ -695,8 +821,7 @@ void shell_run_windowed(const char *initial_cmd)
     }
 
     for (;;) {
-        terminal_writestring(ramfs_getcwd());
-        terminal_writestring("> ");
+        print_prompt();
 
         shell_readline(cmd_line, MAX_CMD_LEN);
         shell_exec_line(cmd_line);

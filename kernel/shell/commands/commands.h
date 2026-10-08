@@ -1,6 +1,8 @@
 #ifndef COMMANDS_H
 #define COMMANDS_H
 
+#include <stdint.h>
+
 void cmd_help(int argc, char **args);
 void cmd_man(int argc, char **args);
 void cmd_echo(int argc, char **args);
@@ -86,6 +88,23 @@ void cmd_ps(int argc, char **args);
 void cmd_log(int argc, char **args);
 void cmd_kill(int argc, char **args);
 void cmd_chmod(int argc, char **args);
+void cmd_id(int argc, char **args);
+void cmd_groups(int argc, char **args);
+void cmd_passwd(int argc, char **args);
+void cmd_useradd(int argc, char **args);
+void cmd_userdel(int argc, char **args);
+void cmd_chown(int argc, char **args);
+void cmd_chgrp(int argc, char **args);
+void cmd_umask(int argc, char **args);
+void cmd_stat(int argc, char **args);
+void cmd_su(int argc, char **args);
+void cmd_sudo(int argc, char **args);
+void cmd_exit(int argc, char **args);
+
+struct vfs_entry;
+void report_fs_failure(const char *cmd, const char *path);   /* "cmd: path: Permission denied" or "Failed" */
+void format_mode(uint32_t mode, int is_dir, char *out);       /* drwxr-xr-x */
+void ls_long_line(const struct vfs_entry *e);
 void cmd_hexdump(int argc, char **args);
 void cmd_tee(int argc, char **args);
 void cmd_alias(int argc, char **args);

@@ -24,6 +24,7 @@ typedef struct task {
     uint8_t *kernel_stack;
     char name[TASK_NAME_MAX];
     void *user_data;
+    uint32_t uid, gid;      /* whose credentials the task runs with (0 = root / kernel) */
 } task_t;
 
 void scheduler_init(void);
@@ -44,6 +45,9 @@ uint32_t task_get_pid(void);
 const char *task_get_name(uint32_t pid);
 uint32_t task_get_state(uint32_t pid);
 uint32_t task_get_cpu_ticks(uint32_t pid);
+void     task_get_cred(uint32_t *uid, uint32_t *gid);
+void     task_set_cred(uint32_t uid, uint32_t gid);
+uint32_t task_get_uid(uint32_t pid);
 void     task_foreach(void (*callback)(uint32_t pid, const char *name, uint32_t state));
 
 #endif

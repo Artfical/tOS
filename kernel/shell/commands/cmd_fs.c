@@ -5,6 +5,7 @@
 #include "memory.h"
 #include "vfs.h"
 #include "fsbridge.h"
+#include "auth.h"
 
 void cmd_pwd(int argc, char **args)
 {
@@ -15,19 +16,28 @@ void cmd_pwd(int argc, char **args)
 
 void cmd_ls(int argc, char **args)
 {
-    const char *path = ramfs_getcwd();
-    if (argc > 1) path = args[1];
+    const char *path = 0;
+    int longfmt = 0, all = 0;
+    for (int i = 1; i < argc; i++) {
+        if (args[i][0] == '-' && args[i][1]) {
+            for (const char *o = args[i] + 1; *o; o++) { if (*o == 'l') longfmt = 1; if (*o == 'a') all = 1; }
+        } else {
+            path = args[i];
+        }
+    }
+    if (!path) path = ramfs_getcwd();
 
-    vfs_entry_t entries[256];
-    int count = fsbridge_list(path, entries, 256);
+    int count;
+    vfs_entry_t *entries = fsbridge_list_all(path, &count);
     if (count < 0) {
         terminal_writestring("ls: ");
         terminal_writestring(path);
-        terminal_writestring(": No such directory\n");
+        terminal_writestring(vfs_denied() ? ": Permission denied\n" : ": No such directory\n");
         return;
     }
-    if (count == 0) return;
     for (int i = 0; i < count; i++) {
+        if (!all && (strcmp(entries[i].name, ".") == 0 || strcmp(entries[i].name, "..") == 0)) continue;
+        if (longfmt) { ls_long_line(&entries[i]); continue; }
         if (entries[i].is_dir) terminal_writestring("d  ");
         else terminal_writestring("   ");
         terminal_writestring(entries[i].name);
@@ -50,6 +60,7 @@ void cmd_ls(int argc, char **args)
         }
         terminal_putchar('\n');
     }
+    free(entries);
 }
 
 void cmd_cd(int argc, char **args)
@@ -72,11 +83,7 @@ void cmd_mkdir(int argc, char **args)
         terminal_writestring("usage: mkdir <dir>\n");
         return;
     }
-    if (fsbridge_mkdir(args[1]) != 0) {
-        terminal_writestring("mkdir: ");
-        terminal_writestring(args[1]);
-        terminal_writestring(": Failed\n");
-    }
+    if (fsbridge_mkdir(args[1]) != 0) report_fs_failure("mkdir", args[1]);
 }
 
 void cmd_rmdir(int argc, char **args)
@@ -85,11 +92,7 @@ void cmd_rmdir(int argc, char **args)
         terminal_writestring("usage: rmdir <dir>\n");
         return;
     }
-    if (fsbridge_delete(args[1]) != 0) {
-        terminal_writestring("rmdir: ");
-        terminal_writestring(args[1]);
-        terminal_writestring(": Failed\n");
-    }
+    if (fsbridge_delete(args[1]) != 0) report_fs_failure("rmdir", args[1]);
 }
 
 void cmd_rm(int argc, char **args)
@@ -98,11 +101,7 @@ void cmd_rm(int argc, char **args)
         terminal_writestring("usage: rm <file>\n");
         return;
     }
-    if (fsbridge_delete(args[1]) != 0) {
-        terminal_writestring("rm: ");
-        terminal_writestring(args[1]);
-        terminal_writestring(": Failed\n");
-    }
+    if (fsbridge_delete(args[1]) != 0) report_fs_failure("rm", args[1]);
 }
 
 void cmd_touch(int argc, char **args)
@@ -112,11 +111,7 @@ void cmd_touch(int argc, char **args)
         return;
     }
     if (fsbridge_exists(args[1])) return;
-    if (fsbridge_create(args[1]) != 0) {
-        terminal_writestring("touch: ");
-        terminal_writestring(args[1]);
-        terminal_writestring(": Failed\n");
-    }
+    if (fsbridge_create(args[1]) != 0) report_fs_failure("touch", args[1]);
 }
 
 void cmd_mv(int argc, char **args)
@@ -125,8 +120,7 @@ void cmd_mv(int argc, char **args)
         terminal_writestring("usage: mv <src> <dst>\n");
         return;
     }
-    if (fsbridge_rename(args[1], args[2]) != 0)
-        terminal_writestring("mv: Failed\n");
+    if (fsbridge_rename(args[1], args[2]) != 0) report_fs_failure("mv", args[1]);
 }
 
 void cmd_cp(int argc, char **args)

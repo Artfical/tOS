@@ -202,6 +202,7 @@ int ramfs_mkdir_mode(const char *path, uint32_t mode);
 int ramfs_vfs_unlink(const char *path);
 int ramfs_vfs_stat(const char *path, vfs_entry_t *entry);
 int ramfs_vfs_symlink(const char *target, const char *path);
+static int ramfs_setattr(void *ctx, const char *path, uint32_t mode, uint32_t uid, uint32_t gid);
 
 static int ramfs_open_stub(void *ctx, const char *path, int flags) { (void)ctx; return ramfs_vfs_open(path, flags); }
 static int ramfs_close_stub(void *ctx, int fd) { (void)ctx; return ramfs_vfs_close(fd); }
@@ -229,6 +230,7 @@ void ramfs_mount_vfs(void)
     ops.stat    = ramfs_stat_stub;
     ops.rename  = ramfs_rename_stub;
     ops.symlink = ramfs_symlink_stub;
+    ops.setattr = ramfs_setattr;
     vfs_mount("/", &ops, 0);
 }
 
@@ -406,6 +408,8 @@ int ramfs_vfs_readdir(const char *path, vfs_entry_t *entries, int max)
         entries[i].is_dir = (c->mode & S_IFDIR) ? 1 : 0;
         entries[i].inode = c->ino;
         entries[i].mode = c->mode;
+        entries[i].uid = c->uid;
+        entries[i].gid = c->gid;
     }
     return n;
 }
@@ -496,6 +500,7 @@ int ramfs_vfs_unlink(const char *path)
  * silently orphaning their contents. */
 int ramfs_rmdir(const char *path)
 {
+    if (vfs_check_remove(path) != 0) return -1;
     uint32_t ino = resolve_path(path, 0);
     if (!ino) return -1;
     ramfs_inode_t *n = iget(ino);
@@ -550,6 +555,22 @@ int ramfs_vfs_stat(const char *path, vfs_entry_t *entry)
     entry->is_dir = (n->mode & S_IFDIR) ? 1 : 0;
     entry->inode = n->ino;
     entry->mode = n->mode;
+    entry->uid = n->uid;
+    entry->gid = n->gid;
+    return 0;
+}
+
+/* permission bits and/or owner (VFS_KEEP leaves a field alone) */
+static int ramfs_setattr(void *ctx, const char *path, uint32_t mode, uint32_t uid, uint32_t gid)
+{
+    (void)ctx;
+    uint32_t ino = resolve_path(path, 1);
+    if (!ino) return -1;
+    ramfs_inode_t *n = iget(ino);
+    if (!n) return -1;
+    if (mode != VFS_KEEP) n->mode = (n->mode & ~07777u) | (mode & 07777u);
+    if (uid != VFS_KEEP) n->uid = uid;
+    if (gid != VFS_KEEP) n->gid = gid;
     return 0;
 }
 
@@ -791,12 +812,7 @@ int ramfs_mkdir(const char *path)
 
 int ramfs_chmod(const char *path, uint32_t mode)
 {
-    uint32_t ino = resolve_path(path, 1);
-    if (!ino) return -1;
-    ramfs_inode_t *n = iget(ino);
-    if (!n) return -1;
-    n->mode = (n->mode & ~0xFFFF) | (mode & 0xFFFF);
-    return 0;
+    return vfs_chmod(path, mode);
 }
 
 void ramfs_get_usage(uint32_t *used_inodes, uint32_t *total_inodes, uint32_t *used_size, uint32_t *total_size)

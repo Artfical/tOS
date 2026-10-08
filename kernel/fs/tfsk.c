@@ -44,6 +44,29 @@ static int sb_sync(tfsk_t *fs)
     return tfsk_block_write(fs, TFSK_SB_BLK, &fs->sb);
 }
 
+static int tfsk_inode_read(tfsk_t *fs, uint32_t ino, tfsk_inode_t *inode);
+static int tfsk_block_read(tfsk_t *fs, uint32_t blk, void *buf);
+static int tfsk_block_write(tfsk_t *fs, uint32_t blk, void *buf);
+
+/* Volumes formatted before the format code marked the root directory's block as used would
+ * hand that block out again for the next file or directory: repair the bitmap on mount. */
+static void tfsk_heal_root_block(tfsk_t *fs)
+{
+    tfsk_inode_t root;
+    if (tfsk_inode_read(fs, TFSK_ROOT_INODE, &root) < 0) return;
+    if (root.size <= TFSK_INLINE_MAX) return;
+    uint32_t blk = root.u.ptr.direct[0];
+    if (blk == 0 || blk >= fs->sb.total_blocks) return;
+    uint32_t bmp_blk = fs->sb.block_bmp_blk + blk / (TFSK_BLOCK_SIZE * 8);
+    uint32_t bit = blk % (TFSK_BLOCK_SIZE * 8);
+    uint8_t map[TFSK_BLOCK_SIZE];
+    if (tfsk_block_read(fs, bmp_blk, map) < 0) return;
+    if (map[bit / 8] & (1 << (bit % 8))) return;
+    map[bit / 8] |= (uint8_t)(1 << (bit % 8));
+    if (tfsk_block_write(fs, bmp_blk, map) < 0) return;
+    if (fs->sb.free_blocks > 0) fs->sb.free_blocks--;
+}
+
 int tfsk_mount(tfsk_t *fs, ata_device_t *dev)
 {
     memset(fs, 0, sizeof(tfsk_t));
@@ -58,11 +81,12 @@ int tfsk_mount(tfsk_t *fs, ata_device_t *dev)
     if (tfsk_checksum(&fs->sb, TFSK_SB_CKSUM_SIZE) != fs->sb.checksum)
         return -1;
 
+    fs->mounted = 1;
+    tfsk_heal_root_block(fs);
     fs->sb.mount_count++;
     fs->sb.state = TFSK_STATE_DIRTY;
     fs->dirty = 1;
     sb_sync(fs);
-    fs->mounted = 1;
     return 0;
 }
 
@@ -133,7 +157,7 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
 
     uint8_t *bmap = kcalloc(bmp_blocks * TFSK_BLOCK_SIZE, 1);
     if (!bmap) return -1;
-    for (uint32_t i = 0; i < data_start; i++)
+    for (uint32_t i = 0; i <= data_start; i++)         /* data_start itself holds the root directory */
         bmap[i / 8] |= (1 << (i % 8));
     for (uint32_t i = 0; i < bmp_blocks; i++) {
         if (ata_write_sectors(dev, (TFSK_BLOCK_BMP_BLK + i) * 8, 8, bmap + i * TFSK_BLOCK_SIZE) < 0) {
@@ -144,7 +168,8 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
 
     tfsk_inode_t root;
     memset(&root, 0, sizeof(root));
-    root.mode = (TFSK_FT_DIR << 12) | (4 << 6) | 4;
+    root.mode = (TFSK_FT_DIR << 12) | 0755;
+    root.flags = TFSK_INODE_PERM;
     root.uid = 0;
     root.gid = 0;
     root.link_count = 2;
@@ -426,14 +451,17 @@ static int tfsk_write_data(tfsk_t *fs, tfsk_inode_t *inode, const void *buf, uin
     }
 
     if (inode->size <= TFSK_INLINE_MAX && offset + size > TFSK_INLINE_MAX) {
-        uint8_t tmp[TFSK_INLINE_MAX];
-        memcpy(tmp, inode->u.inline_data, inode->size);
+        /* leave inline storage: the old bytes become the start of the first block (the inline
+         * area and the block pointers share memory, so clear it before pointing at the block) */
+        uint8_t first[TFSK_BLOCK_SIZE];
+        memset(first, 0, sizeof(first));
+        memcpy(first, inode->u.inline_data, inode->size);
 
         int blk = tfsk_block_alloc(fs);
         if (blk < 0) return -1;
-        inode->u.ptr.direct[0] = blk;
-        tfsk_block_write(fs, blk, tmp);
         memset(inode->u.inline_data, 0, TFSK_INLINE_MAX);
+        inode->u.ptr.direct[0] = blk;
+        tfsk_block_write(fs, blk, first);
     }
 
     uint32_t done = 0;
@@ -599,7 +627,10 @@ int tfsk_mkdir(tfsk_t *fs, uint32_t parent_ino, const char *name)
 
     tfsk_inode_t inode;
     tfsk_inode_read(fs, ino, &inode);
-    inode.mode = (TFSK_FT_DIR << 12) | (4 << 6) | 4;
+    inode.mode = (TFSK_FT_DIR << 12) | 0755;
+    inode.flags = TFSK_INODE_PERM;
+    inode.uid = 0;
+    inode.gid = 0;
     inode.link_count = 2;
     inode.ctime = inode.mtime = inode.atime = tfsk_time();
     tfsk_inode_write(fs, ino, &inode);
@@ -642,7 +673,10 @@ static int tfsk_creat(tfsk_t *fs, uint32_t dir_ino, const char *name)
 
     tfsk_inode_t inode;
     tfsk_inode_read(fs, ino, &inode);
-    inode.mode = (TFSK_FT_FILE << 12) | (6 << 6) | 6;
+    inode.mode = (TFSK_FT_FILE << 12) | 0644;
+    inode.flags = TFSK_INODE_PERM;
+    inode.uid = 0;
+    inode.gid = 0;
     inode.link_count = 1;
     inode.ctime = inode.mtime = inode.atime = tfsk_time();
     tfsk_inode_write(fs, ino, &inode);
@@ -652,7 +686,8 @@ static int tfsk_creat(tfsk_t *fs, uint32_t dir_ino, const char *name)
 
 int tfsk_walk(tfsk_t *fs, const char *path, uint32_t *ino)
 {
-    if (!path || !path[0]) return -1;
+    if (!path) return -1;
+    if (!path[0]) { *ino = TFSK_ROOT_INODE; return 0; }
     uint32_t cur = TFSK_ROOT_INODE;
 
     while (*path == '/') path++;
@@ -682,32 +717,62 @@ int tfsk_walk(tfsk_t *fs, const char *path, uint32_t *ino)
     return 0;
 }
 
+/* "a/b/c" -> parent "a/b" (or "/" for a name directly at the root) and the last component */
+static void tfsk_split_path(const char *path, char *parent, char *name)
+{
+    int i = 0, last_sep = -1;
+    while (path[i]) i++;
+    for (int j = i - 1; j >= 0; j--) {
+        if (path[j] == '/') { last_sep = j; break; }
+    }
+    if (last_sep <= 0) {
+        parent[0] = '/';
+        parent[1] = 0;
+    } else {
+        for (int j = 0; j < last_sep && j < TFSK_MAX_NAME - 1; j++) parent[j] = path[j];
+        parent[last_sep < TFSK_MAX_NAME - 1 ? last_sep : TFSK_MAX_NAME - 1] = 0;
+    }
+    int k = 0;
+    for (int j = last_sep + 1; path[j] && k < TFSK_MAX_NAME - 1; j++) name[k++] = path[j];
+    name[k] = 0;
+}
+
 int tfsk_vfs_open(tfsk_t *fs, const char *path, int flags)
 {
     if (!fs->mounted) return -1;
 
     uint32_t ino;
     if (tfsk_walk(fs, path, &ino) < 0) {
-        if (!(flags & 2)) return -1;
+        if (!(flags & 2) && !(flags & VFS_CREAT)) return -1;
 
         char parent_path[TFSK_MAX_NAME];
         char name_buf[TFSK_MAX_NAME];
-        int i = 0, last_sep = -1;
-        while (path[i]) i++;
-        for (int j = i - 1; j >= 0; j--) {
-            if (path[j] == '/') { last_sep = j; break; }
-        }
-        if (last_sep < 0) return -1;
-        for (int j = 0; j < last_sep; j++) parent_path[j] = path[j];
-        parent_path[last_sep] = 0;
-        int k = 0;
-        for (int j = last_sep + 1; path[j]; j++) name_buf[k++] = path[j];
-        name_buf[k] = 0;
+        tfsk_split_path(path, parent_path, name_buf);
 
         uint32_t p_ino;
-        if (tfsk_walk(fs, parent_path, &p_ino) < 0) return -1;
+        if (tfsk_walk(fs, parent_path, &p_ino) < 0) { serial_write("tfsk: open: parent missing: "); serial_write(parent_path); serial_write("\n"); return -1; }
         ino = tfsk_creat(fs, p_ino, name_buf);
-        if ((int)ino < 0) return -1;
+        if ((int)ino < 0) { serial_write("tfsk: open: creat failed\n"); return -1; }
+    } else if (flags & VFS_TRUNC) {
+        tfsk_inode_t old;
+        if (tfsk_inode_read(fs, ino, &old) == 0 && !(old.mode & (TFSK_FT_DIR << 12)) && old.size > 0) {
+            char parent_path[TFSK_MAX_NAME];
+            char name_buf[TFSK_MAX_NAME];
+            tfsk_split_path(path, parent_path, name_buf);
+            uint32_t p_ino;
+            if (tfsk_walk(fs, parent_path, &p_ino) < 0 || tfsk_unlink(fs, p_ino, name_buf) < 0) return -1;
+            int n = tfsk_creat(fs, p_ino, name_buf);
+            if (n < 0) return -1;
+            ino = (uint32_t)n;
+            tfsk_inode_t fresh;
+            if (tfsk_inode_read(fs, ino, &fresh) == 0) {
+                fresh.uid = old.uid;
+                fresh.gid = old.gid;
+                fresh.mode = old.mode;
+                fresh.flags = old.flags;
+                tfsk_inode_write(fs, ino, &fresh);
+            }
+        }
     }
 
     for (int i = 0; i < VFS_MAX_FDS; i++) {
@@ -770,6 +835,14 @@ int tfsk_vfs_lseek(tfsk_t *fs, int fd, uint32_t offset, int whence)
     return fs->fds[fd].offset;
 }
 
+static uint32_t tfsk_posix_mode(const tfsk_inode_t *in)
+{
+    uint32_t type = (in->mode >> 12) & 0xF;
+    uint32_t perm = (in->flags & TFSK_INODE_PERM) ? (in->mode & 07777u) : (type == TFSK_FT_DIR ? 0755u : 0644u);
+    uint32_t t = type == TFSK_FT_DIR ? 0040000u : type == TFSK_FT_SYMLINK ? 0120000u : 0100000u;
+    return t | perm;
+}
+
 int tfsk_vfs_readdir(tfsk_t *fs, const char *path, vfs_entry_t *entries, int max)
 {
     if (!fs->mounted) return -1;
@@ -798,7 +871,9 @@ int tfsk_vfs_readdir(tfsk_t *fs, const char *path, vfs_entry_t *entries, int max
         entries[count].size = child.size;
         entries[count].is_dir = (child.mode & (TFSK_FT_DIR << 12)) ? 1 : 0;
         entries[count].inode = child_ino;
-        entries[count].mode = child.mode;
+        entries[count].mode = tfsk_posix_mode(&child);
+        entries[count].uid = child.uid;
+        entries[count].gid = child.gid;
         count++;
     }
     return count;
@@ -811,17 +886,7 @@ int tfsk_vfs_mkdir(tfsk_t *fs, const char *path, uint32_t mode)
 
     char parent_path[TFSK_MAX_NAME];
     char name_buf[TFSK_MAX_NAME];
-    int i = 0, last_sep = -1;
-    while (path[i]) i++;
-    for (int j = i - 1; j >= 0; j--) {
-        if (path[j] == '/') { last_sep = j; break; }
-    }
-    if (last_sep < 0) return -1;
-    for (int j = 0; j < last_sep; j++) parent_path[j] = path[j];
-    parent_path[last_sep] = 0;
-    int k = 0;
-    for (int j = last_sep + 1; path[j]; j++) name_buf[k++] = path[j];
-    name_buf[k] = 0;
+    tfsk_split_path(path, parent_path, name_buf);
 
     uint32_t p_ino;
     if (tfsk_walk(fs, parent_path, &p_ino) < 0) return -1;
@@ -834,17 +899,7 @@ int tfsk_vfs_unlink(tfsk_t *fs, const char *path)
 
     char parent_path[TFSK_MAX_NAME];
     char name_buf[TFSK_MAX_NAME];
-    int i = 0, last_sep = -1;
-    while (path[i]) i++;
-    for (int j = i - 1; j >= 0; j--) {
-        if (path[j] == '/') { last_sep = j; break; }
-    }
-    if (last_sep < 0) return -1;
-    for (int j = 0; j < last_sep; j++) parent_path[j] = path[j];
-    parent_path[last_sep] = 0;
-    int k = 0;
-    for (int j = last_sep + 1; path[j]; j++) name_buf[k++] = path[j];
-    name_buf[k] = 0;
+    tfsk_split_path(path, parent_path, name_buf);
 
     uint32_t p_ino;
     if (tfsk_walk(fs, parent_path, &p_ino) < 0) return -1;
@@ -871,8 +926,26 @@ int tfsk_vfs_stat(tfsk_t *fs, const char *path, vfs_entry_t *entry)
     entry->size = inode.size;
     entry->is_dir = (inode.mode & (TFSK_FT_DIR << 12)) ? 1 : 0;
     entry->inode = ino;
-    entry->mode = inode.mode;
+    entry->mode = tfsk_posix_mode(&inode);
+    entry->uid = inode.uid;
+    entry->gid = inode.gid;
     return 0;
+}
+
+static int tfsk_vfs_setattr(tfsk_t *fs, const char *path, uint32_t mode, uint32_t uid, uint32_t gid)
+{
+    if (!fs->mounted) return -1;
+    uint32_t ino;
+    if (tfsk_walk(fs, path, &ino) < 0) return -1;
+    tfsk_inode_t inode;
+    if (tfsk_inode_read(fs, ino, &inode) < 0) return -1;
+    if (mode != VFS_KEEP) {
+        inode.mode = (uint16_t)((inode.mode & 0xF000) | (mode & 07777u));
+        inode.flags |= TFSK_INODE_PERM;
+    }
+    if (uid != VFS_KEEP) inode.uid = (uint16_t)uid;
+    if (gid != VFS_KEEP) inode.gid = (uint16_t)gid;
+    return tfsk_inode_write(fs, ino, &inode);
 }
 
 int tfsk_probe_and_mount(tfsk_t *fs)
@@ -933,6 +1006,11 @@ static int tfsk_stat_stub(void *ctx, const char *path, vfs_entry_t *entry)
     return tfsk_vfs_stat((tfsk_t *)ctx, path, entry);
 }
 
+static int tfsk_setattr_stub(void *ctx, const char *path, uint32_t mode, uint32_t uid, uint32_t gid)
+{
+    return tfsk_vfs_setattr((tfsk_t *)ctx, path, mode, uid, gid);
+}
+
 void tfsk_mount_vfs(tfsk_t *fs, const char *mount_point)
 {
     static vfs_ops_t tfsk_vfs_ops;
@@ -947,5 +1025,6 @@ void tfsk_mount_vfs(tfsk_t *fs, const char *mount_point)
     tfsk_vfs_ops.stat    = tfsk_stat_stub;
     tfsk_vfs_ops.rename  = 0;
     tfsk_vfs_ops.symlink = 0;
+    tfsk_vfs_ops.setattr = tfsk_setattr_stub;
     vfs_mount(mount_point, &tfsk_vfs_ops, fs);
 }

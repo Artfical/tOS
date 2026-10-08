@@ -41,10 +41,15 @@ void cmd_cat(int argc, char **args)
         terminal_writestring("cat: Out of memory\n");
         return;
     }
-    fsbridge_read(args[1], buf, sz, 0);
-    buf[sz] = '\0';
+    int got = sz ? fsbridge_read(args[1], buf, sz, 0) : 0;
+    if (got < 0) {
+        free(buf);
+        report_fs_failure("cat", args[1]);
+        return;
+    }
+    buf[got] = '\0';
     terminal_writestring(buf);
-    if (sz > 0 && buf[sz - 1] != '\n')
+    if (got > 0 && buf[got - 1] != '\n')
         terminal_putchar('\n');
     free(buf);
 }

@@ -10,5 +10,9 @@ int  shell_alias_unset(const char *name);
 void shell_alias_list(void);
 void shell_history_show(void);
 void shell_exec_capture(const char *cmd, char *out, int max);
+void shell_dispatch(int argc, char **args);   /* run one already-split command line */
+void shell_subshell(void);                    /* a nested interactive shell until `exit` (su, sudo -i) */
+void shell_request_exit(void);                /* `exit` / `logout` */
+void shell_login(void);                       /* the login prompt (live sessions go straight in as root) */
 
 #endif
