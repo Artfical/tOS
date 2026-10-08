@@ -2968,3 +2968,40 @@ out:
     free(fs);
     return rc;
 }
+
+/* Offline grow: the new device space is simply free (chunks are allocated into it on demand), so only
+ * the total sizes in the superblock and the device item change. */
+int btrfs_grow(blockdev_t *bd, uint64_t new_bytes, char *err, int err_len)
+{
+    const char *msg = "btrfs grow failed";
+    int rc = -1;
+    btrfs_t *fs = (btrfs_t *)malloc(sizeof(btrfs_t));
+    if (!fs) { msg = "out of memory"; goto out; }
+    if (btrfs_probe_and_mount(fs, bd) != 0) { msg = "not a btrfs volume"; goto out; }
+    if (!fs->rw) { msg = "btrfs volume can only be read by this driver"; goto out; }
+    new_bytes &= ~(uint64_t)(fs->sectorsize - 1);
+    uint64_t dev_total = rd64(fs->sb + 0xC9 + 8);
+    if (new_bytes <= dev_total) { msg = "volume is already that large (shrinking is not supported)"; goto out; }
+    if (new_bytes > fs->dev_size) { msg = "requested size is larger than the device"; goto out; }
+
+    if (bt_txn_begin(fs) != 0) { msg = "cannot start a transaction"; goto out; }
+    bt_key_t dik = { BTRFS_DEV_ITEMS_OBJECTID, BTRFS_DEV_ITEM_KEY, 1 };
+    bt_path_t p;
+    if (bt_find_exact(fs, BTRFS_CHUNK_TREE_OBJECTID, &dik, &p) != 0) { msg = "device item not found"; bt_txn_commit(fs); goto out; }
+    uint32_t dsz;
+    const uint8_t *d = leaf_data(fs, &p, p.slot, &dsz);
+    if (!d || dsz < 98) { path_free(&p); bt_txn_commit(fs); msg = "bad device item"; goto out; }
+    wr64((uint8_t *)d + 8, new_bytes);
+    int wrc = bt_write_block(fs, p.node[0], p.leaf);
+    path_free(&p);
+    wr64(fs->sb + 0xC9 + 8, new_bytes);
+    wr64(fs->sb + 0x70, new_bytes);
+    fs->total_bytes = new_bytes;
+    int crc = bt_txn_commit(fs);
+    if (wrc != 0 || crc != 0) { msg = "write failed"; goto out; }
+    rc = 0;
+out:
+    if (rc && err && err_len > 0) { int i = 0; while (msg[i] && i < err_len - 1) { err[i] = msg[i]; i++; } err[i] = 0; }
+    if (fs) { btrfs_umount(fs); free(fs); }
+    return rc;
+}

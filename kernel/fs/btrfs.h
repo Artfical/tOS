@@ -81,5 +81,6 @@ int btrfs_probe_and_mount(btrfs_t *fs, blockdev_t *bd);
 int btrfs_umount(btrfs_t *fs);
 void btrfs_mount_vfs(btrfs_t *fs, const char *mount_point);
 int btrfs_format(blockdev_t *bd, const char *label);
+int btrfs_grow(blockdev_t *bd, uint64_t new_bytes, char *err, int err_len);   /* offline */
 
 #endif

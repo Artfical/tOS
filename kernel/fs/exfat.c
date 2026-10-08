@@ -1193,6 +1193,16 @@ int exfat_format(blockdev_t *bd, const char *label)
     uint32_t clusters_guess = data_sectors_guess / sectors_per_cluster;
     uint32_t fat_length = ((clusters_guess + 2) * 4 + bytes_per_sector - 1) / bytes_per_sector;
     if (fat_length < 1) fat_length = 1;
+    {
+        /* room to grow later: the FAT cannot move once the heap sits behind it, so
+         * size it for up to 8x the clusters (capped by what one bitmap cluster covers) */
+        uint32_t cap = sectors_per_cluster * bytes_per_sector * 8;      /* clusters one bitmap cluster can track */
+        uint32_t want_clusters = clusters_guess > cap / 8 ? cap : clusters_guess * 8;
+        uint32_t grown = ((want_clusters + 2) * 4 + bytes_per_sector - 1) / bytes_per_sector;
+        uint32_t room = total_sectors / 8;                               /* never spend more than 1/8 of the volume on it */
+        if (grown > room) grown = room;
+        if (grown > fat_length) fat_length = grown;
+    }
 
     uint32_t cluster_heap_offset = fat_offset + fat_length;
     uint32_t heap_sectors = total_sectors - cluster_heap_offset;
@@ -1358,4 +1368,96 @@ int exfat_format(blockdev_t *bd, const char *label)
     free(cluster_buf);
 
     return 0;
+}
+
+/* Offline grow. The FAT and the allocation bitmap cannot move, so the new size has to fit
+ * the room they already have (volumes made by exfat_format() are sized with growth in mind). */
+int exfat_grow(blockdev_t *bd, uint64_t new_bytes, char *err, int err_len)
+{
+    exfat_t *fs = (exfat_t *)malloc(sizeof(exfat_t));
+    uint8_t *region = 0;
+    int rc = -1;
+    const char *msg = "exFAT grow failed";
+    if (!fs) { msg = "out of memory"; goto out; }
+    memset(fs, 0, sizeof(*fs));
+    if (exfat_probe(fs, bd) != 0) { msg = "not an exFAT volume"; goto out; }
+    uint32_t bps = fs->bytes_per_sector;
+
+    uint64_t new_sectors = new_bytes / bps;
+    if (new_sectors > 0xFFFFFFFFull) new_sectors = 0xFFFFFFFFull;
+    if (new_sectors <= fs->cluster_heap_offset) { msg = "size too small"; goto out; }
+    uint64_t nc64 = (new_sectors - fs->cluster_heap_offset) / fs->sectors_per_cluster;
+    uint32_t new_clusters = nc64 > 0xFFFFFFF5ull ? 0xFFFFFFF5u : (uint32_t)nc64;
+    if (new_clusters <= fs->cluster_count) { msg = "volume is already that large (shrinking is not supported)"; goto out; }
+
+    uint64_t fat_slots = (uint64_t)fs->fat_length * bps / 4;
+    if ((uint64_t)new_clusters + 2 > fat_slots) {
+        msg = "this volume's FAT has no room for that size (the FAT cannot move; reformat to use the whole device)";
+        goto out;
+    }
+    uint32_t bitmap_bytes = (new_clusters + 7) / 8, cap_bytes = 0;
+    for (uint32_t c = fs->bitmap_cluster, n = 0; c >= 2 && c < EXFAT_CLUSTER_BAD && n < 0x100000; n++) {
+        cap_bytes += fs->cluster_size;
+        uint32_t e = exfat_get_fat_entry(fs, c);
+        if (e == 0 || e >= EXFAT_CLUSTER_BAD) break;
+        c = e;
+    }
+    if (bitmap_bytes > cap_bytes) {
+        msg = "the allocation bitmap has no room for that size";
+        goto out;
+    }
+    new_sectors = (uint64_t)fs->cluster_heap_offset + (uint64_t)new_clusters * fs->sectors_per_cluster;
+
+    /* bits past the old end must be clear */
+    for (uint32_t bi = fs->cluster_count / 8; bi <= (new_clusters - 1) / 8; bi++) {
+        uint32_t sec;
+        if (exfat_chain_nth_sector(fs, fs->bitmap_cluster, bi / bps, &sec) != 0) { msg = "bad bitmap chain"; goto out; }
+        uint8_t *sb = (uint8_t *)malloc(bps);
+        if (!sb) goto out;
+        if (exfat_read_sector(fs, sec, sb) != 0) { free(sb); goto out; }
+        uint8_t keep = 0;                                   /* bits of this byte that belong to the old volume */
+        if (bi == fs->cluster_count / 8) keep = (uint8_t)((1u << (fs->cluster_count & 7)) - 1);
+        uint8_t nv = sb[bi % bps] & keep;
+        if (nv != sb[bi % bps]) {
+            sb[bi % bps] = nv;
+            if (exfat_write_sector(fs, sec, sb) != 0) { free(sb); goto out; }
+        }
+        free(sb);
+    }
+
+    /* bitmap length in its directory entry */
+    {
+        uint32_t slot = 0; uint8_t entry[32]; int found = 0;
+        while (exfat_read_slot(fs, fs->root_cluster, slot, entry) == 0 && entry[0] != 0x00) {
+            if (entry[0] == EXFAT_ENTRY_BITMAP) {
+                *(uint64_t *)(entry + 24) = bitmap_bytes;
+                if (exfat_write_slot(fs, fs->root_cluster, slot, entry) != 0) goto out;
+                found = 1;
+                break;
+            }
+            slot += ((entry[0] & 0x7F) == (EXFAT_ENTRY_FILE & 0x7F)) ? (uint32_t)(1 + entry[1]) : 1;
+        }
+        if (!found) { msg = "no allocation bitmap entry"; goto out; }
+    }
+
+    /* boot region (main and backup) with its checksum */
+    region = (uint8_t *)malloc(12 * bps);
+    if (!region) goto out;
+    if (blockdev_read(bd, 0, 11, region) != 0) goto out;
+    exfat_boot_sector_t *bs = (exfat_boot_sector_t *)region;
+    bs->volume_length = new_sectors;
+    bs->cluster_count = new_clusters;
+    uint32_t checksum = 0;
+    for (uint32_t i = 0; i < 11 * bps; i++) {
+        if (i == 106 || i == 107 || i == 112) continue;
+        checksum = ((checksum << 31) | (checksum >> 1)) + region[i];
+    }
+    for (uint32_t i = 0; i < bps; i += 4) *(uint32_t *)(region + 11 * bps + i) = checksum;
+    if (blockdev_write(bd, 0, 12, region) != 0 || blockdev_write(bd, 12, 12, region) != 0) goto out;
+    rc = 0;
+out:
+    if (rc && err && err_len > 0) { int i = 0; while (msg[i] && i < err_len - 1) { err[i] = msg[i]; i++; } err[i] = 0; }
+    if (fs) { free(fs->upcase); free(fs); }
+    free(region);
+    return rc;
 }

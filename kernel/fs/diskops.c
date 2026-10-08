@@ -354,6 +354,9 @@ int diskops_resize(const char *name, uint32_t size_mb, char *err, int err_len)
     if (!type) { seterr(err, err_len, "unknown filesystem"); return -1; }
     int rc;
     if (strcmp(type, "ntfs") == 0) rc = ntfs_resize(bd, sectors512, err, err_len);
+    else if (!strcmp(type, "fat32") || !strcmp(type, "fat16")) rc = fat32_grow(bd, want_bytes, err, err_len);
+    else if (!strcmp(type, "btrfs")) rc = btrfs_grow(bd, want_bytes, err, err_len);
+    else if (!strcmp(type, "exfat")) rc = exfat_grow(bd, want_bytes, err, err_len);
     else if (!strcmp(type, "ext2") || !strcmp(type, "ext3") || !strcmp(type, "ext4")) {
         char e2[100] = "";
         rc = ext4_grow(bd, want_bytes, e2, sizeof(e2));

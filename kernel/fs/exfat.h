@@ -40,5 +40,6 @@ int exfat_probe_and_mount(exfat_t *fs, blockdev_t *bd);
 int exfat_umount(exfat_t *fs);
 void exfat_mount_vfs(exfat_t *fs, const char *mount_point);
 int exfat_format(blockdev_t *bd, const char *label);
+int exfat_grow(blockdev_t *bd, uint64_t new_bytes, char *err, int err_len);   /* offline, within the FAT/bitmap room */
 
 #endif

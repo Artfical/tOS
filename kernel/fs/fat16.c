@@ -1011,6 +1011,11 @@ int fat16_format(blockdev_t *bd, const char *label)
     uint32_t clusters_guess = data_sectors_guess / sectors_per_cluster;
     uint32_t fat_sectors = ((clusters_guess + 2) * 2 + bytes_per_sector - 1) / bytes_per_sector;
     if (fat_sectors == 0) fat_sectors = 1;
+    {
+        uint32_t want = clusters_guess * 4 > 65524 ? 65524 : clusters_guess * 4;      /* room to grow, up to the FAT16 limit */
+        uint32_t grown = ((want + 2) * 2 + bytes_per_sector - 1) / bytes_per_sector;
+        if (grown > fat_sectors && grown <= 0xFFFF) fat_sectors = grown;
+    }
 
     uint8_t *sector = (uint8_t *)malloc(bytes_per_sector);
     if (!sector) return -1;
@@ -1041,6 +1046,8 @@ int fat16_format(blockdev_t *bd, const char *label)
         while (label[i] && i < 11) { bs->volume_label[i] = label[i]; i++; }
     }
     memcpy(bs->fs_type, "FAT16   ", 8);
+    sector[510] = 0x55;
+    sector[511] = 0xAA;
 
     int ret = blockdev_write(bd, 0, 1, sector);
     free(sector);

@@ -39,5 +39,6 @@ int fat32_probe_and_mount(fat32_t *fs, blockdev_t *bd);
 int fat32_umount(fat32_t *fs);
 void fat32_mount_vfs(fat32_t *fs, const char *mount_point);
 int fat32_format(blockdev_t *bd, const char *label);
+int fat32_grow(blockdev_t *bd, uint64_t new_bytes, char *err, int err_len);   /* FAT16/32 offline grow, within the FAT's room */
 
 #endif

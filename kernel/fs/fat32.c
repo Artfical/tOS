@@ -1032,6 +1032,12 @@ int fat32_format(blockdev_t *bd, const char *label)
     uint32_t clusters_guess = data_sectors_guess / sectors_per_cluster;
     uint32_t fat_sectors = ((clusters_guess + 2) * 4 + bytes_per_sector - 1) / bytes_per_sector;
     if (fat_sectors == 0) fat_sectors = 1;
+    {
+        /* leave the FAT room to grow later (it cannot move once the data area sits behind it) */
+        uint32_t grown = ((clusters_guess * 4 + 2) * 4 + bytes_per_sector - 1) / bytes_per_sector;
+        if (grown > total_sectors / 16) grown = total_sectors / 16;
+        if (grown > fat_sectors) fat_sectors = grown;
+    }
 
     uint8_t *sector = (uint8_t *)malloc(bytes_per_sector);
     if (!sector) return -1;
@@ -1136,4 +1142,64 @@ int fat32_format(blockdev_t *bd, const char *label)
     free(zero_sector);
 
     return 0;
+}
+
+/* Offline grow of a FAT12/16/32 volume: only the boot sector's size fields change, so the new
+ * size has to fit the room the FAT already has. Used for FAT16 as well (same BPB layout). */
+int fat32_grow(blockdev_t *bd, uint64_t new_bytes, char *err, int err_len)
+{
+    const char *msg = "FAT grow failed";
+    int rc = -1;
+    uint32_t ss = bd->sector_size ? bd->sector_size : 512;
+    uint8_t *b = (uint8_t *)malloc(ss * 2);
+    if (!b) { msg = "out of memory"; goto out; }
+    if (blockdev_read(bd, 0, 1, b) != 0 || b[11] + (b[12] << 8) != (int)ss) { msg = "not a FAT volume"; goto out; }
+    uint32_t bps = b[11] | (b[12] << 8), spc = b[13], resv = b[14] | (b[15] << 8), nfats = b[16];
+    uint32_t rootent = b[17] | (b[18] << 8), tot16 = b[19] | (b[20] << 8), fsz16 = b[22] | (b[23] << 8);
+    uint32_t tot32 = b[32] | (b[33] << 8) | (b[34] << 16) | ((uint32_t)b[35] << 24);
+    uint32_t fsz32 = b[36] | (b[37] << 8) | (b[38] << 16) | ((uint32_t)b[39] << 24);
+    if (bps != ss || spc == 0 || nfats == 0) { msg = "unsupported FAT geometry"; goto out; }
+    int is32 = fsz16 == 0;
+    uint32_t fatsz = is32 ? fsz32 : fsz16, tot = tot16 ? tot16 : tot32;
+    uint32_t data_start = resv + nfats * fatsz + (rootent * 32 + bps - 1) / bps;
+
+    uint64_t nt64 = new_bytes / bps;
+    if (nt64 > 0xFFFFFFFFull) nt64 = 0xFFFFFFFFull;
+    uint32_t new_total = (uint32_t)nt64;
+    if (new_total <= tot) { msg = "volume is already that large (shrinking is not supported)"; goto out; }
+    uint32_t clusters = (new_total - data_start) / spc;
+    uint32_t slots = fatsz * bps / (is32 ? 4 : 2);
+    uint32_t limit = is32 ? 0x0FFFFFF5u : 65524u;
+    if (clusters + 2 > slots || clusters > limit) {
+        msg = "this volume's FAT has no room for that size (the FAT cannot move; reformat to use the whole device)";
+        goto out;
+    }
+    if (is32) {
+        b[32] = (uint8_t)new_total; b[33] = (uint8_t)(new_total >> 8); b[34] = (uint8_t)(new_total >> 16); b[35] = (uint8_t)(new_total >> 24);
+    } else if (new_total <= 0xFFFF) {
+        b[19] = (uint8_t)new_total; b[20] = (uint8_t)(new_total >> 8);
+    } else {
+        b[19] = b[20] = 0;
+        b[32] = (uint8_t)new_total; b[33] = (uint8_t)(new_total >> 8); b[34] = (uint8_t)(new_total >> 16); b[35] = (uint8_t)(new_total >> 24);
+    }
+    uint32_t fsinfo = is32 ? (b[48] | (b[49] << 8)) : 0, backup = is32 ? (b[50] | (b[51] << 8)) : 0;
+    if (blockdev_write(bd, 0, 1, b) != 0) goto out;
+    if (backup && backup < resv && blockdev_write(bd, backup, 1, b) != 0) goto out;
+    if (fsinfo && fsinfo < resv) {
+        /* the cached free-cluster count is stale now: mark it unknown, in both copies */
+        for (int pass = 0; pass < 2; pass++) {
+            uint32_t at = pass == 0 ? fsinfo : (backup ? backup + 1 : 0);
+            if (!at || at >= resv) continue;
+            if (blockdev_read(bd, at, 1, b + ss) != 0) continue;
+            if (b[ss + 0] == 0x52 && b[ss + 1] == 0x52 && b[ss + 2] == 0x61 && b[ss + 3] == 0x41) {
+                for (int i = 0; i < 4; i++) b[ss + 488 + i] = 0xFF;
+                blockdev_write(bd, at, 1, b + ss);
+            }
+        }
+    }
+    rc = 0;
+out:
+    if (rc && err && err_len > 0) { int i = 0; while (msg[i] && i < err_len - 1) { err[i] = msg[i]; i++; } err[i] = 0; }
+    free(b);
+    return rc;
 }
