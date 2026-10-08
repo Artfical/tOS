@@ -214,34 +214,214 @@ static int sb_adjust(xfs_t *fs, int64_t d_icount, int64_t d_ifree, int64_t d_fdb
     return rc;
 }
 
-/* ---------- free space (the by-block and by-size B-trees, one block each) ---------- */
+/* ---------- allocation group B-trees (any depth) ----------
+ *
+ * The four per-group trees (free space by block and by size, inodes, free inodes) are read whole into
+ * a sorted array, changed there, and written back by rebuilding the tree: the blocks it already owns
+ * are reused, and when the tree needs more (or fewer) blocks they are taken from (or given back to)
+ * the group's free space. */
 
-typedef struct { uint32_t start, len; } xfs_frec_t;
+typedef struct { uint32_t magic, recsz, keysz; } xfs_bt_kind_t;
 
-static uint32_t fs_tree_maxrecs(xfs_t *fs) { return (fs->blocksize - XFS_BTBLOCK_HDR) / 8; }
+static const xfs_bt_kind_t BT_BNO  = { XFS_ABTB_CRC_MAGIC, 8, 8 };
+static const xfs_bt_kind_t BT_CNT  = { XFS_ABTC_CRC_MAGIC, 8, 8 };
+static const xfs_bt_kind_t BT_INO  = { XFS_IBT_CRC_MAGIC, 16, 4 };
+static const xfs_bt_kind_t BT_FINO = { XFS_FIBT_CRC_MAGIC, 16, 4 };
 
-static int ag_free_load(xfs_t *fs, uint32_t ag, xfs_frec_t *recs, uint32_t cap, uint32_t *n)
+#define XFS_BT_MAXLEVELS 8
+
+static uint32_t bt_rmax(xfs_t *fs, const xfs_bt_kind_t *k) { return (fs->blocksize - XFS_BTBLOCK_HDR) / k->recsz; }
+static uint32_t bt_kmax(xfs_t *fs, const xfs_bt_kind_t *k) { return (fs->blocksize - XFS_BTBLOCK_HDR) / (k->keysz + 4); }
+
+typedef struct {
+    uint8_t *recs;          /* big-endian records, back to back */
+    uint32_t n, cap;
+    uint32_t count;         /* blocks visited */
+} bt_walk_t;
+
+static int bt_walk_add(xfs_t *fs, const xfs_bt_kind_t *k, bt_walk_t *w, const uint8_t *src, uint32_t nr)
 {
-    uint8_t agf[512];
-    if (fs->sectsize > sizeof(agf) || ag_hdr_read(fs, ag, XFS_AGF_SECTOR, agf) != 0 || be32(agf) != XFS_AGF_MAGIC) return -1;
-    if (be32(agf + 28) != 1) return -1;
+    if (w->n + nr > w->cap) {
+        uint32_t nc = w->cap ? w->cap * 2 : bt_rmax(fs, k);
+        while (nc < w->n + nr) nc *= 2;
+        uint8_t *nb = (uint8_t *)malloc((size_t)nc * k->recsz);
+        if (!nb) return -1;
+        if (w->n) memcpy(nb, w->recs, (size_t)w->n * k->recsz);
+        free(w->recs);
+        w->recs = nb;
+        w->cap = nc;
+    }
+    memcpy(w->recs + (size_t)w->n * k->recsz, src, (size_t)nr * k->recsz);
+    w->n += nr;
+    return 0;
+}
+
+static int bt_walk_node(xfs_t *fs, uint32_t ag, const xfs_bt_kind_t *k, uint32_t blkno, uint32_t level, bt_walk_t *w)
+{
+    if (blkno >= fs->agblocks || w->count++ > fs->agblocks) return -1;
     uint8_t *blk = (uint8_t *)malloc(fs->blocksize);
     if (!blk) return -1;
     int rc = -1;
-    if (xfs_rd(fs, agbno_to_byte(fs, ag, be32(agf + 16)), fs->blocksize, blk) != 0) goto out;
-    if (be32(blk) != XFS_ABTB_CRC_MAGIC || be16(blk + 4) != 0) goto out;
+    if (xfs_rd(fs, agbno_to_byte(fs, ag, blkno), fs->blocksize, blk) != 0) goto out;
+    if (be32(blk) != k->magic || be16(blk + 4) != level) goto out;
     uint32_t nr = be16(blk + 6);
-    if (nr > cap || nr > fs_tree_maxrecs(fs)) goto out;
-    for (uint32_t i = 0; i < nr; i++) {
-        recs[i].start = be32(blk + XFS_BTBLOCK_HDR + i * 8);
-        recs[i].len = be32(blk + XFS_BTBLOCK_HDR + i * 8 + 4);
+    if (level == 0) {
+        if (nr > bt_rmax(fs, k)) goto out;
+        if (bt_walk_add(fs, k, w, blk + XFS_BTBLOCK_HDR, nr) != 0) goto out;
+    } else {
+        uint32_t km = bt_kmax(fs, k);
+        if (nr > km || level >= XFS_BT_MAXLEVELS) goto out;
+        const uint8_t *ptrs = blk + XFS_BTBLOCK_HDR + (size_t)km * k->keysz;
+        for (uint32_t i = 0; i < nr; i++)
+            if (bt_walk_node(fs, ag, k, be32(ptrs + 4 * i), level - 1, w) != 0) goto out;
     }
-    *n = nr;
     rc = 0;
 out:
     free(blk);
     return rc;
 }
+
+/* all records of the tree whose root block / level count the group header names */
+static int bt_load(xfs_t *fs, uint32_t ag, const xfs_bt_kind_t *k, uint32_t root, uint32_t levels, bt_walk_t *w)
+{
+    memset(w, 0, sizeof(*w));
+    if (levels == 0 || levels > XFS_BT_MAXLEVELS) return -1;
+    if (bt_walk_node(fs, ag, k, root, levels - 1, w) != 0) { free(w->recs); w->recs = 0; return -1; }
+    return 0;
+}
+
+/* The block numbers a tree occupies (root first), without reading its leaves. */
+static int bt_owned(xfs_t *fs, uint32_t ag, const xfs_bt_kind_t *k, uint32_t root, uint32_t levels, uint32_t **out, uint32_t *nout)
+{
+    uint32_t cap = 16, n = 0;
+    uint32_t *list = (uint32_t *)malloc(cap * 4);
+    if (!list) return -1;
+    list[n++] = root;
+    uint32_t lo = 0, hi = 1;                      /* the current level's blocks are list[lo..hi) */
+    uint8_t *blk = (uint8_t *)malloc(fs->blocksize);
+    if (!blk) { free(list); return -1; }
+    uint32_t km = bt_kmax(fs, k);
+    for (uint32_t lvl = levels - 1; lvl > 0; lvl--) {
+        uint32_t nlo = n;
+        for (uint32_t i = lo; i < hi; i++) {
+            if (xfs_rd(fs, agbno_to_byte(fs, ag, list[i]), fs->blocksize, blk) != 0 || be32(blk) != k->magic || be16(blk + 4) != lvl) goto bad;
+            uint32_t nr = be16(blk + 6);
+            if (nr > km) goto bad;
+            const uint8_t *ptrs = blk + XFS_BTBLOCK_HDR + (size_t)km * k->keysz;
+            for (uint32_t j = 0; j < nr; j++) {
+                if (n == cap) {
+                    uint32_t *nl = (uint32_t *)malloc(cap * 8);
+                    if (!nl) goto bad;
+                    memcpy(nl, list, n * 4);
+                    free(list); list = nl; cap *= 2;
+                }
+                list[n++] = be32(ptrs + 4 * j);
+            }
+        }
+        lo = nlo; hi = n;
+    }
+    free(blk);
+    *out = list; *nout = n;
+    return 0;
+bad:
+    free(blk); free(list);
+    return -1;
+}
+
+/* How many blocks a tree of n records takes, level by level. */
+static uint32_t bt_blocks_needed(xfs_t *fs, const xfs_bt_kind_t *k, uint32_t n, uint32_t *levels)
+{
+    uint32_t rm = bt_rmax(fs, k), km = bt_kmax(fs, k);
+    uint32_t c = n ? (n + rm - 1) / rm : 1, total = c, lv = 1;
+    while (c > 1) { c = (c + km - 1) / km; total += c; lv++; }
+    if (levels) *levels = lv;
+    return total;
+}
+
+/* A layout of exactly `total` blocks for n records, if one exists: more leaves than the minimum are fine as long as
+ * every block stays at least half full. cnt[level] gets the block count of each level (0 = leaves). */
+static int bt_layout(xfs_t *fs, const xfs_bt_kind_t *k, uint32_t n, uint32_t total, uint32_t *cnt, uint32_t *nlev)
+{
+    uint32_t rm = bt_rmax(fs, k), km = bt_kmax(fs, k), mnr = rm / 2;
+    uint32_t cmin = n ? (n + rm - 1) / rm : 1, cmax = n && mnr ? n / mnr : 1;
+    if (cmax < cmin) cmax = cmin;
+    if (cmax > cmin + 8) cmax = cmin + 8;
+    for (uint32_t c0 = cmin; c0 <= cmax; c0++) {
+        uint32_t lv = 0, c = c0, sum = c0;
+        cnt[0] = c0;
+        while (c > 1) {
+            c = (c + km - 1) / km;
+            if (lv + 2 >= XFS_BT_MAXLEVELS) { sum = 0; break; }
+            cnt[++lv] = c;
+            sum += c;
+        }
+        if (sum == total) { *nlev = lv + 1; return 0; }
+    }
+    return -1;
+}
+
+/* Writes the tree into `blocks` (at least bt_blocks_needed of them); returns the root block and level count. */
+static int bt_build(xfs_t *fs, uint32_t ag, const xfs_bt_kind_t *k, const uint8_t *recs, uint32_t n,
+                    const uint32_t *blocks, uint32_t total, uint32_t *root, uint32_t *levels)
+{
+    uint32_t km = bt_kmax(fs, k);
+    uint32_t cnt[XFS_BT_MAXLEVELS], nlev;
+    if (bt_layout(fs, k, n, total, cnt, &nlev) != 0) return -1;
+    uint8_t *blk = (uint8_t *)malloc(fs->blocksize);
+    uint8_t *keys = (uint8_t *)malloc((size_t)cnt[0] * k->keysz);          /* first key of every block of the level below */
+    uint8_t *nkeys = (uint8_t *)malloc((size_t)cnt[0] * k->keysz);
+    uint32_t *lblk = (uint32_t *)malloc((size_t)cnt[0] * 4), *nblk = (uint32_t *)malloc((size_t)cnt[0] * 4);
+    int rc = -1;
+    if (!blk || !keys || !nkeys || !lblk || !nblk) goto out;
+    uint32_t used = 0;
+    for (uint32_t level = 0; level < nlev; level++) {
+        uint32_t nb = cnt[level];
+        uint32_t items = level == 0 ? n : cnt[level - 1];
+        uint32_t base = items / nb, extra = items % nb, idx = 0;
+        for (uint32_t b = 0; b < nb; b++) {
+            uint32_t take = base + (b < extra ? 1 : 0);
+            uint32_t bno = blocks[used + b];
+            memset(blk, 0, fs->blocksize);
+            put32(blk, k->magic);
+            put16(blk + 4, (uint16_t)level);
+            put16(blk + 6, (uint16_t)take);
+            put32(blk + 8, b ? blocks[used + b - 1] : 0xFFFFFFFFu);
+            put32(blk + 12, b + 1 < nb ? blocks[used + b + 1] : 0xFFFFFFFFu);
+            put64(blk + 16, agbno_to_byte(fs, ag, bno) / 512);
+            memcpy(blk + 32, fs->meta_uuid, 16);
+            put32(blk + 48, ag);
+            if (level == 0) {
+                memcpy(blk + XFS_BTBLOCK_HDR, recs + (size_t)idx * k->recsz, (size_t)take * k->recsz);
+                if (take) memcpy(nkeys + (size_t)b * k->keysz, recs + (size_t)idx * k->recsz, k->keysz);
+                else memset(nkeys + (size_t)b * k->keysz, 0, k->keysz);
+            } else {
+                uint8_t *kp = blk + XFS_BTBLOCK_HDR, *pp = blk + XFS_BTBLOCK_HDR + (size_t)km * k->keysz;
+                for (uint32_t i = 0; i < take; i++) {
+                    memcpy(kp + (size_t)i * k->keysz, keys + (size_t)(idx + i) * k->keysz, k->keysz);
+                    put32(pp + 4 * i, lblk[idx + i]);
+                }
+                memcpy(nkeys + (size_t)b * k->keysz, keys + (size_t)idx * k->keysz, k->keysz);
+            }
+            idx += take;
+            nblk[b] = bno;
+            xfs_cksum_update(blk, fs->blocksize, XFS_BTBLOCK_CRC_OFF);
+            if (xfs_wr(fs, agbno_to_byte(fs, ag, bno), fs->blocksize, blk) != 0) goto out;
+        }
+        used += nb;
+        uint8_t *t = keys; keys = nkeys; nkeys = t;
+        uint32_t *tb = lblk; lblk = nblk; nblk = tb;
+    }
+    *root = lblk[0];
+    *levels = nlev;
+    rc = 0;
+out:
+    free(blk); free(keys); free(nkeys); free(lblk); free(nblk);
+    return rc;
+}
+
+/* ---------- free space ---------- */
+
+typedef struct { uint32_t start, len; } xfs_frec_t;
 
 static int frec_by_size(const xfs_frec_t *a, const xfs_frec_t *b)
 {
@@ -250,61 +430,169 @@ static int frec_by_size(const xfs_frec_t *a, const xfs_frec_t *b)
     return 0;
 }
 
-/* writes one tree block (records already sorted) */
-static int fs_tree_write(xfs_t *fs, uint32_t ag, uint32_t root, const xfs_frec_t *recs, uint32_t n)
+/* all free extents of the group, sorted by start, in an array with room for a few more */
+static int ag_free_load(xfs_t *fs, uint32_t ag, xfs_frec_t **out, uint32_t *n)
 {
-    uint8_t *blk = (uint8_t *)malloc(fs->blocksize);
-    if (!blk) return -1;
-    uint64_t off = agbno_to_byte(fs, ag, root);
-    int rc = -1;
-    if (xfs_rd(fs, off, fs->blocksize, blk) != 0) goto out;
-    put16(blk + 6, (uint16_t)n);
-    memset(blk + XFS_BTBLOCK_HDR, 0, fs->blocksize - XFS_BTBLOCK_HDR);
-    for (uint32_t i = 0; i < n; i++) {
-        put32(blk + XFS_BTBLOCK_HDR + i * 8, recs[i].start);
-        put32(blk + XFS_BTBLOCK_HDR + i * 8 + 4, recs[i].len);
+    uint8_t agf[512];
+    if (fs->sectsize > sizeof(agf) || ag_hdr_read(fs, ag, XFS_AGF_SECTOR, agf) != 0 || be32(agf) != XFS_AGF_MAGIC) return -1;
+    bt_walk_t w;
+    if (bt_load(fs, ag, &BT_BNO, be32(agf + 16), be32(agf + 28), &w) != 0) return -1;
+    xfs_frec_t *recs = (xfs_frec_t *)malloc(((size_t)w.n + 16) * sizeof(xfs_frec_t));
+    if (!recs) { free(w.recs); return -1; }
+    for (uint32_t i = 0; i < w.n; i++) {
+        recs[i].start = be32(w.recs + (size_t)i * 8);
+        recs[i].len = be32(w.recs + (size_t)i * 8 + 4);
     }
-    xfs_cksum_update(blk, fs->blocksize, XFS_BTBLOCK_CRC_OFF);
-    rc = xfs_wr(fs, off, fs->blocksize, blk);
-out:
-    free(blk);
-    return rc;
+    *n = w.n;
+    *out = recs;
+    free(w.recs);
+    return 0;
 }
 
-/* Stores a new free-extent list (sorted by start) in both trees and the AGF counters. */
+/* puts [bno, bno+len) into the sorted array, merging with its neighbours; -1 if it overlaps free space */
+static int frec_add(xfs_frec_t *recs, uint32_t *np, uint32_t bno, uint32_t len)
+{
+    uint32_t n = *np, i = 0;
+    while (i < n && recs[i].start < bno) i++;
+    if ((i < n && bno + len > recs[i].start) || (i > 0 && recs[i - 1].start + recs[i - 1].len > bno)) return -1;
+    int merge_prev = i > 0 && recs[i - 1].start + recs[i - 1].len == bno;
+    int merge_next = i < n && bno + len == recs[i].start;
+    if (merge_prev && merge_next) {
+        recs[i - 1].len += len + recs[i].len;
+        memmove(&recs[i], &recs[i + 1], (size_t)(n - i - 1) * sizeof(xfs_frec_t));
+        n--;
+    } else if (merge_prev) {
+        recs[i - 1].len += len;
+    } else if (merge_next) {
+        recs[i].start = bno;
+        recs[i].len += len;
+    } else {
+        memmove(&recs[i + 1], &recs[i], (size_t)(n - i) * sizeof(xfs_frec_t));
+        recs[i].start = bno;
+        recs[i].len = len;
+        n++;
+    }
+    *np = n;
+    return 0;
+}
+
+/* takes one block off the end of the largest free extent */
+static int frec_take_block(xfs_frec_t *recs, uint32_t *np, uint32_t *bno)
+{
+    uint32_t n = *np, best = n;
+    for (uint32_t i = 0; i < n; i++) if (best == n || recs[i].len > recs[best].len) best = i;
+    if (best == n) return -1;
+    *bno = recs[best].start + recs[best].len - 1;
+    if (--recs[best].len == 0) { memmove(&recs[best], &recs[best + 1], (size_t)(n - best - 1) * sizeof(xfs_frec_t)); n--; }
+    *np = n;
+    return 0;
+}
+
+/* Stores a new free-extent list (sorted by start) in both trees and the AGF counters. The array needs
+ * room for a handful of extra entries: the trees' own blocks come out of it (and go back into it). */
 static int ag_free_store(xfs_t *fs, uint32_t ag, xfs_frec_t *recs, uint32_t n)
 {
-    if (n > fs_tree_maxrecs(fs)) return -1;
     uint8_t agf[512];
     if (ag_hdr_read(fs, ag, XFS_AGF_SECTOR, agf) != 0 || be32(agf) != XFS_AGF_MAGIC) return -1;
-    if (fs_tree_write(fs, ag, be32(agf + 16), recs, n) != 0) return -1;
-    xfs_frec_t *bysz = (xfs_frec_t *)malloc((n ? n : 1) * sizeof(xfs_frec_t));
-    if (!bysz) return -1;
-    uint32_t total = 0, longest = 0;
-    for (uint32_t i = 0; i < n; i++) {
-        xfs_frec_t t = recs[i];
-        uint32_t j = i;
-        while (j > 0 && frec_by_size(&bysz[j - 1], &t) > 0) { bysz[j] = bysz[j - 1]; j--; }
-        bysz[j] = t;
-        total += recs[i].len;
-        if (recs[i].len > longest) longest = recs[i].len;
+    uint32_t *own[2] = { 0, 0 }, nown[2] = { 0, 0 };
+    const xfs_bt_kind_t *kinds[2] = { &BT_BNO, &BT_CNT };
+    uint32_t roots[2] = { be32(agf + 16), be32(agf + 20) }, levs[2] = { be32(agf + 28), be32(agf + 32) };
+    int rc = -1;
+    for (int t = 0; t < 2; t++)
+        if (bt_owned(fs, ag, kinds[t], roots[t], levs[t], &own[t], &nown[t]) != 0) goto out;
+
+    /* both trees hold the same number of records, so they need the same number of blocks */
+    for (int guard = 0; guard < 64; guard++) {
+        uint32_t need = bt_blocks_needed(fs, &BT_BNO, n, 0);
+        if (nown[0] < need || nown[1] < need) {
+            for (int t = 0; t < 2; t++) {
+                if (nown[t] >= need) continue;
+                uint32_t bno;
+                if (frec_take_block(recs, &n, &bno) != 0) goto out;
+                uint32_t *nl = (uint32_t *)malloc((nown[t] + 1) * 4);
+                if (!nl) goto out;
+                memcpy(nl, own[t], nown[t] * 4);
+                nl[nown[t]++] = bno;
+                free(own[t]); own[t] = nl;
+                break;                                   /* n changed: work the numbers out again */
+            }
+            continue;
+        }
+        /* blocks to spare: hand some back, as long as both trees still have a valid layout afterwards */
+        uint32_t lay[XFS_BT_MAXLEVELS], lv;
+        if (bt_layout(fs, &BT_BNO, n, nown[0], lay, &lv) == 0 && bt_layout(fs, &BT_CNT, n, nown[1], lay, &lv) == 0 &&
+            nown[0] == bt_blocks_needed(fs, &BT_BNO, n, 0) && nown[1] == nown[0])
+            break;                                                  /* already the smallest */
+        int shrunk = 0;
+        xfs_frec_t *tmp = (xfs_frec_t *)malloc(((size_t)n + 16) * sizeof(xfs_frec_t));
+        if (!tmp) goto out;
+        for (uint32_t tot = 1; tot <= 8 && !shrunk; tot++) {
+            for (uint32_t k0 = 0; k0 <= tot && !shrunk; k0++) {
+                uint32_t k1 = tot - k0;
+                if (k0 >= nown[0] || k1 >= nown[1]) continue;
+                memcpy(tmp, recs, (size_t)n * sizeof(xfs_frec_t));
+                uint32_t tn = n;
+                int ok = 1;
+                for (uint32_t j = 0; ok && j < k0; j++) ok = frec_add(tmp, &tn, own[0][nown[0] - 1 - j], 1) == 0;
+                for (uint32_t j = 0; ok && j < k1; j++) ok = frec_add(tmp, &tn, own[1][nown[1] - 1 - j], 1) == 0;
+                if (ok && bt_layout(fs, &BT_BNO, tn, nown[0] - k0, lay, &lv) == 0 && bt_layout(fs, &BT_CNT, tn, nown[1] - k1, lay, &lv) == 0) {
+                    memcpy(recs, tmp, (size_t)tn * sizeof(xfs_frec_t));
+                    n = tn;
+                    nown[0] -= k0;
+                    nown[1] -= k1;
+                    shrunk = 1;
+                }
+            }
+        }
+        free(tmp);
+        if (shrunk) continue;
+        break;
     }
-    int rc = fs_tree_write(fs, ag, be32(agf + 20), bysz, n);
-    free(bysz);
-    if (rc != 0) return -1;
-    put32(agf + 52, total);
-    put32(agf + 56, longest);
-    return ag_hdr_write(fs, ag, XFS_AGF_SECTOR, agf, XFS_AGF_CRC_OFF);
+    {
+        uint32_t lay[XFS_BT_MAXLEVELS], lv;
+        if (bt_layout(fs, &BT_BNO, n, nown[0], lay, &lv) != 0 || bt_layout(fs, &BT_CNT, n, nown[1], lay, &lv) != 0)
+            goto out;                                               /* could not settle: leave the trees alone */
+        uint8_t *bno_recs = (uint8_t *)malloc((size_t)(n ? n : 1) * 8);
+        uint8_t *cnt_recs = (uint8_t *)malloc((size_t)(n ? n : 1) * 8);
+        xfs_frec_t *bysz = (xfs_frec_t *)malloc((size_t)(n ? n : 1) * sizeof(xfs_frec_t));
+        if (!bno_recs || !cnt_recs || !bysz) { free(bno_recs); free(cnt_recs); free(bysz); goto out; }
+        uint32_t total = 0, longest = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            put32(bno_recs + 8 * i, recs[i].start);
+            put32(bno_recs + 8 * i + 4, recs[i].len);
+            xfs_frec_t t = recs[i];
+            uint32_t j = i;
+            while (j > 0 && frec_by_size(&bysz[j - 1], &t) > 0) { bysz[j] = bysz[j - 1]; j--; }
+            bysz[j] = t;
+            total += recs[i].len;
+            if (recs[i].len > longest) longest = recs[i].len;
+        }
+        for (uint32_t i = 0; i < n; i++) { put32(cnt_recs + 8 * i, bysz[i].start); put32(cnt_recs + 8 * i + 4, bysz[i].len); }
+        free(bysz);
+        uint32_t r0, r1, l0, l1;
+        int brc = bt_build(fs, ag, &BT_BNO, bno_recs, n, own[0], nown[0], &r0, &l0);
+        if (brc == 0) brc = bt_build(fs, ag, &BT_CNT, cnt_recs, n, own[1], nown[1], &r1, &l1);
+        free(bno_recs); free(cnt_recs);
+        if (brc != 0) goto out;
+        put32(agf + 16, r0); put32(agf + 20, r1);
+        put32(agf + 28, l0); put32(agf + 32, l1);
+        put32(agf + 52, total);
+        put32(agf + 56, longest);
+        put32(agf + 60, nown[0] + nown[1] - 2);                    /* btree blocks other than the two roots */
+        rc = ag_hdr_write(fs, ag, XFS_AGF_SECTOR, agf, XFS_AGF_CRC_OFF);
+    }
+out:
+    free(own[0]); free(own[1]);
+    return rc;
 }
 
 /* Takes up to maxlen (at least minlen) blocks out of the AG's free space; the
  * start is a multiple of `align`. Prefers an extent that holds all of maxlen. */
 static int ag_alloc(xfs_t *fs, uint32_t ag, uint32_t minlen, uint32_t maxlen, uint32_t align, uint32_t *out_bno, uint32_t *out_len)
 {
-    uint32_t cap = fs_tree_maxrecs(fs), n;
-    xfs_frec_t *recs = (xfs_frec_t *)malloc((size_t)(cap + 2) * sizeof(xfs_frec_t));
-    if (!recs) return -1;
-    if (ag_free_load(fs, ag, recs, cap, &n) != 0) { free(recs); return -1; }
+    xfs_frec_t *recs;
+    uint32_t n;
+    if (ag_free_load(fs, ag, &recs, &n) != 0) return -1;
     if (align == 0) align = 1;
     int best = -1;
     uint32_t best_as = 0, best_take = 0;
@@ -340,30 +628,10 @@ static int ag_alloc(xfs_t *fs, uint32_t ag, uint32_t minlen, uint32_t maxlen, ui
 static int ag_free(xfs_t *fs, uint32_t ag, uint32_t bno, uint32_t len)
 {
     if (len == 0) return 0;
-    uint32_t cap = fs_tree_maxrecs(fs), n;
-    xfs_frec_t *recs = (xfs_frec_t *)malloc((size_t)(cap + 2) * sizeof(xfs_frec_t));
-    if (!recs) return -1;
-    if (ag_free_load(fs, ag, recs, cap, &n) != 0) { free(recs); return -1; }
-    uint32_t i = 0;
-    while (i < n && recs[i].start < bno) i++;
-    if ((i < n && bno + len > recs[i].start) || (i > 0 && recs[i - 1].start + recs[i - 1].len > bno)) { free(recs); return -1; }   /* already free: corrupt */
-    int merge_prev = i > 0 && recs[i - 1].start + recs[i - 1].len == bno;
-    int merge_next = i < n && bno + len == recs[i].start;
-    if (merge_prev && merge_next) {
-        recs[i - 1].len += len + recs[i].len;
-        memmove(&recs[i], &recs[i + 1], (size_t)(n - i - 1) * sizeof(xfs_frec_t));
-        n--;
-    } else if (merge_prev) {
-        recs[i - 1].len += len;
-    } else if (merge_next) {
-        recs[i].start = bno;
-        recs[i].len += len;
-    } else {
-        memmove(&recs[i + 1], &recs[i], (size_t)(n - i) * sizeof(xfs_frec_t));
-        recs[i].start = bno;
-        recs[i].len = len;
-        n++;
-    }
+    xfs_frec_t *recs;
+    uint32_t n;
+    if (ag_free_load(fs, ag, &recs, &n) != 0) return -1;
+    if (frec_add(recs, &n, bno, len) != 0) { free(recs); return -1; }       /* already free: corrupt */
     int rc = ag_free_store(fs, ag, recs, n);
     free(recs);
     return rc;
@@ -396,7 +664,7 @@ static int xfs_free_blocks(xfs_t *fs, uint64_t fsb, uint32_t len)
     return sb_adjust(fs, 0, 0, (int64_t)len);
 }
 
-/* ---------- inode allocation (inode B-tree and free-inode B-tree, one block each) ---------- */
+/* ---------- inode allocation (inode B-tree and free-inode B-tree) ---------- */
 
 typedef struct {
     uint32_t startino;
@@ -408,7 +676,6 @@ typedef struct {
 
 #define XFS_INODES_PER_CHUNK 64
 
-static uint32_t ibt_maxrecs(xfs_t *fs) { return (fs->blocksize - XFS_BTBLOCK_HDR) / 16; }
 
 static void irec_decode(xfs_t *fs, const uint8_t *p, xfs_irec_t *r)
 {
@@ -439,52 +706,67 @@ static void irec_encode(xfs_t *fs, uint8_t *p, const xfs_irec_t *r)
 }
 
 /* which = 0: inobt, 1: finobt */
-static int ibt_root(xfs_t *fs, uint32_t ag, int which, uint32_t *root)
+static int ibt_root(xfs_t *fs, uint32_t ag, int which, uint32_t *root, uint32_t *levels)
 {
     uint8_t agi[512];
     if (ag_hdr_read(fs, ag, XFS_AGI_SECTOR, agi) != 0 || be32(agi) != XFS_AGI_MAGIC) return -1;
-    if (which == 0) { *root = be32(agi + 20); return be32(agi + 24) == 1 ? 0 : -1; }
-    *root = be32(agi + 328);
-    return be32(agi + 332) == 1 ? 0 : -1;
+    if (which == 0) { *root = be32(agi + 20); *levels = be32(agi + 24); }
+    else { *root = be32(agi + 328); *levels = be32(agi + 332); }
+    return 0;
 }
 
-static int ibt_load(xfs_t *fs, uint32_t ag, int which, xfs_irec_t *recs, uint32_t cap, uint32_t *n)
+static int ibt_load(xfs_t *fs, uint32_t ag, int which, xfs_irec_t **out, uint32_t *n)
 {
-    uint32_t root;
-    if (ibt_root(fs, ag, which, &root) != 0) return -1;
-    uint8_t *blk = (uint8_t *)malloc(fs->blocksize);
-    if (!blk) return -1;
-    int rc = -1;
-    uint32_t magic = which == 0 ? XFS_IBT_CRC_MAGIC : XFS_FIBT_CRC_MAGIC;
-    if (xfs_rd(fs, agbno_to_byte(fs, ag, root), fs->blocksize, blk) != 0) goto out;
-    if (be32(blk) != magic || be16(blk + 4) != 0) goto out;
-    uint32_t nr = be16(blk + 6);
-    if (nr > cap || nr > ibt_maxrecs(fs)) goto out;
-    for (uint32_t i = 0; i < nr; i++) irec_decode(fs, blk + XFS_BTBLOCK_HDR + i * 16, &recs[i]);
-    *n = nr;
-    rc = 0;
-out:
-    free(blk);
-    return rc;
+    uint32_t root, levels;
+    if (ibt_root(fs, ag, which, &root, &levels) != 0) return -1;
+    bt_walk_t w;
+    if (bt_load(fs, ag, which == 0 ? &BT_INO : &BT_FINO, root, levels, &w) != 0) return -1;
+    xfs_irec_t *recs = (xfs_irec_t *)malloc(((size_t)w.n + 4) * sizeof(xfs_irec_t));
+    if (!recs) { free(w.recs); return -1; }
+    for (uint32_t i = 0; i < w.n; i++) irec_decode(fs, w.recs + (size_t)i * 16, &recs[i]);
+    *n = w.n;
+    *out = recs;
+    free(w.recs);
+    return 0;
 }
 
 static int ibt_store(xfs_t *fs, uint32_t ag, int which, const xfs_irec_t *recs, uint32_t n)
 {
-    if (n > ibt_maxrecs(fs)) return -1;
-    uint32_t root;
-    if (ibt_root(fs, ag, which, &root) != 0) return -1;
-    uint8_t *blk = (uint8_t *)malloc(fs->blocksize);
-    if (!blk) return -1;
-    uint64_t off = agbno_to_byte(fs, ag, root);
+    const xfs_bt_kind_t *k = which == 0 ? &BT_INO : &BT_FINO;
+    uint32_t root, levels;
+    if (ibt_root(fs, ag, which, &root, &levels) != 0) return -1;
+    uint32_t *own = 0, nown = 0;
+    if (bt_owned(fs, ag, k, root, levels, &own, &nown) != 0) return -1;
+    uint32_t need = bt_blocks_needed(fs, k, n, 0);
     int rc = -1;
-    if (xfs_rd(fs, off, fs->blocksize, blk) != 0) goto out;
-    put16(blk + 6, (uint16_t)n);
-    memset(blk + XFS_BTBLOCK_HDR, 0, fs->blocksize - XFS_BTBLOCK_HDR);
-    for (uint32_t i = 0; i < n; i++) irec_encode(fs, blk + XFS_BTBLOCK_HDR + i * 16, &recs[i]);
-    xfs_cksum_update(blk, fs->blocksize, XFS_BTBLOCK_CRC_OFF);
-    rc = xfs_wr(fs, off, fs->blocksize, blk);
+    uint8_t *raw = (uint8_t *)malloc((size_t)(n ? n : 1) * 16);
+    uint32_t *all = (uint32_t *)malloc((size_t)(need > nown ? need : nown) * 4 + 4);
+    if (!raw || !all) goto out;
+    for (uint32_t i = 0; i < n; i++) irec_encode(fs, raw + (size_t)i * 16, &recs[i]);
+    memcpy(all, own, nown * 4);
+    while (nown < need) {                                   /* grow: blocks come out of the group's free space */
+        uint32_t bno, got;
+        if (ag_alloc(fs, ag, 1, 1, 1, &bno, &got) != 0) goto out;
+        if (sb_adjust(fs, 0, 0, -1) != 0) goto out;
+        all[nown++] = bno;
+    }
+    uint32_t r, l;
+    if (bt_build(fs, ag, k, raw, n, all, need, &r, &l) != 0) goto out;
+    {
+        uint8_t agi[512];
+        if (ag_hdr_read(fs, ag, XFS_AGI_SECTOR, agi) != 0) goto out;
+        if (which == 0) { put32(agi + 20, r); put32(agi + 24, l); }
+        else { put32(agi + 328, r); put32(agi + 332, l); }
+        if (fs->inobtcount) put32(agi + (which == 0 ? 336 : 340), need);
+        if (ag_hdr_write(fs, ag, XFS_AGI_SECTOR, agi, XFS_AGI_CRC_OFF) != 0) goto out;
+    }
+    for (uint32_t i = need; i < nown; i++) {                 /* shrink: surplus blocks go back */
+        if (ag_free(fs, ag, all[i], 1) != 0) goto out;
+        if (sb_adjust(fs, 0, 0, 1) != 0) goto out;
+    }
+    rc = 0;
 out:
-    free(blk);
+    free(own); free(raw); free(all);
     return rc;
 }
 
@@ -492,10 +774,9 @@ out:
 static int finobt_sync(xfs_t *fs, uint32_t ag, const xfs_irec_t *r)
 {
     if (!fs->finobt) return 0;
-    uint32_t cap = ibt_maxrecs(fs), n;
-    xfs_irec_t *recs = (xfs_irec_t *)malloc((size_t)(cap + 2) * sizeof(xfs_irec_t));
-    if (!recs) return -1;
-    if (ibt_load(fs, ag, 1, recs, cap, &n) != 0) { free(recs); return -1; }
+    xfs_irec_t *recs;
+    uint32_t n;
+    if (ibt_load(fs, ag, 1, &recs, &n) != 0) return -1;
     uint32_t i = 0;
     while (i < n && recs[i].startino < r->startino) i++;
     int have = i < n && recs[i].startino == r->startino;
@@ -550,11 +831,9 @@ static int ialloc_chunk(xfs_t *fs, uint32_t ag)
     }
     if (fs->imax_pct && (icount + XFS_INODES_PER_CHUNK) * fs->inodesize > dblocks_bytes / 100 * fs->imax_pct) return 1;
     uint32_t blocks = XFS_INODES_PER_CHUNK * fs->inodesize / fs->blocksize;
-    uint32_t cap = ibt_maxrecs(fs), n, bno, got;
-    xfs_irec_t *recs = (xfs_irec_t *)malloc((size_t)(cap + 2) * sizeof(xfs_irec_t));
-    if (!recs) return -1;
-    if (ibt_load(fs, ag, 0, recs, cap, &n) != 0) { free(recs); return -1; }
-    if (n + 1 > cap) { free(recs); return 1; }
+    uint32_t n, bno, got;
+    xfs_irec_t *recs;
+    if (ibt_load(fs, ag, 0, &recs, &n) != 0) return -1;
     int rc = ag_alloc(fs, ag, blocks, blocks, fs->inoalign ? fs->inoalign : 1, &bno, &got);
     if (rc != 0) { free(recs); return rc < 0 ? -1 : 1; }
     uint32_t startino = (ag << (fs->agblklog + fs->inopblog)) | (bno << fs->inopblog);
@@ -587,10 +866,9 @@ static int ialloc_take(xfs_t *fs, uint32_t ag, uint64_t *ino)
     uint8_t agi[512];
     if (ag_hdr_read(fs, ag, XFS_AGI_SECTOR, agi) != 0 || be32(agi) != XFS_AGI_MAGIC) return -1;
     if (be32(agi + 28) == 0) return 1;
-    uint32_t cap = ibt_maxrecs(fs), n;
-    xfs_irec_t *recs = (xfs_irec_t *)malloc((size_t)(cap + 2) * sizeof(xfs_irec_t));
-    if (!recs) return -1;
-    if (ibt_load(fs, ag, 0, recs, cap, &n) != 0) { free(recs); return -1; }
+    xfs_irec_t *recs;
+    uint32_t n;
+    if (ibt_load(fs, ag, 0, &recs, &n) != 0) return -1;
     for (uint32_t i = 0; i < n; i++) {
         if (recs[i].freecount == 0) continue;
         for (int b = 0; b < XFS_INODES_PER_CHUNK; b++) {
@@ -635,10 +913,9 @@ static int xfs_ifree(xfs_t *fs, uint64_t ino)
     uint32_t ag = (uint32_t)(ino >> (fs->agblklog + fs->inopblog));
     uint32_t agino = (uint32_t)(ino & (((uint64_t)1 << (fs->agblklog + fs->inopblog)) - 1));
     if (ag >= fs->agcount) return -1;
-    uint32_t cap = ibt_maxrecs(fs), n;
-    xfs_irec_t *recs = (xfs_irec_t *)malloc((size_t)(cap + 2) * sizeof(xfs_irec_t));
-    if (!recs) return -1;
-    if (ibt_load(fs, ag, 0, recs, cap, &n) != 0) { free(recs); return -1; }
+    xfs_irec_t *recs;
+    uint32_t n;
+    if (ibt_load(fs, ag, 0, &recs, &n) != 0) return -1;
     for (uint32_t i = 0; i < n; i++) {
         uint32_t s = ((uint64_t)recs[i].startino);
         if (agino < s || agino >= s + XFS_INODES_PER_CHUNK) continue;
@@ -800,16 +1077,122 @@ static int read_data(xfs_t *fs, const xfs_inode_t *ip, uint64_t pos, uint8_t *bu
 
 /* ---------- data fork editing ---------- */
 
-/* Stores the extent list in an extent-format fork; fails when it does not fit. */
-static int fork_set_extents(xfs_inode_t *ip, const ext_list_t *l)
+static uint32_t inode_pref_ag(xfs_t *fs, uint64_t ino);
+
+/* Stores the extent list in the data fork: inline when it fits, otherwise as a bmap btree whose blocks come
+ * from the inode's allocation group (the ones the fork already owns are reused). Does not write the inode.
+ * tree_before / tree_after: number of bmap btree blocks the fork had / has, for di_nblocks. */
+static int fork_store(xfs_t *fs, uint64_t ino, xfs_inode_t *ip, const ext_list_t *l, uint32_t *tree_before, uint32_t *tree_after)
 {
-    if (ip->format != XFS_DINODE_FMT_EXTENTS || (int64_t)l->n * 16 > ip->fork_len) return -1;
-    uint8_t *fork = ip->raw + ip->core_len;
-    memset(fork, 0, (size_t)ip->fork_len);
-    for (uint32_t i = 0; i < l->n; i++) ext_pack(&l->list[i], fork + (size_t)i * 16);
-    put32(ip->raw + 76, l->n);
-    ip->nextents = l->n;
-    return 0;
+    ext_list_t oldext, oldtree;
+    memset(&oldext, 0, sizeof(oldext));
+    memset(&oldtree, 0, sizeof(oldtree));
+    if (ip->format == XFS_DINODE_FMT_BTREE) {
+        if (get_extents_ex(fs, ip, &oldext, &oldtree) != 0) return -1;
+        free(oldext.list);
+    }
+    *tree_before = oldtree.n;
+    *tree_after = 0;
+    uint32_t bs = fs->blocksize, n = l->n;
+    int rc = -1;
+    uint64_t *blocks = 0;
+    uint8_t *blk = 0;
+    if ((int64_t)n * 16 <= ip->fork_len) {
+        ip->raw[5] = XFS_DINODE_FMT_EXTENTS;
+        ip->format = XFS_DINODE_FMT_EXTENTS;
+        uint8_t *fork = ip->raw + ip->core_len;
+        memset(fork, 0, (size_t)ip->fork_len);
+        for (uint32_t i = 0; i < n; i++) ext_pack(&l->list[i], fork + (size_t)i * 16);
+        put32(ip->raw + 76, n);
+        ip->nextents = n;
+        for (uint32_t i = 0; i < oldtree.n; i++)
+            if (xfs_free_blocks(fs, oldtree.list[i].startblock, 1) != 0) goto out;
+        rc = 0;
+        goto out;
+    }
+
+    uint32_t lm = (bs - 72) / 16, rmax = ((uint32_t)ip->fork_len - 4) / 16;
+    uint32_t cnt[XFS_BT_MAXLEVELS], lv = 0, total;
+    cnt[0] = (n + lm - 1) / lm;
+    while (cnt[lv] > rmax) {
+        if (lv + 2 >= XFS_BT_MAXLEVELS) goto out;
+        cnt[lv + 1] = (cnt[lv] + lm - 1) / lm;
+        lv++;
+    }
+    total = 0;
+    for (uint32_t i = 0; i <= lv; i++) total += cnt[i];
+    blocks = (uint64_t *)malloc((size_t)(total > oldtree.n ? total : oldtree.n) * 8 + 8);
+    blk = (uint8_t *)malloc(bs);
+    if (!blocks || !blk) goto out;
+    for (uint32_t i = 0; i < total && i < oldtree.n; i++) blocks[i] = oldtree.list[i].startblock;
+    for (uint32_t i = oldtree.n; i < total; i++) {
+        uint32_t got;
+        if (xfs_alloc_blocks(fs, inode_pref_ag(fs, ino), 1, 1, 1, &blocks[i], &got) != 0) goto out;
+    }
+
+    /* one level at a time, leaves first; keys[] / ptrs[] describe the level below the one being written */
+    uint64_t *keys = (uint64_t *)malloc((size_t)cnt[0] * 8), *nkeys = (uint64_t *)malloc((size_t)cnt[0] * 8);
+    uint64_t *ptrs = (uint64_t *)malloc((size_t)cnt[0] * 8), *nptrs = (uint64_t *)malloc((size_t)cnt[0] * 8);
+    if (!keys || !nkeys || !ptrs || !nptrs) { free(keys); free(nkeys); free(ptrs); free(nptrs); goto out; }
+    uint32_t used = 0;
+    int wrc = 0;
+    for (uint32_t level = 0; level <= lv && wrc == 0; level++) {
+        uint32_t nb = cnt[level], items = level == 0 ? n : cnt[level - 1];
+        uint32_t base = items / nb, extra = items % nb, idx = 0;
+        for (uint32_t b = 0; b < nb && wrc == 0; b++) {
+            uint32_t take = base + (b < extra ? 1 : 0);
+            uint64_t me = blocks[used + b];
+            memset(blk, 0, bs);
+            put32(blk, 0x424D4133u);
+            put16(blk + 4, (uint16_t)level);
+            put16(blk + 6, (uint16_t)take);
+            put64(blk + 8, b ? blocks[used + b - 1] : ~0ull);
+            put64(blk + 16, b + 1 < nb ? blocks[used + b + 1] : ~0ull);
+            put64(blk + 24, fsb_to_byte(fs, me) / 512);
+            memcpy(blk + 40, fs->meta_uuid, 16);
+            put64(blk + 56, ino);
+            if (level == 0) {
+                for (uint32_t i = 0; i < take; i++) ext_pack(&l->list[idx + i], blk + 72 + (size_t)i * 16);
+                nkeys[b] = take ? l->list[idx].startoff : 0;
+            } else {
+                for (uint32_t i = 0; i < take; i++) {
+                    put64(blk + 72 + (size_t)i * 8, keys[idx + i]);
+                    put64(blk + 72 + (size_t)lm * 8 + (size_t)i * 8, ptrs[idx + i]);
+                }
+                nkeys[b] = keys[idx];
+            }
+            idx += take;
+            nptrs[b] = me;
+            xfs_cksum_update(blk, bs, 64);
+            wrc = xfs_wr(fs, fsb_to_byte(fs, me), bs, blk);
+        }
+        used += nb;
+        uint64_t *t = keys; keys = nkeys; nkeys = t;
+        t = ptrs; ptrs = nptrs; nptrs = t;
+    }
+    if (wrc == 0) {
+        /* the root lives in the inode */
+        uint8_t *fork = ip->raw + ip->core_len;
+        memset(fork, 0, (size_t)ip->fork_len);
+        put16(fork, (uint16_t)(lv + 1));
+        put16(fork + 2, (uint16_t)cnt[lv]);
+        for (uint32_t i = 0; i < cnt[lv]; i++) {
+            put64(fork + 4 + (size_t)i * 8, keys[i]);
+            put64(fork + 4 + (size_t)rmax * 8 + (size_t)i * 8, ptrs[i]);
+        }
+        ip->raw[5] = XFS_DINODE_FMT_BTREE;
+        ip->format = XFS_DINODE_FMT_BTREE;
+        put32(ip->raw + 76, n);
+        ip->nextents = n;
+        for (uint32_t i = total; i < oldtree.n; i++)
+            if (xfs_free_blocks(fs, oldtree.list[i].startblock, 1) != 0) wrc = -1;
+        *tree_after = total;
+    }
+    free(keys); free(nkeys); free(ptrs); free(nptrs);
+    rc = wrc;
+out:
+    free(blocks); free(blk); free(oldtree.list);
+    return rc;
 }
 
 /* inserts an extent keeping the list sorted by file offset, merging neighbours */
@@ -867,7 +1250,7 @@ static int xfs_file_write(xfs_t *fs, uint64_t ino, uint64_t pos, const uint8_t *
     if (len == 0) return 0;
     xfs_inode_t ip;
     if (read_inode(fs, ino, &ip) != 0) return -1;
-    if ((ip.mode & S_IFMT_) != S_IFREG_ || ip.format != XFS_DINODE_FMT_EXTENTS) { inode_free(&ip); return -1; }
+    if ((ip.mode & S_IFMT_) != S_IFREG_ || (ip.format != XFS_DINODE_FMT_EXTENTS && ip.format != XFS_DINODE_FMT_BTREE)) { inode_free(&ip); return -1; }
     ext_list_t l;
     if (get_extents(fs, &ip, &l) != 0) { inode_free(&ip); return -1; }
     int rc = -1;
@@ -895,7 +1278,6 @@ static int xfs_file_write(xfs_t *fs, uint64_t ino, uint64_t pos, const uint8_t *
         holes[nholes].off = cur;
         holes[nholes++].cnt = fb1 - cur + 1;
     }
-    if (((int64_t)l.n + nholes) * 16 > ip.fork_len) goto out;        /* too fragmented for the inode */
 
     uint64_t nblocks = be64(ip.raw + 64);
     uint32_t pref = inode_pref_ag(fs, ino);
@@ -931,7 +1313,11 @@ static int xfs_file_write(xfs_t *fs, uint64_t ino, uint64_t pos, const uint8_t *
     rc = 0;
 out_partial:
     /* record what was allocated even if a later step failed */
-    if (fork_set_extents(&ip, &l) != 0) rc = -1;
+    {
+        uint32_t tb0, tb1;
+        if (fork_store(fs, ino, &ip, &l, &tb0, &tb1) != 0) rc = -1;
+        nblocks = nblocks - tb0 + tb1;
+    }
     put64(ip.raw + 64, nblocks);
     if (rc == 0 && end > ip.size) { ip.size = end; put64(ip.raw + 56, end); }
     if (write_inode(fs, ino, &ip) != 0) rc = -1;
@@ -1228,7 +1614,7 @@ static int dir_load(xfs_t *fs, const xfs_inode_t *dir, xfs_dir_t *d)
         }
         return 0;
     }
-    if (dir->format != XFS_DINODE_FMT_EXTENTS || fs->dirblklog != 0 || !fs->v5) return -2;
+    if ((dir->format != XFS_DINODE_FMT_EXTENTS && dir->format != XFS_DINODE_FMT_BTREE) || fs->dirblklog != 0 || !fs->v5) return -2;
     uint32_t bs = fs->blocksize;
     ext_list_t l;
     if (get_extents(fs, dir, &l) != 0) return -2;
@@ -1288,7 +1674,7 @@ static int dir_load(xfs_t *fs, const xfs_inode_t *dir, xfs_dir_t *d)
 static int dir_remap(xfs_t *fs, uint64_t dino, xfs_inode_t *dir, const uint64_t *need, int nneed, uint64_t *phys)
 {
     ext_list_t l;
-    if (dir->format == XFS_DINODE_FMT_EXTENTS) {
+    if (dir->format == XFS_DINODE_FMT_EXTENTS || dir->format == XFS_DINODE_FMT_BTREE) {
         if (get_extents(fs, dir, &l) != 0) return -2;
     } else {
         memset(&l, 0, sizeof(l));
@@ -1333,7 +1719,6 @@ static int dir_remap(xfs_t *fs, uint64_t dino, xfs_inode_t *dir, const uint64_t 
         xfs_ext_t e = { need[i], phys[i], 1, 0 };
         if (ext_insert(&nl, &e) != 0) rc = -1;
     }
-    if (rc == 0 && (int64_t)nl.n * 16 > dir->fork_len) rc = 1;           /* too many extents for the inode */
     if (rc != 0) {                                                       /* undo: nothing of the old layout was touched */
         for (int i = 0; i < nfresh; i++) xfs_free_blocks(fs, fresh[i].fsb, fresh[i].len);
         free(have); free(fresh); free(nl.list); free(l.list);
@@ -1354,12 +1739,11 @@ static int dir_remap(xfs_t *fs, uint64_t dino, xfs_inode_t *dir, const uint64_t 
     }
     free(have); free(fresh); free(l.list);
     if (rc != 0) { free(nl.list); return rc; }
-    dir->raw[5] = XFS_DINODE_FMT_EXTENTS;
-    dir->format = XFS_DINODE_FMT_EXTENTS;
-    int frc = fork_set_extents(dir, &nl);
+    uint32_t tb0, tb1;
+    int frc = fork_store(fs, dino, dir, &nl, &tb0, &tb1);
     free(nl.list);
     if (frc != 0) return -1;
-    put64(dir->raw + 64, (uint64_t)nneed);
+    put64(dir->raw + 64, (uint64_t)nneed + tb1);
     return 0;
 }
 
@@ -2247,31 +2631,43 @@ void xfs_mount_vfs(xfs_t *fs, const char *mount_point)
 
 /* ---------- mount ---------- */
 
-/* The log is clean when its last record is an unmount record: nothing is left to replay. */
+/* The log is clean when its last record is an unmount record: nothing is left to replay. Every record starts with
+ * a header block whose first word is the magic number (no other block can begin with it: the first word of every
+ * other log block is overwritten by the cycle number), so the newest record is the header with the highest
+ * (cycle, block) pair, wherever the log has wrapped. */
 static int xfs_log_clean(xfs_t *fs)
 {
     uint64_t base = fsb_to_byte(fs, fs->logstart);
     uint64_t nbb = (uint64_t)fs->logblocks * fs->blocksize / 512;
-    uint8_t h[512], d[512];
-    if (xfs_rd(fs, base, 512, h) != 0 || be32(h) != 0xFEEDBABEu) return 0;
-    uint32_t c0 = be32(h + 4);
-    uint64_t b = 0, last = 0;
-    int have_last = 0;
-    uint32_t last_ops = 0;
-    for (int guard = 0; guard < 4000000; guard++) {
-        if (b >= nbb) break;
-        if (xfs_rd(fs, base + b * 512, 512, h) != 0) return 0;
-        if (be32(h) != 0xFEEDBABEu || be32(h + 4) != c0) break;
-        uint32_t len = be32(h + 12);
-        if (len > 32768) return 0;                       /* extended record headers: do not guess */
-        last = b;
-        have_last = 1;
-        last_ops = be32(h + 40);
-        b += 1 + (len + 511) / 512;
+    if (nbb > (512ull << 20) / 512) return 0;
+    uint32_t chunk_sectors = 256;                                   /* 128 KB per read */
+    uint8_t *buf = (uint8_t *)malloc((size_t)chunk_sectors * 512);
+    if (!buf) return 0;
+    int have = 0;
+    uint32_t best_cycle = 0;
+    uint64_t best_block = 0;
+    uint32_t best_ops = 0;
+    uint8_t flags = 0;
+    for (uint64_t b0 = 0; b0 < nbb; b0 += chunk_sectors) {
+        uint32_t cnt = nbb - b0 < chunk_sectors ? (uint32_t)(nbb - b0) : chunk_sectors;
+        if (xfs_rd(fs, base + b0 * 512, cnt * 512, buf) != 0) { free(buf); return 0; }
+        for (uint32_t i = 0; i < cnt; i++) {
+            const uint8_t *h = buf + (size_t)i * 512;
+            if (be32(h) != 0xFEEDBABEu) continue;
+            uint32_t cyc = be32(h + 4);
+            if (be32(h + 12) > 32768) { free(buf); return 0; }       /* extended record headers: do not guess */
+            if (!have || cyc > best_cycle || (cyc == best_cycle && b0 + i > best_block)) {
+                have = 1; best_cycle = cyc; best_block = b0 + i; best_ops = be32(h + 40);
+            }
+        }
     }
-    if (!have_last || last_ops != 1) return 0;
-    if (xfs_rd(fs, base + (last + 1) * 512, 512, d) != 0) return 0;
-    return (d[9] & 0x20) != 0;                           /* XLOG_UNMOUNT_TRANS */
+    free(buf);
+    if (!have || best_ops != 1) return 0;
+    uint8_t d[512];
+    uint64_t data_block = best_block + 1 < nbb ? best_block + 1 : 0;   /* the record's data follows its header (it may wrap) */
+    if (xfs_rd(fs, base + data_block * 512, 512, d) != 0) return 0;
+    flags = d[9];
+    return (flags & 0x20) != 0;                                     /* XLOG_UNMOUNT_TRANS */
 }
 
 int xfs_probe_and_mount(xfs_t *fs, blockdev_t *bd)
@@ -2315,6 +2711,7 @@ int xfs_probe_and_mount(xfs_t *fs, blockdev_t *bd)
         fs->ftype = (incompat & XFS_INCOMPAT_FTYPE) != 0;
         fs->spinodes = (incompat & XFS_INCOMPAT_SPINODES) != 0;
         fs->finobt = (ro_compat & XFS_RO_COMPAT_FINOBT) != 0;
+        fs->inobtcount = (ro_compat & XFS_RO_COMPAT_INOBTCNT) != 0;
         if (incompat & XFS_INCOMPAT_META_UUID) memcpy(fs->meta_uuid, sb + 248, 16);
         else memcpy(fs->meta_uuid, sb + 32, 16);
     } else {
@@ -2343,8 +2740,9 @@ int xfs_probe_and_mount(xfs_t *fs, blockdev_t *bd)
         uint8_t agf[512], agi[512];
         if (ag_hdr_read(fs, ag, XFS_AGF_SECTOR, agf) != 0 || ag_hdr_read(fs, ag, XFS_AGI_SECTOR, agi) != 0 ||
             be32(agf) != XFS_AGF_MAGIC || be32(agi) != XFS_AGI_MAGIC) { rw = 0; break; }
-        if (be32(agf + 28) != 1 || be32(agf + 32) != 1 || be32(agi + 24) != 1) rw = 0;
-        if (fs->finobt && be32(agi + 332) != 1) rw = 0;
+        if (be32(agf + 28) < 1 || be32(agf + 32) < 1 || be32(agi + 24) < 1 || be32(agf + 28) > XFS_BT_MAXLEVELS ||
+            be32(agf + 32) > XFS_BT_MAXLEVELS || be32(agi + 24) > XFS_BT_MAXLEVELS) rw = 0;
+        if (fs->finobt && (be32(agi + 332) < 1 || be32(agi + 332) > XFS_BT_MAXLEVELS)) rw = 0;
         if ((ro_compat & XFS_RO_COMPAT_REFLINK) && be32(agf + 84) > 1) rw = 0;     /* shared extents exist */
         if (rw && (ro_compat & XFS_RO_COMPAT_REFLINK) && be32(agf + 84) == 1) {
             /* an empty refcount tree is fine */

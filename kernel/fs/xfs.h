@@ -36,14 +36,15 @@ typedef struct {
     int      ftype;         /* directory entries carry a file type byte */
     int      spinodes;      /* sparse inode chunks: inode B-tree records carry a hole mask */
     int      finobt;        /* free inode B-tree present */
+    int      inobtcount;    /* inode B-tree block counts are kept in the AGI */
     int      rw;            /* writable: everything we would touch is something we keep up to date */
     uint8_t  meta_uuid[16];
     char     fname[13];
     xfs_fd_t fds[VFS_MAX_FDS];
 } xfs_t;
 
-/* Version 5 volumes made by mkfs.xfs are written to when their log is clean and
- * their allocation-group B-trees fit in one block; anything else is read-only. */
+/* Version 5 volumes made by mkfs.xfs are written to when their log is clean and they use
+ * no features beyond those handled here; anything else is read-only. */
 int xfs_probe_and_mount(xfs_t *fs, blockdev_t *bd);
 int xfs_umount(xfs_t *fs);
 void xfs_mount_vfs(xfs_t *fs, const char *mount_point);
