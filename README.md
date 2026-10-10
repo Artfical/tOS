@@ -432,7 +432,7 @@ Five NIC drivers are available, all auto-detected via PCI bus scanning:
 
 `tpkg` is tOS's package manager, talking to a small Flask+Waitress server (`pkg.artfical.com`) over plain HTTP. The server's catalog (`tpkg look`) lists every available package as `name|version|license|description`; `tpkg install <name>` downloads a ustar `.tar`, extracts it into `/programs/<name>/`, and registers any commands it ships (via `<file>.txt` sidecars next to each `.py`/`.t`) in `/sys/path.tmbl`. Everything currently on the server is AGPL-3.0-or-later.
 
-Packages can ship native `.t` executables — flat, non-relocatable binaries built with [tos-sdk](https://github.com/Artfical/tos-sdk), running in ring3 with a Linux-i386-style `int 0x80` syscall ABI (file I/O, terminal, TCP networking, linear-framebuffer graphics, and crypto primitives — SHA-256/HMAC/AES-128-CTR/modexp — backed by this kernel's own TLS code). Two example packages:
+Packages can ship native `.t` executables — flat, non-relocatable binaries built with [tos-sdk](https://github.com/Artfical/tos-sdk), running in ring3 with a Linux-i386-style `int 0x80` syscall ABI (file I/O, terminal, TCP networking, linear-framebuffer graphics, windows of their own, and crypto primitives — SHA-256/HMAC/AES-128-CTR/modexp — backed by this kernel's own TLS code). Each one runs as a process in its own address space with the installing user's credentials (see [Processes](#processes)). Two example packages:
 
 - **`tdemo`** — one `.t` program per syscall area (`thello`/`tbss`/`tfile`/`tterm`/`tnet`/`tgfx`).
 - **`ssh-client`** — a from-scratch SSH-2 client (`ssh` command; DH group14 key exchange, AES-128-CTR + HMAC-SHA256, password auth, single-command exec — see the package's own README for its documented v1 limitations). Not bundled into tOS's own boot image; install it with `tpkg install ssh-client`.
@@ -446,6 +446,21 @@ The scheduler uses the PIT (Programmable Interval Timer) at approximately 100 Hz
 - Task sleep (`task_sleep`)
 - Task exit (`task_exit`)
 - Dedicated timer interrupt handler with stack switching
+
+## Processes
+
+A `.t` program does not run inside the shell's task any more: `run <file.t>` starts it as a process of its own (`kernel/core/proc.c`).
+
+- **Its own address space.** Every process gets a page directory from `paging_create_dir()`: the kernel half is shared but has no user-accessible page, the user half holds only that program's code, heap and stack, and all of it is freed when the process ends. Ring 3 can therefore no longer reach kernel memory at all — before this, `paging_init()` mapped every physical page and the only thing standing between a `.t` program and the kernel was the `U/S` bit on a few ranges.
+- **Checked syscall pointers.** Every pointer a syscall takes is walked through the calling process's own page tables (`paging_user_range_ok()`), and output buffers must be writable, so a pointer into kernel memory or into a hole is refused rather than followed.
+- **Its own credentials and files.** A process runs as whoever started it, and every file it opens goes through the VFS under those credentials, so the owner/group/other bits and the `/system` rules apply exactly as they do to the shell. `SYS_OPEN` keeps a per-process descriptor table; nothing is shared between processes.
+- **setuid/setgid.** A program with the setuid or setgid bit runs as its owner or group, but only when the file is not group- or world-writable — otherwise the bit is ignored.
+- **The `x` bit is required.** `run` refuses a file the caller may not execute. `tpkg`, the installer and the `/system/apps` launchers mark programs `0755`.
+- **A fault ends the process, not the system.** A ring-3 exception prints `<name>: segmentation fault (killed)` and the process dies; the shell carries on. Only a fault in ring 0 is still a kernel panic.
+- **Processes of its own.** `SYS_SPAWN` starts another program, `waitpid` waits for it, `kill` ends one (your own, or anyone's as root), and `run <file.t> &` leaves it running in the background. `ps` lists processes with the user they run as.
+- **A window of its own.** With a GUI running, `SYS_WIN_OPEN` gives a process its own window: text written to stdout lands in it, `SYS_WIN_FOCUS` and `SYS_WIN_CLICK` report focus and clicks inside it, and `SYS_TERM_CLEAR`/`SETPOS`/`COLOR` position and colour the text. The window is closed with the process. A packaged program can therefore be a real windowed app, not just a console one.
+
+What this does *not* do yet: the shell, the window manager and the bundled apps are still kernel C code, so moving them under `/system/apps` means rewriting them as `.t` programs, not just loading them differently. The launchers in `/system/apps` are real `.t` files, but they ask the kernel to open its own built-in app.
 
 ## Memory Allocator
 
