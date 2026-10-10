@@ -26,6 +26,7 @@ typedef struct proc {
     uint32_t brk;
     int exit_code;
     int gfx;                            /* switched the display into graphics mode */
+    void *win, *win_prev;               /* a window of its own (SYS_WIN_OPEN), and the one it drew to before */
     int fd[PROC_MAX_FDS];               /* VFS descriptors (-1 = free); 0..2 are the console and not stored here */
     char fdpath[PROC_MAX_FDS][VFS_NAME_LEN];
     char name[32];

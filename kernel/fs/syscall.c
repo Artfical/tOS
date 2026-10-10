@@ -20,6 +20,7 @@
 #include "vga.h"
 #include "tos_api.h"
 #include "gui.h"
+#include "wm.h"
 #include "proc.h"
 #include "vfs.h"
 #include "scheduler.h"
@@ -186,6 +187,7 @@ void syscall_proc_cleanup(struct proc *p)
     for (int i = 0; i < PROC_MAX_FDS; i++)
         if (p->fd[i] >= 0) { vfs_close(p->fd[i]); p->fd[i] = -1; }
     if (p->gfx) { p->gfx = 0; gfx_leave_if_active(); }
+    if (p->win) { wm_script_close(p->win, p->win_prev); p->win = 0; p->win_prev = 0; }
 }
 
 static void syscall_stub(registers_t *regs)
@@ -341,6 +343,13 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
         case SYS_GETPID:
             return task_get_pid();
 
+        /* the credentials the process actually runs with -- its starter's, or the owner's for a setuid program */
+        case SYS_GETUID:
+            return auth_uid();
+
+        case SYS_GETGID:
+            return auth_gid();
+
         case SYS_KILL: {
             uint32_t pid = a;
             if (b != 15 && b != 9) return -1;
@@ -379,6 +388,53 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, u
             }
             return -1;
         }
+
+        case SYS_WIN_OPEN: {
+            proc_t *p = proc_current();
+            if (!p || p->win || !gui_is_active() || !user_cstr_ok(a)) return (uint32_t)-1;
+            char title[64];
+            strncpy(title, (const char *)a, sizeof(title) - 1);
+            title[sizeof(title) - 1] = 0;
+            void *prev = 0;
+            void *w = wm_script_open(title, &prev);
+            if (!w) return (uint32_t)-1;
+            p->win = w;
+            p->win_prev = prev;
+            return 0;
+        }
+
+        case SYS_WIN_CLOSE: {
+            proc_t *p = proc_current();
+            if (!p || !p->win) return (uint32_t)-1;
+            wm_script_close(p->win, p->win_prev);
+            p->win = 0;
+            p->win_prev = 0;
+            return 0;
+        }
+
+        case SYS_WIN_FOCUS:
+            return (uint32_t)wm_current_task_has_focus();
+
+        case SYS_WIN_CLICK: {
+            if (!user_wr_ok(a, 2 * sizeof(int))) return (uint32_t)-1;
+            int x = 0, y = 0;
+            if (!wm_get_content_click(&x, &y)) return 0;
+            ((int *)a)[0] = x;
+            ((int *)a)[1] = y;
+            return 1;
+        }
+
+        case SYS_TERM_CLEAR:
+            terminal_clear();
+            return 0;
+
+        case SYS_TERM_SETPOS:
+            terminal_setpos(a, b);
+            return 0;
+
+        case SYS_TERM_COLOR:
+            terminal_setcolor((uint8_t)a);
+            return 0;
 
         case SYS_OPEN_APP: {
             if (!user_cstr_ok(a)) return (uint32_t)-1;

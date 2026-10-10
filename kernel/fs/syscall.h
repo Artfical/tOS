@@ -15,6 +15,8 @@
 #define SYS_BRK     17
 #define SYS_LSEEK   19
 #define SYS_GETPID  20
+#define SYS_GETUID  24
+#define SYS_GETGID  47
 #define SYS_KILL    37
 #define SYS_ISATTY  71
 #define SYS_FSTAT   108
@@ -22,6 +24,16 @@
 /* tOS-specific extensions -- deliberately numbered well above the
  * Linux-i386-compatible range above (highest real one there is 108)
  * so a future real syscall never collides with these. */
+/* Windows and text output, so a program can be a real windowed app of its own instead of only writing to
+ * whatever window started it. A window belongs to the process that opened it and is closed with it. */
+#define SYS_WIN_OPEN     260 /* a=title -- opens this process's own window; 0 = ok, -1 without a GUI or when none is free */
+#define SYS_WIN_CLOSE    261
+#define SYS_WIN_FOCUS    262 /* 1 = this process's window is the focused one (so its keys are meant for it) */
+#define SYS_WIN_CLICK    263 /* a=int[2] -- 1 and fills x,y with a pending click inside the window, else 0 */
+#define SYS_TERM_CLEAR   264
+#define SYS_TERM_SETPOS  265 /* a=column, b=row */
+#define SYS_TERM_COLOR   266 /* a=VGA attribute byte (foreground | background << 4) */
+
 #define SYS_SPAWN        251 /* a=path of a .t program -- starts it as a new process (credentials of the caller); returns its pid or -1 */
 #define SYS_OPEN_APP     250 /* a=app name -- opens a built-in window-manager app (what the programs in /system/apps do); -1 without a GUI */
 #define SYS_NET_RESOLVE  200
