@@ -555,6 +555,7 @@ int x509_verify_chain(const x509_der_t *chain, int n, const char *host,
     if (!x509_host_matches(&c[0], host)) return X509_ERR_HOSTNAME;
     if (c[0].has_eku && !c[0].eku_server_auth) return X509_ERR_KEY_USAGE;
     if ((flags & X509_F_RSA_KEY_EXCHANGE) && c[0].has_ku && !(c[0].ku & X509_KU_KEY_ENCIPHERMENT)) return X509_ERR_KEY_USAGE;
+    if ((flags & X509_F_SIGNATURE) && c[0].has_ku && !(c[0].ku & X509_KU_DIGITAL_SIGNATURE)) return X509_ERR_KEY_USAGE;
 
     uint32_t used = 1;
     int cur = 0, below = 0;

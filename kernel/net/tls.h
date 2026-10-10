@@ -4,19 +4,24 @@
 #include <stdint.h>
 #include "sha256.h"
 
-/* TLS 1.2 minimal client context */
+/* TLS 1.2 client context */
 #define TLS_RX_BUF  16384             /* TLS plaintext limit per record (RFC 5246 6.2.1) */
 #define TLS_REC_MAX (16384 + 2048)    /* largest ciphertext record a peer may send */
 #define TLS_TX_BUF  4096
 
+/* The cipher suites this client offers, best first. */
+#define TLS_SUITE_ECDHE_RSA_AES128_GCM_SHA256 0xC02F
+#define TLS_SUITE_RSA_AES128_CBC_SHA256       0x003C
+
 typedef struct {
     int      fd;
+    uint16_t suite;                       /* TLS_SUITE_* the server chose */
     uint8_t  client_rand[32];
     uint8_t  server_rand[32];
     uint8_t  master[48];
     uint8_t  client_write_key[16];
     uint8_t  server_write_key[16];
-    uint8_t  client_write_iv[16];
+    uint8_t  client_write_iv[16];         /* CBC: a whole block; GCM: the first 4 bytes are the fixed salt */
     uint8_t  server_write_iv[16];
     uint8_t  client_mac[32];
     uint8_t  server_mac[32];

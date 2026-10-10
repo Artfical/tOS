@@ -82,6 +82,7 @@ x509_der_t x509_trust_get(int i);
 int x509_trust_add(const uint8_t *der, uint32_t len);   /* copies; 0 or negative error */
 
 #define X509_F_RSA_KEY_EXCHANGE 1   /* leaf must allow keyEncipherment (if it has keyUsage) */
+#define X509_F_SIGNATURE        2   /* leaf must allow digitalSignature -- what an ECDHE handshake uses the key for */
 
 /* Validates chain[0..n) (leaf first, the order servers send) against the trust
  * store for the server `host` at time `now`. On success returns 0 and parses

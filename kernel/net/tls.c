@@ -4,7 +4,10 @@
 #include "tcp.h"
 #include "arp.h"
 #include "sha256.h"
+#include "sha512.h"
 #include "aes.h"
+#include "gcm.h"
+#include "x25519.h"
 #include "x509.h"
 #include "rsa.h"
 #include "cmos.h"
@@ -12,9 +15,15 @@
 #include "memory.h"
 #include "klog.h"
 
-/* TLS 1.2, cipher suite TLS_RSA_WITH_AES_128_CBC_SHA256 (0x003C)
- * The server certificate chain is validated against the built-in CA store
- * (see x509.c / ca_store.c) unless tls_set_verify(0) was called. */
+/* TLS 1.2 client. Two cipher suites are offered, best first:
+ *
+ *   TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 (0xC02F) -- ephemeral X25519 key exchange, AES-GCM
+ *   TLS_RSA_WITH_AES_128_CBC_SHA256       (0x003C) -- the older RSA key transport, kept as a fallback
+ *
+ * The first is what modern servers expect, and the one that gives forward secrecy: the session
+ * key comes from a key exchange thrown away afterwards, so someone who later obtains the server's
+ * private key still cannot decrypt recorded traffic. The server certificate chain is validated
+ * against the built-in CA store (see x509.c / ca_store.c) unless tls_set_verify(0) was called. */
 
 #define TLS_VER_MAJOR 3
 #define TLS_VER_MINOR 3   /* TLS 1.2 */
@@ -31,6 +40,13 @@
 #define TLS_HT_CLIENT_KEY_EX   16
 #define TLS_HT_FINISHED        20
 #define TLS_CIPHER_RSA_AES128_CBC_SHA256  0x003C
+#define TLS_CIPHER_ECDHE_RSA_AES128_GCM   0xC02F
+#define TLS_GROUP_X25519                  0x001D
+#define TLS_GCM_FIXED_IV   4              /* the salt half of the nonce, from the key block */
+#define TLS_GCM_EXPLICIT   8              /* the per-record half, sent in the clear */
+#define TLS_GCM_TAG       16
+
+static int suite_is_gcm(const tls_ctx_t *ctx) { return ctx->suite == TLS_CIPHER_ECDHE_RSA_AES128_GCM; }
 
 /* All TLS randomness (client random, premaster secret, CBC IVs, RSA padding)
  * comes from the kernel CSPRNG. This used to be an LCG with the constant seed
@@ -217,8 +233,60 @@ static x509_time_t tls_now(void)
     return x509_time_from_ymdhms(t.year, t.month, t.day, t.hour, t.minute, t.second);
 }
 
+/* The additional authenticated data of a GCM record: the sequence number and the header
+ * the record will carry, with the *plaintext* length (RFC 5288). */
+static void gcm_aad(uint8_t aad[13], uint64_t seq, uint8_t type, int plain_len)
+{
+    for (int i = 0; i < 8; i++) aad[i] = (uint8_t)(seq >> (56 - 8 * i));
+    aad[8] = type;
+    aad[9] = TLS_VER_MAJOR; aad[10] = TLS_VER_MINOR;
+    aad[11] = (uint8_t)(plain_len >> 8); aad[12] = (uint8_t)plain_len;
+}
+
+/* ---- AES-128-GCM record (TLS 1.2, RFC 5288) ----
+ * On the wire: explicit_nonce(8) || ciphertext || tag(16). The nonce is the 4-byte salt from
+ * the key block followed by those 8 explicit bytes, for which the sequence number is used --
+ * it never repeats for a given key, which is what GCM requires above all else. */
+static int tls_gcm_encrypt_record(tls_ctx_t *ctx, uint8_t type,
+                                  const uint8_t *data, int dlen,
+                                  uint8_t *out, int out_cap, int *out_len)
+{
+    if (dlen < 0 || dlen > 16384 || out_cap < TLS_GCM_EXPLICIT + dlen + TLS_GCM_TAG) return -1;
+    uint8_t nonce[12], aad[13];
+    memcpy(nonce, ctx->client_write_iv, TLS_GCM_FIXED_IV);
+    for (int i = 0; i < 8; i++) nonce[TLS_GCM_FIXED_IV + i] = (uint8_t)(ctx->tx_seq >> (56 - 8 * i));
+    memcpy(out, nonce + TLS_GCM_FIXED_IV, TLS_GCM_EXPLICIT);
+    gcm_aad(aad, ctx->tx_seq, type, dlen);
+    aes_gcm_encrypt(ctx->client_write_key, nonce, aad, sizeof(aad),
+                    data, (uint32_t)dlen, out + TLS_GCM_EXPLICIT,
+                    out + TLS_GCM_EXPLICIT + dlen);
+    *out_len = TLS_GCM_EXPLICIT + dlen + TLS_GCM_TAG;
+    ctx->tx_seq++;
+    return 0;
+}
+
+static int tls_gcm_decrypt_record(tls_ctx_t *ctx, uint8_t type,
+                                  const uint8_t *in, int in_len,
+                                  uint8_t *out, int out_cap, int *out_len)
+{
+    if (in_len < TLS_GCM_EXPLICIT + TLS_GCM_TAG || in_len > TLS_REC_MAX) return -1;
+    int dlen = in_len - TLS_GCM_EXPLICIT - TLS_GCM_TAG;
+    if (dlen > out_cap || dlen > TLS_RX_BUF) return -1;
+    uint8_t nonce[12], aad[13];
+    memcpy(nonce, ctx->server_write_iv, TLS_GCM_FIXED_IV);
+    memcpy(nonce + TLS_GCM_FIXED_IV, in, TLS_GCM_EXPLICIT);   /* the peer picks its own explicit half */
+    gcm_aad(aad, ctx->rx_seq, type, dlen);
+    if (aes_gcm_decrypt(ctx->server_write_key, nonce, aad, sizeof(aad),
+                        in + TLS_GCM_EXPLICIT, (uint32_t)dlen, out,
+                        in + TLS_GCM_EXPLICIT + dlen) != 0)
+        return -1;
+    *out_len = dlen;
+    ctx->rx_seq++;
+    return 0;
+}
+
 /* ---- AES-128-CBC encrypt with HMAC-SHA256 MAC (TLS 1.2 record) ---- */
-static int tls_encrypt_record(tls_ctx_t *ctx, uint8_t type,
+static int tls_cbc_encrypt_record(tls_ctx_t *ctx, uint8_t type,
                                const uint8_t *data, int dlen,
                                uint8_t *out, int out_cap, int *out_len)
 {
@@ -276,7 +344,7 @@ static int tls_encrypt_record(tls_ctx_t *ctx, uint8_t type,
 }
 
 /* ---- AES-128-CBC decrypt (TLS 1.2 record from server) ---- */
-static int tls_decrypt_record(tls_ctx_t *ctx, uint8_t type,
+static int tls_cbc_decrypt_record(tls_ctx_t *ctx, uint8_t type,
                                const uint8_t *in, int in_len,
                                uint8_t *out, int out_cap, int *out_len)
 {
@@ -342,6 +410,23 @@ out:
     free(plaintext);
     free(mac_input);
     return rc;
+}
+
+/* Record protection, whichever suite was negotiated. */
+static int tls_encrypt_record(tls_ctx_t *ctx, uint8_t type,
+                               const uint8_t *data, int dlen,
+                               uint8_t *out, int out_cap, int *out_len)
+{
+    if (suite_is_gcm(ctx)) return tls_gcm_encrypt_record(ctx, type, data, dlen, out, out_cap, out_len);
+    return tls_cbc_encrypt_record(ctx, type, data, dlen, out, out_cap, out_len);
+}
+
+static int tls_decrypt_record(tls_ctx_t *ctx, uint8_t type,
+                               const uint8_t *in, int in_len,
+                               uint8_t *out, int out_cap, int *out_len)
+{
+    if (suite_is_gcm(ctx)) return tls_gcm_decrypt_record(ctx, type, in, in_len, out, out_cap, out_len);
+    return tls_cbc_decrypt_record(ctx, type, in, in_len, out, out_cap, out_len);
 }
 
 /* ---- Receive encrypted TLS record, decrypt into rx_plain ---- */
@@ -511,13 +596,15 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
      * "timestamp", leaving only 28 bytes of entropy in the client random. */
     prng_fill(ctx->client_rand, 32);
 
-    uint8_t ch[384];
+    uint8_t ch[512];
     int cpos = 0;
     ch[cpos++] = TLS_VER_MAJOR; ch[cpos++] = TLS_VER_MINOR; /* client version */
     memcpy(ch+cpos, ctx->client_rand, 32); cpos += 32;
     ch[cpos++] = 0; /* session ID length = 0 */
-    /* cipher suites */
-    ch[cpos++] = 0; ch[cpos++] = 2; /* 1 suite */
+    /* cipher suites, most preferred first */
+    ch[cpos++] = 0; ch[cpos++] = 4; /* 2 suites */
+    ch[cpos++] = (TLS_CIPHER_ECDHE_RSA_AES128_GCM>>8)&0xFF;
+    ch[cpos++] = TLS_CIPHER_ECDHE_RSA_AES128_GCM & 0xFF;
     ch[cpos++] = (TLS_CIPHER_RSA_AES128_CBC_SHA256>>8)&0xFF;
     ch[cpos++] = TLS_CIPHER_RSA_AES128_CBC_SHA256 & 0xFF;
     /* compression: null only */
@@ -554,9 +641,25 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
          * handshake rather than guess. Advertise the one algorithm
          * this client actually verifies against: rsa_pkcs1_sha256. */
         ch[cpos++] = 0x00; ch[cpos++] = 0x0d; /* extension type: signature_algorithms */
-        ch[cpos++] = 0x00; ch[cpos++] = 0x04; /* extension_data length */
-        ch[cpos++] = 0x00; ch[cpos++] = 0x02; /* supported_signature_algorithms length */
+        ch[cpos++] = 0x00; ch[cpos++] = 0x08; /* extension_data length */
+        ch[cpos++] = 0x00; ch[cpos++] = 0x06; /* supported_signature_algorithms length */
         ch[cpos++] = 0x04; ch[cpos++] = 0x01; /* sha256, rsa */
+        ch[cpos++] = 0x05; ch[cpos++] = 0x01; /* sha384, rsa */
+        ch[cpos++] = 0x06; ch[cpos++] = 0x01; /* sha512, rsa -- the server signs its key exchange
+                                               * with one of these, and all three are verified here */
+
+        /* supported_groups (RFC 8422 5.1.1): which curves we can do an ephemeral exchange on.
+         * X25519 is the one implemented, and the one modern servers prefer anyway. */
+        ch[cpos++] = 0x00; ch[cpos++] = 0x0a; /* extension type: supported_groups */
+        ch[cpos++] = 0x00; ch[cpos++] = 0x04; /* extension_data length */
+        ch[cpos++] = 0x00; ch[cpos++] = 0x02; /* list length */
+        ch[cpos++] = (TLS_GROUP_X25519 >> 8) & 0xFF; ch[cpos++] = TLS_GROUP_X25519 & 0xFF;
+
+        /* ec_point_formats: uncompressed only. X25519 has no point format of its own, but
+         * servers still expect the extension when a curve is offered. */
+        ch[cpos++] = 0x00; ch[cpos++] = 0x0b; /* extension type: ec_point_formats */
+        ch[cpos++] = 0x00; ch[cpos++] = 0x02; /* extension_data length */
+        ch[cpos++] = 0x01; ch[cpos++] = 0x00; /* one format: uncompressed */
 
         int all_ext_total = cpos - (all_ext_pos + 2);
         ch[all_ext_pos] = (uint8_t)((all_ext_total >> 8) & 0xFF);
@@ -600,9 +703,15 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
             tls_log("ServerHello session id / parameters exceed the message");
             goto fail;
         }
-        if (u16be(hbody + 35 + sid_len) != TLS_CIPHER_RSA_AES128_CBC_SHA256) {
-            tls_log("server chose a cipher suite we did not offer");
-            goto fail;
+        {
+            uint16_t chosen = u16be(hbody + 35 + sid_len);
+            if (chosen != TLS_CIPHER_ECDHE_RSA_AES128_GCM && chosen != TLS_CIPHER_RSA_AES128_CBC_SHA256) {
+                tls_log("server chose a cipher suite we did not offer");
+                goto fail;
+            }
+            ctx->suite = chosen;
+            tls_log(chosen == TLS_CIPHER_ECDHE_RSA_AES128_GCM
+                    ? "suite: ECDHE-RSA-AES128-GCM-SHA256" : "suite: RSA-AES128-CBC-SHA256");
         }
         if (hbody[37 + sid_len] != 0) {
             tls_log("server chose a compression method we did not offer");
@@ -625,6 +734,8 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
     int found_key = 0;
     int got_cert = 0;
     int got_done = 0;
+    int got_ske = 0;
+    uint8_t server_pub[X25519_LEN];
     while (!got_done) {
         uint8_t ht; const uint8_t *hbody; uint32_t hlen;
         int hr = hs_next(ctx, &ht, &hbody, &hlen);
@@ -674,8 +785,11 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
              * is still parsed, but nothing vouches for it.) */
             x509_cert_t leaf;
             int xr;
+            /* What the server's key is used for depends on the suite: RSA key transport
+             * encrypts to it, an ECDHE handshake only signs with it. */
+            int ku_flag = suite_is_gcm(ctx) ? X509_F_SIGNATURE : X509_F_RSA_KEY_EXCHANGE;
             if (g_tls_verify)
-                xr = x509_verify_chain(chain, nc, sni_host, tls_now(), X509_F_RSA_KEY_EXCHANGE, &leaf);
+                xr = x509_verify_chain(chain, nc, sni_host, tls_now(), ku_flag, &leaf);
             else
                 xr = x509_parse(chain[0].der, chain[0].len, &leaf);
             if (xr == X509_OK && !leaf.has_rsa_key) xr = X509_ERR_UNSUPPORTED_KEY;
@@ -694,8 +808,57 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
             if (hlen != 0) { tls_log("ServerHelloDone is not empty"); goto fail; }
             got_done = 1;
         } else if (ht == TLS_HT_SERVER_KEY_EX) {
-            tls_log("server wants an ephemeral key exchange (only plain RSA is supported)");
-            goto fail;
+            if (!suite_is_gcm(ctx)) {
+                tls_log("ServerKeyExchange in a plain-RSA handshake");
+                goto fail;
+            }
+            if (!found_key) { tls_log("ServerKeyExchange before the Certificate"); goto fail; }
+            if (got_ske) { tls_log("duplicate ServerKeyExchange"); goto fail; }
+            /* ServerECDHParams: curve_type(1) named_curve(2) point_len(1) point,
+             * then the signature over it: algorithm(2) length(2) signature. */
+            if (hlen < 4) { tls_log("ServerKeyExchange too short"); goto fail; }
+            if (hbody[0] != 3 || u16be(hbody + 1) != TLS_GROUP_X25519) {
+                tls_log("server picked a curve we did not offer");
+                goto fail;
+            }
+            uint32_t plen = hbody[3];
+            if (plen != X25519_LEN || hlen < 4 + plen + 4) {
+                tls_log("ServerKeyExchange public key is not a 32-byte X25519 point");
+                goto fail;
+            }
+            uint32_t params_len = 4 + plen;             /* exactly what the signature covers */
+            const uint8_t *sig_alg = hbody + params_len;
+            uint32_t sig_len = u16be(sig_alg + 2);
+            const uint8_t *sig = sig_alg + 4;
+            if (params_len + 4 + sig_len != hlen) {
+                tls_log("ServerKeyExchange signature length does not match the message");
+                goto fail;
+            }
+            if (sig_alg[1] != 1) {                      /* signature algorithm: 1 = RSA (PKCS#1 v1.5) */
+                tls_log("server signed its key exchange with an algorithm we cannot verify");
+                goto fail;
+            }
+            /* The signature is over client_random || server_random || the params above, which
+             * is what binds this ephemeral key to the certificate we just authenticated --
+             * without checking it, anyone in the path could substitute their own key. */
+            int hash_id;
+            uint8_t digest[64];
+            uint8_t signed_data[32 + 32 + 4 + X25519_LEN];
+            memcpy(signed_data, ctx->client_rand, 32);
+            memcpy(signed_data + 32, ctx->server_rand, 32);
+            memcpy(signed_data + 64, hbody, params_len);
+            uint32_t signed_len = 64 + params_len;
+            if (sig_alg[0] == 4)      { hash_id = RSA_HASH_SHA256; sha256_hash(signed_data, signed_len, digest); }
+            else if (sig_alg[0] == 5) { hash_id = RSA_HASH_SHA384; sha384_hash(signed_data, signed_len, digest); }
+            else if (sig_alg[0] == 6) { hash_id = RSA_HASH_SHA512; sha512_hash(signed_data, signed_len, digest); }
+            else { tls_log("server used a hash we did not offer for its key exchange"); goto fail; }
+            if (rsa_pkcs1_verify(rsa_mod, rsa_mod_len, rsa_exp, hash_id, digest, sig, (int)sig_len) != 0) {
+                tls_log("ServerKeyExchange signature is not valid for this certificate");
+                goto fail;
+            }
+            memcpy(server_pub, hbody + 4, X25519_LEN);
+            got_ske = 1;
+            tls_log("ServerKeyExchange verified");
         } else if (ht == TLS_HT_CERT_REQUEST) {
             tls_log("server requests a client certificate (not supported)");
             goto fail;
@@ -716,22 +879,48 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
 
     /* --- Step 4: ClientKeyExchange --- */
     uint8_t premaster[48];
-    premaster[0] = TLS_VER_MAJOR; premaster[1] = TLS_VER_MINOR;
-    prng_fill(premaster+2, 46);
+    uint32_t premaster_len;
+    if (suite_is_gcm(ctx)) {
+        if (!got_ske) { tls_log("ECDHE handshake without a ServerKeyExchange"); goto fail; }
+        /* An ephemeral key pair used once and then forgotten: this is where forward secrecy
+         * comes from, and the scalar never leaves this function. */
+        uint8_t scalar[X25519_LEN], our_pub[X25519_LEN];
+        prng_fill(scalar, X25519_LEN);
+        x25519_base(our_pub, scalar);
+        if (x25519(premaster, scalar, server_pub) != 0) {
+            secure_zero(scalar, sizeof(scalar));
+            tls_log("server sent a degenerate X25519 point");
+            goto fail;
+        }
+        secure_zero(scalar, sizeof(scalar));
+        premaster_len = X25519_LEN;
 
-    uint8_t enc_pm[RSA_MAX_BYTES];
-    if (rsa_pkcs1_encrypt(rsa_mod, rsa_mod_len, rsa_exp, premaster, 48, enc_pm) != 0) {
-        tls_log("RSA encrypt of premaster secret failed");
-        goto fail;
-    }
+        uint8_t cke[1 + X25519_LEN];
+        cke[0] = X25519_LEN;
+        memcpy(cke + 1, our_pub, X25519_LEN);
+        if (tls_send_hs(ctx, TLS_HT_CLIENT_KEY_EX, cke, sizeof(cke)) != 0) {
+            tls_log("ClientKeyExchange send failed");
+            goto fail;
+        }
+    } else {
+        premaster[0] = TLS_VER_MAJOR; premaster[1] = TLS_VER_MINOR;
+        prng_fill(premaster+2, 46);
+        premaster_len = 48;
 
-    uint8_t cke[2 + RSA_MAX_BYTES];
-    cke[0] = (uint8_t)(rsa_mod_len >> 8);
-    cke[1] = (uint8_t)rsa_mod_len;
-    memcpy(cke+2, enc_pm, (size_t)rsa_mod_len);
-    if (tls_send_hs(ctx, TLS_HT_CLIENT_KEY_EX, cke, 2 + rsa_mod_len) != 0) {
-        tls_log("ClientKeyExchange send failed");
-        goto fail;
+        uint8_t enc_pm[RSA_MAX_BYTES];
+        if (rsa_pkcs1_encrypt(rsa_mod, rsa_mod_len, rsa_exp, premaster, 48, enc_pm) != 0) {
+            tls_log("RSA encrypt of premaster secret failed");
+            goto fail;
+        }
+
+        uint8_t cke[2 + RSA_MAX_BYTES];
+        cke[0] = (uint8_t)(rsa_mod_len >> 8);
+        cke[1] = (uint8_t)rsa_mod_len;
+        memcpy(cke+2, enc_pm, (size_t)rsa_mod_len);
+        if (tls_send_hs(ctx, TLS_HT_CLIENT_KEY_EX, cke, 2 + rsa_mod_len) != 0) {
+            tls_log("ClientKeyExchange send failed");
+            goto fail;
+        }
     }
     tls_log("ClientKeyExchange sent");
 
@@ -740,7 +929,7 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
         uint8_t seed[64];
         memcpy(seed, ctx->client_rand, 32);
         memcpy(seed+32, ctx->server_rand, 32);
-        tls_prf(premaster, 48, "master secret", 13, seed, 64, ctx->master, 48);
+        tls_prf(premaster, premaster_len, "master secret", 13, seed, 64, ctx->master, 48);
     }
     secure_zero(premaster, sizeof(premaster));          /* no longer needed */
 
@@ -749,14 +938,25 @@ int tls_connect(tls_ctx_t *ctx, uint32_t ip, uint16_t port, const char *sni_host
         uint8_t seed[64];
         memcpy(seed, ctx->server_rand, 32);
         memcpy(seed+32, ctx->client_rand, 32);
-        uint8_t km[128]; /* 2*32 (MAC) + 2*16 (key) + 2*16 (IV) = 128 bytes */
-        tls_prf(ctx->master, 48, "key expansion", 13, seed, 64, km, 128);
-        memcpy(ctx->client_mac,      km,    32);
-        memcpy(ctx->server_mac,      km+32, 32);
-        memcpy(ctx->client_write_key,km+64, 16);
-        memcpy(ctx->server_write_key,km+80, 16);
-        memcpy(ctx->client_write_iv, km+96, 16);
-        memcpy(ctx->server_write_iv, km+112,16);
+        uint8_t km[128];
+        if (suite_is_gcm(ctx)) {
+            /* GCM authenticates with the cipher itself, so there are no MAC keys: the block is
+             * two 16-byte keys and two 4-byte nonce salts (RFC 5288). */
+            tls_prf(ctx->master, 48, "key expansion", 13, seed, 64, km, 40);
+            memcpy(ctx->client_write_key, km,      16);
+            memcpy(ctx->server_write_key, km + 16, 16);
+            memcpy(ctx->client_write_iv,  km + 32,  TLS_GCM_FIXED_IV);
+            memcpy(ctx->server_write_iv,  km + 36,  TLS_GCM_FIXED_IV);
+        } else {
+            /* 2*32 (MAC) + 2*16 (key) + 2*16 (IV) = 128 bytes */
+            tls_prf(ctx->master, 48, "key expansion", 13, seed, 64, km, 128);
+            memcpy(ctx->client_mac,      km,    32);
+            memcpy(ctx->server_mac,      km+32, 32);
+            memcpy(ctx->client_write_key,km+64, 16);
+            memcpy(ctx->server_write_key,km+80, 16);
+            memcpy(ctx->client_write_iv, km+96, 16);
+            memcpy(ctx->server_write_iv, km+112,16);
+        }
         secure_zero(km, sizeof(km));
     }
 
