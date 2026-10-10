@@ -208,7 +208,7 @@ Enable **ICH AC97** in VirtualBox VM Settings → Audio → Audio Controller: IC
 | `ping6 <addr>` | ICMPv6 Echo Request/Reply (IPv6) |
 | `ip6addr` | Show the kernel's link-local IPv6 address |
 | `wget <url>` | Download a file over HTTP/1.0 (port 80) |
-| `wget https://<url>` | Download a file over HTTPS (TLS 1.2, port 443) |
+| `wget [-k] https://<url>` | Download a file over HTTPS (TLS 1.2, port 443); `-k` skips certificate checks |
 | `sctp_connect <ip> <port>` | Open an SCTP association (blocking handshake) |
 | `sctp_send <data>` | Send a DATA chunk on the current SCTP association |
 | `sctp_close` | Close the current SCTP association (SHUTDOWN sequence) |
@@ -312,8 +312,8 @@ The network stack is implemented from scratch in `kernel/net/`. It supports both
 | **TCP** | `tcp.c` | Transmission Control Protocol — RFC 793 state machine, 16 concurrent sockets, retransmission, slow-start congestion control |
 | **DNS** | `dns.c` | A-record resolution |
 | **HTTP** | `http.c` | HTTP/1.0 client (`http_get`) |
-| **HTTPS** | `https.c` | HTTPS client over TLS 1.2 — AES-128-CBC-SHA256, RSA-2048 key exchange, no cert verification |
-| **TLS 1.2** | `tls.c` | Minimal TLS 1.2 client — ClientHello/ServerHello, Certificate parse, ClientKeyExchange (RSA PKCS#1 v1.5), Finished verify, AES-128-CBC record encryption |
+| **HTTPS** | `https.c` | HTTPS client over TLS 1.2 |
+| **TLS 1.2** | `tls.c` | TLS 1.2 client. Preferred suite `ECDHE-RSA-AES128-GCM-SHA256`: ephemeral X25519 key exchange (`x25519.c`), the server's RSA signature over it verified against the certificate, and AES-128-GCM record protection (`gcm.c`). `RSA-AES128-CBC-SHA256` is kept as a fallback for servers that offer nothing better. The chain is validated against the built-in CA store by default. |
 | **SHA-256** | `sha256.c` | SHA-256 + HMAC-SHA256 (used by TLS PRF and record MAC) |
 | **AES-128** | `aes.c` | AES-128 encrypt/decrypt (used by TLS CBC mode) |
 | **SCTP** | `sctp.c` | Stream Control Transmission Protocol (RFC 4960) |
