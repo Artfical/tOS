@@ -235,6 +235,7 @@ KERNEL_OBJS = \
     kernel/net/ca_store.o \
     kernel/net/csprng.o \
     kernel/net/aes.o \
+    kernel/net/gcm.o \
     kernel/net/bignum.o \
     kernel/net/tls.o \
     kernel/net/https.o \
