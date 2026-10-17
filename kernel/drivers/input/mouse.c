@@ -255,7 +255,7 @@ void mouse_poll(void)
     int dx, dy;
     uint8_t btns;
     if (usb_mouse_read(&dx, &dy, &btns)) {
-        mouse_apply_delta(dx, -dy);
+        mouse_apply_delta(dx, dy);          /* USB reports y growing downwards, like the screen */
 
         mouse_buttons = btns & 0x07;
 

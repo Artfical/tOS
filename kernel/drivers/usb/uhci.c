@@ -4,6 +4,7 @@
 #include "memory.h"
 #include "string.h"
 #include "klog.h"
+#include "debugmon.h"
 
 #define FRAME_NUM 1024
 
@@ -12,6 +13,24 @@ static uint32_t _dma_pos;
 static uint32_t _dma_base;        /* past the frame list and queue head, which stay for good */
 
 static uhci_controller_t _saved_ctrl;
+static uhci_qh_t *intr_qh[UHCI_INTR_SLOTS];
+static uhci_td_t *intr_td[UHCI_INTR_SLOTS];
+static int intr_armed[UHCI_INTR_SLOTS];
+static uint8_t intr_buf[UHCI_INTR_SLOTS][64] __attribute__((aligned(16)));
+static int port_addr[2];           /* the address each root port's device was given, 0 = none */
+
+/* waits for a descriptor to finish: at most `ms` milliseconds (and a bounded number of polls,
+ * should the clock not run yet) */
+static int td_wait(uhci_td_t *td, uint32_t ms)
+{
+    uint32_t start = debugmon_uptime_ms();
+    for (int n = 0; n < 4000000; n++) {
+        if (!(td->status & 0x00800000)) return 0;
+        if ((n & 255) == 0 && debugmon_uptime_ms() - start > ms) break;
+        inb(0x80);
+    }
+    return -1;
+}
 static int _uhci_ready = 0;
 
 static void *dma_zalloc(uint32_t sz, uint32_t *phys)
@@ -61,8 +80,16 @@ int uhci_init(uhci_controller_t *c)
     uint32_t bar4 = pci_get_bar(c->pci.bus, c->pci.device, c->pci.func, 4);
     c->io_base = bar4 & 0xFFF0;
 
+    /* take the controller from the BIOS: its USB legacy support (keyboard and mouse emulated
+     * through SMIs) must be off before the controller is reset, or the firmware and tOS both
+     * drive it and the machine can hang (VMware's BIOS has it on) */
+    pci_write_config(c->pci.bus, c->pci.device, c->pci.func, 0xC0, 0x8F00);
+
     pci_write_config(c->pci.bus, c->pci.device, c->pci.func, 4, 5 | (1u << 10));
 
+    w16(c, 4, 0);          /* no interrupts: everything here is polled */
+    w16(c, 0, 0);          /* stop it first */
+    for (volatile int d = 0; d < 20000; d++);
     w16(c, 0, 2);
     volatile int t = 50000;
     while (r16(c, 0) & 2 && --t);
@@ -77,8 +104,20 @@ int uhci_init(uhci_controller_t *c)
     c->async_qh->link = 1;
     c->async_qh->element = 1;
 
+    /* interrupt pipes (mouse, keyboard) each get a queue head and a descriptor of their own that
+     * stay in the schedule, in front of the one control and bulk transfers use */
+    uint32_t head = qp;
+    for (int i = UHCI_INTR_SLOTS - 1; i >= 0; i--) {
+        uint32_t p;
+        intr_qh[i] = dma_zalloc(32, &p);
+        intr_qh[i]->link = head | 2;
+        intr_qh[i]->element = 1;
+        intr_td[i] = dma_zalloc(sizeof(uhci_td_t), &p);
+        head = (uint32_t)intr_qh[i];
+    }
+
     for (int i = 0; i < FRAME_NUM; i++)
-        c->frame_list[i] = qp | 2;
+        c->frame_list[i] = head | 2;
 
     w32(c, 8, flp);
     w16(c, 12, 0x40);
@@ -106,7 +145,9 @@ int uhci_init(uhci_controller_t *c)
 int uhci_port_connected(uhci_controller_t *c, int port)
 {
     uint16_t s = r16(c, 16 + port * 2);
-    if (s & 2) w16(c, 16 + port * 2, (uint16_t)(s & ~(4 | 8)) | 2);   /* acknowledge the change */
+    /* acknowledge a connect change (write 1 to it) without touching port enable */
+    if (s & 2) w16(c, 16 + port * 2, (uint16_t)((s & ~0x0008) | 0x0002));
+    if (!(s & 1)) port_addr[port] = 0;      /* unplugged: it gets a fresh address when it is back */
     return s & 1;
 }
 
@@ -176,15 +217,22 @@ int uhci_control(uhci_controller_t *c, int dev, int ep, usb_device_request_t *re
 
     c->async_qh->element = (uint32_t)&td[0];
 
-    int t = 2000000;
-    while (--t) {
+    /* done when the status stage is; a stage that fails (a stall, no device) halts the queue, so
+     * that ends the wait too instead of running into the timeout */
+    uint32_t start = debugmon_uptime_ms();
+    int rc = -1;
+    for (int n = 0; n < 4000000; n++) {
+        if (!(td[status_idx].status & UHCI_TD_ACTIVE)) { rc = (td[status_idx].status & UHCI_TD_ERROR_MASK) ? -1 : 0; break; }
+        int failed = 0;
+        for (int i = 0; i < status_idx; i++)
+            if (!(td[i].status & UHCI_TD_ACTIVE) && (td[i].status & UHCI_TD_ERROR_MASK)) failed = 1;
+        if (failed) break;
+        if ((n & 255) == 0 && debugmon_uptime_ms() - start > 200) break;
         inb(0x80);
-        if (!(td[status_idx].status & UHCI_TD_ACTIVE)) break;
     }
 
     c->async_qh->element = 1;
-
-    return (!t || (td[status_idx].status & UHCI_TD_ACTIVE)) ? -1 : 0;
+    return rc;
 }
 
 int uhci_interrupt_read(uhci_controller_t *c, int dev, int ep, int max_len, void *buf)
@@ -198,13 +246,7 @@ int uhci_interrupt_read(uhci_controller_t *c, int dev, int ep, int max_len, void
     td->buffer = (uint32_t)buf;
 
     c->async_qh->element = (uint32_t)td;
-
-    int t = 500000;
-    while (--t) {
-        inb(0x80);
-        if (!(td->status & UHCI_TD_ACTIVE)) break;
-    }
-
+    td_wait(td, 20);
     c->async_qh->element = 1;
 
     if (td->status & UHCI_TD_ACTIVE) return -1;
@@ -231,16 +273,10 @@ int uhci_bulk_transfer(uhci_controller_t *c, int dev, int ep, int dir, void *buf
         td->buffer = (uint32_t)p;
 
         c->async_qh->element = (uint32_t)td;
-
-        int t = 2000000;
-        while (--t) {
-            inb(0x80);
-            if (!(td->status & UHCI_TD_ACTIVE)) break;
-        }
-
+        int timed_out = td_wait(td, 2000) != 0;
         c->async_qh->element = 1;
 
-        if (!t) return -1;
+        if (timed_out) return -1;
         if (td->status & UHCI_TD_ERROR_MASK) return -1;
 
         *toggle ^= 1;
@@ -250,4 +286,57 @@ int uhci_bulk_transfer(uhci_controller_t *c, int dev, int ep, int dir, void *buf
     }
 
     return 0;
+}
+
+/* An interrupt IN pipe read without waiting: the descriptor stays queued and is looked at on the
+ * next call. 1 = a report arrived (copied to buf, at most max_len bytes), 0 = nothing yet,
+ * -1 = the device answered with an error (the pipe is re-armed all the same). */
+int uhci_interrupt_poll(uhci_controller_t *c, int slot, int dev, int ep, int max_len, void *buf, int *toggle)
+{
+    (void)c;
+    if (slot < 0 || slot >= UHCI_INTR_SLOTS || !intr_td[slot]) return -1;
+    if (max_len > 64) max_len = 64;
+    uhci_td_t *td = intr_td[slot];
+    if (!intr_armed[slot]) {
+        td->link = 1;
+        td->buffer = (uint32_t)intr_buf[slot];
+        td->token = uhci_token(UHCI_PID_IN, dev, ep, *toggle, max_len);
+        td->status = UHCI_TD_INIT_STATUS;
+        intr_qh[slot]->element = (uint32_t)td;
+        intr_armed[slot] = 1;
+        return 0;
+    }
+    uint32_t st = td->status;
+    if (st & UHCI_TD_ACTIVE) return 0;
+    intr_armed[slot] = 0;
+    if (st & UHCI_TD_ERROR_MASK) return -1;
+    int got = (int)((st + 1) & 0x7FF);
+    if (got > max_len) got = max_len;
+    memcpy(buf, intr_buf[slot], (size_t)got);
+    *toggle ^= 1;
+    return 1;
+}
+
+/* The device on a root port, reset and given an address of its own (port 0 gets 1, port 1 gets
+ * 2) the first time it is asked for; later calls hand back the same address, so the drivers
+ * looking for a disk, a keyboard and a mouse no longer reset each other's devices.
+ * 0 = nothing plugged in there. */
+int uhci_port_attach(uhci_controller_t *c, int port)
+{
+    if (port < 0 || port > 1) return 0;
+    if (!(r16(c, 16 + port * 2) & 1)) { port_addr[port] = 0; return 0; }
+    if (port_addr[port]) return port_addr[port];
+    if (!uhci_port_detect(c, port)) return 0;
+    usb_device_request_t req;
+    uint8_t desc[8] __attribute__((aligned(16)));
+    req.bmRequestType = 0x80; req.bRequest = USB_REQ_GET_DESCRIPTOR;
+    req.wValue = USB_DEVICE_DESCRIPTOR_TYPE << 8; req.wIndex = 0; req.wLength = 8;
+    if (uhci_control(c, 0, 0, &req, desc, 0x80) != 0) return 0;
+    req.bmRequestType = 0x00; req.bRequest = USB_REQ_SET_ADDRESS;
+    req.wValue = (uint16_t)(port + 1); req.wIndex = 0; req.wLength = 0;
+    if (uhci_control(c, 0, 0, &req, 0, 0x00) != 0) return 0;
+    uint32_t t0 = debugmon_uptime_ms();
+    for (int n = 0; n < 200000 && debugmon_uptime_ms() - t0 < 3; n++) inb(0x80);   /* the device takes 2 ms to switch */
+    port_addr[port] = port + 1;
+    return port_addr[port];
 }

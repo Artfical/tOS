@@ -11,6 +11,7 @@ static int usb_keyboard_found = 0;
 static int keyboard_dev_addr = 0;
 static int keyboard_in_endpoint = 0;
 static int keyboard_max_packet = 0;
+static int keyboard_toggle;
 
 static const char usb_kc_ascii[128] = {
     0, 0, 0, 0, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l',
@@ -51,17 +52,6 @@ static int usb_get_descriptor(uhci_controller_t *c, int dev, int type, int index
     return uhci_control(c, dev, 0, &req, buf, 0x80);
 }
 
-static int usb_set_address(uhci_controller_t *c, int addr)
-{
-    usb_device_request_t req;
-    req.bmRequestType = 0x00;
-    req.bRequest = USB_REQ_SET_ADDRESS;
-    req.wValue = addr;
-    req.wIndex = 0;
-    req.wLength = 0;
-    return uhci_control(c, 0, 0, &req, NULL, 0x00);
-}
-
 static int usb_set_config(uhci_controller_t *c, int dev, int config)
 {
     usb_device_request_t req;
@@ -95,30 +85,19 @@ static int usb_set_idle(uhci_controller_t *c, int dev, int duration)
     return uhci_control(c, dev, 0, &req, NULL, 0x00);
 }
 
-static int enumerate_usb_keyboard(uhci_controller_t *c)
+static int enumerate_usb_keyboard(uhci_controller_t *c, int addr)
 {
-    usb_device_descriptor_t dev_desc;
-    if (usb_get_descriptor(c, 0, USB_DEVICE_DESCRIPTOR_TYPE, 0, &dev_desc, 8) != 0) {
-        terminal_writestring("USB: No device on port\n");
-        return -1;
-    }
-
-    terminal_writestring("USB: Device detected\n");
-
-    usb_set_address(c, 1);
-
-    dev_desc.bMaxPacketSize0 = 8;
-
     usb_config_descriptor_t cfg_desc;
-    if (usb_get_descriptor(c, 1, USB_CONFIG_DESCRIPTOR_TYPE, 0, &cfg_desc, 9) != 0) {
+    if (usb_get_descriptor(c, addr, USB_CONFIG_DESCRIPTOR_TYPE, 0, &cfg_desc, 9) != 0) {
         terminal_writestring("USB: Get config failed\n");
         return -1;
     }
 
+    if (cfg_desc.wTotalLength < 9 || cfg_desc.wTotalLength > 1024) return -1;
     unsigned char *cfg_buf = (unsigned char *)malloc(cfg_desc.wTotalLength);
     if (!cfg_buf) return -1;
 
-    if (usb_get_descriptor(c, 1, USB_CONFIG_DESCRIPTOR_TYPE, 0, cfg_buf, cfg_desc.wTotalLength) != 0) {
+    if (usb_get_descriptor(c, addr, USB_CONFIG_DESCRIPTOR_TYPE, 0, cfg_buf, cfg_desc.wTotalLength) != 0) {
         free(cfg_buf);
         return -1;
     }
@@ -131,9 +110,10 @@ static int enumerate_usb_keyboard(uhci_controller_t *c)
         if (desc[1] == USB_INTERFACE_DESCRIPTOR_TYPE && desc[0] >= 9) {
             usb_interface_descriptor_t *iface = (usb_interface_descriptor_t *)desc;
             if (iface->bInterfaceClass == USB_CLASS_HID &&
-                iface->bInterfaceSubClass == 1) {
+                iface->bInterfaceSubClass == 1 &&
+                iface->bInterfaceProtocol == 1) {          /* 1 = keyboard; a boot mouse is 2 */
                 found_keyboard = 1;
-                keyboard_dev_addr = 1;
+                keyboard_dev_addr = addr;
 
                 unsigned char *ep_pos = cfg_buf + pos + desc[0];
                 while (ep_pos < cfg_buf + cfg_desc.wTotalLength) {
@@ -162,13 +142,13 @@ static int enumerate_usb_keyboard(uhci_controller_t *c)
         return -1;
     }
 
-    if (usb_set_config(c, 1, 1) != 0) {
+    if (usb_set_config(c, addr, 1) != 0) {
         terminal_writestring("USB: Set config failed\n");
         return -1;
     }
 
-    usb_set_protocol(c, 1, HID_BOOT_PROTOCOL);
-    usb_set_idle(c, 1, 0);
+    usb_set_protocol(c, addr, HID_BOOT_PROTOCOL);
+    usb_set_idle(c, addr, 0);
 
     terminal_writestring("USB: Keyboard ready\n");
     usb_keyboard_found = 1;
@@ -182,9 +162,9 @@ int usb_keyboard_read(char *c)
 {
     if (!usb_keyboard_found) return 0;
 
-    if (uhci_interrupt_read(&uhci_ctrl, keyboard_dev_addr,
-                            keyboard_in_endpoint, keyboard_max_packet,
-                            &current_report) != 0)
+    /* never waits: keyboard_getchar's loops call this all the time */
+    if (uhci_interrupt_poll(&uhci_ctrl, 1, keyboard_dev_addr, keyboard_in_endpoint,
+                            keyboard_max_packet > 8 ? 8 : keyboard_max_packet, &current_report, &keyboard_toggle) != 1)
         return 0;
 
     for (int i = 0; i < 6; i++) {
@@ -213,8 +193,9 @@ void usb_keyboard_init(void)
     usb_available = 1;
 
     for (int p = 0; p < 2; p++) {
-        if (uhci_port_detect(&uhci_ctrl, p)) {
-            if (enumerate_usb_keyboard(&uhci_ctrl) == 0)
+        int addr = uhci_port_attach(&uhci_ctrl, p);
+        if (addr) {
+            if (enumerate_usb_keyboard(&uhci_ctrl, addr) == 0)
                 break;
         }
     }

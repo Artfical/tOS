@@ -18,17 +18,6 @@ static int usb_get_descriptor(uhci_controller_t *c, int dev, int type, int index
     return uhci_control(c, dev, 0, &req, buf, 0x80);
 }
 
-static int usb_set_address(uhci_controller_t *c, int addr)
-{
-    usb_device_request_t req;
-    req.bmRequestType = 0x00;
-    req.bRequest = USB_REQ_SET_ADDRESS;
-    req.wValue = addr;
-    req.wIndex = 0;
-    req.wLength = 0;
-    return uhci_control(c, 0, 0, &req, NULL, 0x00);
-}
-
 static int usb_set_config(uhci_controller_t *c, int dev, int config)
 {
     usb_device_request_t req;
@@ -40,26 +29,19 @@ static int usb_set_config(uhci_controller_t *c, int dev, int config)
     return uhci_control(c, dev, 0, &req, NULL, 0x00);
 }
 
-static int enumerate_usb_msd(uhci_controller_t *c, usb_msd_device_t *dev)
+static int enumerate_usb_msd(uhci_controller_t *c, usb_msd_device_t *dev, int addr)
 {
-    usb_device_descriptor_t dev_desc;
-    if (usb_get_descriptor(c, 0, USB_DEVICE_DESCRIPTOR_TYPE, 0, &dev_desc, 8) != 0) {
-        terminal_writestring("USB: No device on port\n");
-        return -1;
-    }
-
-    usb_set_address(c, 1);
-
     usb_config_descriptor_t cfg_desc;
-    if (usb_get_descriptor(c, 1, USB_CONFIG_DESCRIPTOR_TYPE, 0, &cfg_desc, 9) != 0) {
+    if (usb_get_descriptor(c, addr, USB_CONFIG_DESCRIPTOR_TYPE, 0, &cfg_desc, 9) != 0) {
         terminal_writestring("USB: Get config failed\n");
         return -1;
     }
 
+    if (cfg_desc.wTotalLength < 9 || cfg_desc.wTotalLength > 1024) return -1;
     unsigned char *cfg_buf = (unsigned char *)malloc(cfg_desc.wTotalLength);
     if (!cfg_buf) return -1;
 
-    if (usb_get_descriptor(c, 1, USB_CONFIG_DESCRIPTOR_TYPE, 0, cfg_buf, cfg_desc.wTotalLength) != 0) {
+    if (usb_get_descriptor(c, addr, USB_CONFIG_DESCRIPTOR_TYPE, 0, cfg_buf, cfg_desc.wTotalLength) != 0) {
         free(cfg_buf);
         return -1;
     }
@@ -75,7 +57,7 @@ static int enumerate_usb_msd(uhci_controller_t *c, usb_msd_device_t *dev)
                 iface->bInterfaceSubClass == USB_MSD_SUBCLASS_SCSI &&
                 iface->bInterfaceProtocol == USB_MSD_PROTO_BULK) {
                 found_msd = 1;
-                dev->dev_addr = 1;
+                dev->dev_addr = addr;
 
                 unsigned char *ep_pos = cfg_buf + pos + desc[0];
                 while (ep_pos < cfg_buf + cfg_desc.wTotalLength) {
@@ -107,7 +89,7 @@ static int enumerate_usb_msd(uhci_controller_t *c, usb_msd_device_t *dev)
         return -1;
     }
 
-    if (usb_set_config(c, 1, 1) != 0) {
+    if (usb_set_config(c, addr, 1) != 0) {
         terminal_writestring("USB: Set config failed\n");
         return -1;
     }
@@ -184,8 +166,9 @@ int usb_msd_init(usb_msd_device_t *dev)
     }
 
     for (int p = 0; p < 2; p++) {
-        if (uhci_port_detect(&uhci_ctrl, p)) {
-            if (enumerate_usb_msd(&uhci_ctrl, dev) == 0) {
+        int addr = uhci_port_attach(&uhci_ctrl, p);
+        if (addr) {
+            if (enumerate_usb_msd(&uhci_ctrl, dev, addr) == 0) {
                 uint8_t cb[16];
                 memset(cb, 0, sizeof(cb));
                 cb[0] = USB_MSD_CMD_TEST_UNIT_READY;

@@ -11,6 +11,7 @@ static int usb_mouse_found = 0;
 static int mouse_dev_addr = 0;
 static int mouse_in_endpoint = 0;
 static int mouse_max_packet = 0;
+static int mouse_toggle;
 
 static hid_mouse_report_t last_report;
 static hid_mouse_report_t current_report;
@@ -24,17 +25,6 @@ static int usb_get_descriptor(uhci_controller_t *c, int dev, int type, int index
     req.wIndex = 0;
     req.wLength = len;
     return uhci_control(c, dev, 0, &req, buf, 0x80);
-}
-
-static int usb_set_address(uhci_controller_t *c, int addr)
-{
-    usb_device_request_t req;
-    req.bmRequestType = 0x00;
-    req.bRequest = USB_REQ_SET_ADDRESS;
-    req.wValue = addr;
-    req.wIndex = 0;
-    req.wLength = 0;
-    return uhci_control(c, 0, 0, &req, NULL, 0x00);
 }
 
 static int usb_set_config(uhci_controller_t *c, int dev, int config)
@@ -70,30 +60,19 @@ static int usb_set_idle(uhci_controller_t *c, int dev, int duration)
     return uhci_control(c, dev, 0, &req, NULL, 0x00);
 }
 
-static int enumerate_usb_mouse(uhci_controller_t *c)
+static int enumerate_usb_mouse(uhci_controller_t *c, int addr)
 {
-    usb_device_descriptor_t dev_desc;
-    if (usb_get_descriptor(c, 0, USB_DEVICE_DESCRIPTOR_TYPE, 0, &dev_desc, 8) != 0) {
-        terminal_writestring("USB mouse: No device on port\n");
-        return -1;
-    }
-
-    terminal_writestring("USB mouse: Device detected\n");
-
-    usb_set_address(c, 1);
-
-    dev_desc.bMaxPacketSize0 = 8;
-
     usb_config_descriptor_t cfg_desc;
-    if (usb_get_descriptor(c, 1, USB_CONFIG_DESCRIPTOR_TYPE, 0, &cfg_desc, 9) != 0) {
+    if (usb_get_descriptor(c, addr, USB_CONFIG_DESCRIPTOR_TYPE, 0, &cfg_desc, 9) != 0) {
         terminal_writestring("USB mouse: Get config failed\n");
         return -1;
     }
 
+    if (cfg_desc.wTotalLength < 9 || cfg_desc.wTotalLength > 1024) return -1;
     unsigned char *cfg_buf = (unsigned char *)malloc(cfg_desc.wTotalLength);
     if (!cfg_buf) return -1;
 
-    if (usb_get_descriptor(c, 1, USB_CONFIG_DESCRIPTOR_TYPE, 0, cfg_buf, cfg_desc.wTotalLength) != 0) {
+    if (usb_get_descriptor(c, addr, USB_CONFIG_DESCRIPTOR_TYPE, 0, cfg_buf, cfg_desc.wTotalLength) != 0) {
         free(cfg_buf);
         return -1;
     }
@@ -109,7 +88,7 @@ static int enumerate_usb_mouse(uhci_controller_t *c)
                 iface->bInterfaceSubClass == 1 &&
                 iface->bInterfaceProtocol == 2) {
                 found = 1;
-                mouse_dev_addr = 1;
+                mouse_dev_addr = addr;
 
                 unsigned char *ep_pos = cfg_buf + pos + desc[0];
                 while (ep_pos < cfg_buf + cfg_desc.wTotalLength) {
@@ -138,13 +117,13 @@ static int enumerate_usb_mouse(uhci_controller_t *c)
         return -1;
     }
 
-    if (usb_set_config(c, 1, 1) != 0) {
+    if (usb_set_config(c, addr, 1) != 0) {
         terminal_writestring("USB mouse: Set config failed\n");
         return -1;
     }
 
-    usb_set_protocol(c, 1, HID_BOOT_PROTOCOL);
-    usb_set_idle(c, 1, 0);
+    usb_set_protocol(c, addr, HID_BOOT_PROTOCOL);
+    usb_set_idle(c, addr, 0);
 
     terminal_writestring("USB mouse: Ready\n");
     usb_mouse_found = 1;
@@ -160,13 +139,12 @@ int usb_mouse_read(int *dx, int *dy, uint8_t *buttons)
     hid_mouse_report_t report;
     memset(&report, 0, sizeof(report));
 
-    if (uhci_interrupt_read(&uhci_ctrl, mouse_dev_addr,
-                            mouse_in_endpoint, mouse_max_packet,
-                            &report) != 0)
+    /* never waits: a report is taken when the controller has one, otherwise nothing happens */
+    if (uhci_interrupt_poll(&uhci_ctrl, 0, mouse_dev_addr, mouse_in_endpoint,
+                            mouse_max_packet > 8 ? 8 : mouse_max_packet, &report, &mouse_toggle) != 1)
         return 0;
 
-    if (report.x == last_report.x && report.y == last_report.y &&
-        report.buttons == last_report.buttons)
+    if (report.x == 0 && report.y == 0 && report.buttons == last_report.buttons)
         return 0;
 
     if (dx) *dx = report.x;
@@ -190,8 +168,9 @@ void usb_mouse_init(void)
     }
 
     for (int p = 0; p < 2; p++) {
-        if (uhci_port_detect(&uhci_ctrl, p)) {
-            if (enumerate_usb_mouse(&uhci_ctrl) == 0)
+        int addr = uhci_port_attach(&uhci_ctrl, p);
+        if (addr) {
+            if (enumerate_usb_mouse(&uhci_ctrl, addr) == 0)
                 break;
         }
     }
