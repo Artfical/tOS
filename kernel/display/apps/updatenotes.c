@@ -8,7 +8,7 @@
  * What's New in tOS: the release notes of the updates this computer is missing, in a window of
  * their own (System Settings > Software Update > Show Release Notes). App by app, each with its
  * icon, what changed and the commit; then the screenshots, "Before:"/"After:" pairs side by
- * side. Scrolls with the wheel or the bar at its edge.
+ * side, and videos playing in place. Scrolls with the wheel or the bar at its edge.
  */
 
 typedef struct {
@@ -42,9 +42,18 @@ static void shot(gfx_surface_t *s, const update_shot_t *sh, int x, int y, int w,
 {
     *h = 0;
     if (!sh->rgba) return;
-    *h = sh->h * w / (sh->w ? sh->w : 1);
-    gfx_image_t im = { sh->w, sh->h, sh->rgba };
+    /* a video arrives as its frames one under the other: show the one for now, round and round */
+    int video = sh->frames > 1 && sh->frame_ms > 0;
+    int fh = video ? sh->h / sh->frames : sh->h, fi = 0;
+    if (video) fi = (int)(uihost_ms() / (uint32_t)sh->frame_ms % (uint32_t)sh->frames);
+    *h = fh * w / (sh->w ? sh->w : 1);
+    gfx_image_t im = { sh->w, fh, sh->rgba + (size_t)fi * sh->w * fh * 4 };
     gfx_blit_scaled(s, &im, x, y, w, *h, 255);
+    if (video) {
+        /* how far through it is, like a player's bar */
+        gfx_fill_alpha(s, x + 10, y + *h - 12, w - 20, 3, 0xFFFFFF, 90);
+        gfx_fill_alpha(s, x + 10, y + *h - 12, (w - 20) * (fi + 1) / sh->frames, 3, 0xFFFFFF, 230);
+    }
     gfx_rrect_outline(s, x, y, w, *h, 8, edge, 255);
 }
 
@@ -160,9 +169,13 @@ static void un_key(uiapp_t *a, int k)
 
 static int un_tick(uiapp_t *a)
 {
-    /* the screenshots arrive a moment after the notes */
+    /* the screenshots arrive a moment after the notes; videos need their next frame */
     static uint32_t last;
-    uint32_t t = uihost_ms() / 1000;
+    const update_info_t *in = uihost_update_status();
+    uint32_t step = 1000;
+    for (int i = 0; i < in->nshots; i++)
+        if (in->shots[i].rgba && in->shots[i].frames > 1 && (uint32_t)in->shots[i].frame_ms < step) step = (uint32_t)in->shots[i].frame_ms;
+    uint32_t t = uihost_ms() / step;
     (void)a;
     if (t != last) { last = t; return 1; }
     return 0;

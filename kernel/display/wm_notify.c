@@ -206,12 +206,10 @@ static void draw_card(gfx_surface_t *s, notif_t *n, int x, int y, int w, int alp
     gfx_circle(s, x + w - 18, y + 18, 9, ui_theme.dark ? 0x45464E : 0xE2E2E6, 255);
     const gfx_image_t *xg = gfx_image("glyph_x");
     if (xg) gfx_blit_tinted(s, xg, x + w - 26, y + 10, ui_theme.dim, 255);
-    gfx_surface_t c = *s;
-    gfx_clip(&c, x + 64, y, w - 64 - 12, h);
-    gfx_text(&c, &ui_font_medium, x + 64, y + 30, n->title, ui_theme.text, 255);
+    ui_text_fit(s, &ui_font_medium, x + 64, y + 30, w - 64 - 12, n->title, ui_theme.text);
     char l[2][96];
     int nl = n->body[0] ? wrap(&ui_font_regular, n->body, w - 72, l) : 0;
-    for (int i = 0; i < nl; i++) gfx_text(&c, &ui_font_regular, x + 64, y + 50 + i * 18, l[i], ui_theme.text, 220);
+    for (int i = 0; i < nl; i++) gfx_text(s, &ui_font_regular, x + 64, y + 50 + i * 18, l[i], ui_theme.text, 220);
     if (n->act[0][0] && !n->result) {
         int na = n->act[1][0] ? 2 : 1, by = y + h - 40, bw = (w - 64 - 14 - (na - 1) * 8) / na;
         for (int i = 0; i < na; i++) {

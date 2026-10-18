@@ -28,6 +28,7 @@ typedef struct {
     char path[64], caption[80], app[32];
     uint8_t *rgba;                      /* decoded once downloaded, NULL until then */
     int w, h;
+    int frames, frame_ms;               /* a video: `frames` pictures stacked in rgba, shown frame_ms each */
 } update_shot_t;
 
 typedef struct {

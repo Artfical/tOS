@@ -97,6 +97,7 @@ void ui_set_dark(int dark);
 
 void ui_button(gfx_surface_t *s, int x, int y, int w, int h, const char *label, uint32_t bg, uint32_t fg, int hot);
 int  ui_hit(int px, int py, int x, int y, int w, int h);
+void ui_text_fit(gfx_surface_t *s, const ui_font_t *f, int x, int y, int maxw, const char *t, uint32_t c);   /* ends in "…" if too long */
 /* A scroll bar along the right edge of an area of height `view` showing `content` pixels from
  * `scroll` on (drawn only when the content is longer). ui_scroll_drag turns a press or drag at
  * height py on the bar into the new scroll position; ui_scroll_clamp keeps one in range. */

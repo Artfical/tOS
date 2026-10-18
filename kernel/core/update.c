@@ -29,12 +29,21 @@ const update_info_t *update_info(void) { return &info; }
 static int write_file(const char *path, const void *data, uint32_t len)
 {
     int fd = vfs_open(path, VFS_WRONLY | VFS_CREAT | VFS_TRUNC);
-    if (fd < 0) return -1;
+    if (fd < 0) { klog_write("update: could not create "); klog_write(path); klog_write("\n"); return -1; }
     const uint8_t *p = data;
     uint32_t done = 0;
     while (done < len) {
         int w = vfs_write(fd, p + done, len - done > 65536 ? 65536 : len - done);
-        if (w <= 0) { vfs_close(fd); return -1; }
+        if (w <= 0) {
+            char m[96] = "update: writing stopped at byte ";
+            char n[12]; int o = 0; uint32_t v = done; char r[12]; int ro = 0;
+            do { r[ro++] = (char)('0' + v % 10); v /= 10; } while (v);
+            while (ro) n[o++] = r[--ro];
+            n[o] = 0;
+            strcat(m, n); strcat(m, " of "); klog_write(m); klog_write(path); klog_write("\n");
+            vfs_close(fd);
+            return -1;
+        }
         done += (uint32_t)w;
     }
     vfs_close(fd);
@@ -99,26 +108,95 @@ static unsigned num(const char *s) { unsigned v = 0; while (*s >= '0' && *s <= '
 
 /* ------------------------------------------------------------------ network */
 
-/* GET https://update.artfical.com<path>: the body in *body (inside *buf, which the caller frees) */
+/* GET https://update.artfical.com<path> (or plain http for big files: their SHA-256 came over
+ * HTTPS and is checked, and TLS in software is many times slower): the body in *body, inside
+ * *buf, which the caller frees */
+static int fetch_via(const char *path, uint32_t expect, uint8_t **buf, uint8_t **body, uint32_t *blen, int secure);
+
 static int fetch(const char *path, uint32_t expect, uint8_t **buf, uint8_t **body, uint32_t *blen)
 {
+    return fetch_via(path, expect, buf, body, blen, 1);
+}
+
+static void log_num(const char *a, uint32_t v, const char *b)
+{
+    char n[12], r[12]; int o = 0, ro = 0;
+    do { r[ro++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (ro) n[o++] = r[--ro];
+    n[o] = 0;
+    klog_write(a); klog_write(n); klog_write(b);
+}
+
+static int header_end(const uint8_t *b, int n)
+{
+    for (int i = 0; i + 3 < n; i++) if (b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' && b[i + 3] == '\n') return i + 4;
+    return -1;
+}
+
+/* A big file over plain HTTP (its SHA-256 is checked afterwards). When the connection drops
+ * part way, the next attempt asks only for the rest (a Range request), so a slow or unsteady
+ * network still gets there; the parts land one after another in the same buffer. */
+static uint32_t dl_part;                        /* bytes of this file from earlier attempts */
+
+static int fetch_resume(uint32_t ip, const char *path, uint32_t expect, uint8_t **buf, uint8_t **body, uint32_t *blen)
+{
+    int cap = (int)expect + 32768;
+    uint8_t *b = malloc((uint32_t)cap);           /* headers + body of the first answer */
+    if (!b) { strcpy(info.err, "Not enough memory for the update."); return -1; }
+    uint32_t got = 0;
+    int he0 = -1;
+    for (int attempt = 0; attempt < 6 && (he0 < 0 || got < expect); attempt++) {
+        if (he0 < 0) {
+            int n = http_get(ip, HOST, 80, path, b, cap);
+            if (n <= 12 || strncmp((char *)b, "HTTP/1.", 7) || strncmp((char *)b + 9, "200", 3)) { log_num("update: no answer (", (uint32_t)-n, ")\n"); continue; }
+            he0 = header_end(b, n);
+            if (he0 < 0) continue;
+            got = (uint32_t)(n - he0);
+        } else {
+            /* the rest: read into a window after what we have, then drop its headers */
+            uint8_t *dst = b + he0 + got;
+            int room = cap - he0 - (int)got;
+            dl_part = got;
+            int n = http_get_from(ip, HOST, 80, path, got, dst, room);
+            if (n <= 12 || strncmp((char *)dst, "HTTP/1.", 7) || strncmp((char *)dst + 9, "206", 3)) { log_num("update: resuming got no answer (", (uint32_t)-n, ")\n"); continue; }
+            int he = header_end(dst, n);
+            if (he < 0) continue;
+            memmove(dst, dst + he, (size_t)(n - he));
+            got += (uint32_t)(n - he);
+        }
+        if (got < expect) {
+            log_num("update: the connection stopped at byte ", got, "");
+            log_num(" of ", expect, "");
+            log_num(" (", (uint32_t)-http_last_recv, "); resuming\n");
+        }
+    }
+    dl_part = 0;
+    if (he0 < 0 || got != expect) { free(b); strcpy(info.err, "The download stopped. Check the network and try again."); return -1; }
+    *buf = b;
+    *body = b + he0;
+    *blen = got;
+    return 0;
+}
+
+static int fetch_via(const char *path, uint32_t expect, uint8_t **buf, uint8_t **body, uint32_t *blen, int secure)
+{
     uint32_t ip;
-    if (dns_resolve(HOST, &ip) != 0) { strcpy(info.err, "update.artfical.com could not be found. Check the network."); return -1; }
-    int cap = expect ? (int)expect + 32768 : 256 * 1024;
+    if (dns_resolve(HOST, &ip) != 0) { strcpy(info.err, "Can\xE2\x80\x99t reach the update server. Check the network."); return -1; }
+    if (!secure && expect) return fetch_resume(ip, path, expect, buf, body, blen);
+    int cap = expect ? (int)expect + 32768 : 2 * 1024 * 1024;   /* answers and pictures (a video's frames) */
     uint8_t *b = malloc((uint32_t)cap);
     if (!b) { strcpy(info.err, "Not enough memory for the update."); return -1; }
-    int n = https_get(ip, HOST, 443, path, b, cap);
+    int n = secure ? https_get(ip, HOST, 443, path, b, cap) : http_get(ip, HOST, 80, path, b, cap);
     if (n <= 12 || strncmp((char *)b, "HTTP/1.", 7) || strncmp((char *)b + 9, "200", 3)) {
         free(b);
         strcpy(info.err, "The update server did not answer.");
         return -1;
     }
-    uint8_t *e = 0;
-    for (int i = 0; i + 3 < n; i++) if (b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' && b[i + 3] == '\n') { e = b + i + 4; break; }
-    if (!e) { free(b); strcpy(info.err, "The update server's answer was cut off."); return -1; }
+    int he = header_end(b, n);
+    if (he < 0) { free(b); strcpy(info.err, "The update server's answer was cut off."); return -1; }
     *buf = b;
-    *body = e;
-    *blen = (uint32_t)(n - (e - b));
+    *body = b + he;
+    *blen = (uint32_t)(n - he);
     if (expect && *blen != expect) { free(b); strcpy(info.err, "The download was incomplete."); return -1; }
     return 0;
 }
@@ -169,11 +247,12 @@ static void check_task(void)
         if (ll > (int)sizeof(line) - 1) ll = (int)sizeof(line) - 1;
         memcpy(line, p, (size_t)ll);
         line[ll] = 0;
-        char *f[5] = { 0 }; int k = 0;
+        char *f[6] = { 0 }; int k = 0;
         int is_note = !strncmp(line, "note=", 5), is_shot = !strncmp(line, "shot=", 5);
         if (is_note || is_shot) {
             f[k++] = line + 5;
-            for (char *q = line + 5; *q && k < 5; q++) if (*q == '\t') { *q = 0; f[k++] = q + 1; }
+            int most = is_shot ? 6 : 5;              /* a note's last field is the rest of the line */
+            for (char *q = line + 5; *q && k < most; q++) if (*q == '\t') { *q = 0; f[k++] = q + 1; }
         }
         if (is_note && k == 5 && info.nnotes < UPD_MAX_NOTES) {
             update_note_t *nt = &info.notes[info.nnotes++];
@@ -186,6 +265,7 @@ static void check_task(void)
             sh->build = num(f[0]);
             strncpy(sh->path, f[1], sizeof sh->path - 1); strncpy(sh->caption, f[2], sizeof sh->caption - 1);
             if (k > 3) strncpy(sh->app, f[3], sizeof sh->app - 1);
+            if (k > 5) { sh->frames = (int)num(f[4]); sh->frame_ms = (int)num(f[5]); }
         }
         p = nl ? nl + 1 : 0;
     }
@@ -219,7 +299,7 @@ static uint32_t dl_base, dl_last_ms, dl_last_bytes;
 
 static void on_progress(int received)
 {
-    uint32_t got = dl_base + (uint32_t)received;
+    uint32_t got = dl_base + dl_part + (uint32_t)received;
     if (got > info.total) got = info.total;
     info.got = got;
     uint32_t now = debugmon_uptime_ms();
@@ -242,13 +322,13 @@ static void download_task(void)
     vfs_unlink(STAGE "/ready");                      /* an older staged update is replaced */
     uint8_t *buf, *body; uint32_t len;
     http_progress = on_progress;
-    int ok = fetch(info.kpath, info.ksize, &buf, &body, &len) == 0;
+    int ok = fetch_via(info.kpath, info.ksize, &buf, &body, &len, 0) == 0;
     if (ok && !sha_matches(body, len, info.ksha)) { ok = 0; strcpy(info.err, "The downloaded kernel is damaged (checksum)."); }
     if (ok) ok = write_file(STAGE "/tOS.elf", body, len) == 0;
     if (ok) free(buf);
     dl_base = info.ksize;
     if (ok) {
-        ok = fetch(info.ipath, info.isize, &buf, &body, &len) == 0;
+        ok = fetch_via(info.ipath, info.isize, &buf, &body, &len, 0) == 0;
         if (ok && !sha_matches(body, len, info.isha)) { ok = 0; strcpy(info.err, "The downloaded system files are damaged (checksum)."); }
         if (ok) ok = write_file(STAGE "/initrd.tar", body, len) == 0;
         if (ok) free(buf);

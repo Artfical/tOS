@@ -22,15 +22,28 @@ static int req_put(char *req, int cap, int *off, const char *s, int check)
     return 0;
 }
 
-int http_build_request(char *req, int cap, const char *host, const char *path)
+static int build_request(char *req, int cap, const char *host, const char *path, uint32_t from)
 {
     int off = 0;
     if (req_put(req, cap, &off, "GET ", 0) || req_put(req, cap, &off, path, 1) ||
-        req_put(req, cap, &off, " HTTP/1.0\r\nHost: ", 0) || req_put(req, cap, &off, host, 1) ||
-        req_put(req, cap, &off, "\r\nConnection: close\r\n\r\n", 0))
+        req_put(req, cap, &off, " HTTP/1.0\r\nHost: ", 0) || req_put(req, cap, &off, host, 1))
         return -1;
+    if (from) {
+        char n[12]; int o = 0; char r[12]; int ro = 0;
+        do { r[ro++] = (char)('0' + from % 10); from /= 10; } while (from);
+        while (ro) n[o++] = r[--ro];
+        n[o] = 0;
+        if (req_put(req, cap, &off, "\r\nRange: bytes=", 0) || req_put(req, cap, &off, n, 0) || req_put(req, cap, &off, "-", 0))
+            return -1;
+    }
+    if (req_put(req, cap, &off, "\r\nConnection: close\r\n\r\n", 0)) return -1;
     req[off] = 0;
     return off;
+}
+
+int http_build_request(char *req, int cap, const char *host, const char *path)
+{
+    return build_request(req, cap, host, path, 0);
 }
 
 static int hdr_end(const uint8_t *r, int total)
@@ -119,13 +132,21 @@ int http_dechunk(uint8_t *r, int total)
     }
 }
 
+int http_last_recv;
+
 int http_get(uint32_t ip, const char *host, uint16_t port, const char *path, uint8_t *response, int max_len)
 {
+    return http_get_from(ip, host, port, path, 0, response, max_len);
+}
+
+int http_get_from(uint32_t ip, const char *host, uint16_t port, const char *path, uint32_t from, uint8_t *response, int max_len)
+{
+    http_last_recv = 0;
     int rc = tcp_connect(ip, port);
     if (rc != 0) return rc;
 
     char req[1024];
-    int off = http_build_request(req, sizeof(req), host, path);
+    int off = build_request(req, sizeof(req), host, path, from);
     if (off < 0) { tcp_close(); return HTTP_ERR_REQUEST; }
 
     if (tcp_send(req, off) != 0) { tcp_close(); return TCP_ERR_TIMEOUT; /* connection dropped between connect() and send() */ }
@@ -133,7 +154,7 @@ int http_get(uint32_t ip, const char *host, uint16_t port, const char *path, uin
     int total = 0;
     while (total < max_len) {
         int n = tcp_recv(response + total, max_len - total);
-        if (n <= 0) break;
+        if (n <= 0) { http_last_recv = n; break; }
         total += n;
         if (http_progress) http_progress(total);
         int st = http_response_check(response, &total);

@@ -134,9 +134,7 @@ static void np_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
     gfx_hline(s, x, y + BAR_H - 1, w, 0x000000, 120);
     static const char *const tb[3] = { "New", "Open", "Save" };
     for (int i = 0; i < 3; i++) ui_button(s, x + 10 + i * 78, y + 8, 70, 28, tb[i], UI_CARD2, UI_TEXT, 0);
-    gfx_surface_t t = *s;
-    gfx_clip(&t, x + 260, y, w - 270, BAR_H);
-    gfx_text(&t, &ui_font_regular, x + 262, y + 13, n->path[0] ? n->path : "Not saved yet", UI_DIM, 255);
+    ui_text_fit(s, &ui_font_regular, x + 262, y + 13, w - 272, n->path[0] ? n->path : "Not saved yet", UI_DIM);
 
     int ty = y + BAR_H, th = h - BAR_H - STATUS_H;
     gfx_fill(s, x, ty, GUTTER, th, UI_SIDEBAR);

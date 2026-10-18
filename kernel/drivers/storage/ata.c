@@ -3,6 +3,7 @@
 #include "string.h"
 #include "terminal.h"
 #include "serial.h"
+#include "scheduler.h"
 ata_device_t ata_devices[ATA_MAX_DEVICES];
 int ata_device_count = 0;
 
@@ -154,7 +155,7 @@ static int ata_issue(ata_device_t *dev, uint64_t lba, uint32_t count, int write)
     return ext;
 }
 
-int ata_read_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, void *buf)
+static int read_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, void *buf)
 {
     if (!dev || !dev->present || count == 0) return -1;
     if (lba + count > ata_capacity(dev)) return -1;
@@ -173,7 +174,9 @@ int ata_read_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, void *buf)
     return 0;
 }
 
-int ata_write_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, const void *buf)
+static int flush_cache(ata_device_t *dev);
+
+static int write_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, const void *buf)
 {
     if (!dev || !dev->present || count == 0) return -1;
     if (lba + count > ata_capacity(dev)) return -1;
@@ -191,13 +194,13 @@ int ata_write_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, const voi
         if (ata_poll(dev, 0)) { ata_report("ata_write", dev, lba, n); return -1; }
         dev->unflushed += n;
         /* FLUSH CACHE is slow (an fsync on emulated disks); batch it */
-        if (dev->unflushed >= ATA_FLUSH_EVERY && ata_flush(dev)) return -1;
+        if (dev->unflushed >= ATA_FLUSH_EVERY && flush_cache(dev)) return -1;
         lba += n; in += n * 512; count -= n;
     }
     return 0;
 }
 
-int ata_flush(ata_device_t *dev)
+static int flush_cache(ata_device_t *dev)
 {
     if (!dev || !dev->present) return -1;
     if (dev->unflushed == 0) return 0;
@@ -208,4 +211,56 @@ int ata_flush(ata_device_t *dev)
     if (ata_poll(dev, 0)) { ata_report("ata_flush", dev, 0, 0); return -1; }
     dev->unflushed = 0;
     return 0;
+}
+
+/* One command at a time on the controller: a PIO command is a sequence of register writes and
+ * 256-word transfers, and two tasks interleaving theirs (a file system writing while the desktop
+ * reads a file) made both fail. The file systems reach this driver directly, so the lock is here
+ * rather than only in the block layer. The task holding it may take it again. */
+static task_t *volatile ata_owner;
+static int ata_depth;
+
+static void ata_lock(void)
+{
+    task_t *me = task_current();
+    if (!me) return;
+    for (;;) {
+        task_preempt_disable();
+        if (!ata_owner || ata_owner == me) { ata_owner = me; ata_depth++; task_preempt_enable(); return; }
+        task_preempt_enable();
+        task_yield();
+    }
+}
+
+static void ata_unlock(void)
+{
+    task_t *me = task_current();
+    if (!me) return;
+    task_preempt_disable();
+    if (ata_owner == me && --ata_depth == 0) ata_owner = 0;
+    task_preempt_enable();
+}
+
+int ata_read_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, void *buf)
+{
+    ata_lock();
+    int rc = read_sectors(dev, lba, count, buf);
+    ata_unlock();
+    return rc;
+}
+
+int ata_write_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, const void *buf)
+{
+    ata_lock();
+    int rc = write_sectors(dev, lba, count, buf);
+    ata_unlock();
+    return rc;
+}
+
+int ata_flush(ata_device_t *dev)
+{
+    ata_lock();
+    int rc = flush_cache(dev);
+    ata_unlock();
+    return rc;
 }

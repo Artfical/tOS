@@ -28,6 +28,10 @@ int http_dechunk(uint8_t *r, int total);
 /* called with the bytes received so far while http_get()/https_get() read a response; NULL = off */
 extern void (*http_progress)(int received);
 int http_get(uint32_t ip, const char *host, uint16_t port, const char *path, uint8_t *response, int max_len);
+/* the same, asking only for the bytes from `from` on (a Range request; 0 = all of it) */
+int http_get_from(uint32_t ip, const char *host, uint16_t port, const char *path, uint32_t from, uint8_t *response, int max_len);
+/* why the last http_get() stopped reading early: 0 = the peer closed, else a TCP_ERR_* code */
+extern int http_last_recv;
 const char *http_strerror(int err);
 
 /* Builds "GET <path> HTTP/1.0" into req. Returns its length, or -1 when it

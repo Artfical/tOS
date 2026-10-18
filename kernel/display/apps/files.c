@@ -255,9 +255,7 @@ static void f_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
         int on = !strcmp(vols[i].path, f->dir), py = y + place_y(NPLACES + i);
         if (on) gfx_rrect(s, x + 8, py, SIDE_W - 16, 26, 6, ui_theme.dark ? 0x3A3C46 : 0xD8D8DE, 255);
         gfx_blit_tinted(s, gfx_image("glyph_hard-drive"), x + 18, py + 5, UI_DIM, 255);
-        gfx_surface_t lc = *s;
-        gfx_clip(&lc, x + 44, py, SIDE_W - 44 - 34, 26);
-        gfx_text(&lc, &ui_font_regular, x + 44, py + 4, vols[i].name, UI_TEXT, 255);
+        ui_text_fit(s, &ui_font_regular, x + 44, py + 4, SIDE_W - 44 - 34, vols[i].name, UI_TEXT);
         gfx_blit_tinted(s, gfx_image("glyph_eject"), x + SIDE_W - 32, py + 5, UI_DIM, 255);
     }
     gfx_fill(s, x + SIDE_W, y, 1, h, UI_LINE);
@@ -266,9 +264,7 @@ static void f_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
     gfx_fill(s, bx, y, bw, BAR_H, UI_TOOLBAR);
     gfx_blit_tinted(s, gfx_image("glyph_chevron-left"), bx + 14, y + 18, f->pos > 0 ? UI_TEXT : UI_DIM, f->pos > 0 ? 255 : 110);
     gfx_blit_tinted(s, gfx_image("glyph_chevron-right"), bx + 40, y + 18, f->pos < f->nhist - 1 ? UI_TEXT : UI_DIM, f->pos < f->nhist - 1 ? 255 : 110);
-    gfx_surface_t t = *s;
-    gfx_clip(&t, bx + 70, y, bw - 70 - 330, BAR_H);
-    gfx_text(&t, &ui_font_medium, bx + 72, y + 16, a->title, UI_TEXT, 255);
+    ui_text_fit(s, &ui_font_medium, bx + 72, y + 16, bw - 72 - 330, a->title, UI_TEXT);
     int rx = bx + bw - 12 - 170;
     gfx_rrect(s, rx, y + 12, 170, 28, 7, UI_FIELD, 255);
     if (f->search_focus) gfx_rrect_outline(s, rx - 1, y + 11, 172, 30, 8, UI_ACCENT, 255);

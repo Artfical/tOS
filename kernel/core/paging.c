@@ -69,6 +69,10 @@ void paging_map(uint32_t virt, uint32_t phys, uint32_t flags)
     uint32_t pd_idx = virt >> 22;
     uint32_t pt_idx = (virt >> 12) & 0x3FF;
 
+    /* Before paging_init() every address is physical and nothing needs mapping: the boot screen
+     * finds the display that early, and bootsplash_paging_ready() maps it once paging is on. */
+    if (!kernel_dir) return;
+
     if (!(kernel_dir[pd_idx] & PDE_PRESENT)) {
         uint32_t *pt = (uint32_t *)alloc_physical_page();
         /* alloc_physical_page() returns 0 on exhaustion -- without

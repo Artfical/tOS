@@ -241,9 +241,7 @@ static void du_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
         int ix = x + (vol ? 38 : 16);
         if (!vol) gfx_blit_tinted(s, gfx_image("glyph_chevron-right"), x + 2, ry + 6, r == u->sel ? 0xFFFFFF : UI_DIM, 160);
         gfx_blit(s, gfx_image(disk_icon(d, 0)), ix, ry + 3, 255);
-        gfx_surface_t c = *s;
-        gfx_clip(&c, ix + 26, ry, SIDE_W - (ix - x) - 26 - 30, ROW_H);
-        gfx_text(&c, vol ? &ui_font_regular : &ui_font_medium, ix + 26, ry + 5, vol ? vol_name(d) : d->model, tc, 255);
+        ui_text_fit(s, vol ? &ui_font_regular : &ui_font_medium, ix + 26, ry + 5, SIDE_W - (ix - x) - 26 - 30, vol ? vol_name(d) : d->model, tc);
         if (vol && d->mounted && !d->startup)
             gfx_blit_tinted(s, gfx_image("glyph_eject"), x + SIDE_W - 34, ry + 5, r == u->sel ? 0xFFFFFF : UI_DIM, 255);
     }

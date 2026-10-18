@@ -52,6 +52,29 @@ void ui_button(gfx_surface_t *s, int x, int y, int w, int h, const char *label, 
     gfx_text_center(s, &ui_font_regular, x, y + (h - 17) / 2, w, label, tc, 255);
 }
 
+/* Text that may be longer than the room it has: cut at the last whole character that fits and
+ * end it with an ellipsis, instead of running under whatever is next to it. */
+void ui_text_fit(gfx_surface_t *s, const ui_font_t *f, int x, int y, int maxw, const char *t, uint32_t c)
+{
+    if (maxw <= 0) return;
+    if (gfx_text_width(f, t) <= maxw) { gfx_text(s, f, x, y, t, c, 255); return; }
+    char line[256];
+    int ew = gfx_text_width(f, "\xE2\x80\xA6"), n = 0, keep = 0;
+    while (t[n] && n < 250) {
+        int len = 1;
+        while ((t[n + len] & 0xC0) == 0x80) len++;          /* never split a UTF-8 character */
+        memcpy(line, t, (size_t)(n + len));
+        line[n + len] = 0;
+        if (gfx_text_width(f, line) + ew > maxw) break;
+        n += len;
+        keep = n;
+    }
+    while (keep > 0 && t[keep - 1] == ' ') keep--;
+    memcpy(line, t, (size_t)keep);
+    memcpy(line + keep, "\xE2\x80\xA6", 4);
+    gfx_text(s, f, x, y, line, c, 255);
+}
+
 int ui_hit(int px, int py, int x, int y, int w, int h) { return px >= x && px < x + w && py >= y && py < y + h; }
 
 /* the scroll bar: a thin rounded thumb over a faint track, like macOS's when scrolling */
@@ -179,9 +202,7 @@ void ui_filedlg_draw(ui_filedlg_t *d, gfx_surface_t *s, int x, int y, int w, int
     gfx_text(s, &ui_font_medium, dx + 18, dy + 14, d->saving ? "Save As" : "Open", UI_TEXT, 255);
     /* the folder, with an "up" button */
     ui_button(s, dx + 18, dy + 42, 34, 26, "\xE2\x86\x90", UI_CARD2, UI_TEXT, 0);
-    gfx_surface_t t = *s;
-    gfx_clip(&t, dx + 60, dy + 42, DLG_W - 80, 26);
-    gfx_text(&t, &ui_font_regular, dx + 62, dy + 46, d->dir, UI_DIM, 255);
+    ui_text_fit(s, &ui_font_regular, dx + 62, dy + 46, DLG_W - 82, d->dir, UI_DIM);
     /* the listing */
     int ly = dy + 78, rows = (DLG_H - 78 - 96) / DLG_ROW;
     gfx_rrect(s, dx + 18, ly, DLG_W - 36, rows * DLG_ROW + 8, 8, UI_FIELD, 255);

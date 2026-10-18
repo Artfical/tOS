@@ -258,14 +258,14 @@ static void draw_update(uiapp_t *a, set_t *st, gfx_surface_t *s, int px, int gy,
     gfx_blit(s, gfx_image("rec_install"), px + 16, gy + 12, 255);
     int tx = px + 96, ty = gy + 18;
     if (u->state == UPD_AVAILABLE || u->state == UPD_DOWNLOADING || u->state == UPD_READY) {
-        gfx_text(s, &ui_font_medium, tx, ty, u->title[0] ? u->title : "A tOS update is available", UI_TEXT, 255);
+        ui_text_fit(s, &ui_font_medium, tx, ty, pw - 96 - 16, u->title[0] ? u->title : "A tOS update is available", UI_TEXT);
         v[0] = 0; strcat(v, "Build "); ui_num(v, u->latest); strcat(v, " \xC2\xB7 "); strcat(v, u->date);
         strcat(v, " \xC2\xB7 "); mb(v, u->ksize + u->isize);
         if (u->behind > 1) { strcat(v, " \xC2\xB7 "); ui_num(v, u->behind); strcat(v, " updates"); }
-        gfx_text(s, &ui_font_small, tx, ty + 22, v, UI_DIM, 255);
+        ui_text_fit(s, &ui_font_small, tx, ty + 22, pw - 96 - 16, v, UI_DIM);
     } else {
         v[0] = 0; strcat(v, "tOS "); strcat(v, uihost_version()); strcat(v, " (build "); ui_num(v, uihost_build()); strcat(v, ")");
-        gfx_text(s, &ui_font_medium, tx, ty, v, UI_TEXT, 255);
+        ui_text_fit(s, &ui_font_medium, tx, ty, pw - 96 - 16, v, UI_TEXT);
     }
     int by = gy + 54, bx = px + pw - 150;
     switch (u->state) {
@@ -283,7 +283,7 @@ static void draw_update(uiapp_t *a, set_t *st, gfx_surface_t *s, int px, int gy,
         ui_button(s, bx, by - 4, 136, 28, "Check Now", UI_CARD2, UI_TEXT, 0);
         break;
     case UPD_AVAILABLE:
-        gfx_text(s, &ui_font_regular, tx, by + 2, u->far ? "This computer is far behind: update it." : "Installs while restarting.", u->far ? UI_ORANGE : UI_DIM, 255);
+        ui_text_fit(s, &ui_font_regular, tx, by + 2, bx - tx - 12, u->far ? "This computer is far behind: update it." : "Installs while restarting.", u->far ? UI_ORANGE : UI_DIM);
         ui_button(s, bx, by - 4, 136, 28, "Update Now", UI_ACCENT, 0xFFFFFF, 0);
         break;
     case UPD_DOWNLOADING: {
@@ -297,19 +297,19 @@ static void draw_update(uiapp_t *a, set_t *st, gfx_surface_t *s, int px, int gy,
             uint32_t left = (u->total - u->got) / (u->speed ? u->speed : 1);
             if (left < 60) { ui_num(v, left); strcat(v, " seconds"); } else { ui_num(v, left / 60 + 1); strcat(v, " minutes"); }
         }
-        gfx_text(s, &ui_font_small, tx, by + 12, v, UI_DIM, 255);
+        ui_text_fit(s, &ui_font_small, tx, by + 12, pw - 96 - 24, v, UI_DIM);
         break;
     }
     case UPD_READY:
-        gfx_text(s, &ui_font_regular, tx, by + 2, "Restart to finish installing the update.", UI_DIM, 255);
+        ui_text_fit(s, &ui_font_regular, tx, by + 2, bx - tx - 12, "Restart to finish installing the update.", UI_DIM);
         ui_button(s, bx, by - 4, 136, 28, "Restart Now", UI_ACCENT, 0xFFFFFF, 0);
         break;
     case UPD_ERROR:
-        gfx_text(s, &ui_font_regular, tx, by + 2, u->err[0] ? u->err : "Software Update failed.", UI_RED, 255);
+        ui_text_fit(s, &ui_font_regular, tx, by + 2, bx - tx - 12, u->err[0] ? u->err : "Software Update failed.", UI_RED);
         ui_button(s, bx, by - 4, 136, 28, "Try Again", UI_CARD2, UI_TEXT, 0);
         break;
     case UPD_LIVE:
-        gfx_text(s, &ui_font_regular, tx, by + 2, "Software Update works once tOS is installed, not in the live environment.", UI_DIM, 255);
+        ui_text_fit(s, &ui_font_regular, tx, by + 2, pw - 96 - 16, "Software Update works once tOS is installed, not in the live environment.", UI_DIM);
         break;
     }
     /* what is new: one line per app here, the full notes in a window of their own */
@@ -327,9 +327,7 @@ static void draw_update(uiapp_t *a, set_t *st, gfx_surface_t *s, int px, int gy,
         if (!ic) ic = gfx_image("icon48_settings");
         gfx_blit_scaled(s, ic, px, y, 26, 26, 255);
         gfx_text(s, &ui_font_medium, px + 36, y + 1, n->app, UI_TEXT, 255);
-        gfx_surface_t c = *s;
-        gfx_clip(&c, px + 36, y, pw - 36, 40);
-        gfx_text(&c, &ui_font_small, px + 36, y + 20, n->text, UI_DIM, 255);
+        ui_text_fit(s, &ui_font_small, px + 36, y + 20, pw - 36, n->text, UI_DIM);
         y += 46;
         rows++;
     }

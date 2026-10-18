@@ -103,6 +103,8 @@ typedef struct {
     int bmp_valid;
     uint32_t bmp_idx;
     uint8_t bmp_cache[TFSK_BLOCK_SIZE];
+    int alloc_nozero;           /* the caller overwrites the whole block: no need to clear it */
+    int sb_pending;             /* allocations since the superblock was last written */
 } tfsk_t;
 
 int  tfsk_mount(tfsk_t *fs, ata_device_t *dev);

@@ -8,7 +8,7 @@ GCC_INC := $(shell $(CC) -m32 -print-file-name=include)
 
 # Regular kernel flags (no nostdinc to avoid breaking existing code)
 CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
-         -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+         -fno-builtin -fno-stack-protector -fno-pic -fno-pie -fno-strict-aliasing \
          -mno-mmx -mno-sse -mno-sse2 \
          -O2 -Wall -Wextra -Werror \
          -I. \

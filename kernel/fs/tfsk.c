@@ -94,6 +94,7 @@ int tfsk_mount(tfsk_t *fs, ata_device_t *dev)
 int tfsk_umount(tfsk_t *fs)
 {
     if (!fs->mounted) return -1;
+    fs->sb_pending = 0;
     if (fs->dirty) {
         fs->sb.state = TFSK_STATE_CLEAN;
         sb_sync(fs);
@@ -287,9 +288,10 @@ static int tfsk_block_alloc(tfsk_t *fs)
                 if (fs->bmp_cache[o / 8] & (1 << (o % 8))) continue;
                 fs->bmp_cache[o / 8] |= (uint8_t)(1 << (o % 8));
                 if (tfsk_block_write(fs, fs->sb.block_bmp_blk + bi, fs->bmp_cache) < 0) { fs->bmp_valid = 0; return -1; }
-                tfsk_block_zero(fs, blk);
+                if (!fs->alloc_nozero) tfsk_block_zero(fs, blk);
                 fs->sb.free_blocks--;
-                sb_sync(fs);
+                /* the free count reaches the disk every 64 blocks and when a file is closed */
+                if (++fs->sb_pending >= 64) { sb_sync(fs); fs->sb_pending = 0; }
                 fs->alloc_hint = blk + 1;
                 return (int)blk;
             }
@@ -483,16 +485,25 @@ static int tfsk_write_data(tfsk_t *fs, tfsk_inode_t *inode, const void *buf, uin
         uint32_t blk_idx = (offset + done) / TFSK_BLOCK_SIZE;
         uint32_t blk_off = (offset + done) % TFSK_BLOCK_SIZE;
         uint32_t phys;
-
-        if (resolve_block_ptr(fs, inode, blk_idx, &phys, 1) < 0) break;
-
-        char block[TFSK_BLOCK_SIZE];
-        tfsk_block_read(fs, phys, block);
-
         uint32_t chunk = TFSK_BLOCK_SIZE - blk_off;
         if (chunk > size - done) chunk = size - done;
-        memcpy(block + blk_off, (const char *)buf + done, chunk);
-        tfsk_block_write(fs, phys, block);
+        int whole = blk_off == 0 && chunk == TFSK_BLOCK_SIZE;
+
+        /* a whole block is written straight: a new one is not cleared first, and nothing is
+         * read back to be merged (three disk writes and a read per block before) */
+        fs->alloc_nozero = whole;
+        int r = resolve_block_ptr(fs, inode, blk_idx, &phys, 1);
+        fs->alloc_nozero = 0;
+        if (r < 0) break;
+
+        if (whole) {
+            tfsk_block_write(fs, phys, (void *)((const char *)buf + done));
+        } else {
+            char block[TFSK_BLOCK_SIZE];
+            tfsk_block_read(fs, phys, block);
+            memcpy(block + blk_off, (const char *)buf + done, chunk);
+            tfsk_block_write(fs, phys, block);
+        }
         done += chunk;
     }
 
@@ -805,6 +816,7 @@ int tfsk_vfs_close(tfsk_t *fs, int fd)
 {
     if (fd < 0 || fd >= VFS_MAX_FDS || !fs->fds[fd].used) return -1;
     fs->fds[fd].used = 0;
+    if (fs->sb_pending) { sb_sync(fs); fs->sb_pending = 0; }
     return 0;
 }
 

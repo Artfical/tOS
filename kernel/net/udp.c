@@ -78,19 +78,26 @@ int udp_open(uint16_t port)
     return -1;
 }
 
-static uint16_t udp_checksum(void *pseudo, int pseudo_len, void *udp_seg, int seg_len)
+/* The UDP checksum over the IPv4 pseudo-header (addresses in network order as they sit in the
+ * packet) and the segment. Everything is read a byte at a time: the pseudo-header used to be a
+ * struct read through a uint16_t pointer, and GCC 13 (the one CI builds releases with) was
+ * entitled to drop the address stores before that read -- every DNS query from a released
+ * kernel went out with a checksum made from zero addresses and was thrown away. */
+static uint16_t udp_checksum(uint32_t src, uint32_t dst, const void *udp_seg, int seg_len)
 {
+    uint8_t ph[12];
+    memcpy(ph, &src, 4);
+    memcpy(ph + 4, &dst, 4);
+    ph[8] = 0;
+    ph[9] = IPPROTO_UDP;
+    ph[10] = (uint8_t)(seg_len >> 8);
+    ph[11] = (uint8_t)seg_len;
     uint32_t sum = 0;
-    uint16_t *p = (uint16_t *)pseudo;
-    for (int i = 0; i < pseudo_len / 2; i++) sum += ntohs(p[i]);
-    p = (uint16_t *)udp_seg;
-    for (int i = 0; i < seg_len / 2; i++) sum += ntohs(p[i]);
-    /* A trailing odd byte is padded with an implicit zero LOW byte, i.e.
-     * it occupies the HIGH byte of the final 16-bit word — not a plain
-     * byte value. DNS queries (variable-length hostnames) hit this path
-     * far more often than ICMP's fixed-size echo payloads, which is why
-     * this was silently corrupting almost every DNS query checksum. */
-    if (seg_len & 1) sum += (uint32_t)((uint8_t *)udp_seg)[seg_len - 1] << 8;
+    for (int i = 0; i < 12; i += 2) sum += (uint32_t)ph[i] << 8 | ph[i + 1];
+    const uint8_t *p = (const uint8_t *)udp_seg;
+    for (int i = 0; i + 1 < seg_len; i += 2) sum += (uint32_t)p[i] << 8 | p[i + 1];
+    /* a trailing odd byte is padded with an implicit zero low byte */
+    if (seg_len & 1) sum += (uint32_t)p[seg_len - 1] << 8;
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return htons(sum == 0 ? 0xFFFF : ~sum & 0xFFFF);
 }
@@ -109,13 +116,7 @@ int udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port, void *data, 
     udp->checksum = 0;
     memcpy(buf + sizeof(udp_hdr_t), data, len);
 
-    struct { uint32_t src; uint32_t dst; uint8_t zero; uint8_t proto; uint16_t len; } __attribute__((packed)) pseudo;
-    pseudo.src = net_ip;
-    pseudo.dst = dst_ip;
-    pseudo.zero = 0;
-    pseudo.proto = IPPROTO_UDP;
-    pseudo.len = htons(total);
-    udp->checksum = udp_checksum(&pseudo, sizeof(pseudo), buf, total);
+    udp->checksum = udp_checksum(net_ip, dst_ip, buf, total);
 
     int r = ip_send(dst_ip, IPPROTO_UDP, buf, total);
     free(buf);
@@ -145,13 +146,7 @@ void udp_handle(ip_hdr_t *ip, void *pkt, int len)
         if (!copy) return;
         memcpy(copy, pkt, (size_t)ulen);
         ((udp_hdr_t *)copy)->checksum = 0;
-        struct { uint32_t src; uint32_t dst; uint8_t zero; uint8_t proto; uint16_t len; } __attribute__((packed)) pseudo;
-        pseudo.src = ip->src_ip;
-        pseudo.dst = ip->dst_ip;
-        pseudo.zero = 0;
-        pseudo.proto = IPPROTO_UDP;
-        pseudo.len = htons((uint16_t)ulen);
-        uint16_t want = udp_checksum(&pseudo, sizeof(pseudo), copy, ulen);
+        uint16_t want = udp_checksum(ip->src_ip, ip->dst_ip, copy, ulen);
         free(copy);
         if (want != udp->checksum) return;
     }

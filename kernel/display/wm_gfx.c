@@ -173,6 +173,9 @@ static void open_panel(int panel, const char *title)
 
 /* ---- native apps (uiapp.h) ---- */
 
+static void genie(window_t *w, int restore);
+static int ease(int t);
+static void login_transition(const uint32_t *from);
 static window_t *native_grab;          /* the native window a press started in, until release */
 
 int wm_gfx_open_native(const char *id, const char *arg)
@@ -241,7 +244,8 @@ static void dock_activate(const app_t *a)
     }
     if (!best) { launch(a); return; }
     sound_click();
-    if (best == wm_focused && !best->minimized) best->minimized = 1;
+    if (best == wm_focused && !best->minimized) genie(best, 0);
+    else if (best->minimized) genie(best, 1);
     else wm_focus_window(best);
     dirty = 1;
 }
@@ -342,6 +346,7 @@ enum {
 typedef struct { const char *label; int action; int sep_after; int disabled; } menu_item_t;
 
 static menu_item_t menu_items[16];
+static uint32_t menu_open_ms;          /* menus fade in and drop a few pixels, like the Mac's */
 static int menu_count, menu_x, menu_y, menu_w, menu_which;   /* 0 = closed */
 enum { MENU_SYS = 1, MENU_FILE_, MENU_WINDOW, MENU_CTX, MENU_EJECT, MENU_APP0 = 10 };
 #define BAR_MENUS 10
@@ -375,6 +380,7 @@ static int menu_height(void)
 static void open_menu(int which, int x, int y)
 {
     menu_count = 0;
+    if (menu_which != which) menu_open_ms = debugmon_uptime_ms();
     menu_which = which;
     if (which == MENU_SYS) {
         menu_add("About tOS", A_ABOUT, 0);
@@ -497,7 +503,7 @@ static void do_action(int a)
     case A_OPEN:      if (f) { action_target = f; pending_action = WM_ACTION_OPEN; } break;
     case A_SAVE:      if (f) { action_target = f; pending_action = WM_ACTION_SAVE; } break;
     case A_CLOSE:     if (f) wm_close_window(f); break;
-    case A_MINIMIZE:  if (f) f->minimized = 1; break;
+    case A_MINIMIZE:  if (f) genie(f, 0); break;
     case A_ZOOM:      if (f) zoom_window(f); break;
     case A_NEW_FOLDER: wm_desktop_new_folder(); break;
     case A_NEW_FILE:  wm_desktop_new_file(); break;
@@ -665,9 +671,7 @@ static void draw_window_g(window_t *w)
     int tx = x + (ww - tw) / 2;
     if (tx < x + 80) tx = x + 80;
     if (a) gfx_blit(&bs, icon(a->icon, 0), tx - 26, y + (TITLE_H - 20) / 2, 255);
-    gfx_clip(&bs, x, y, ww - 8, TITLE_H);
-    gfx_text(&bs, &ui_font_medium, tx, y + 8, w->title, active ? ui_theme.title_text : C_TEXT_DIM, 255);
-    gfx_unclip(&bs);
+    ui_text_fit(&bs, &ui_font_medium, tx, y + 8, x + ww - 12 - tx, w->title, active ? ui_theme.title_text : C_TEXT_DIM);
 
     /* content */
     gfx_clip(&bs, x, y + TITLE_H, ww, hh - TITLE_H);
@@ -898,6 +902,20 @@ static void draw_menu(void)
 {
     if (!menu_which) return;
     int h = menu_height();
+    uint32_t el = debugmon_uptime_ms() - menu_open_ms;
+    int fading = el < 180;
+    int e = fading ? ease((int)(el * 1024 / 180)) : 1024;
+    int my0 = menu_y;
+    int rx = menu_x - 24, ry = menu_y - 24, rw = menu_w + 48, rh = h + 56;
+    if (fading) {
+        /* what was under it, to blend the menu over while it appears */
+        for (int j = ry; j < ry + rh; j++) {
+            if (j < 0 || j >= SH) continue;
+            int x0 = rx < 0 ? 0 : rx, x1 = rx + rw > SW ? SW : rx + rw;
+            if (x1 > x0) memcpy(scratch + j * SW + x0, back + j * SW + x0, (size_t)(x1 - x0) * 4);
+        }
+        menu_y -= 6 * (1024 - e) >> 10;
+    }
     gfx_shadow(&bs, menu_x, menu_y, menu_w, h, 200);
     gfx_rrect(&bs, menu_x, menu_y, menu_w, h, 9, C_MENU_BG, 245);
     gfx_rrect_outline(&bs, menu_x, menu_y, menu_w, h, 9, ui_theme.dark ? 0xFFFFFF : 0x000000, 34);
@@ -913,6 +931,16 @@ static void draw_menu(void)
             gfx_hline(&bs, menu_x + 12, iy + 4, menu_w - 24, 0xFFFFFF, 30);
             iy += 9;
         }
+    }
+    if (fading) {
+        int a = e * 255 >> 10;
+        for (int j = ry; j < ry + rh; j++) {
+            if (j < 0 || j >= SH) continue;
+            for (int i = rx < 0 ? 0 : rx; i < rx + rw && i < SW; i++)
+                back[j * SW + i] = gfx_mix(scratch[j * SW + i], back[j * SW + i], a);
+        }
+        menu_y = my0;
+        dirty = 1;                          /* the next frame carries on */
     }
 }
 
@@ -1447,7 +1475,10 @@ static void login_submit(void)
     }
     auth_set_session(u.uid, u.gid);
     if (!fsbridge_exists(u.home) || ramfs_chdir(u.home) != 0) ramfs_chdir("/");
+    uint32_t *lock = malloc((uint32_t)SW * SH * 4);
+    if (lock) memcpy(lock, back, (size_t)SW * SH * 4);        /* the lock screen as it was last shown */
     wm_gfx_set_session(0);
+    if (lock) { login_transition(lock); free(lock); }
 }
 
 static void draw_login(void)
@@ -1598,7 +1629,9 @@ static void update_watch(void)
             } else {
                 strcat(body, u->title[0] ? u->title : "A new version of tOS is ready to download.");
             }
-            nid = notify_post("settings", 0, u->far ? "Your tOS is out of date" : "Software Update", body, "Update", "Later");
+            /* the app name is not an app id, so a click opens Settings here, at Software Update,
+             * rather than the window manager opening it a second time at its first page */
+            nid = notify_post("Software Update", "settings", u->far ? "Your tOS is out of date" : "Software Update", body, "Update", "Later");
         }
         phase = 3;
         return;
@@ -1683,6 +1716,125 @@ static void present(void)
     memcpy(lfb, back, (size_t)SW * SH * 4);
     cur_x = -100;
     cursor_draw();
+}
+
+/* ------------------------------------------------------------------ animations */
+
+/* recordings of the animations are made with this raised (slow motion), then sped up */
+#define ANIM_SLOW 1
+
+/* 0..1024 in, eased 0..1024 out: slow start, slow end */
+static int ease(int t)
+{
+    if (t <= 0) return 0;
+    if (t >= 1024) return 1024;
+    if (t < 512) return (int)(4LL * t * t * t >> 20);
+    int u = 2048 - 2 * t;
+    return 1024 - (int)((long long)u * u * u >> 21);
+}
+
+static int clamp1024(int v) { return v < 0 ? 0 : v > 1024 ? 1024 : v; }
+
+/* where a window goes when it is minimised: its app's icon in the Dock (or the middle of it) */
+static void dock_target(window_t *w, int *tx, int *ty, int *ts)
+{
+    layout_dock();
+    const app_t *a = app_for_window(w);
+    *tx = dock_x + dock_w / 2 - DOCK_ICON / 2; *ty = dock_y + DOCK_PAD; *ts = DOCK_ICON;
+    for (int i = 0; i < dock_n; i++)
+        if (a && dock[i].app == a) { *tx = dock[i].x; *ty = dock[i].y; *ts = dock[i].size; }
+}
+
+/* The Mac's genie: the window's lower edge funnels into the Dock icon and the rest pours after
+ * it (minimising), or rises back out of it (restoring). The desktop without the window and a
+ * picture of the window are taken once; every frame bends the picture row by row. */
+static void genie(window_t *w, int restore)
+{
+    if (session != 0 || launcher_open) { w->minimized = !restore; if (restore) wm_focus_window(w); return; }
+    int x = w->gx, y = w->gy, ww = w->gw, hh = w->gh;
+    if (ww < 8 || hh < 8) { w->minimized = !restore; return; }
+    uint32_t *base = malloc((uint32_t)SW * SH * 4), *pic = malloc((uint32_t)ww * hh * 4);
+    if (!base || !pic) { free(base); free(pic); w->minimized = !restore; if (restore) wm_focus_window(w); return; }
+
+    if (restore) wm_focus_window(w); else w->minimized = 0;
+    compose();
+    for (int j = 0; j < hh; j++)
+        for (int i = 0; i < ww; i++) {
+            int sx = x + i, sy = y + j;
+            uint32_t c = (sx >= 0 && sx < SW && sy >= 0 && sy < SH) ? back[sy * SW + sx] & 0xFFFFFF : 0;
+            /* the rounded corners stay see-through */
+            int cx = i < RADIUS ? RADIUS - i : i >= ww - RADIUS ? i - (ww - RADIUS - 1) : 0;
+            int cy = j < RADIUS ? RADIUS - j : j >= hh - RADIUS ? j - (hh - RADIUS - 1) : 0;
+            pic[j * ww + i] = (cx && cy && cx * cx + cy * cy > RADIUS * RADIUS) ? 0 : (c | 0xFF000000u);
+        }
+    w->minimized = 1;
+    compose();
+    memcpy(base, back, (size_t)SW * SH * 4);
+
+    int tx, ty, ts;
+    dock_target(w, &tx, &ty, &ts);
+    int span = ty - y > 1 ? ty - y : 1;
+    uint32_t start = debugmon_uptime_ms(), dur = 460 * ANIM_SLOW;
+    for (;;) {
+        uint32_t el = debugmon_uptime_ms() - start;
+        int t = el >= dur ? 1024 : (int)(el * 1024 / dur);
+        int p = restore ? 1024 - t : t;
+        memcpy(back, base, (size_t)SW * SH * 4);
+        int k = ease(clamp1024(p * 1024 / 460));                       /* how far the sides have bent */
+        int ybot = y + hh + (int)((long long)(ty + ts - (y + hh)) * ease(clamp1024(p * 1024 / 700)) >> 10);
+        int ytop = y + (int)((long long)(ty - y) * ease(clamp1024((p - 300) * 1024 / 724)) >> 10);
+        int rows = ybot - ytop;
+        if (rows > 0) {
+            for (int dy = ytop < 0 ? 0 : ytop; dy < ybot && dy < SH; dy++) {
+                int sr = (int)((long long)(dy - ytop) * hh / rows);
+                if (sr >= hh) sr = hh - 1;
+                /* the funnel: a smooth S from the window's width down to the icon's */
+                int f = clamp1024((dy - y) * 1024 / span);
+                int sm = (int)((long long)f * f * (3072 - 2 * f) >> 20);
+                int b = (int)((long long)k * sm >> 10);
+                int L = x + (int)((long long)(tx - x) * b >> 10);
+                int R = x + ww + (int)((long long)(tx + ts - (x + ww)) * b >> 10);
+                int width = R - L;
+                if (width <= 0) continue;
+                const uint32_t *src = pic + sr * ww;
+                uint32_t *dst = back + dy * SW;
+                int step = (ww << 16) / width, acc = 0;
+                for (int dx = L; dx < R; dx++, acc += step) {
+                    if (dx < 0 || dx >= SW) continue;
+                    uint32_t c = src[acc >> 16];
+                    if (c >> 24) dst[dx] = c & 0xFFFFFF;
+                }
+            }
+        }
+        present();
+        if (t >= 1024) break;
+    }
+    free(base);
+    free(pic);
+    w->minimized = !restore;
+    if (restore) wm_focus_window(w);
+    dirty = 1;
+}
+
+/* Logging in: the blurred lock screen clears into the desktop, the way the Mac's does. */
+static void login_transition(const uint32_t *from)
+{
+    compose();
+    uint32_t *to = malloc((uint32_t)SW * SH * 4);
+    if (!to) return;
+    memcpy(to, back, (size_t)SW * SH * 4);
+    uint32_t start = debugmon_uptime_ms(), dur = 650 * ANIM_SLOW;
+    for (;;) {
+        uint32_t el = debugmon_uptime_ms() - start;
+        int t = el >= dur ? 1024 : (int)(el * 1024 / dur);
+        int a = ease(t) * 255 >> 10;
+        if (a >= 255) break;
+        for (int i = 0; i < SW * SH; i++) back[i] = gfx_mix(from[i], to[i], a);
+        present();
+    }
+    memcpy(back, to, (size_t)SW * SH * 4);
+    present();
+    free(to);
 }
 
 static void shutdown_screen(void)
@@ -2051,7 +2203,7 @@ static void press(int x, int y)
             if ((lx - cx) * (lx - cx) + (ly - cy) * (ly - cy) <= 64) {
                 sound_click();
                 if (i == 0) wm_close_window(w);
-                else if (i == 1) w->minimized = 1;
+                else if (i == 1) genie(w, 0);
                 else zoom_window(w);
                 return;
             }

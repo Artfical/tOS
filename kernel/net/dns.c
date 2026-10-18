@@ -172,10 +172,16 @@ int dns_resolve(const char *hostname, uint32_t *ip_out)
     /* Unpredictable source port and transaction id: with the old constants
      * (port 12345, id 0xAAAA) anyone could forge an answer without seeing
      * the query. The socket is released afterwards. */
-    uint16_t port = (uint16_t)(49152 + csprng_u32() % 16384);
-    uint16_t txid = (uint16_t)csprng_u32();
-    int r = dns_query(hostname, ip_out, port, txid);
-    udp_close(port);
+    int r = DNS_ERR_TIMEOUT;
+    /* UDP: a query or its answer can be lost (the first one often is, while ARP for the server
+     * is still being learnt), so a silent server is asked up to three times. */
+    for (int attempt = 0; attempt < 3; attempt++) {
+        uint16_t port = (uint16_t)(49152 + csprng_u32() % 16384);
+        uint16_t txid = (uint16_t)csprng_u32();
+        r = dns_query(hostname, ip_out, port, txid);
+        udp_close(port);
+        if (r != DNS_ERR_TIMEOUT) break;
+    }
     return r;
 }
 
