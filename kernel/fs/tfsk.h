@@ -98,6 +98,11 @@ typedef struct {
     int dirty;
     int mounted;
     tfsk_file_t fds[VFS_MAX_FDS];
+    /* the block allocator: where the next search starts, and the bitmap block it last read */
+    uint32_t alloc_hint;
+    int bmp_valid;
+    uint32_t bmp_idx;
+    uint8_t bmp_cache[TFSK_BLOCK_SIZE];
 } tfsk_t;
 
 int  tfsk_mount(tfsk_t *fs, ata_device_t *dev);

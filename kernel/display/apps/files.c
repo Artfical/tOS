@@ -342,6 +342,10 @@ static void f_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
     }
     if (!f->n) gfx_text_center(s, &ui_font_regular, bx, cy + ch / 2 - 10, bw, f->search[0] ? "No results" : "This folder is empty", UI_DIM, 255);
 
+    {
+        int total = f->list_view ? f->n * ROW_H + 28 : ((f->n + cols_of(a) - 1) / cols_of(a)) * TILE_H + 12;
+        ui_scrollbar(s, x + w - 12, cy, ch, total + 10, f->scroll);
+    }
     int py = y + h - PATH_H;
     gfx_fill(s, bx, py, bw, PATH_H, UI_STATUS);
     gfx_hline(s, bx, py, bw, UI_LINE, 255);
@@ -440,6 +444,11 @@ static void f_press(uiapp_t *a, int px, int py, int b)
     }
     f->search_focus = 0;
     if (py >= a->h - PATH_H) return;
+    if (px >= a->w - 14 && py >= BAR_H) {
+        int total = f->list_view ? f->n * ROW_H + 28 : ((f->n + cols_of(a) - 1) / cols_of(a)) * TILE_H + 12;
+        int view = a->h - BAR_H - PATH_H;
+        if (total + 10 > view) { f->scroll = ui_scroll_drag(py, BAR_H, view, total + 10); return; }
+    }
     int hit = -1;
     if (!f->list_view) {
         for (int i = 0; i < f->n; i++) {

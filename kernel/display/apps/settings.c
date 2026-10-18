@@ -239,27 +239,6 @@ static void draw_section(uiapp_t *a, set_t *st, gfx_surface_t *s, int x, int y, 
 
 /* ---- Software Update ---- */
 
-static void wrap_text(gfx_surface_t *s, const ui_font_t *f, int x, int *y, int w, const char *t, uint32_t c)
-{
-    char line[200];
-    while (*t) {
-        int best = 0, i = 0;
-        while (t[i] && i < 198) {
-            line[i] = t[i]; line[i + 1] = 0;
-            if (gfx_text_width(f, line) > w) break;
-            if (t[i] == ' ') best = i;
-            i++;
-        }
-        int take = !t[i] ? i : (best ? best : i);
-        memcpy(line, t, (size_t)take);
-        line[take] = 0;
-        gfx_text(s, f, x, *y, line, c, 255);
-        *y += f->line_h + 2;
-        t += take;
-        while (*t == ' ') t++;
-    }
-}
-
 static void mb(char *o, uint32_t bytes)
 {
     uint32_t tenths = bytes / 100000;
@@ -333,51 +312,28 @@ static void draw_update(uiapp_t *a, set_t *st, gfx_surface_t *s, int px, int gy,
         gfx_text(s, &ui_font_regular, tx, by + 2, "Software Update works once tOS is installed, not in the live environment.", UI_DIM, 255);
         break;
     }
-    /* what is new, app by app, with the commits and the pictures */
+    /* what is new: one line per app here, the full notes in a window of their own */
     if (u->state != UPD_AVAILABLE && u->state != UPD_DOWNLOADING && u->state != UPD_READY) return;
     int top = gy + 104;
     gfx_text(s, &ui_font_medium, px, top, "What\xE2\x80\x99s New", UI_TEXT, 255);
-    gfx_surface_t c = *s;
-    gfx_clip(&c, px - 4, top + 26, pw + 8, ph - (top + 26 - gy) - 8);
-    int y = top + 32 - st->scroll;
-    const char *last_app = "";
-    unsigned last_build = 0;
-    for (int i = 0; i < u->nnotes; i++) {
+    ui_button(s, px + pw - 190, top - 6, 190, 28, "Show Release Notes\xE2\x80\xA6", UI_CARD2, UI_TEXT, 0);
+    int y = top + 34, rows = 0;
+    for (int i = 0; i < u->nnotes && y < gy + ph - 40; i++) {
         const update_note_t *n = &u->notes[i];
-        if (strcmp(n->app, last_app) || n->build != last_build) {
-            y += 6;
-            char key[32] = "icon48_";
-            strcat(key, n->icon);
-            const gfx_image_t *ic = gfx_image(key);
-            if (!ic) ic = gfx_image("icon48_settings");
-            gfx_blit_scaled(&c, ic, px, y, 26, 26, 255);
-            gfx_text(&c, &ui_font_medium, px + 36, y + 4, n->app, UI_TEXT, 255);
-            v[0] = 0; strcat(v, "build "); ui_num(v, n->build);
-            gfx_text(&c, &ui_font_small, px + pw - gfx_text_width(&ui_font_small, v), y + 6, v, UI_DIM, 255);
-            y += 32;
-            last_app = n->app; last_build = n->build;
-        }
-        gfx_circle(&c, px + 41, y + 8, 2, UI_DIM, 255);
-        wrap_text(&c, &ui_font_regular, px + 50, &y, pw - 54, n->text, UI_TEXT);
-        if (i + 1 >= u->nnotes || strcmp(u->notes[i + 1].app, n->app) || u->notes[i + 1].build != n->build) {
-            gfx_text(&c, &ui_font_small, px + 50, y, n->url, UI_ACCENT, 255);
-            y += 22;
-        }
+        if (i && !strcmp(u->notes[i - 1].app, n->app) && u->notes[i - 1].build == n->build) continue;
+        char key[32] = "icon48_";
+        strcat(key, n->icon);
+        const gfx_image_t *ic = gfx_image(key);
+        if (!ic) ic = gfx_image("icon48_settings");
+        gfx_blit_scaled(s, ic, px, y, 26, 26, 255);
+        gfx_text(s, &ui_font_medium, px + 36, y + 1, n->app, UI_TEXT, 255);
+        gfx_surface_t c = *s;
+        gfx_clip(&c, px + 36, y, pw - 36, 40);
+        gfx_text(&c, &ui_font_small, px + 36, y + 20, n->text, UI_DIM, 255);
+        y += 46;
+        rows++;
     }
-    for (int i = 0; i < u->nshots; i++) {
-        const update_shot_t *sh = &u->shots[i];
-        y += 8;
-        if (sh->rgba) {
-            int w = sh->w > pw ? pw : sh->w, h2 = sh->h * w / (sh->w ? sh->w : 1);
-            gfx_image_t im = { sh->w, sh->h, sh->rgba };
-            gfx_blit_scaled(&c, &im, px, y, w, h2, 255);
-            gfx_rrect_outline(&c, px, y, w, h2, 8, UI_LINE, 255);
-            y += h2 + 4;
-        }
-        gfx_text(&c, &ui_font_small, px, y, sh->caption, UI_DIM, 255);
-        y += 22;
-    }
-    st->last_sec = (uint32_t)(y + st->scroll - (top + 32));        /* the notes' full height, for scrolling */
+    (void)rows;
     (void)a;
 }
 
@@ -433,6 +389,8 @@ static void s_press(uiapp_t *a, int lx, int ly, int b)
     switch (st->sec) {
     case S_UPDATE: {
         const update_info_t *u = uihost_update_status();
+        if (ui_hit(lx, ly, px + pw - 190, gy + 98, 190, 28) && (u->state == UPD_AVAILABLE || u->state == UPD_DOWNLOADING || u->state == UPD_READY))
+            uihost_open("updatenotes", 0);
         if (ui_hit(lx, ly, px + pw - 150, gy + 50, 136, 28)) {
             if (u->state == UPD_AVAILABLE) uihost_update_download();
             else if (u->state == UPD_READY) uihost_update_restart();

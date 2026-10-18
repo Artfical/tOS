@@ -173,6 +173,12 @@ static void np_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
         line++;
     }
 
+    /* a scroll bar once the text is longer than the window */
+    {
+        int lines = 1;
+        for (int k = 0; k < n->len; k++) if (n->buf[k] == '\n') lines++;
+        ui_scrollbar(s, x + w - 12, ty, th, (lines + 1) * UI_CELL_H, n->top * UI_CELL_H);
+    }
     int sy = y + h - STATUS_H;
     gfx_fill(s, x, sy, w, STATUS_H, UI_TOOLBAR);
     char st[96] = "Ln ";

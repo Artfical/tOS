@@ -267,6 +267,7 @@ static void download_task(void)
     if (!ok && !info.err[0]) strcpy(info.err, "The update could not be saved on the disk.");
     info.got = ok ? info.total : info.got;
     info.state = ok ? UPD_READY : UPD_ERROR;
+    klog_write(ok ? "update: downloaded and staged\n" : "update: the download failed\n");
     auth_restore(&saved);
     busy = 0;
     task_exit();

@@ -2,11 +2,11 @@
 #include "string.h"
 
 extern const uiapp_class_t app_calculator, app_clock, app_2048, app_notepad, app_files, app_viewer,
-                           app_activity, app_network, app_paint, app_notes, app_settings, app_diskutil, app_recovery;
+                           app_activity, app_network, app_paint, app_notes, app_settings, app_diskutil, app_recovery, app_updatenotes;
 
 const uiapp_class_t *const uiapp_classes[] = {
     &app_files, &app_notepad, &app_calculator, &app_paint, &app_viewer, &app_activity, &app_network,
-    &app_clock, &app_notes, &app_2048, &app_settings, &app_diskutil, &app_recovery,
+    &app_clock, &app_notes, &app_2048, &app_settings, &app_diskutil, &app_recovery, &app_updatenotes,
 };
 const int uiapp_class_count = (int)(sizeof(uiapp_classes) / sizeof(uiapp_classes[0]));
 
@@ -53,6 +53,33 @@ void ui_button(gfx_surface_t *s, int x, int y, int w, int h, const char *label, 
 }
 
 int ui_hit(int px, int py, int x, int y, int w, int h) { return px >= x && px < x + w && py >= y && py < y + h; }
+
+/* the scroll bar: a thin rounded thumb over a faint track, like macOS's when scrolling */
+void ui_scrollbar(gfx_surface_t *s, int x, int y, int view, int content, int scroll)
+{
+    if (content <= view || view < 20) return;
+    int th = view * view / content;
+    if (th < 28) th = 28;
+    int ty = y + (int)((int64_t)(view - th) * scroll / (content - view));
+    gfx_rrect(s, x, y + 2, 10, view - 4, 5, ui_theme.dark ? 0xFFFFFF : 0x000000, 18);
+    gfx_rrect(s, x + 2, ty + 2, 6, th - 4, 3, ui_theme.dark ? 0xFFFFFF : 0x000000, ui_theme.dark ? 110 : 90);
+}
+
+int ui_scroll_drag(int py, int y, int view, int content)
+{
+    if (content <= view) return 0;
+    int th = view * view / content;
+    if (th < 28) th = 28;
+    int pos = py - y - th / 2;
+    return ui_scroll_clamp((int)((int64_t)pos * (content - view) / (view - th > 0 ? view - th : 1)), view, content);
+}
+
+int ui_scroll_clamp(int scroll, int view, int content)
+{
+    if (scroll > content - view) scroll = content - view;
+    if (scroll < 0) scroll = 0;
+    return scroll;
+}
 
 void ui_num(char *out, int64_t v)
 {

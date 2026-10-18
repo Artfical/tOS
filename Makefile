@@ -203,6 +203,7 @@ KERNEL_OBJS = \
     kernel/display/apps/calc.o \
     kernel/display/apps/diskutil.o \
     kernel/display/apps/recovery.o \
+    kernel/display/apps/updatenotes.o \
     kernel/display/apps/clock.o \
     kernel/display/apps/g2048.o \
     kernel/display/apps/notepad2.o \

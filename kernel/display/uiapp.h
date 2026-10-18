@@ -97,6 +97,12 @@ void ui_set_dark(int dark);
 
 void ui_button(gfx_surface_t *s, int x, int y, int w, int h, const char *label, uint32_t bg, uint32_t fg, int hot);
 int  ui_hit(int px, int py, int x, int y, int w, int h);
+/* A scroll bar along the right edge of an area of height `view` showing `content` pixels from
+ * `scroll` on (drawn only when the content is longer). ui_scroll_drag turns a press or drag at
+ * height py on the bar into the new scroll position; ui_scroll_clamp keeps one in range. */
+void ui_scrollbar(gfx_surface_t *s, int x, int y, int view, int content, int scroll);
+int  ui_scroll_drag(int py, int y, int view, int content);
+int  ui_scroll_clamp(int scroll, int view, int content);
 void ui_num(char *out, int64_t v);            /* appends a decimal number */
 void ui_size(char *out, uint32_t bytes);      /* appends "12 KB" style */
 

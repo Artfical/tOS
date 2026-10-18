@@ -264,28 +264,37 @@ static int tfsk_inode_write(tfsk_t *fs, uint32_t ino, tfsk_inode_t *inode)
     return tfsk_block_write(fs, blk, buf);
 }
 
+/* Takes the first free block from where the last one was found, reading one bitmap block at a
+ * time (kept between calls) and writing back only the one it changed. It used to read and write
+ * the whole bitmap for every block, which made writing a 4 MB file take minutes. */
 static int tfsk_block_alloc(tfsk_t *fs)
 {
-    uint32_t bmp_blocks = (fs->sb.total_blocks + TFSK_BLOCK_SIZE * 8 - 1) / (TFSK_BLOCK_SIZE * 8);
-    uint8_t *bmap = malloc(bmp_blocks * TFSK_BLOCK_SIZE);
-    if (!bmap) return -1;
-
-    for (uint32_t i = 0; i < bmp_blocks; i++)
-        tfsk_block_read(fs, fs->sb.block_bmp_blk + i, bmap + i * TFSK_BLOCK_SIZE);
-
-    for (uint32_t blk = 0; blk < fs->sb.total_blocks; blk++) {
-        if (!(bmap[blk / 8] & (1 << (blk % 8)))) {
-            bmap[blk / 8] |= (1 << (blk % 8));
-            for (uint32_t i = 0; i < bmp_blocks; i++)
-                tfsk_block_write(fs, fs->sb.block_bmp_blk + i, bmap + i * TFSK_BLOCK_SIZE);
-            tfsk_block_zero(fs, blk);
-            fs->sb.free_blocks--;
-            sb_sync(fs);
-            free(bmap);
-            return blk;
+    uint32_t total = (uint32_t)fs->sb.total_blocks, per = TFSK_BLOCK_SIZE * 8;
+    uint32_t start = fs->alloc_hint < total ? fs->alloc_hint : 0;
+    for (int pass = 0; pass < 2; pass++) {
+        uint32_t blk = pass ? 0 : start, limit = pass ? start : total;
+        while (blk < limit) {
+            uint32_t bi = blk / per;
+            if (!fs->bmp_valid || fs->bmp_idx != bi) {
+                if (tfsk_block_read(fs, fs->sb.block_bmp_blk + bi, fs->bmp_cache) < 0) return -1;
+                fs->bmp_idx = bi;
+                fs->bmp_valid = 1;
+            }
+            uint32_t end = (bi + 1) * per < limit ? (bi + 1) * per : limit;
+            for (; blk < end; blk++) {
+                uint32_t o = blk % per;
+                if ((o & 7) == 0 && blk + 8 <= end && fs->bmp_cache[o / 8] == 0xFF) { blk += 7; continue; }   /* a full byte */
+                if (fs->bmp_cache[o / 8] & (1 << (o % 8))) continue;
+                fs->bmp_cache[o / 8] |= (uint8_t)(1 << (o % 8));
+                if (tfsk_block_write(fs, fs->sb.block_bmp_blk + bi, fs->bmp_cache) < 0) { fs->bmp_valid = 0; return -1; }
+                tfsk_block_zero(fs, blk);
+                fs->sb.free_blocks--;
+                sb_sync(fs);
+                fs->alloc_hint = blk + 1;
+                return (int)blk;
+            }
         }
     }
-    free(bmap);
     return -1;
 }
 
@@ -295,6 +304,8 @@ static int tfsk_block_free(tfsk_t *fs, uint32_t blk)
     uint32_t bmp_idx = blk / (TFSK_BLOCK_SIZE * 8);
     uint32_t bmp_off = blk % (TFSK_BLOCK_SIZE * 8);
     if (bmp_idx >= bmp_blocks) return -1;
+    fs->bmp_valid = 0;                                   /* the allocator reads it afresh */
+    if (blk < fs->alloc_hint) fs->alloc_hint = blk;
     uint8_t buf[TFSK_BLOCK_SIZE];
     memset(buf, 0, TFSK_BLOCK_SIZE);
     tfsk_block_read(fs, fs->sb.block_bmp_blk + bmp_idx, buf);

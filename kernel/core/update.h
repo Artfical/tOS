@@ -16,7 +16,7 @@
 enum { UPD_IDLE, UPD_CHECKING, UPD_UPTODATE, UPD_AVAILABLE, UPD_DOWNLOADING, UPD_READY, UPD_ERROR, UPD_LIVE };
 
 #define UPD_MAX_NOTES 40
-#define UPD_MAX_SHOTS 4
+#define UPD_MAX_SHOTS 8
 
 typedef struct {
     unsigned build;
