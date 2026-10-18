@@ -254,6 +254,10 @@ int uhci_interrupt_read(uhci_controller_t *c, int dev, int ep, int max_len, void
     return 0;
 }
 
+/* Bulk data, up to 32 packets queued at once: the descriptors are linked depth first, so the
+ * controller runs as many as fit in each 1 ms frame instead of one packet per frame. */
+#define BULK_BATCH 32
+
 int uhci_bulk_transfer(uhci_controller_t *c, int dev, int ep, int dir, void *buf, int len, int maxpacket, int *toggle)
 {
     uint8_t *p = (uint8_t *)buf;
@@ -261,29 +265,45 @@ int uhci_bulk_transfer(uhci_controller_t *c, int dev, int ep, int dir, void *buf
 
     if (maxpacket <= 0) maxpacket = 64;
 
-    while (remaining > 0 || len == 0) {
-        int chunk = remaining > maxpacket ? maxpacket : remaining;
-
+    do {
+        int n = len == 0 ? 1 : (remaining + maxpacket - 1) / maxpacket;
+        if (n > BULK_BATCH) n = BULK_BATCH;
         uint32_t tdp;
-        uhci_td_t *td = (uhci_td_t *)dma_zalloc(sizeof(uhci_td_t), &tdp);
+        uhci_td_t *td = (uhci_td_t *)dma_zalloc((uint32_t)n * sizeof(uhci_td_t), &tdp);
+        int t = *toggle;
+        uint8_t *q = p;
+        int left = remaining;
+        for (int i = 0; i < n; i++) {
+            int chunk = left > maxpacket ? maxpacket : left;
+            td[i].link = i < n - 1 ? (((uint32_t)&td[i + 1]) | 4) : 1;     /* 4: depth first */
+            td[i].status = UHCI_TD_INIT_STATUS;
+            td[i].token = uhci_token(dir ? UHCI_PID_IN : UHCI_PID_OUT, dev, ep, t, chunk);
+            td[i].buffer = (uint32_t)q;
+            t ^= 1;
+            q += chunk;
+            left -= chunk;
+        }
 
-        td->link = 1;
-        td->status = UHCI_TD_INIT_STATUS;
-        td->token = uhci_token(dir ? UHCI_PID_IN : UHCI_PID_OUT, dev, ep, *toggle, chunk);
-        td->buffer = (uint32_t)p;
-
-        c->async_qh->element = (uint32_t)td;
-        int timed_out = td_wait(td, 2000) != 0;
+        c->async_qh->element = (uint32_t)&td[0];
+        /* done when the last packet is; an error halts the queue and ends the wait too */
+        uint32_t start = debugmon_uptime_ms();
+        int failed = 0, done = 0;
+        for (int k = 0; k < 4000000 && !done && !failed; k++) {
+            if (!(td[n - 1].status & UHCI_TD_ACTIVE)) { done = 1; break; }
+            for (int i = 0; i < n; i++)
+                if (!(td[i].status & UHCI_TD_ACTIVE) && (td[i].status & UHCI_TD_ERROR_MASK)) failed = 1;
+            if ((k & 255) == 0 && debugmon_uptime_ms() - start > 2000) break;
+            inb(0x80);
+        }
         c->async_qh->element = 1;
 
-        if (timed_out) return -1;
-        if (td->status & UHCI_TD_ERROR_MASK) return -1;
-
-        *toggle ^= 1;
-        p += chunk;
-        remaining -= chunk;
-        if (len == 0) break;
-    }
+        for (int i = 0; i < n; i++) {
+            if ((td[i].status & UHCI_TD_ACTIVE) || (td[i].status & UHCI_TD_ERROR_MASK)) return -1;
+            *toggle ^= 1;
+        }
+        p = q;
+        remaining = left;
+    } while (remaining > 0);
 
     return 0;
 }

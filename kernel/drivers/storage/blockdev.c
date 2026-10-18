@@ -115,8 +115,32 @@ blockdev_t *blockdev_find(const char *name)
 /* Raw device access is not reentrant (PIO command sequences, shared DMA
  * buffers), and the GUI runs several tasks that can reach a disk at once.
  * The scheduler is not running yet during early boot, hence the guard. */
-static void bd_lock(void)   { if (task_current()) task_preempt_disable(); }
-static void bd_unlock(void) { if (task_current()) task_preempt_enable(); }
+/* A mutex rather than preemption switched off: a slow device (a USB disk answers each command
+ * in milliseconds) used to freeze the whole desktop for the length of a transfer. The task that
+ * holds it may take it again (reads made of reads); the others give way until it is free. */
+static task_t *volatile bd_owner;
+static int bd_depth;
+
+static void bd_lock(void)
+{
+    task_t *me = task_current();
+    if (!me) return;
+    for (;;) {
+        task_preempt_disable();
+        if (!bd_owner || bd_owner == me) { bd_owner = me; bd_depth++; task_preempt_enable(); return; }
+        task_preempt_enable();
+        task_yield();
+    }
+}
+
+static void bd_unlock(void)
+{
+    task_t *me = task_current();
+    if (!me) return;
+    task_preempt_disable();
+    if (bd_owner == me && --bd_depth == 0) bd_owner = 0;
+    task_preempt_enable();
+}
 
 /* Write-through sector cache for 512-byte-sector devices. The filesystem
  * drivers read single FAT entries / bitmap bytes through whole-sector PIO

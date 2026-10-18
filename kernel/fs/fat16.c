@@ -1067,16 +1067,18 @@ int fat16_format(blockdev_t *bd, const char *label)
         }
     }
 
-    memset(fat_sector_buf, 0, bytes_per_sector);
+    /* the rest of each FAT, 64 sectors a command */
+    free(fat_sector_buf);
+    uint8_t *zeros = (uint8_t *)kcalloc(64, bytes_per_sector);
+    if (!zeros) return -1;
     for (uint32_t f = 0; f < num_fats; f++) {
-        for (uint32_t s = 1; s < fat_sectors; s++) {
-            if (blockdev_write(bd, reserved_sectors + f * fat_sectors + s, 1, fat_sector_buf) != 0) {
-                free(fat_sector_buf);
-                return -1;
-            }
+        for (uint32_t s = 1; s < fat_sectors; ) {
+            uint32_t n = fat_sectors - s < 64 ? fat_sectors - s : 64;
+            if (blockdev_write(bd, reserved_sectors + f * fat_sectors + s, n, zeros) != 0) { free(zeros); return -1; }
+            s += n;
         }
     }
-    free(fat_sector_buf);
+    free(zeros);
 
     uint32_t root_dir_sector = reserved_sectors + num_fats * fat_sectors;
     uint8_t *zero_sector = (uint8_t *)malloc(bytes_per_sector);
