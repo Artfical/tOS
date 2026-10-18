@@ -318,6 +318,13 @@ static void download_task(void)
     info.total = info.ksize + info.isize;
     info.got = 0; info.speed = 0;
     dl_base = 0; dl_last_ms = debugmon_uptime_ms(); dl_last_bytes = 0;
+    /* a video in the notes holds all its frames (~12 MB): give them back first, or the
+     * kernel and initrd may find no room. The notes window stops drawing them once the pointer
+     * is gone; wait a frame before freeing what it may still be drawing from. */
+    uint8_t *frames[UPD_MAX_SHOTS]; int nf = 0;
+    for (int i = 0; i < info.nshots; i++)
+        if (info.shots[i].rgba && info.shots[i].frames > 1) { frames[nf++] = info.shots[i].rgba; info.shots[i].rgba = 0; }
+    if (nf) { task_sleep(100); while (nf) free(frames[--nf]); }
     if (!vfs_exists(STAGE)) vfs_mkdir(STAGE, 0700);
     vfs_unlink(STAGE "/ready");                      /* an older staged update is replaced */
     uint8_t *buf, *body; uint32_t len;

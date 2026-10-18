@@ -253,8 +253,9 @@ static void draw_update(uiapp_t *a, set_t *st, gfx_surface_t *s, int px, int gy,
     const update_info_t *u = uihost_update_status();
     if (!st->asked) { st->asked = 1; if (u->state == UPD_IDLE || u->state == UPD_ERROR) uihost_update_check(); }
     char v[160];
-    /* the card at the top: what this computer runs and what there is */
-    group(s, px, gy, pw, 2);
+    /* the card at the top: what this computer runs and what there is (one block, no rule:
+     * the build line under the title would sit on it) */
+    gfx_rrect(s, px, gy, pw, 88, 10, UI_CARD, 255);
     gfx_blit(s, gfx_image("rec_install"), px + 16, gy + 12, 255);
     int tx = px + 96, ty = gy + 18;
     if (u->state == UPD_AVAILABLE || u->state == UPD_DOWNLOADING || u->state == UPD_READY) {
