@@ -341,18 +341,61 @@ def disk_icon(size):
 for sz in (64, 48, 20):
     add_image(f'doc{sz}_disk', disk_icon(sz))
 
-# the eject mark: a triangle over a bar, white on transparent like the other glyphs
-S = 64
+# an internal disk: a darker metal drive with screws in its corners, the kind of icon macOS
+# gives the startup disk (drawn here, not taken from Apple)
+def hdd_icon(size):
+    S = size * 4
+    im = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+    x0, x1, y0, y1 = int(S * 0.08), int(S * 0.92), int(S * 0.24), int(S * 0.82)
+    sh = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(sh).rounded_rectangle([x0, y0 + S // 24, x1, y1 + S // 24], radius=int(S * 0.07), fill=90)
+    sh = sh.filter(ImageFilter.GaussianBlur(S * 0.03))
+    im = Image.composite(Image.new('RGBA', (S, S), (0, 0, 0, 255)), im, sh)
+    body = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(body)
+    for y in range(y0, y1 + 1):
+        t = (y - y0) / (y1 - y0)
+        c = int(196 - 70 * t)
+        bd.line([(0, y), (S, y)], fill=(c, c + 2, c + 6, 255))
+    mask = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([x0, y0, x1, y1], radius=int(S * 0.07), fill=255)
+    im = Image.composite(body, im, mask)
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle([x0, y0, x1, y1], radius=int(S * 0.07), outline=(96, 98, 106, 255), width=max(2, S // 80))
+    d.line([(x0 + S // 30, y0 + S // 40), (x1 - S // 30, y0 + S // 40)], fill=(236, 238, 242, 255), width=max(2, S // 70))
+    # the label on top
+    d.rounded_rectangle([int(S * 0.24), int(S * 0.33), int(S * 0.76), int(S * 0.56)], radius=S // 40, fill=(222, 224, 230, 255), outline=(150, 152, 160, 255), width=max(1, S // 120))
+    for i in range(3):
+        yy = int(S * 0.39) + i * int(S * 0.05)
+        d.line([(int(S * 0.30), yy), (int(S * 0.62) - i * int(S * 0.06), yy)], fill=(160, 162, 170, 255), width=max(1, S // 100))
+    # the connector edge and four screws
+    d.line([(x0, int(S * 0.66)), (x1, int(S * 0.66))], fill=(100, 102, 110, 255), width=max(2, S // 90))
+    for cx, cy in [(0.15, 0.31), (0.85, 0.31), (0.15, 0.74), (0.85, 0.74)]:
+        r = S * 0.028
+        d.ellipse([S * cx - r, S * cy - r, S * cx + r, S * cy + r], fill=(120, 122, 130, 255), outline=(80, 82, 90, 255))
+    return im.resize((size, size), Image.LANCZOS)
+
+for sz in (64, 48, 20):
+    add_image(f'doc{sz}_hdd', hdd_icon(sz))
+
+# the eject mark, drawn on the 16 px grid at 8x so the triangle and the bar stay crisp: the
+# triangle fills rows 3-9 with rounded corners, the bar rows 12-13, a clean gap between
+S = 128
+u = S / 16.0
 ej = Image.new('L', (S, S), 0)
 d = ImageDraw.Draw(ej)
-d.polygon([(32, 10), (54, 36), (10, 36)], fill=255)
-d.rounded_rectangle([10, 44, 54, 53], radius=2, fill=255)
+r = 0.7 * u
+tri = [(8 * u, 3 * u + r), (14 * u - r * 1.4, 10 * u - r), (2 * u + r * 1.4, 10 * u - r)]
+d.polygon(tri, fill=255)
+d.line(tri + [tri[0]], fill=255, width=int(2 * r), joint='curve')
+for x, y in tri: d.ellipse([x - r, y - r, x + r, y + r], fill=255)
+d.rounded_rectangle([2 * u, 12 * u, 14 * u, 14 * u - 1], radius=0.8 * u, fill=255)
 ej = ej.resize((16, 16), Image.LANCZOS)
 rgba = Image.new('RGBA', (16, 16), (255, 255, 255, 0)); rgba.putalpha(ej)
 add_image('glyph_eject', rgba)
 
 # small monochrome glyphs for the top bar and window buttons (white on transparent)
-for g in ['pencil', 'paint-bucket', 'type', 'eraser', 'pipette', 'zoom-in', 'zoom-out', 'brush', 'spray-can', 'pen-tool', 'highlighter', 'square', 'circle', 'triangle', 'star', 'minus', 'arrow-right', 'diamond', 'crop', 'scaling', 'rotate-ccw', 'rotate-cw', 'flip-horizontal', 'flip-vertical', 'square-dashed', 'layers', 'plus', 'trash-2', 'eye', 'eye-off', 'undo-2', 'redo-2', 'palette', 'copy', 'scissors', 'clipboard', 'heart', 'hexagon', 'move', 'maximize', 'grid-3x3', 'droplet', 'save', 'folder-open', 'arrow-up', 'arrow-down', 'pentagon', 'ethernet-port', 'sun', 'moon', 'user', 'users', 'mouse-pointer', 'layout-panel-top', 'image', 'info', 'lock', 'list', 'layout-grid', 'chevron-left', 'folder', 'hard-drive', 'download', 'file-text', 'wifi', 'volume-2', 'battery-full', 'search', 'power', 'bell', 'x', 'minus', 'maximize-2', 'house', 'monitor', 'cpu', 'chevron-right']:
+for g in ['pencil', 'paint-bucket', 'type', 'eraser', 'pipette', 'zoom-in', 'zoom-out', 'brush', 'spray-can', 'pen-tool', 'highlighter', 'square', 'circle', 'triangle', 'star', 'minus', 'arrow-right', 'diamond', 'crop', 'scaling', 'rotate-ccw', 'rotate-cw', 'flip-horizontal', 'flip-vertical', 'square-dashed', 'layers', 'plus', 'trash-2', 'eye', 'eye-off', 'undo-2', 'redo-2', 'palette', 'copy', 'scissors', 'clipboard', 'heart', 'hexagon', 'move', 'maximize', 'grid-3x3', 'droplet', 'save', 'folder-open', 'arrow-up', 'arrow-down', 'pentagon', 'ethernet-port', 'sun', 'moon', 'user', 'users', 'mouse-pointer', 'layout-panel-top', 'image', 'info', 'lock', 'list', 'layout-grid', 'chevron-left', 'folder', 'hard-drive', 'download', 'file-text', 'wifi', 'volume-2', 'battery-full', 'search', 'power', 'bell', 'x', 'minus', 'maximize-2', 'house', 'monitor', 'cpu', 'chevron-right', 'stethoscope', 'chart-pie', 'history', 'panel-left', 'usb', 'database']:
     S = 64
     f = ImageFont.truetype(lucide_path, 52)
     im = Image.new('L', (S, S), 0)

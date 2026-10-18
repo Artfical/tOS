@@ -4,6 +4,7 @@
 #include "terminal.h"
 #include "memory.h"
 #include "string.h"
+#include "klog.h"
 
 static uhci_controller_t uhci_ctrl;
 
@@ -112,26 +113,32 @@ static int usb_msd_send_cmd(usb_msd_device_t *dev, const uint8_t *cb, int cb_len
     memcpy(cbw.cb, cb, cb_len);
 
     if (uhci_bulk_transfer(&uhci_ctrl, dev->dev_addr, dev->bulk_out_ep, 0,
-                            &cbw, sizeof(cbw), dev->out_max_packet, &dev->out_toggle) != 0)
+                            &cbw, sizeof(cbw), dev->out_max_packet, &dev->out_toggle) != 0) {
+        klog_write("usb_msd: command stage failed\n");
         return -1;
+    }
 
     if (data_len > 0) {
         int dir = data_in ? 1 : 0;
         int ep = data_in ? dev->bulk_in_ep : dev->bulk_out_ep;
         int mp = data_in ? dev->in_max_packet : dev->out_max_packet;
         int *toggle = data_in ? &dev->in_toggle : &dev->out_toggle;
-        if (uhci_bulk_transfer(&uhci_ctrl, dev->dev_addr, ep, dir, data, (int)data_len, mp, toggle) != 0)
+        if (uhci_bulk_transfer(&uhci_ctrl, dev->dev_addr, ep, dir, data, (int)data_len, mp, toggle) != 0) {
+            klog_write(data_in ? "usb_msd: data in failed\n" : "usb_msd: data out failed\n");
             return -1;
+        }
     }
 
     usb_msd_csw_t csw __attribute__((aligned(16)));
     memset(&csw, 0, sizeof(csw));
     if (uhci_bulk_transfer(&uhci_ctrl, dev->dev_addr, dev->bulk_in_ep, 1,
-                            &csw, sizeof(csw), dev->in_max_packet, &dev->in_toggle) != 0)
+                            &csw, sizeof(csw), dev->in_max_packet, &dev->in_toggle) != 0) {
+        klog_write("usb_msd: status stage failed\n");
         return -1;
+    }
 
-    if (csw.signature != USB_MSD_CSW_SIGNATURE) return -1;
-    if (csw.status != 0) return -1;
+    if (csw.signature != USB_MSD_CSW_SIGNATURE) { klog_write("usb_msd: bad status signature\n"); return -1; }
+    if (csw.status != 0) { klog_write("usb_msd: the device reported a failed command\n"); return -1; }
 
     return 0;
 }

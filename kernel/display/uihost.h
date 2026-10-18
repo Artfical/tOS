@@ -78,4 +78,32 @@ typedef struct { char name[32]; char path[64]; uint64_t bytes; } uihost_volume_t
 int  uihost_volumes(uihost_volume_t *out, int max);
 int  uihost_eject(const char *path);
 
+
+/* Disk Utility: every disk, with what is on it. size is the device's; total/used are the file
+ * system's (used_known says whether they could be read). Mounting puts a volume at
+ * /Volumes/<name>. Erasing needs authorisation (uihost_authorize first). */
+typedef struct {
+    char dev[16];            /* ata0, usb0 */
+    char model[40];          /* what the disk calls itself */
+    char name[32];           /* the volume's name, "" when nothing is mounted */
+    char fs[16];             /* tfsk, fat32, ...; "" when none was recognised */
+    char mount[64];
+    char connection[16];     /* SATA, USB, PCI-Express */
+    uint64_t size, total, used;
+    int used_known, mounted, removable, startup;
+} uihost_disk_t;
+int  uihost_disks(uihost_disk_t *out, int max);
+int  uihost_disk_mount(const char *dev);
+int  uihost_disk_unmount(const char *dev);
+int  uihost_disk_erase(const char *dev, const char *fs, const char *name, char *err, int len);
+int  uihost_disk_first_aid(const char *dev, char *report, int len);   /* 0 OK, 1 problems, -1 unreadable */
+/* The long ones in the background, so the desktop keeps running: op 1 = erase (authorise first),
+ * 2 = First Aid. While a job runs its disk can't be mounted, unmounted or ejected.
+ * start: 0 started, -1 busy (this disk, or another job); poll: -2 still running, otherwise the
+ * result, with the report copied out. Mount/unmount return -2 for a disk a job is using. */
+/* closes the window an app (a uiapp_t) is in, like its red button */
+void uihost_close_window(void *app);
+int  uihost_disk_job(int op, const char *dev, const char *fs, const char *name);
+int  uihost_disk_job_poll(char *report, int len);
+
 #endif

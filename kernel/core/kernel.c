@@ -24,6 +24,7 @@
 #include "micropython.h"
 #include "scheduler.h"
 #include "vga_font.h"
+#include "bootsplash.h"
 #include "vfs.h"
 #include "pcspkr.h"
 #include "ramfs.h"
@@ -86,7 +87,7 @@ static void show_boot_intro(void)
     terminal_setcolor(0x07);
     terminal_writestring("tOS");
 
-    busy_delay_ms(2000);
+    if (!bootsplash_active()) busy_delay_ms(2000);     /* the boot screen is showing instead */
     terminal_clear();
 }
 
@@ -146,6 +147,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     serial_init();
     terminal_init();
     klog_init();
+    bootsplash_begin();          /* the logo on white from here to the first question */
     serial_write(TOS_BOOT_STRING "\n");
     terminal_writestring(TOS_BOOT_STRING "\n");
     klog_write(TOS_BOOT_STRING "\n");
@@ -179,6 +181,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
      * software self-yields, which would otherwise make calibration
      * count fake ticks too. See debugmon_calibrate_tsc(). */
     debugmon_calibrate_tsc();
+    bootsplash_progress(5);
 
     {
         /* Temporary boot-time self-check: print the calibrated TSC
@@ -246,10 +249,13 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     memory_init(mem_upper, have_initrd ? initrd_end : 0);
 
     paging_init();
+    bootsplash_paging_ready();
+    bootsplash_progress(8);
     tss_init();
     usermode_init();
 
     ramfs_init();
+    bootsplash_progress(12);
     terminal_writestring("[OK] Ramfs initialized\n");
     klog_write("[OK] Ramfs initialized\n");
 
@@ -263,6 +269,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     }
 
     vfs_init();
+    bootsplash_progress(22);
     ramfs_mount_vfs();
     terminal_writestring("[OK] VFS initialized\n");
     klog_write("[OK] VFS initialized\n");
@@ -270,6 +277,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     blockdev_init();
 
     int ata_count = ata_init();
+    bootsplash_progress(38);
     terminal_writestring("[OK] ATA initialized (");
     terminal_putchar('0' + ata_count);
     terminal_writestring(" devices)\n");
@@ -343,6 +351,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         klog_write("[INFO] No NVMe controller found\n");
     }
 
+    bootsplash_progress(55);
     static usb_msd_device_t usb_msd_instance;
     if (usb_msd_init(&usb_msd_instance) == 0) {
         terminal_writestring("[OK] USB mass storage initialized\n");
@@ -371,12 +380,23 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         klog_write("[INFO] No USB mass storage device found\n");
     }
 
+    bootsplash_progress(68);
     static tfsk_t tfs_instance;
     if (installer_check_installed()) {
         terminal_writestring("[OK] tFS disk detected, mounting...\n");
         klog_write("[OK] tFS disk detected, mounting...\n");
         if (tfsk_probe_and_mount(&tfs_instance) == 0) {
             tfsk_mount_vfs(&tfs_instance, "/mnt");
+            /* recorded on its block device, so Disk Utility and df see the startup disk */
+            for (int i = 0; i < blockdev_count(); i++) {
+                blockdev_t *bd = blockdev_get(i);
+                if (bd && bd->driver_data == tfs_instance.dev && !bd->mounted) {
+                    bd->mounted = 1;
+                    strcpy(bd->mount_point, "/mnt");
+                    strcpy(bd->fs_type, "tfsk");
+                    bd->fs_ctx = &tfs_instance;
+                }
+            }
             terminal_writestring("[OK] tFS mounted at /mnt\n");
             klog_write("[OK] tFS mounted at /mnt\n");
         } else {
@@ -388,6 +408,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         klog_write("[INFO] No tFS disk found.\n");
     }
 
+    bootsplash_progress(82);
     keyboard_init();
     terminal_writestring("[OK] Keyboard initialized\n");
     klog_write("[OK] Keyboard initialized\n");
@@ -401,6 +422,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
      * (the more common choice) skipped it entirely until now. */
     vga_font_capture_base();
 
+    bootsplash_end();
     terminal_writestring("\nKeyboard layout: [US] (1) or [TR-Q] (2) ? ");
     for (;;) {
         char c = keyboard_getchar();

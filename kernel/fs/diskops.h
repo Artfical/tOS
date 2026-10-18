@@ -23,6 +23,11 @@ int diskops_resize(const char *name, uint32_t size_mb, char *err, int err_len);
    the user for a filesystem type up front. */
 const char *diskops_detect(const char *name);
 
+/* bytes the mounted file system on `name` holds and uses; -1 when it cannot tell */
+int diskops_usage(const char *name, uint64_t *total, uint64_t *used);
+/* First Aid: read-only checks with a report of what was done (0 OK, 1 problems, -1 unreadable) */
+int diskops_first_aid(const char *name, char *report, int len);
+
 extern const char *diskops_fstypes[];
 extern const int diskops_fstypes_count;
 

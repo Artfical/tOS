@@ -781,3 +781,11 @@ void cmd_notify(int argc, char **args)
     else terminal_writestring("closed");
     terminal_writestring("\n");
 }
+
+/* open <app> [file]: opens an app on the desktop (open diskutil, open paint ~/a.png) */
+void uihost_open(const char *app_id, const char *path);
+void cmd_open(int argc, char **args)
+{
+    if (argc < 2) { terminal_writestring("usage: open <app> [file]   (files, notepad, paint, diskutil, settings, ...)\n"); return; }
+    uihost_open(args[1], argc > 2 ? args[2] : 0);
+}

@@ -214,3 +214,115 @@ int uihost_volumes(uihost_volume_t *out, int max)
 }
 
 int uihost_eject(const char *path) { return volumes_eject(path); }
+
+/* ---- Disk Utility ---- */
+#include "blockdev.h"
+#include "diskops.h"
+#include "tfsk.h"
+
+int uihost_disks(uihost_disk_t *out, int max)
+{
+    int n = 0;
+    for (int i = 0; i < blockdev_count() && n < max; i++) {
+        blockdev_t *bd = blockdev_get(i);
+        if (!bd) continue;
+        uihost_disk_t *d = &out[n++];
+        memset(d, 0, sizeof(*d));
+        strncpy(d->dev, bd->name, sizeof(d->dev) - 1);
+        d->size = bd->total_sectors * bd->sector_size;
+        d->removable = bd->type == BLOCKDEV_USB_MSD;
+        const char *conn = bd->type == BLOCKDEV_USB_MSD ? "USB" : bd->type == BLOCKDEV_NVME ? "PCI-Express" : bd->type == BLOCKDEV_AHCI ? "SATA" : "ATA";
+        strcpy(d->connection, conn);
+        if (bd->type == BLOCKDEV_ATA && bd->driver_data) {
+            const char *m = ((ata_device_t *)bd->driver_data)->model;
+            int l = 0;
+            while (m[l] && l < 39) { d->model[l] = m[l]; l++; }
+            while (l > 0 && d->model[l - 1] == ' ') l--;
+            d->model[l] = 0;
+        }
+        if (!d->model[0]) strcpy(d->model, bd->type == BLOCKDEV_USB_MSD ? "USB Flash Disk" : bd->type == BLOCKDEV_NVME ? "NVMe SSD" : "Disk");
+        d->mounted = bd->mounted;
+        if (bd->mounted) {
+            strncpy(d->fs, bd->fs_type, sizeof(d->fs) - 1);
+            strncpy(d->mount, bd->mount_point, sizeof(d->mount) - 1);
+            d->startup = !strcmp(bd->mount_point, "/mnt");
+            const char *vn = volumes_name_of(bd->name);
+            if (vn) strncpy(d->name, vn, sizeof(d->name) - 1);
+            else if (d->startup && !strcmp(bd->fs_type, "tfsk") && bd->fs_ctx && ((tfsk_t *)bd->fs_ctx)->sb.volume[0])
+                strncpy(d->name, ((tfsk_t *)bd->fs_ctx)->sb.volume, sizeof(d->name) - 1);
+            else if (d->startup) strcpy(d->name, "tOS");
+            else {
+                const char *b = bd->mount_point;
+                for (const char *p = bd->mount_point; *p; p++) if (*p == '/' && p[1]) b = p + 1;
+                strncpy(d->name, b, sizeof(d->name) - 1);
+            }
+            d->used_known = diskops_usage(bd->name, &d->total, &d->used) == 0;
+        } else {
+            const char *fs = diskops_detect(bd->name);
+            if (fs) { strncpy(d->fs, fs, sizeof(d->fs) - 1); volumes_label_of(bd->name, fs, d->name); }
+        }
+    }
+    return n;
+}
+
+int uihost_disk_mount(const char *dev) { return volumes_mount(dev); }
+int uihost_disk_unmount(const char *dev) { return volumes_unmount(dev); }
+
+int uihost_disk_erase(const char *dev, const char *fs, const char *name, char *err, int len)
+{
+    err[0] = 0;
+    if (!wm_gfx_take_authorization()) { strncpy(err, "Not authorised.", (size_t)len); return -1; }
+    return volumes_erase(dev, fs, name, err, len);
+}
+
+int uihost_disk_first_aid(const char *dev, char *report, int len) { return diskops_first_aid(dev, report, len); }
+
+/* ---- disk jobs: erase and First Aid on a task of their own ---- */
+#include "scheduler.h"
+
+static volatile int job_running, job_rc;
+static int job_op;
+static char job_dev[16], job_fs[16], job_name[24], job_report[1200];
+
+static void job_entry(void)
+{
+    char err[96] = "";
+    if (job_op == 1) {
+        job_report[0] = 0;
+        strcpy(job_report, "Unmounting the disk.\nErasing and creating \xE2\x80\x9C");
+        strcat(job_report, job_name);
+        strcat(job_report, "\xE2\x80\x9D.\n");
+        job_rc = volumes_erase(job_dev, job_fs, job_name, err, sizeof(err)) == 0 ? 0 : -1;
+        strcat(job_report, job_rc == 0 ? "Mounting the new volume.\nOperation successful.\n" : (err[0] ? err : "Erasing failed."));
+        if (job_rc) strcat(job_report, "\n");
+    } else job_rc = diskops_first_aid(job_dev, job_report, sizeof(job_report));
+    volumes_release(job_dev);
+    job_running = 0;
+    task_exit();
+}
+
+int uihost_disk_job(int op, const char *dev, const char *fs, const char *name)
+{
+    if (job_running || volumes_claim(dev) != 0) return -1;
+    if (op == 1 && !wm_gfx_take_authorization()) { volumes_release(dev); return -1; }
+    job_op = op;
+    strncpy(job_dev, dev, sizeof(job_dev) - 1);
+    strncpy(job_fs, fs ? fs : "", sizeof(job_fs) - 1);
+    strncpy(job_name, name ? name : "", sizeof(job_name) - 1);
+    job_report[0] = 0;
+    job_running = 1;
+    if (task_spawn(job_entry, op == 1 ? "diskutil-erase" : "diskutil-firstaid") < 0) {
+        job_running = 0;
+        volumes_release(dev);
+        return -1;
+    }
+    return 0;
+}
+
+int uihost_disk_job_poll(char *report, int len)
+{
+    if (job_running) return -2;
+    strncpy(report, job_report, (size_t)len - 1);
+    report[len - 1] = 0;
+    return job_rc;
+}

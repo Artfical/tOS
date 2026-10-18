@@ -184,7 +184,7 @@ static const char *builtin_names[] = {
     "version", "about", "uname", "ping", "ifconfig", "wget", "ws", "tls", "ipsec", "tpkg", "python", "tsharp", "run",
     "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
     "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",
-    "basename", "dirname", "which", "env", "uptime", "ps", "log", "kill", "notify",
+    "basename", "dirname", "which", "env", "uptime", "ps", "log", "kill", "notify", "open",
     "chmod", "hexdump", "tee", "alias", "history", "font", "htop",
     "disk", "rev", "uniq", "tar", "zip", "unzip",
     "id", "groups", "passwd", "useradd", "userdel", "chown", "chgrp", "umask", "stat",
@@ -642,6 +642,8 @@ void shell_dispatch(int argc, char **args)
             cmd_uptime(argc, args);
         } else if (strcmp(c, "notify") == 0) {
             cmd_notify(argc, args);
+        } else if (strcmp(c, "open") == 0) {
+            cmd_open(argc, args);
         } else if (strcmp(c, "ps") == 0) {
             cmd_ps(argc, args);
         } else if (strcmp(c, "log") == 0) {

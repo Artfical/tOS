@@ -1216,4 +1216,5 @@ static void p_close(uiapp_t *a)
 const uiapp_class_t app_paint = {
     "paint", "Paint", "paint", 1060, 600, 1, sizeof(pt_t),
     p_init, p_draw, p_press, p_drag, p_release, p_key, p_wheel, p_tick, p_close,
+    0, 0, 0,
 };

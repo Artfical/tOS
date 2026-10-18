@@ -17,6 +17,7 @@
 #include "apfs.h"
 #include "klog.h"
 #include "auth.h"
+#include "debugmon.h"
 
 const char *diskops_fstypes[] = { "tfsk", "fat16", "fat32", "exfat", "ext2", "ext3", "ext4", "ntfs", "btrfs", "xfs", "zfs", "apfs" };
 const int diskops_fstypes_count = 12;
@@ -41,6 +42,18 @@ static void log3(const char *a, const char *b, const char *c)
     klog_write("\n");
 }
 
+/* the disk tOS runs from (its tFS is at /mnt, and /system, /home, /etc live on it) can never
+ * be unmounted, ejected or erased: everything would fall away underneath the running system */
+static int is_startup_mount(const char *mp)
+{
+    return !strcmp(mp, "/mnt") || !strcmp(mp, "/mnt/") || !strcmp(mp, "/");
+}
+
+static int is_startup_dev(blockdev_t *bd)
+{
+    return bd && bd->mounted && is_startup_mount(bd->mount_point);
+}
+
 int diskops_mount(const char *name, const char *mount_point, const char *fstype, char *err, int err_len)
 {
     if (!auth_is_root()) { seterr(err, err_len, "permission denied (needs root; try sudo)"); return -1; }
@@ -58,8 +71,7 @@ int diskops_mount(const char *name, const char *mount_point, const char *fstype,
         if (fs_next >= VFS_MAX_MOUNTS) { seterr(err, err_len, "too many mounted filesystems"); return -1; }
         tfsk_t *fs = &fs_instances[fs_next];
         memset(fs, 0, sizeof(*fs));
-        fs->dev = (ata_device_t *)bd->driver_data;
-        if (tfsk_probe_and_mount(fs) != 0) { seterr(err, err_len, "tfsk probe failed (not formatted?)"); return -1; }
+        if (tfsk_mount(fs, (ata_device_t *)bd->driver_data) != 0) { seterr(err, err_len, "tfsk probe failed (not formatted?)"); return -1; }
         fs_next++;
         tfsk_mount_vfs(fs, mount_point);
         bd->fs_ctx = fs;
@@ -194,7 +206,6 @@ const char *diskops_detect(const char *name)
     if (!bd || bd->mounted) return NULL;
     blockdev_cache_invalidate(bd);
 
-    static tfsk_t  det_tfs;
     static fat32_t det_f32;
     static fat16_t det_f16;
     static exfat_t det_ef;
@@ -206,11 +217,9 @@ const char *diskops_detect(const char *name)
     static zfs_t   det_zfs;
     static apfs_t  det_apfs;
 
-    if (bd->type == BLOCKDEV_ATA) {
-        memset(&det_tfs, 0, sizeof(det_tfs));
-        det_tfs.dev = (ata_device_t *)bd->driver_data;
-        if (tfsk_probe_and_mount(&det_tfs) == 0) return "tfsk";
-    }
+    /* this device only, and without writing: tfsk_probe_and_mount() tries every ATA disk and
+     * mounting writes the superblock, which on the running startup disk is no probe at all */
+    if (bd->type == BLOCKDEV_ATA && tfsk_probe((ata_device_t *)bd->driver_data) == 0) return "tfsk";
 
     memset(&det_f32, 0, sizeof(det_f32));
     if (fat32_probe_and_mount(&det_f32, bd) == 0) return "fat32";
@@ -251,6 +260,7 @@ int diskops_umount(const char *mount_point, char *err, int err_len)
 {
     if (!auth_is_root()) { seterr(err, err_len, "permission denied (needs root; try sudo)"); return -1; }
     log3("diskops: unmounting ", mount_point, NULL);
+    if (is_startup_mount(mount_point)) { seterr(err, err_len, "the startup disk can't be unmounted"); return -1; }
 
     if (vfs_unmount(mount_point) != 0) { seterr(err, err_len, "umount failed (not mounted, or busy)"); return -1; }
 
@@ -295,6 +305,7 @@ int diskops_format(const char *name, const char *fstype, char *err, int err_len)
 
     blockdev_t *bd = blockdev_find(name);
     if (!bd) { seterr(err, err_len, "no such device"); return -1; }
+    if (is_startup_dev(bd)) { seterr(err, err_len, "the startup disk can't be erased"); return -1; }
     if (bd->mounted) { seterr(err, err_len, "cannot format a mounted device, umount first"); return -1; }
     blockdev_cache_invalidate(bd);
 
@@ -370,4 +381,160 @@ int diskops_resize(const char *name, uint32_t size_mb, char *err, int err_len)
     else { seterr(err, err_len, "resizing is not implemented for this filesystem"); rc = -1; }
     blockdev_cache_invalidate(bd);
     return rc;
+}
+
+/* ------------------------------------------------------------------ usage and First Aid */
+
+/* free clusters of a FAT volume, counted from the table itself; remembered for a few seconds
+ * because Disk Utility asks on every repaint and a big FAT is many sectors */
+static struct { blockdev_t *bd; uint32_t free, total, ms; } fat_cache[4];
+
+static int fat_count(blockdev_t *bd, int is32, uint32_t fat_lba, uint32_t clusters, uint32_t *free_out, uint32_t *bad_out)
+{
+    static uint8_t buf[8 * 512];       /* eight sectors a read: a USB disk answers each read slowly */
+    uint32_t per = is32 ? 128 : 256, free = 0, bad = 0, max = clusters + 1;
+    for (uint32_t c = 2, cached = 0xFFFFFFFF; c <= max; c++) {
+        uint32_t s = c / per;
+        if (s / 8 != cached) { if (blockdev_read(bd, fat_lba + (s / 8) * 8, 8, buf) != 0) return -1; cached = s / 8; }
+        uint8_t *sec = buf + (s % 8) * 512;
+        uint32_t i = c % per;
+        uint32_t v = is32 ? (((uint32_t)sec[i * 4] | ((uint32_t)sec[i * 4 + 1] << 8) | ((uint32_t)sec[i * 4 + 2] << 16) | ((uint32_t)sec[i * 4 + 3] << 24)) & 0x0FFFFFFF)
+                          : ((uint32_t)sec[i * 2] | ((uint32_t)sec[i * 2 + 1] << 8));
+        if (v == 0) { free++; continue; }
+        uint32_t eoc = is32 ? 0x0FFFFFF8 : 0xFFF8, badmark = is32 ? 0x0FFFFFF7 : 0xFFF7;
+        /* a link must point at a cluster that exists, or end the chain */
+        if (v != badmark && v < eoc && (v < 2 || v > max)) bad++;
+    }
+    *free_out = free;
+    if (bad_out) *bad_out = bad;
+    return 0;
+}
+
+int diskops_usage(const char *name, uint64_t *total, uint64_t *used)
+{
+    blockdev_t *bd = blockdev_find(name);
+    if (!bd || !bd->mounted || !bd->fs_ctx) return -1;
+    const char *ft = bd->fs_type;
+    if (!strcmp(ft, "tfsk")) {
+        tfsk_t *fs = (tfsk_t *)bd->fs_ctx;
+        *total = fs->sb.total_blocks * TFSK_BLOCK_SIZE;
+        *used = (fs->sb.total_blocks - fs->sb.free_blocks) * TFSK_BLOCK_SIZE;
+        return 0;
+    }
+    if (!strcmp(ft, "ext4")) {
+        ext4_t *fs = (ext4_t *)bd->fs_ctx;
+        *total = (uint64_t)fs->blocks_count * fs->block_size;
+        *used = (uint64_t)(fs->blocks_count - fs->free_blocks_count) * fs->block_size;
+        return 0;
+    }
+    if (!strcmp(ft, "fat32") || !strcmp(ft, "fat16")) {
+        int is32 = !strcmp(ft, "fat32");
+        uint32_t spc, data, totsec, res, bps;
+        if (is32) { fat32_t *f = bd->fs_ctx; spc = f->sectors_per_cluster; data = f->data_start_sector; totsec = f->total_sectors; res = f->reserved_sectors; bps = f->bytes_per_sector; }
+        else      { fat16_t *f = bd->fs_ctx; spc = f->sectors_per_cluster; data = f->data_start_sector; totsec = f->total_sectors; res = f->reserved_sectors; bps = f->bytes_per_sector; }
+        if (!spc || bps != 512 || totsec <= data) return -1;
+        uint32_t clusters = (totsec - data) / spc;
+        uint32_t now = debugmon_uptime_ms(), free = 0xFFFFFFFF;
+        /* FAT32 keeps a free count in its FSInfo sector, valid until the driver first changes the
+         * table (it marks it unknown then) */
+        if (is32) {
+            fat32_t *f = bd->fs_ctx;
+            static uint8_t fi[512];
+            if (f->fsinfo_sector && !f->fsinfo_invalid && blockdev_read(bd, f->fsinfo_sector, 1, fi) == 0 &&
+                fi[0] == 0x52 && fi[1] == 0x52 && fi[2] == 0x61 && fi[3] == 0x41) {
+                uint32_t v = (uint32_t)fi[488] | ((uint32_t)fi[489] << 8) | ((uint32_t)fi[490] << 16) | ((uint32_t)fi[491] << 24);
+                if (v <= clusters) free = v;
+            }
+        }
+        int slot = -1;
+        for (int i = 0; i < 4; i++) if (fat_cache[i].bd == bd) slot = i;
+        if (free != 0xFFFFFFFF) { }
+        else if (slot >= 0 && now - fat_cache[slot].ms < 60000) free = fat_cache[slot].free;
+        else {
+            if (fat_count(bd, is32, res, clusters, &free, 0) != 0) return -1;
+            if (slot < 0) { slot = 0; for (int i = 0; i < 4; i++) if (!fat_cache[i].bd) { slot = i; break; } }
+            fat_cache[slot].bd = bd; fat_cache[slot].free = free; fat_cache[slot].ms = now;
+        }
+        *total = (uint64_t)clusters * spc * 512;
+        *used = (uint64_t)(clusters - free) * spc * 512;
+        return 0;
+    }
+    return -1;
+}
+
+static void rep(char *r, int len, const char *s)
+{
+    int l = (int)strlen(r);
+    while (*s && l < len - 1) r[l++] = *s++;
+    r[l] = 0;
+}
+
+static void rep_num(char *r, int len, uint32_t v)
+{
+    char b[12]; int n = 0;
+    do { b[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    char o[12]; int k = 0;
+    while (n) o[k++] = b[--n];
+    o[k] = 0;
+    rep(r, len, o);
+}
+
+/* First Aid: checks what can be checked without changing anything and writes what it did, line
+ * by line, into report. 0 = the volume looks right, 1 = problems found, -1 = it could not be read. */
+int diskops_first_aid(const char *name, char *report, int len)
+{
+    report[0] = 0;
+    blockdev_t *bd = blockdev_find(name);
+    if (!bd) { rep(report, len, "No such device.\n"); return -1; }
+    rep(report, len, "Running First Aid on \xE2\x80\x9C"); rep(report, len, name); rep(report, len, "\xE2\x80\x9D\n");
+    static uint8_t sec[512];
+    rep(report, len, "Checking that the device can be read.\n");
+    uint64_t probes[4] = { 0, bd->total_sectors / 3, bd->total_sectors * 2 / 3, bd->total_sectors - 1 };
+    for (int i = 0; i < 4; i++)
+        if (blockdev_read(bd, probes[i], 1, sec) != 0) { rep(report, len, "Sector "); rep_num(report, len, (uint32_t)probes[i]); rep(report, len, " could not be read.\nFirst Aid failed: the device has read errors.\n"); return -1; }
+    if (!bd->mounted || !bd->fs_ctx) {
+        const char *fs = diskops_detect(name);
+        rep(report, len, fs ? "The volume is not mounted; only the device was checked.\n" : "No file system was found on the device.\n");
+        rep(report, len, "Operation successful.\n");
+        return 0;
+    }
+    const char *ft = bd->fs_type;
+    int problems = 0;
+    rep(report, len, "Checking the "); rep(report, len, ft); rep(report, len, " file system.\n");
+    if (!strcmp(ft, "fat32") || !strcmp(ft, "fat16")) {
+        int is32 = !strcmp(ft, "fat32");
+        uint32_t spc, data, totsec, res, nf, fsz;
+        if (is32) { fat32_t *f = bd->fs_ctx; spc = f->sectors_per_cluster; data = f->data_start_sector; totsec = f->total_sectors; res = f->reserved_sectors; nf = f->num_fats; fsz = f->fat_sectors; }
+        else      { fat16_t *f = bd->fs_ctx; spc = f->sectors_per_cluster; data = f->data_start_sector; totsec = f->total_sectors; res = f->reserved_sectors; nf = f->num_fats; fsz = f->fat_sectors; }
+        uint32_t clusters = (totsec - data) / spc, free = 0, bad = 0;
+        rep(report, len, "Checking the file allocation table ("); rep_num(report, len, clusters); rep(report, len, " clusters).\n");
+        if (fat_count(bd, is32, res, clusters, &free, &bad) != 0) { rep(report, len, "The table could not be read.\n"); return -1; }
+        if (bad) { rep_num(report, len, bad); rep(report, len, " cluster links point outside the volume.\n"); problems++; }
+        if (nf > 1) {
+            rep(report, len, "Comparing the two copies of the table.\n");
+            static uint8_t s2[512];
+            uint32_t diff = 0;
+            for (uint32_t i = 0; i < fsz && i < 4096; i++) {
+                if (blockdev_read(bd, res + i, 1, sec) != 0 || blockdev_read(bd, res + fsz + i, 1, s2) != 0) break;
+                if (memcmp(sec, s2, 512)) diff++;
+            }
+            if (diff) { rep_num(report, len, diff); rep(report, len, " sectors differ between the copies.\n"); problems++; }
+        }
+        rep_num(report, len, clusters - free); rep(report, len, " clusters in use, "); rep_num(report, len, free); rep(report, len, " free.\n");
+    } else if (!strcmp(ft, "tfsk")) {
+        tfsk_t *fs = bd->fs_ctx;
+        rep(report, len, "Checking the superblock.\n");
+        if (fs->sb.magic != TFSK_MAGIC) { rep(report, len, "The superblock has the wrong signature.\n"); problems++; }
+        if (fs->sb.free_blocks > fs->sb.total_blocks || fs->sb.free_inodes > fs->sb.total_inodes) { rep(report, len, "The free counts are larger than the volume.\n"); problems++; }
+        if (fs->sb.state == TFSK_STATE_ERROR) { rep(report, len, "The volume is marked as having errors.\n"); problems++; }
+        rep_num(report, len, fs->sb.total_inodes - fs->sb.free_inodes); rep(report, len, " files and folders.\n");
+    } else if (!strcmp(ft, "ext4")) {
+        ext4_t *fs = bd->fs_ctx;
+        rep(report, len, "Checking the superblock and block groups.\n");
+        if (fs->free_blocks_count > fs->blocks_count || fs->free_inodes_count > fs->inodes_count) { rep(report, len, "The free counts are larger than the volume.\n"); problems++; }
+        rep_num(report, len, fs->num_groups); rep(report, len, " block groups.\n");
+    } else rep(report, len, "This file system has no checks yet; the device reads correctly.\n");
+    if (problems) { rep(report, len, "First Aid found problems on the volume. Back up its files and erase it.\n"); return 1; }
+    rep(report, len, "The volume appears to be OK.\nOperation successful.\n");
+    return 0;
 }

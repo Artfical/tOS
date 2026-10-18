@@ -180,4 +180,5 @@ static void v_wheel(uiapp_t *a, int d) { v_press(a, d > 0 ? 190 : 100, 20, 1); }
 const uiapp_class_t app_viewer = {
     "viewer", "Image Viewer", "viewer", 760, 520, 1, sizeof(viewer_t),
     v_init, v_draw, v_press, v_drag, v_release, v_key, v_wheel, 0, v_close,
+    0, 0, 0,
 };

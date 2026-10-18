@@ -151,4 +151,5 @@ static void clock_init(uiapp_t *a, const char *arg) { (void)arg; ((clock_t_ *)a-
 const uiapp_class_t app_clock = {
     "clock", "Clock", "clock", 360, 460, 0, sizeof(clock_t_),
     clock_init, clock_draw, clock_press, 0, 0, clock_key, 0, clock_tick, 0,
+    0, 0, 0,
 };

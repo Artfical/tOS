@@ -40,6 +40,12 @@ typedef struct {
     void (*wheel)(uiapp_t *a, int delta);
     int  (*tick)(uiapp_t *a);                       /* 1 = needs repainting */
     void (*close)(uiapp_t *a);
+    /* the app's own menus in the top bar, in place of File (Window is always added after them):
+     * titles ends with NULL; menu_items fills the labels of one menu ("-" draws a separator) and
+     * whether each can be chosen, returning how many; menu_pick is called with the choice */
+    const char *const *menus;
+    int  (*menu_items)(uiapp_t *a, int menu, const char **labels, int *enabled, int max);
+    void (*menu_pick)(uiapp_t *a, int menu, int item);
 } uiapp_class_t;
 
 struct uiapp {

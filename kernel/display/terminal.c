@@ -45,6 +45,10 @@ static uint16_t make_vgaentry(char c, uint8_t color)
 }
 
 static int terminal_force_direct = 0;
+static int terminal_quiet = 0;
+
+/* the boot screen is up: text still goes to the serial line, not into the VGA memory */
+void terminal_set_quiet(int quiet) { terminal_quiet = quiet; }
 
 void terminal_set_force_direct(int enable)
 {
@@ -144,6 +148,7 @@ void terminal_clear(void)
     }
     terminal_row = 0;
     terminal_column = 0;
+    if (terminal_quiet) return;
     for (int y = terminal_y_offset; y < VGA_HEIGHT; y++) {
         for (int x = 0; x < VGA_WIDTH; x++) {
             const size_t index = y * VGA_WIDTH + x;
@@ -219,6 +224,7 @@ void terminal_putchar(char c)
     }
 
     serial_putchar(c);
+    if (terminal_quiet) return;
 
     term_surface_t *s = current_surface();
     if (s) { surface_putchar(s, c); return; }

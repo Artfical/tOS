@@ -104,6 +104,7 @@ int  tfsk_mount(tfsk_t *fs, ata_device_t *dev);
 int  tfsk_umount(tfsk_t *fs);
 int  tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume);
 int  tfsk_probe_and_mount(tfsk_t *fs);
+int  tfsk_probe(ata_device_t *dev);           /* 0 = a tFS is on it; read-only */
 void tfsk_mount_vfs(tfsk_t *fs, const char *mount_point);
 
 int tfsk_vfs_open(tfsk_t *fs, const char *path, int flags);

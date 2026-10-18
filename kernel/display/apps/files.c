@@ -529,4 +529,5 @@ static int f_tick(uiapp_t *a)
 const uiapp_class_t app_files = {
     "files", "Files", "files", 820, 480, 1, sizeof(files_t),
     f_init, f_draw, f_press, 0, 0, f_key, f_wheel, f_tick, 0,
+    0, 0, 0,
 };

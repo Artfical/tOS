@@ -218,4 +218,5 @@ static void calc_key(uiapp_t *a, int k)
 const uiapp_class_t app_calculator = {
     "calculator", "Calculator", "calculator", 4 * BTN + 5 * GAP, TOPH + 5 * BTN + 5 * GAP, 0, sizeof(calc_t),
     calc_init, calc_draw, calc_press, 0, calc_release, calc_key, 0, 0, 0,
+    0, 0, 0,
 };

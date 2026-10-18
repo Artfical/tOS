@@ -948,6 +948,15 @@ static int tfsk_vfs_setattr(tfsk_t *fs, const char *path, uint32_t mode, uint32_
     return tfsk_inode_write(fs, ino, &inode);
 }
 
+/* is there a tFS on this device? reads the superblock and changes nothing */
+int tfsk_probe(ata_device_t *dev)
+{
+    static tfsk_superblock_t sb;
+    if (!dev || ata_read_sectors(dev, (uint64_t)TFSK_SB_BLK * 8, 8, &sb) < 0) return -1;
+    if (sb.magic != TFSK_MAGIC) return -1;
+    return tfsk_checksum(&sb, TFSK_SB_CKSUM_SIZE) == sb.checksum ? 0 : -1;
+}
+
 int tfsk_probe_and_mount(tfsk_t *fs)
 {
     for (int i = 0; i < ata_device_count; i++) {

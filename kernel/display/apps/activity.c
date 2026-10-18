@@ -160,4 +160,5 @@ static void act_key(uiapp_t *ap, int k)
 const uiapp_class_t app_activity = {
     "taskmgr", "Activity", "taskmgr", 640, 520, 1, sizeof(act_t),
     act_init, act_draw, act_press, 0, 0, act_key, act_wheel, act_tick, 0,
+    0, 0, 0,
 };

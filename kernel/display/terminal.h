@@ -72,6 +72,7 @@ void terminal_capture_stop(void);
  * takes over the real display, even if the fault happened while some
  * GUI window's surface was the active render target. */
 void terminal_set_force_direct(int enable);
+void terminal_set_quiet(int quiet);          /* text to serial only (the boot screen is showing) */
 void terminal_fill_screen(uint8_t color);
 
 #endif

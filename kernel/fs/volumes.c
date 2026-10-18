@@ -8,6 +8,8 @@
 #include "string.h"
 #include "klog.h"
 #include "ramfs.h"
+#include "fat32.h"
+#include "fat16.h"
 
 /*
  * Removable disks, the way a Mac treats them: a USB disk that is plugged in is mounted at
@@ -38,6 +40,27 @@ static int have_uhci = -1;      /* -1 not looked yet */
 static int port_seen[2];
 static char last_name[32];
 static int started;
+
+/* a disk Disk Utility is erasing or checking: nothing else may mount, unmount or eject it then */
+static char busy_bd[4][16];
+
+int volumes_busy(const char *bd)
+{
+    for (int i = 0; i < 4; i++) if (busy_bd[i][0] && !strcmp(busy_bd[i], bd)) return 1;
+    return 0;
+}
+
+int volumes_claim(const char *bd)
+{
+    if (volumes_busy(bd)) return -1;
+    for (int i = 0; i < 4; i++) if (!busy_bd[i][0]) { strncpy(busy_bd[i], bd, 15); busy_bd[i][15] = 0; return 0; }
+    return -1;
+}
+
+void volumes_release(const char *bd)
+{
+    for (int i = 0; i < 4; i++) if (!strcmp(busy_bd[i], bd)) busy_bd[i][0] = 0;
+}
 
 static void trim_label(const uint8_t *p, int n, char *out)
 {
@@ -206,16 +229,20 @@ int volumes_list(volume_info_t *out, int max)
         strcpy(out[n].name, vols[i].name);
         strcpy(out[n].path, vols[i].path);
         out[n].bytes = vols[i].bytes;
+        out[n].removable = vols[i].port >= 0;
         n++;
     }
     return n;
 }
+
+static int unmount_vol(vol_t *v);
 
 int volumes_eject(const char *path)
 {
     for (int i = 0; i < VOLUMES_MAX; i++) {
         vol_t *v = &vols[i];
         if (!v->used || v->state != VOL_MOUNTED || strcmp(v->path, path)) continue;
+        if (volumes_busy(v->bd)) return -2;      /* Disk Utility is working on it */
         blockdev_t *bd = blockdev_find(v->bd);
         auth_saved_t saved;
         auth_become(0, 0, &saved);
@@ -226,8 +253,94 @@ int volumes_eject(const char *path)
         auth_restore(&saved);
         if (rc != 0) return -1;                  /* in use: a file is open on it */
         strcpy(last_name, v->name);
-        v->state = VOL_EJECTED;                  /* safe to pull out now; it is forgotten then */
+        if (v->port < 0) v->used = 0;            /* an internal disk: just unmounted */
+        else v->state = VOL_EJECTED;             /* safe to pull out now; it is forgotten then */
         return 0;
     }
     return -1;
+}
+
+/* ---- for Disk Utility: any disk, not only USB ones ---- */
+
+static vol_t *by_bd(const char *bd)
+{
+    for (int i = 0; i < VOLUMES_MAX; i++) if (vols[i].used && !strcmp(vols[i].bd, bd)) return &vols[i];
+    return 0;
+}
+
+int volumes_mount(const char *bdname)
+{
+    if (!started) start();
+    if (volumes_busy(bdname)) return -2;
+    blockdev_t *bd = blockdev_find(bdname);
+    if (!bd || bd->mounted) return -1;
+    vol_t *old = by_bd(bdname);
+    int port = old ? old->port : (bd->type == BLOCKDEV_USB_MSD ? 0 : -1);
+    if (old) old->used = 0;                       /* an ejected USB disk mounted again */
+    return mount_dev(bd, port) ? 0 : -1;
+}
+
+int volumes_unmount(const char *bdname)
+{
+    vol_t *v = by_bd(bdname);
+    if (!v || v->state != VOL_MOUNTED) return -1;
+    return volumes_eject(v->path);
+}
+
+const char *volumes_name_of(const char *bdname)
+{
+    vol_t *v = by_bd(bdname);
+    return v && v->state == VOL_MOUNTED ? v->name : 0;
+}
+
+int volumes_erase(const char *bdname, const char *fstype, const char *label, char *err, int err_len)
+{
+    blockdev_t *bd = blockdev_find(bdname);
+    if (!bd) { strncpy(err, "No such disk.", (size_t)err_len); return -1; }
+    if (bd->mounted && !by_bd(bdname)) { strncpy(err, "The startup disk can\xE2\x80\x99t be erased.", (size_t)err_len); return -1; }
+    vol_t *v = by_bd(bdname);
+    int port = v ? v->port : (bd->type == BLOCKDEV_USB_MSD ? 0 : -1);
+    if (v && v->state == VOL_MOUNTED && unmount_vol(v) != 0) { strncpy(err, "The volume is in use and could not be unmounted.", (size_t)err_len); return -1; }
+    if (v) v->used = 0;
+    /* the name goes into the label (FAT keeps 11 capital letters) */
+    char lab[12];
+    int n = 0;
+    for (const char *p = label; *p && n < 11; p++) lab[n++] = (*p >= 'a' && *p <= 'z') ? (char)(*p - 32) : *p;
+    lab[n] = 0;
+    auth_saved_t saved;
+    auth_become(0, 0, &saved);
+    int rc;
+    if (!strcmp(fstype, "fat32")) rc = fat32_format(bd, lab);
+    else if (!strcmp(fstype, "fat16")) rc = fat16_format(bd, lab);
+    else rc = diskops_format(bdname, fstype, err, err_len);
+    auth_restore(&saved);
+    blockdev_cache_invalidate(bd);
+    if (rc != 0) { if (!err[0]) strncpy(err, "Erasing failed.", (size_t)err_len); return -1; }
+    mount_dev(bd, port);
+    return 0;
+}
+
+/* the label of a volume that is not mounted (Disk Utility shows it greyed out) */
+void volumes_label_of(const char *bdname, const char *fs, char *out)
+{
+    blockdev_t *bd = blockdev_find(bdname);
+    out[0] = 0;
+    if (bd && fs) read_label(bd, fs, out);
+    if (!strcmp(out, "NO NAME")) out[0] = 0;
+}
+
+/* unmount without the busy check: for the job that holds the claim */
+static int unmount_vol(vol_t *v)
+{
+    blockdev_t *bd = blockdev_find(v->bd);
+    auth_saved_t saved;
+    auth_become(0, 0, &saved);
+    char err[96];
+    if (bd) blockdev_flush(bd);
+    int rc = diskops_umount(v->path, err, sizeof(err));
+    if (rc == 0) ramfs_rmdir(v->path);
+    auth_restore(&saved);
+    if (rc != 0) return -1;
+    if (v->port < 0) v->used = 0; else v->state = VOL_EJECTED;
+    return 0;
 }

@@ -86,6 +86,7 @@ void cmd_env(int argc, char **args);
 
 void cmd_uptime(int argc, char **args);
 void cmd_notify(int argc, char **args);
+void cmd_open(int argc, char **args);
 void cmd_ps(int argc, char **args);
 void cmd_log(int argc, char **args);
 void cmd_kill(int argc, char **args);

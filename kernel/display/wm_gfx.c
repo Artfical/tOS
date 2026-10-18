@@ -332,12 +332,19 @@ enum {
     A_NEW_FOLDER = 40, A_NEW_FILE, A_FILES, A_WALLPAPER,
 };
 
-typedef struct { const char *label; int action; int sep_after; } menu_item_t;
+typedef struct { const char *label; int action; int sep_after; int disabled; } menu_item_t;
 
 static menu_item_t menu_items[16];
 static int menu_count, menu_x, menu_y, menu_w, menu_which;   /* 0 = closed */
-enum { MENU_SYS = 1, MENU_FILE_, MENU_WINDOW, MENU_CTX };
-static int menu_label_x[4], menu_label_w[4];
+enum { MENU_SYS = 1, MENU_FILE_, MENU_WINDOW, MENU_CTX, MENU_EJECT, MENU_APP0 = 10 };
+#define BAR_MENUS 10
+static int menu_label_x[BAR_MENUS], menu_label_w[BAR_MENUS], bar_kind[BAR_MENUS], bar_n;
+static int search_x = -1000, eject_x = -1000;
+#define A_EJECT0 80
+#define A_APP0   100      /* + menu * 16 + item: an app's own menus */
+static char eject_labels[VOLUMES_MAX][48];
+static uihost_volume_t eject_vols[VOLUMES_MAX];
+static int eject_n;
 
 static void menu_add(const char *label, int action, int sep)
 {
@@ -345,6 +352,7 @@ static void menu_add(const char *label, int action, int sep)
     menu_items[menu_count].label = label;
     menu_items[menu_count].action = action;
     menu_items[menu_count].sep_after = sep;
+    menu_items[menu_count].disabled = 0;
     menu_count++;
 }
 
@@ -376,6 +384,33 @@ static void open_menu(int which, int x, int y)
         }
         menu_add("New Terminal Window", A_NEW_TERM, 1);
         menu_add("Close Window", A_CLOSE, 0);
+    } else if (which == MENU_EJECT) {
+        /* removable disks, one line each */
+        volume_info_t v[VOLUMES_MAX];
+        int n = volumes_list(v, VOLUMES_MAX);
+        eject_n = 0;
+        for (int i = 0; i < n; i++) {
+            if (!v[i].removable) continue;
+            strcpy(eject_vols[eject_n].name, v[i].name);
+            strcpy(eject_vols[eject_n].path, v[i].path);
+            strcpy(eject_labels[eject_n], "Eject \xE2\x80\x9C");
+            strcat(eject_labels[eject_n], v[i].name);
+            strcat(eject_labels[eject_n], "\xE2\x80\x9D");
+            menu_add(eject_labels[eject_n], A_EJECT0 + eject_n, 0);
+            eject_n++;
+        }
+        if (eject_n > 1) { menu_items[menu_count - 1].sep_after = 1; menu_add("Eject All", A_EJECT0 + VOLUMES_MAX, 0); }
+    } else if (which >= MENU_APP0) {
+        /* the focused app's own menu */
+        uiapp_t *ap = wm_focused && wm_focused->kind == WIN_KIND_NATIVE ? wm_focused->native : 0;
+        static const char *labels[16];
+        static int enabled[16];
+        int n = ap && ap->cls->menu_items ? ap->cls->menu_items(ap, which - MENU_APP0, labels, enabled, 16) : 0;
+        for (int i = 0; i < n; i++) {
+            if (labels[i][0] == '-') { if (menu_count) menu_items[menu_count - 1].sep_after = 1; continue; }
+            menu_add(labels[i], A_APP0 + (which - MENU_APP0) * 16 + i, 0);
+            menu_items[menu_count - 1].disabled = !enabled[i];
+        }
     } else if (which == MENU_WINDOW) {
         menu_add("Minimize", A_MINIMIZE, 0);
         menu_add("Zoom", A_ZOOM, 1);
@@ -416,9 +451,33 @@ static int menu_hit(int x, int y)
 static void shutdown_screen(void);
 static void set_wallpaper(int choice);
 
+static void eject_one(int i)
+{
+    int rc = volumes_eject(eject_vols[i].path);
+    if (rc == 0) return;
+    /* what the Finder says when a disk can't go */
+    char body[160] = "The disk \xE2\x80\x9C";
+    strcat(body, eject_vols[i].name);
+    strcat(body, rc == -2 ? "\xE2\x80\x9D is being used by Disk Utility. Wait for it to finish, then try again."
+                          : "\xE2\x80\x9D wasn\xE2\x80\x99t ejected because one or more programs may be using it.");
+    notify_post("System", "doc48_disk", "Disk in use", body, 0, 0);
+}
+
 static void do_action(int a)
 {
     window_t *f = wm_focused;
+    if (a >= A_APP0) {
+        uiapp_t *ap = f && f->kind == WIN_KIND_NATIVE ? f->native : 0;
+        if (ap && ap->cls->menu_pick) { ap->cls->menu_pick(ap, (a - A_APP0) / 16, (a - A_APP0) % 16); ap->dirty = 1; }
+        dirty = 1;
+        return;
+    }
+    if (a >= A_EJECT0 && a < A_APP0) {
+        if (a - A_EJECT0 == VOLUMES_MAX) { for (int i = 0; i < eject_n; i++) eject_one(i); }
+        else if (a - A_EJECT0 < eject_n) eject_one(a - A_EJECT0);
+        dirty = 1;
+        return;
+    }
     switch (a) {
     case A_ABOUT:     open_panel(PANEL_ABOUT, "About tOS"); break;
     case A_SETTINGS:  wm_gfx_open_native("settings", 0); break;
@@ -666,11 +725,19 @@ static void draw_topbar(void)
     gfx_text(&bs, &ui_font_medium, x, 6, app, ui_theme.bar_text, 255);
     x += gfx_text_width(&ui_font_medium, app) + 22;
 
-    static const char *labels[2] = { "File", "Window" };
-    for (int i = 0; i < 2; i++) {
+    /* the menus: the focused app's own, or File; then Window */
+    bar_kind[0] = MENU_SYS;
+    bar_n = 1;
+    const char *labels[BAR_MENUS];
+    uiapp_t *nap = wm_focused && wm_focused->open && wm_focused->kind == WIN_KIND_NATIVE ? wm_focused->native : 0;
+    if (nap && nap->cls->menus) {
+        for (int i = 0; nap->cls->menus[i] && bar_n < BAR_MENUS - 1; i++) { labels[bar_n] = nap->cls->menus[i]; bar_kind[bar_n++] = MENU_APP0 + i; }
+    } else { labels[bar_n] = "File"; bar_kind[bar_n++] = MENU_FILE_; }
+    labels[bar_n] = "Window"; bar_kind[bar_n++] = MENU_WINDOW;
+    for (int i = 1; i < bar_n; i++) {
         int tw = gfx_text_width(&ui_font_regular, labels[i]);
-        menu_label_x[i + 1] = x - 8; menu_label_w[i + 1] = tw + 16;
-        if (menu_which == i + 2) gfx_rrect(&bs, x - 8, 3, tw + 16, TOPBAR_H - 6, 6, ui_theme.dark ? 0xFFFFFF : 0x000000, 30);
+        menu_label_x[i] = x - 8; menu_label_w[i] = tw + 16;
+        if (menu_which == bar_kind[i]) gfx_rrect(&bs, x - 8, 3, tw + 16, TOPBAR_H - 6, 6, ui_theme.dark ? 0xFFFFFF : 0x000000, 30);
         gfx_text(&bs, &ui_font_regular, x, 6, labels[i], ui_theme.bar_text, 230);
         x += tw + 22;
     }
@@ -705,8 +772,19 @@ static void draw_topbar(void)
         rx -= 28;
     }
     gfx_blit_tinted(&bs, gfx_image("glyph_search"), rx, 6, ui_theme.bar_text, 230);
-    menu_label_x[3] = rx - 6; menu_label_w[3] = 28;
+    search_x = rx;
     rx -= 28;
+    /* a removable disk is mounted: the eject menu */
+    volume_info_t vl[VOLUMES_MAX];
+    int nv = volumes_list(vl, VOLUMES_MAX), any_removable = 0;
+    for (int i = 0; i < nv; i++) if (vl[i].removable) any_removable = 1;
+    eject_x = -1000;
+    if (any_removable) {
+        if (menu_which == MENU_EJECT) gfx_rrect(&bs, rx - 6, 3, 28, TOPBAR_H - 6, 6, ui_theme.dark ? 0xFFFFFF : 0x000000, 30);
+        gfx_blit_tinted(&bs, gfx_image("glyph_eject"), rx, 6, ui_theme.bar_text, 230);
+        eject_x = rx;
+        rx -= 28;
+    }
     gfx_blit_tinted(&bs, gfx_image("glyph_volume-2"), rx, 6, ui_theme.bar_text, 230);
     rx -= 28;
     gfx_blit_tinted(&bs, gfx_image("glyph_ethernet-port"), rx, 6, ui_theme.bar_text, net_ip ? 230 : 90);
@@ -790,9 +868,10 @@ static void draw_menu(void)
     gfx_rrect_outline(&bs, menu_x, menu_y, menu_w, h, 9, ui_theme.dark ? 0xFFFFFF : 0x000000, 34);
     int iy = menu_y + 4;
     for (int i = 0; i < menu_count; i++) {
-        if (i == hover_menu) gfx_rrect(&bs, menu_x + 5, iy, menu_w - 10, ITEM_H, 6, C_ACCENT, 255);
+        int hot = i == hover_menu && !menu_items[i].disabled;
+        if (hot) gfx_rrect(&bs, menu_x + 5, iy, menu_w - 10, ITEM_H, 6, C_ACCENT, 255);
         gfx_clip(&bs, menu_x, iy, menu_w - 12, ITEM_H);
-        gfx_text(&bs, &ui_font_regular, menu_x + 16, iy + 5, menu_items[i].label, i == hover_menu ? 0xFFFFFF : C_TEXT, 255);
+        gfx_text(&bs, &ui_font_regular, menu_x + 16, iy + 5, menu_items[i].label, hot ? 0xFFFFFF : C_TEXT, menu_items[i].disabled ? 100 : 255);
         gfx_unclip(&bs);
         iy += ITEM_H;
         if (menu_items[i].sep_after) {
@@ -1137,8 +1216,14 @@ void uihost_authorize(const char *reason)
     auth_session(&uid, &gid);
     memset((void *)&sheet.pw, 0, sizeof(sheet.pw));
     sheet.len = 0;
+    /* the app asking is the one in front: its name in the message, its icon on the padlock */
     strcpy(sheet.app, "System Settings");
     strcpy(sheet.icon, "settings");
+    if (wm_focused && wm_focused->open && wm_focused->kind == WIN_KIND_NATIVE && wm_focused->native) {
+        const uiapp_class_t *c = ((uiapp_t *)wm_focused->native)->cls;
+        strncpy(sheet.app, c->title, sizeof(sheet.app) - 1);
+        strncpy(sheet.icon, c->icon, sizeof(sheet.icon) - 1);
+    }
     strncpy(sheet.user, auth_name_of(uid), sizeof(sheet.user) - 1);
     sheet.attempt = 0;
     sheet.async = 1;
@@ -1616,10 +1701,12 @@ static void press(int x, int y)
         int was = menu_which;
         menu_which = 0;
         dirty = 1;
+        if (i >= 0 && menu_items[i].disabled) { menu_which = was; return; }   /* a greyed item: the menu stays */
         if (i >= 0) { sound_click(); do_action(menu_items[i].action); return; }
         if (y < TOPBAR_H) {
-            for (int k = 0; k < 3; k++)
-                if (x >= menu_label_x[k] && x < menu_label_x[k] + menu_label_w[k] && was == k + 1) return;
+            for (int k = 0; k < bar_n; k++)
+                if (x >= menu_label_x[k] && x < menu_label_x[k] + menu_label_w[k] && was == bar_kind[k]) return;
+            if (was == MENU_EJECT && x >= eject_x - 6 && x < eject_x + 22) return;
         } else return;
     }
     if (launcher_open) {
@@ -1630,13 +1717,13 @@ static void press(int x, int y)
         return;
     }
     if (y < TOPBAR_H) {
-        static const int which[3] = { MENU_SYS, MENU_FILE_, MENU_WINDOW };
-        for (int k = 0; k < 3; k++)
+        for (int k = 0; k < bar_n; k++)
             if (x >= menu_label_x[k] && x < menu_label_x[k] + menu_label_w[k]) {
-                open_menu(which[k], menu_label_x[k], TOPBAR_H + 2);
+                open_menu(bar_kind[k], menu_label_x[k], TOPBAR_H + 2);
                 return;
             }
-        if (x >= menu_label_x[3] && x < menu_label_x[3] + menu_label_w[3]) { launcher_open = 1; dirty = 1; }
+        if (x >= eject_x - 6 && x < eject_x + 22) { open_menu(MENU_EJECT, eject_x - 6, TOPBAR_H + 2); return; }
+        if (x >= search_x - 6 && x < search_x + 22) { launcher_open = 1; dirty = 1; }
         else if (x >= eth_icon_x - 6 && x < eth_icon_x + 22) wm_gfx_open_native("netmon", 0);
         return;
     }
@@ -1864,3 +1951,9 @@ int uihost_notify(const char *app, const char *icon, const char *title, const ch
 }
 
 int uihost_notify_result(int id) { return notify_result(id); }
+
+void uihost_close_window(void *app)
+{
+    for (int i = 0; i < MAX_WINDOWS; i++)
+        if (windows[i].open && windows[i].kind == WIN_KIND_NATIVE && windows[i].native == app) { wm_close_window(&windows[i]); dirty = 1; return; }
+}

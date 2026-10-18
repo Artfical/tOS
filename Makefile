@@ -190,11 +190,14 @@ KERNEL_OBJS = \
     kernel/display/wm.o \
     kernel/display/wm_gfx.o \
     kernel/display/wm_notify.o \
+    kernel/display/bootsplash.o \
+    kernel/display/bootlogo.o \
     kernel/display/gfx.o \
     kernel/display/ui_assets.o \
     kernel/display/uiapp.o \
     kernel/display/uihost_tos.o \
     kernel/display/apps/calc.o \
+    kernel/display/apps/diskutil.o \
     kernel/display/apps/clock.o \
     kernel/display/apps/g2048.o \
     kernel/display/apps/notepad2.o \
