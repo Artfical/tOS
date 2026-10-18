@@ -10,6 +10,7 @@
 #include "vfs.h"
 #include "auth.h"
 #include "fsbridge.h"
+#include "klog.h"
 
 static void strncat_safe(char *dst, const char *src, size_t cap)
 {
@@ -316,5 +317,102 @@ int installer_setup_accounts(void)
     }
     memset(pw, 0, sizeof(pw));
     terminal_writestring("\nAccounts created. This user may use sudo.\n");
+    return 0;
+}
+
+/* ------------------------------------------------------------------ the graphical installer's steps */
+#include "sysdirs.h"
+
+static void say(void (*progress)(int, const char *), int pct, const char *what)
+{
+    klog_write("installer: ");
+    klog_write(what);
+    klog_write("\n");
+    if (progress) progress(pct, what);
+}
+
+/* Erases `disk` with a tFS called "tOS Root", lays out the system folders and copies the
+ * programs on it. Reports along the way through progress (percent, what it is doing). */
+int installer_install(ata_device_t *disk, void (*progress)(int pct, const char *what))
+{
+    uint64_t sectors = disk->lba48 ? disk->sectors_48 : (uint64_t)disk->sectors_28;
+    say(progress, 5, "Preparing the disk\xE2\x80\xA6");
+    if (tfsk_format(disk, sectors / 8, "tOS Root") < 0) { say(progress, 5, "The disk could not be erased."); return -1; }
+    static tfsk_t fs;
+    say(progress, 25, "Creating the file system\xE2\x80\xA6");
+    if (tfsk_mount(&fs, disk) < 0) { say(progress, 25, "The new file system could not be opened."); return -1; }
+    tfsk_mkdir(&fs, TFSK_ROOT_INODE, "system");
+    uint32_t sys_ino;
+    if (tfsk_walk(&fs, "/system", &sys_ino) == 0) tfsk_mkdir(&fs, sys_ino, "programs");
+    static const char *const dirs[] = { "etc", "home", "root", "mnt", "tmp" };
+    for (int i = 0; i < 5; i++) tfsk_mkdir(&fs, TFSK_ROOT_INODE, dirs[i]);
+
+    /* the programs, from the installer's own file system */
+    static vfs_entry_t entries[64];
+    const char *src_dirs[] = { "/programs", "/bin", 0 };
+    int total = 0, copied = 0;
+    for (int di = 0; src_dirs[di]; di++) { int n = vfs_readdir(src_dirs[di], entries, 64); if (n > 0) total += n; }
+    for (int di = 0; src_dirs[di]; di++) {
+        int n = vfs_readdir(src_dirs[di], entries, 64);
+        for (int i = 0; i < n; i++) {
+            if (entries[i].is_dir) continue;
+            char src[VFS_NAME_LEN], dst[VFS_NAME_LEN];
+            strcpy(src, src_dirs[di]); strncat_safe(src, "/", sizeof(src)); strncat_safe(src, entries[i].name, sizeof(src));
+            uint8_t *buf = malloc(entries[i].size ? entries[i].size : 1);
+            if (!buf) continue;
+            int fd = vfs_open(src, 0);
+            int rd = fd >= 0 ? vfs_read(fd, buf, entries[i].size) : -1;
+            if (fd >= 0) vfs_close(fd);
+            if (rd > 0) {
+                strcpy(dst, "/system/programs/"); strncat_safe(dst, entries[i].name, sizeof(dst));
+                int fd2 = tfsk_vfs_open(&fs, dst, 2);
+                if (fd2 >= 0) { tfsk_vfs_write(&fs, fd2, buf, rd); tfsk_vfs_close(&fs, fd2); copied++; }
+            }
+            free(buf);
+            char what[64] = "Copying ";
+            strncat_safe(what, entries[i].name, sizeof(what));
+            say(progress, 30 + (total ? 50 * (copied + 1) / total : 50), what);
+        }
+    }
+    tfsk_umount(&fs);
+    say(progress, 82, "The system files are in place.");
+    return 0;
+}
+
+static void write_file(const char *path, const char *text)
+{
+    int fd = vfs_open(path, 2);
+    if (fd < 0) return;
+    vfs_write(fd, text, (uint32_t)strlen(text));
+    vfs_close(fd);
+}
+
+/* After installer_install(): mounts the new disk at /mnt as the system would at boot, and makes
+ * the computer name, the administrator account (root gets the same password), the keyboard
+ * layout and the account picture. */
+int installer_finish(ata_device_t *disk, const char *host, const char *user, const char *full, const char *password,
+                     const char *keyboard, int picture, void (*progress)(int pct, const char *what))
+{
+    static tfsk_t fs;
+    say(progress, 86, "Setting up your account\xE2\x80\xA6");
+    if (tfsk_mount(&fs, disk) < 0) return -1;
+    tfsk_mount_vfs(&fs, "/mnt");
+    sysdirs_setup(1);
+    auth_init();
+    auth_set_hostname(host);
+    auth_set_root_password(password);
+    uint32_t uid;
+    if (auth_add_user(user, password, full[0] ? full : user, 1, &uid) != 0) { say(progress, 86, "The account could not be created."); return -1; }
+    auth_save();
+    write_file("/etc/keyboard", keyboard);
+    auth_user_t u;
+    if (auth_lookup(user, &u) == 0) {
+        char path[96], n[4] = { (char)('0' + picture / 10), (char)('0' + picture % 10), '\n', 0 };
+        strcpy(path, u.home);
+        strncat_safe(path, "/.picture", sizeof(path));
+        write_file(path, n);
+        vfs_chown(path, u.uid, u.gid);
+    }
+    say(progress, 100, "tOS is installed.");
     return 0;
 }

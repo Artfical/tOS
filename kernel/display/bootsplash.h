@@ -7,6 +7,7 @@ int  bootsplash_begin(void);          /* 0 = it is up */
 void bootsplash_progress(int percent);
 void bootsplash_end(void);
 int  bootsplash_active(void);
+void bootsplash_handoff(void);        /* the desktop has the screen now */
 void bootsplash_paging_ready(void);   /* paging is on now: map the framebuffer */            /* back to the text console */
 
 #endif

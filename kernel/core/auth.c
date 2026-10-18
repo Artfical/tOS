@@ -486,7 +486,8 @@ int auth_add_user(const char *name, const char *password, const char *gecos, int
     strcpy(a->u.home, "/home/");
     strcat(a->u.home, name);
     strcpy(a->u.shell, "/system/shell");
-    if (password && password[0]) make_hash(password, a->hash); else copy_str(a->hash, "!", AUTH_HASH_MAX);
+    /* NULL: no password at all (the live session's user); "": locked */
+    if (password && password[0]) make_hash(password, a->hash); else if (!password) a->hash[0] = 0; else copy_str(a->hash, "!", AUTH_HASH_MAX);
     group_t *g = &groups[ngroup++];
     memset(g, 0, sizeof(*g));
     copy_str(g->name, name, AUTH_NAME_MAX);

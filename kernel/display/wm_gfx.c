@@ -20,6 +20,8 @@
 #include "auth.h"
 #include "wm_notify.h"
 #include "volumes.h"
+#include "ramfs.h"
+#include "bootsplash.h"
 
 /*
  * The graphical desktop.
@@ -73,6 +75,7 @@ static int mx, my;                    /* pointer, pixels */
 static uint8_t prev_btn;
 static int cur_x = -100, cur_y = -100;    /* where the cursor is drawn on screen */
 static int dirty = 1;
+static int session;     /* 0 the desktop, 1 tOS Recovery (no dock, no apps but its own), 2 the login window */
 static int clock_x = -1000, clock_w;
 static uint32_t last_frame_ms;
 static int last_minute = -1;
@@ -176,6 +179,9 @@ int wm_gfx_open_native(const char *id, const char *arg)
     if (!wm_gfx_mode) return -1;
     const uiapp_class_t *cls = uiapp_find(id);
     if (!cls) return -1;
+    /* tOS Recovery exists only in the Recovery session: from a running system it can't be
+     * opened, whatever asks for it */
+    if (!strcmp(cls->id, "recovery") && session != 1) return -1;
     int slot = wm_find_free_slot();
     if (slot < 0) return -1;
     uiapp_t *ap = malloc(sizeof(uiapp_t));
@@ -637,6 +643,18 @@ static void draw_window_g(window_t *w)
     gfx_shadow(&bs, x, y, ww, hh, active ? 230 : 130);
     save_corners(w);
 
+    /* tOS Recovery's panel has no title bar: the content colour runs to the top, like the Mac's */
+    int bare = w->kind == WIN_KIND_NATIVE && w->native && !strcmp(((uiapp_t *)w->native)->cls->id, "recovery");
+    if (bare) {
+        gfx_rrect(&bs, x, y, ww, hh, 12, UI_BG, 255);
+        gfx_rrect_outline(&bs, x, y, ww, hh, 12, 0x000000, ui_theme.dark ? 90 : 30);
+        uiapp_t *ap = w->native;
+        ap->w = ww; ap->h = hh - TITLE_H;
+        gfx_clip(&bs, x, y + TITLE_H, ww, hh - TITLE_H);
+        ap->cls->draw(ap, &bs, x, y + TITLE_H, ww, hh - TITLE_H);
+        gfx_unclip(&bs);
+        return;
+    }
     /* title bar */
     gfx_rrect(&bs, x, y, ww, TITLE_H + RADIUS, RADIUS, active ? C_TITLE_ON : C_TITLE_OFF, 255);
     gfx_hline(&bs, x + RADIUS, y, ww - 2 * RADIUS, 0xFFFFFF, 26);              /* top highlight */
@@ -698,6 +716,8 @@ static void draw_window_g(window_t *w)
 
 static const char *const wdays[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
 static const char *const months[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+static const char *const wdays_long[7] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+static const char *const months_long[12] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
 
 static int weekday(int y, int m, int d)
 {
@@ -720,6 +740,20 @@ static void draw_topbar(void)
     menu_label_x[0] = x - 6; menu_label_w[0] = 30;
     x += 34;
 
+    if (session == 1) {
+        gfx_text(&bs, &ui_font_medium, x, 6, "tOS Recovery", ui_theme.bar_text, 255);
+        bar_n = 1; bar_kind[0] = MENU_SYS;
+        char clk[8];
+        cmos_time_t tt;
+        cmos_get_time(&tt);
+        put2(clk, tt.hour); clk[2] = ':'; put2(clk + 3, tt.minute); clk[5] = 0;
+        int cw2 = gfx_text_width(&ui_font_medium, clk);
+        gfx_text(&bs, &ui_font_medium, SW - 14 - cw2, 6, clk, ui_theme.bar_text, 255);
+        gfx_blit_tinted(&bs, gfx_image("glyph_ethernet-port"), SW - 14 - cw2 - 30, 6, ui_theme.bar_text, net_ip ? 230 : 90);
+        clock_x = -1000; search_x = -1000; eject_x = -1000;
+        eth_icon_x = SW - 14 - cw2 - 30;
+        return;
+    }
     const app_t *a = wm_focused && wm_focused->open ? app_for_window(wm_focused) : 0;
     const char *app = a ? a->title : "Desktop";
     gfx_text(&bs, &ui_font_medium, x, 6, app, ui_theme.bar_text, 255);
@@ -1287,6 +1321,212 @@ static void sheet_input(int pressed_btn)
 
 /* ------------------------------------------------------------------ frames */
 
+/* ------------------------------------------------------------------ sessions */
+
+int wm_gfx_session(void) { return session; }
+void wm_gfx_shutdown(void) { shutdown_screen(); }
+
+/* Recovery's backdrop: light brushed metal, soft rings of light over it */
+static void recovery_backdrop(void)
+{
+    for (int y = 0; y < SH; y++) {
+        int base = 236 - 36 * y / SH;                                   /* lighter at the top */
+        uint32_t h = (uint32_t)y * 2654435761u;
+        int streak = (int)((h >> 28) & 3) - 1;                          /* brushed: each row a little off */
+        for (int x = 0; x < SW; x++) {
+            int dx1 = x - SW / 5, dy1 = y - SH / 3, dx2 = x - SW * 4 / 5, dy2 = y - SH * 4 / 5;
+            int d1 = 0, d2 = 0;
+            /* integer square roots are too slow per pixel; the squared distance makes rings that
+             * tighten outwards, which reads like the Mac's wave pattern */
+            d1 = (dx1 * dx1 + dy1 * dy1) / 900;
+            d2 = (dx2 * dx2 + dy2 * dy2) / 1100;
+            int r1 = d1 % 40, r2 = d2 % 46;
+            int w1 = r1 < 20 ? r1 : 40 - r1, w2 = r2 < 23 ? r2 : 46 - r2;  /* triangle waves */
+            int l = base + streak + (w1 - 10) / 4 + (w2 - 11) / 5;
+            if (l > 250) l = 250;
+            if (l < 150) l = 150;
+            uint32_t c = (uint32_t)l;
+            wall[y * SW + x] = (c << 16) | (c << 8) | (c + 3 > 255 ? 255 : c + 3);
+        }
+    }
+    memcpy(wall_blur, wall, (size_t)SW * SH * 4);
+}
+
+static void login_reset(void);
+static void load_user_desktop(void);
+
+static void close_all_windows(void)
+{
+    for (int i = 0; i < MAX_WINDOWS; i++) if (windows[i].open) wm_close_window(&windows[i]);
+}
+
+void serial_write(const char *s);
+void wm_gfx_set_session(int s)
+{
+    int was = session;
+    serial_write(s == 1 ? "session: recovery\n" : s == 2 ? "session: login\n" : "session: desktop\n");
+    session = s;
+    menu_which = 0; launcher_open = 0;
+    if (s == 1) {
+        close_all_windows();
+        ui_set_dark(0);                 /* Recovery is light, like the Mac's */
+        recovery_backdrop();
+        if (wm_gfx_open_native("recovery", 0) == 0 && wm_focused) {
+            wm_focused->gx = (SW - wm_focused->gw) / 2;
+            wm_focused->gy = TOPBAR_H + (SH - TOPBAR_H - wm_focused->gh) / 2;
+        }
+    } else if (s == 2) {
+        close_all_windows();
+        set_wallpaper(0);
+        login_reset();
+    } else {
+        if (was == 1) close_all_windows();
+        load_user_desktop();
+    }
+    dirty = 1;
+}
+
+/* ---- the login window ---- */
+
+static struct {
+    int n, sel, len, busy;
+    uihost_user_t u[8];
+    int pic[8];
+    char pw[64];
+    uint32_t shake_ms;
+} lg;
+
+static int picture_of(const char *name)
+{
+    auth_user_t u;
+    if (auth_lookup(name, &u) == 0) {
+        char p[96];
+        strcpy(p, u.home);
+        strcat(p, "/.picture");
+        uint8_t *d; uint32_t n;
+        if (uihost_read(p, &d, &n) == 0) {
+            int v = 0;
+            for (uint32_t i = 0; i < n && d[i] >= '0' && d[i] <= '9'; i++) v = v * 10 + (d[i] - '0');
+            free(d);
+            if (v >= 0 && v < 29) return v;
+        }
+    }
+    int h = 0;
+    for (const char *c = name; *c; c++) h += *c;
+    return h % 29;
+}
+
+static void login_reset(void)
+{
+    memset(&lg, 0, sizeof(lg));
+    lg.n = uihost_users(lg.u, 8);
+    /* root is not a person: it is offered only when there is nobody else */
+    int k = 0;
+    for (int i = 0; i < lg.n; i++) if (lg.u[i].uid != 0) lg.u[k++] = lg.u[i];
+    if (k) lg.n = k;
+    for (int i = 0; i < lg.n; i++) lg.pic[i] = picture_of(lg.u[i].name);
+}
+
+static int login_avatar_x(int i) { return SW / 2 - (lg.n * 150) / 2 + i * 150 + 75; }
+#define LOGIN_AV_Y (SH - 300)
+
+static void login_submit(void)
+{
+    if (lg.sel < 0 || lg.sel >= lg.n) return;
+    int bad = auth_check_password(lg.u[lg.sel].name, lg.pw) != 0;
+    memset(lg.pw, 0, sizeof(lg.pw));
+    lg.len = 0;
+    auth_user_t u;
+    if (bad || auth_lookup(lg.u[lg.sel].name, &u) != 0) {
+        lg.shake_ms = debugmon_uptime_ms();
+        sound_error();
+        dirty = 1;
+        return;
+    }
+    auth_set_session(u.uid, u.gid);
+    if (!fsbridge_exists(u.home) || ramfs_chdir(u.home) != 0) ramfs_chdir("/");
+    wm_gfx_set_session(0);
+}
+
+static void draw_login(void)
+{
+    memcpy(back, wall_blur, (size_t)SW * SH * 4);
+    gfx_fill_alpha(&bs, 0, 0, SW, SH, 0x000000, 50);
+    /* the date and a large clock, like the lock screen */
+    cmos_time_t t;
+    cmos_get_time(&t);
+    char date[40] = "";
+    strcat(date, wdays_long[weekday(t.year, t.month, t.day) % 7]);
+    strcat(date, ", ");
+    char d2[4] = { 0 };
+    if (t.day >= 10) { d2[0] = (char)('0' + t.day / 10); d2[1] = (char)('0' + t.day % 10); } else d2[0] = (char)('0' + t.day);
+    strcat(date, d2); strcat(date, " "); strcat(date, months_long[(t.month + 11) % 12]);
+    gfx_text_center(&bs, &ui_font_medium, 0, 70, SW, date, 0xFFFFFF, 230);
+    char clk[8];
+    put2(clk, t.hour); clk[2] = ':'; put2(clk + 3, t.minute); clk[5] = 0;
+    gfx_text_center(&bs, &ui_font_huge, 0, 92, SW, clk, 0xFFFFFF, 245);
+
+    int shake = 0;
+    uint32_t dt = debugmon_uptime_ms() - lg.shake_ms;
+    if (lg.shake_ms && dt < 400) shake = (int)((dt / 40) % 2 ? 10 : -10) * (int)(400 - dt) / 400;
+    for (int i = 0; i < lg.n; i++) {
+        int cx = login_avatar_x(i) + (i == lg.sel ? shake : 0);
+        char key[16] = "avatar_";
+        key[7] = (char)('0' + lg.pic[i] / 10); key[8] = (char)('0' + lg.pic[i] % 10); key[9] = 0;
+        int sz = i == lg.sel ? 96 : 72;
+        if (i == lg.sel) gfx_circle(&bs, cx, LOGIN_AV_Y + 48, 52, 0xFFFFFF, 60);
+        gfx_blit_scaled(&bs, gfx_image(key), cx - sz / 2, LOGIN_AV_Y + 48 - sz / 2, sz, sz, i == lg.sel ? 255 : 200);
+        gfx_text_center(&bs, &ui_font_medium, cx - 75, LOGIN_AV_Y + 108, 150, lg.u[i].full, 0xFFFFFF, i == lg.sel ? 255 : 190);
+    }
+    if (!lg.n) gfx_text_center(&bs, &ui_font_medium, 0, LOGIN_AV_Y + 40, SW, "No accounts", 0xFFFFFF, 220);
+    if (lg.sel >= 0 && lg.sel < lg.n) {
+        int fw = 230, fx = login_avatar_x(lg.sel) - fw / 2 + shake, fy = LOGIN_AV_Y + 140;
+        gfx_rrect(&bs, fx, fy, fw, 32, 16, 0xFFFFFF, 70);
+        gfx_rrect_outline(&bs, fx, fy, fw, 32, 16, 0xFFFFFF, 90);
+        if (lg.len) {
+            for (int k = 0; k < lg.len && k < 18; k++) gfx_circle(&bs, fx + 18 + k * 11, fy + 16, 4, 0xFFFFFF, 255);
+        } else gfx_text(&bs, &ui_font_regular, fx + 16, fy + 7, "Enter Password", 0xFFFFFF, 170);
+        gfx_circle(&bs, fx + fw - 17, fy + 16, 12, 0xFFFFFF, lg.len ? 230 : 90);
+        gfx_blit_tinted(&bs, gfx_image("glyph_arrow-right"), fx + fw - 25, fy + 8, 0x333333, 255);
+    }
+    /* restart and shut down, at the bottom */
+    static const char *const lbl[2] = { "Restart", "Shut Down" };
+    static const char *const gl[2] = { "glyph_refresh-ccw", "glyph_power" };
+    for (int i = 0; i < 2; i++) {
+        int bx = SW / 2 - 90 + i * 180 - 30;
+        gfx_circle(&bs, bx + 30, SH - 74, 18, 0xFFFFFF, 50);
+        gfx_blit_tinted(&bs, gfx_image(gl[i]), bx + 22, SH - 82, 0xFFFFFF, 255);
+        gfx_text_center(&bs, &ui_font_small, bx - 20, SH - 48, 100, lbl[i], 0xFFFFFF, 220);
+    }
+}
+
+static void login_press(int x, int y)
+{
+    for (int i = 0; i < lg.n; i++) {
+        int cx = login_avatar_x(i);
+        if (x >= cx - 60 && x < cx + 60 && y >= LOGIN_AV_Y && y < LOGIN_AV_Y + 128) { lg.sel = i; lg.len = 0; lg.pw[0] = 0; dirty = 1; return; }
+    }
+    if (lg.sel >= 0 && lg.sel < lg.n) {
+        int fw = 230, fx = login_avatar_x(lg.sel) - fw / 2, fy = LOGIN_AV_Y + 140;
+        if (x >= fx + fw - 32 && x < fx + fw && y >= fy && y < fy + 32) { login_submit(); return; }
+    }
+    for (int i = 0; i < 2; i++) {
+        int bx = SW / 2 - 90 + i * 180;
+        if ((x - bx) * (x - bx) + (y - (SH - 74)) * (y - (SH - 74)) < 22 * 22) {
+            if (i == 0) uihost_restart(); else shutdown_screen();
+        }
+    }
+}
+
+static void login_key(char ch)
+{
+    if (ch == '\n') { login_submit(); return; }
+    if (ch == 0x1B) { lg.len = 0; lg.pw[0] = 0; }
+    else if (ch == '\b') { if (lg.len) lg.pw[--lg.len] = 0; }
+    else if ((unsigned char)ch >= 32 && lg.len < (int)sizeof(lg.pw) - 1) { lg.pw[lg.len++] = ch; lg.pw[lg.len] = 0; }
+    dirty = 1;
+}
+
 /* ------------------------------------------------------------------ disks on the desktop */
 
 /* mounted removable disks sit at the top right of the desktop, like on a Mac */
@@ -1353,9 +1593,10 @@ static void poll_volumes(void)
 
 static void compose(void)
 {
+    if (session == 2) { draw_login(); return; }
     if (launcher_open) { draw_launcher(); return; }
     draw_wallpaper();
-    draw_desktop_disks();
+    if (session == 0) draw_desktop_disks();
     int order[MAX_WINDOWS], n = 0;
     for (int i = 0; i < MAX_WINDOWS; i++) if (windows[i].open && !windows[i].minimized) order[n++] = i;
     for (int i = 1; i < n; i++) {
@@ -1364,10 +1605,10 @@ static void compose(void)
         order[j + 1] = k;
     }
     for (int i = 0; i < n; i++) draw_window_g(&windows[order[i]]);
-    draw_dock();
+    if (session == 0) draw_dock();
     draw_topbar();
     draw_menu();
-    notify_draw(&bs, SW, SH, TOPBAR_H);
+    if (session == 0) notify_draw(&bs, SW, SH, TOPBAR_H);
     draw_sheet();
 }
 
@@ -1622,6 +1863,17 @@ int wm_gfx_init(void)
     if (alloc_buffers(SW, SH) != 0) return -1;
     if (bochs_set_mode(&vdev, SW, SH, 32) != 0) return -1;
     lfb = (uint32_t *)vdev.lfb;
+    bootsplash_handoff();
+    load_user_desktop();
+    mouse_set_pixel_mode(SW, SH);
+    mx = SW / 2; my = SH / 2;
+    dirty = 1;
+    return 0;
+}
+
+/* the wallpaper and the settings of whoever is logged in (home/.desktop, home/.wallpaper) */
+static void load_user_desktop(void)
+{
     set_wallpaper(0);
     /* the picture chosen last time, if there was one */
     {
@@ -1637,10 +1889,6 @@ int wm_gfx_init(void)
         }
     }
     prefs_load();
-    mouse_set_pixel_mode(SW, SH);
-    mx = SW / 2; my = SH / 2;
-    dirty = 1;
-    return 0;
 }
 
 /* ------------------------------------------------------------------ input */
@@ -1675,8 +1923,27 @@ static window_t *window_at(int x, int y)
     return hit;
 }
 
+static void toggle_about(void)
+{
+    for (int i = 0; i < MAX_WINDOWS; i++)
+        if (windows[i].open && windows[i].kind == WIN_KIND_PANEL && windows[i].panel == PANEL_ABOUT) { wm_close_window(&windows[i]); dirty = 1; return; }
+    open_panel(PANEL_ABOUT, "About tOS");
+}
+
 static void press(int x, int y)
 {
+    if (session == 2) { login_press(x, y); return; }
+    if (session == 1) {
+        if (y < TOPBAR_H) { if (x < 44) { toggle_about(); sound_click(); } return; }
+        window_t *rw = window_at(x, y);
+        if (!rw) return;
+        /* Recovery's own window stays: its traffic lights do nothing */
+        if (rw->kind == WIN_KIND_NATIVE && rw->native && !strcmp(((uiapp_t *)rw->native)->cls->id, "recovery") && y - rw->gy < TITLE_H) {
+            wm_focus_window(rw); dirty = 1;
+            if (x - rw->gx > 72) { drag_win = rw; drag_dx = x - rw->gx; drag_dy = y - rw->gy; }
+            return;
+        }
+    }
     /* notifications sit above everything but the password sheet */
     {
         char app[24];
@@ -1857,7 +2124,13 @@ void wm_gfx_tick(void)
     }
     (void)released;
 
-    if (rpressed && !menu_which && !launcher_open && my >= TOPBAR_H && dock_hit(mx, my) < 0 && !window_at(mx, my))
+    if (session == 2) {
+        char lc;
+        while (keyboard_try_getchar(&lc)) login_key(lc);
+        while (keyboard_get_special()) { }
+    }
+
+    if (session == 0 && rpressed && !menu_which && !launcher_open && my >= TOPBAR_H && dock_hit(mx, my) < 0 && !window_at(mx, my))
         open_menu(MENU_CTX, mx, my);
 
     int wheel = mouse_get_wheel_delta();

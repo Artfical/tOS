@@ -312,6 +312,37 @@ def padlock(size):
 
 add_image('padlock', padlock(80))
 
+# account pictures: 29 to choose from, a white glyph on a colour of its own, 96 px
+AVATARS = [('cat', (255, 159, 67), (238, 90, 36)), ('dog', (162, 155, 254), (108, 92, 231)), ('bird', (85, 239, 196), (0, 184, 148)),
+           ('fish', (116, 185, 255), (9, 132, 227)), ('rabbit', (253, 121, 168), (232, 67, 147)), ('turtle', (129, 236, 236), (0, 206, 201)),
+           ('squirrel', (225, 177, 44), (204, 142, 53)), ('flower', (255, 118, 117), (214, 48, 49)), ('leaf', (106, 176, 76), (39, 174, 96)),
+           ('sun', (253, 203, 110), (243, 156, 18)), ('moon', (99, 110, 114), (45, 52, 54)), ('star', (255, 234, 167), (253, 203, 110)),
+           ('heart', (255, 107, 129), (238, 82, 83)), ('music', (190, 46, 221), (132, 34, 175)), ('camera', (72, 84, 96), (30, 39, 46)),
+           ('rocket', (72, 52, 212), (52, 31, 151)), ('plane', (126, 214, 223), (34, 166, 179)), ('car', (235, 77, 75), (192, 57, 43)),
+           ('bike', (186, 220, 88), (106, 176, 76)), ('coffee', (176, 132, 96), (120, 84, 56)), ('pizza', (255, 190, 118), (240, 147, 43)),
+           ('globe', (104, 109, 224), (72, 52, 212)), ('mountain', (149, 175, 192), (83, 92, 104)), ('tree-pine', (46, 204, 113), (22, 160, 133)),
+           ('gamepad-2', (247, 143, 179), (207, 106, 135)), ('crown', (246, 229, 141), (249, 202, 36)), ('ghost', (199, 236, 238), (126, 214, 223)),
+           ('snowflake', (130, 204, 221), (60, 99, 130)), ('guitar', (229, 80, 57), (183, 21, 64))]
+def avatar(glyph, c1, c2, size=96):
+    S = size * 4
+    grad = Image.new('RGBA', (S, S))
+    gd = ImageDraw.Draw(grad)
+    for y in range(S):
+        t = y / (S - 1)
+        gd.line([(0, y), (S, y)], fill=tuple(int(c1[i] * (1 - t) + c2[i] * t) for i in range(3)) + (255,))
+    f = ImageFont.truetype(lucide_path, int(S * 0.5))
+    g = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(g).text((S / 2, S / 2), chr(codes[glyph]), font=f, fill=255, anchor='mm')
+    grad = Image.composite(Image.new('RGBA', (S, S), (255, 255, 255, 255)), grad, g)
+    mask = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, S - 1, S - 1], fill=255)
+    out = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+    out = Image.composite(grad, out, mask)
+    return out.resize((size, size), Image.LANCZOS)
+for i, (g, c1, c2) in enumerate(AVATARS):
+    add_image('avatar_%02d' % i, avatar(g, c1, c2))
+
+
 # an external disk, like macOS's: a silver drive with a dark slot and an orange light
 def disk_icon(size):
     S = size * 4
@@ -395,7 +426,7 @@ rgba = Image.new('RGBA', (16, 16), (255, 255, 255, 0)); rgba.putalpha(ej)
 add_image('glyph_eject', rgba)
 
 # small monochrome glyphs for the top bar and window buttons (white on transparent)
-for g in ['pencil', 'paint-bucket', 'type', 'eraser', 'pipette', 'zoom-in', 'zoom-out', 'brush', 'spray-can', 'pen-tool', 'highlighter', 'square', 'circle', 'triangle', 'star', 'minus', 'arrow-right', 'diamond', 'crop', 'scaling', 'rotate-ccw', 'rotate-cw', 'flip-horizontal', 'flip-vertical', 'square-dashed', 'layers', 'plus', 'trash-2', 'eye', 'eye-off', 'undo-2', 'redo-2', 'palette', 'copy', 'scissors', 'clipboard', 'heart', 'hexagon', 'move', 'maximize', 'grid-3x3', 'droplet', 'save', 'folder-open', 'arrow-up', 'arrow-down', 'pentagon', 'ethernet-port', 'sun', 'moon', 'user', 'users', 'mouse-pointer', 'layout-panel-top', 'image', 'info', 'lock', 'list', 'layout-grid', 'chevron-left', 'folder', 'hard-drive', 'download', 'file-text', 'wifi', 'volume-2', 'battery-full', 'search', 'power', 'bell', 'x', 'minus', 'maximize-2', 'house', 'monitor', 'cpu', 'chevron-right', 'stethoscope', 'chart-pie', 'history', 'panel-left', 'usb', 'database']:
+for g in ['pencil', 'paint-bucket', 'type', 'eraser', 'pipette', 'zoom-in', 'zoom-out', 'brush', 'spray-can', 'pen-tool', 'highlighter', 'square', 'circle', 'triangle', 'star', 'minus', 'arrow-right', 'diamond', 'crop', 'scaling', 'rotate-ccw', 'rotate-cw', 'flip-horizontal', 'flip-vertical', 'square-dashed', 'layers', 'plus', 'trash-2', 'eye', 'eye-off', 'undo-2', 'redo-2', 'palette', 'copy', 'scissors', 'clipboard', 'heart', 'hexagon', 'move', 'maximize', 'grid-3x3', 'droplet', 'save', 'folder-open', 'arrow-up', 'arrow-down', 'pentagon', 'ethernet-port', 'sun', 'moon', 'user', 'users', 'mouse-pointer', 'layout-panel-top', 'image', 'info', 'lock', 'list', 'layout-grid', 'chevron-left', 'folder', 'hard-drive', 'download', 'file-text', 'wifi', 'volume-2', 'battery-full', 'search', 'power', 'bell', 'x', 'minus', 'maximize-2', 'house', 'monitor', 'cpu', 'chevron-right', 'stethoscope', 'chart-pie', 'history', 'panel-left', 'usb', 'database', 'keyboard', 'arrow-left', 'refresh-ccw', 'life-buoy', 'user-round']:
     S = 64
     f = ImageFont.truetype(lucide_path, 52)
     im = Image.new('L', (S, S), 0)
@@ -470,6 +501,77 @@ waves = waves.filter(ImageFilter.GaussianBlur(3))
 dark = Image.new('RGB', (W, H), (30, 14, 50))
 wp = Image.composite(dark, wp, waves)
 images.append(('wallpaper', W, H, add(wp.tobytes())))   # RGB, 3 bytes per pixel
+
+# the three choices in tOS Recovery, drawn with care at 4x: the installer is a disc of the tOS
+# evening (like the Mac's), Disk Utility a white tile with a stethoscope over a disk, and the
+# live environment a display showing the desktop
+def rec_install_icon(size=64):
+    S = size * 4
+    sq = wp.crop((W // 2 - H // 2 - 120, 0, W // 2 + H // 2 - 120, H)).resize((S, S), Image.LANCZOS).convert('RGBA')
+    hl = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(hl).ellipse([-S * 0.2, -S * 0.75, S * 1.2, S * 0.42], fill=40)
+    sq = Image.composite(Image.new('RGBA', (S, S), (255, 255, 255, 255)), sq, hl)
+    out = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+    sh = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(sh).ellipse([S * 0.06, S * 0.09, S * 0.94, S * 0.97], fill=110)
+    sh = sh.filter(ImageFilter.GaussianBlur(S * 0.03))
+    out = Image.composite(Image.new('RGBA', (S, S), (0, 0, 0, 255)), out, sh)
+    m = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(m).ellipse([S * 0.05, S * 0.05, S * 0.95, S * 0.95], fill=255)
+    out = Image.composite(sq, out, m)
+    d = ImageDraw.Draw(out)
+    d.ellipse([S * 0.05, S * 0.05, S * 0.95, S * 0.95], outline=(255, 255, 255, 110), width=max(2, S // 60))
+    return out.resize((size, size), Image.LANCZOS)
+
+def rec_diskutil_icon(size=64):
+    S = size * 4
+    out = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+    sh = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(sh).rounded_rectangle([S * 0.08, S * 0.1, S * 0.92, S * 0.95], radius=int(S * 0.2), fill=90)
+    sh = sh.filter(ImageFilter.GaussianBlur(S * 0.03))
+    out = Image.composite(Image.new('RGBA', (S, S), (0, 0, 0, 255)), out, sh)
+    tile = Image.new('RGBA', (S, S))
+    td = ImageDraw.Draw(tile)
+    for y in range(S):
+        c = int(253 - 26 * y / S)
+        td.line([(0, y), (S, y)], fill=(c, c, c + 2 if c < 253 else 255, 255))
+    m = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(m).rounded_rectangle([S * 0.08, S * 0.06, S * 0.92, S * 0.9], radius=int(S * 0.2), fill=255)
+    out = Image.composite(tile, out, m)
+    ImageDraw.Draw(out).rounded_rectangle([S * 0.08, S * 0.06, S * 0.92, S * 0.9], radius=int(S * 0.2), outline=(200, 200, 206, 255), width=max(2, S // 90))
+    # the stethoscope, dark grey, over the upper left
+    f = ImageFont.truetype(lucide_path, int(S * 0.56))
+    g = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(g).text((S * 0.42, S * 0.40), chr(codes['stethoscope']), font=f, fill=255, anchor='mm')
+    out = Image.composite(Image.new('RGBA', (S, S), (72, 72, 78, 255)), out, g)
+    # the disk it listens to, lower right
+    hd = hdd_icon(int(size * 0.62)).resize((int(S * 0.62), int(S * 0.62)), Image.LANCZOS)
+    out.alpha_composite(hd, (int(S * 0.38), int(S * 0.42)))
+    return out.resize((size, size), Image.LANCZOS)
+
+def rec_try_icon(size=64):
+    S = size * 4
+    out = Image.new('RGBA', (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(out)
+    # the stand, then the display with the desktop on it
+    d.polygon([(S * 0.42, S * 0.70), (S * 0.58, S * 0.70), (S * 0.62, S * 0.86), (S * 0.38, S * 0.86)], fill=(186, 188, 196, 255))
+    d.rounded_rectangle([S * 0.30, S * 0.84, S * 0.70, S * 0.89], radius=S // 60, fill=(160, 162, 170, 255))
+    sh = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(sh).rounded_rectangle([S * 0.06, S * 0.14, S * 0.94, S * 0.74], radius=int(S * 0.06), fill=110)
+    sh = sh.filter(ImageFilter.GaussianBlur(S * 0.025))
+    out = Image.composite(Image.new('RGBA', (S, S), (0, 0, 0, 255)), out, sh)
+    d = ImageDraw.Draw(out)
+    d.rounded_rectangle([S * 0.06, S * 0.10, S * 0.94, S * 0.70], radius=int(S * 0.06), fill=(36, 36, 40, 255))
+    scr = wp.resize((int(S * 0.80), int(S * 0.45)), Image.LANCZOS).convert('RGBA')
+    sd = ImageDraw.Draw(scr)
+    sd.rectangle([0, 0, scr.width, int(S * 0.025)], fill=(230, 230, 236, 200))             # the top bar
+    sd.rounded_rectangle([scr.width * 0.3, scr.height * 0.82, scr.width * 0.7, scr.height * 0.95], radius=S // 80, fill=(255, 255, 255, 120))   # the dock
+    out.alpha_composite(scr, (int(S * 0.10), int(S * 0.14)))
+    return out.resize((size, size), Image.LANCZOS)
+
+add_image('rec_install', rec_install_icon(64))
+add_image('rec_diskutil', rec_diskutil_icon(64))
+add_image('rec_try', rec_try_icon(64))
 
 # ---------------------------------------------------------------- write it out
 comp = zlib.compressobj(9, zlib.DEFLATED, -15)

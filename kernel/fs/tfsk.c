@@ -1,3 +1,4 @@
+#include "klog.h"
 #include "tfsk.h"
 #include "string.h"
 #include "memory.h"
@@ -104,21 +105,23 @@ int tfsk_umount(tfsk_t *fs)
 
 int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
 {
-    uint8_t *zero = kcalloc(1, TFSK_BLOCK_SIZE);
-    if (!zero) return -1;
-
-    for (uint64_t i = 0; i < blocks; i++) {
-        if (ata_write_sectors(dev, i * 8, 8, zero) < 0) {
-            free(zero);
-            return -1;
-        }
-    }
-    free(zero);
-
     uint32_t bmp_blocks = (blocks + TFSK_BLOCK_SIZE * 8 - 1) / (TFSK_BLOCK_SIZE * 8);
     uint32_t inode_blocks = (TFSK_MAX_INODES + TFSK_INODES_PER_BLK - 1) / TFSK_INODES_PER_BLK;
     uint32_t inode_table_blk = TFSK_BLOCK_BMP_BLK + bmp_blocks;
     uint32_t data_start = inode_table_blk + inode_blocks;
+
+    /* only the metadata is cleared (superblock, bitmaps, inode table, the root directory's
+     * block): the data blocks are zeroed when they are allocated, so writing the whole disk,
+     * which took minutes, is not needed */
+    uint8_t *zero = kcalloc(1, TFSK_BLOCK_SIZE);
+    if (!zero) return -1;
+    for (uint64_t i = 0; i <= data_start && i < blocks; i++) {
+        if (ata_write_sectors(dev, i * 8, 8, zero) < 0) {
+            klog_write("tfsk_format: failed at step 1\n"); free(zero);
+            { klog_write("tfsk_format: failed (plain)\n"); return -1; }
+        }
+    }
+    free(zero);
 
     tfsk_superblock_t sb;
     memset(&sb, 0, sizeof(sb));
@@ -144,14 +147,14 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
 
     sb.checksum = tfsk_checksum(&sb, TFSK_SB_CKSUM_SIZE);
     if (ata_write_sectors(dev, TFSK_SB_BLK * 8, 8, &sb) < 0)
-        return -1;
+        { klog_write("tfsk_format: failed (plain)\n"); return -1; }
 
     uint8_t *imap = kcalloc(1, TFSK_BLOCK_SIZE);
     if (!imap) return -1;
     for (uint32_t i = 0; i < 3; i++)
         imap[i / 8] |= (1 << (i % 8));
     if (ata_write_sectors(dev, TFSK_INODE_BMP_BLK * 8, 8, imap) < 0) {
-        free(imap); return -1;
+        klog_write("tfsk_format: failed at step 2\n"); free(imap); return -1;
     }
     free(imap);
 
@@ -161,7 +164,7 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
         bmap[i / 8] |= (1 << (i % 8));
     for (uint32_t i = 0; i < bmp_blocks; i++) {
         if (ata_write_sectors(dev, (TFSK_BLOCK_BMP_BLK + i) * 8, 8, bmap + i * TFSK_BLOCK_SIZE) < 0) {
-            free(bmap); return -1;
+            klog_write("tfsk_format: failed at step 3\n"); free(bmap); return -1;
         }
     }
     free(bmap);
@@ -186,8 +189,8 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
     if (!ibuf) return -1;
     memcpy(ibuf + inode_off, &root, sizeof(root));
     if (ata_write_sectors(dev, inode_blk * 8, 8, ibuf) < 0) {
-        free(ibuf);
-        return -1;
+        klog_write("tfsk_format: failed at step 4\n"); free(ibuf);
+        { klog_write("tfsk_format: failed (plain)\n"); return -1; }
     }
 
     tfsk_dentry_t dot;
@@ -207,14 +210,14 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
     dotdot.name[0] = '.'; dotdot.name[1] = '.';
 
     uint8_t *dir_block = kcalloc(1, TFSK_BLOCK_SIZE);
-    if (!dir_block) { free(ibuf); return -1; }
+    if (!dir_block) { klog_write("tfsk_format: failed at step 5\n"); free(ibuf); return -1; }
     memcpy(dir_block, &dot, sizeof(tfsk_dentry_t));
     memcpy(dir_block + sizeof(tfsk_dentry_t), &dotdot, sizeof(tfsk_dentry_t));
 
     if (ata_write_sectors(dev, root_data_blk * 8, 8, dir_block) < 0) {
-        free(dir_block);
+        klog_write("tfsk_format: failed at step 6\n"); free(dir_block);
         free(ibuf);
-        return -1;
+        { klog_write("tfsk_format: failed (plain)\n"); return -1; }
     }
     free(dir_block);
 
@@ -225,8 +228,8 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
     memset(ibuf, 0, TFSK_BLOCK_SIZE);
     memcpy(ibuf + inode_off, &root, sizeof(root));
     if (ata_write_sectors(dev, inode_blk * 8, 8, ibuf) < 0) {
-        free(ibuf);
-        return -1;
+        klog_write("tfsk_format: failed at step 7\n"); free(ibuf);
+        { klog_write("tfsk_format: failed (plain)\n"); return -1; }
     }
     free(ibuf);
 
@@ -234,7 +237,7 @@ int tfsk_format(ata_device_t *dev, uint64_t blocks, const char *volume)
     sb.free_inodes = TFSK_MAX_INODES - 3;
     sb.checksum = tfsk_checksum(&sb, TFSK_SB_CKSUM_SIZE);
     if (ata_write_sectors(dev, TFSK_SB_BLK * 8, 8, &sb) < 0)
-        return -1;
+        { klog_write("tfsk_format: failed (plain)\n"); return -1; }
 
     return 0;
 }

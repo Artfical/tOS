@@ -2,11 +2,11 @@
 #include "string.h"
 
 extern const uiapp_class_t app_calculator, app_clock, app_2048, app_notepad, app_files, app_viewer,
-                           app_activity, app_network, app_paint, app_notes, app_settings, app_diskutil;
+                           app_activity, app_network, app_paint, app_notes, app_settings, app_diskutil, app_recovery;
 
 const uiapp_class_t *const uiapp_classes[] = {
     &app_files, &app_notepad, &app_calculator, &app_paint, &app_viewer, &app_activity, &app_network,
-    &app_clock, &app_notes, &app_2048, &app_settings, &app_diskutil,
+    &app_clock, &app_notes, &app_2048, &app_settings, &app_diskutil, &app_recovery,
 };
 const int uiapp_class_count = (int)(sizeof(uiapp_classes) / sizeof(uiapp_classes[0]));
 
@@ -35,10 +35,21 @@ const uiapp_class_t *uiapp_find(const char *id)
     return 0;
 }
 
+/* A push button the way macOS draws one: small radius, the default (coloured) button with a
+ * soft light from the top, the others white (light) or grey (dark) with a hairline edge and a
+ * faint shadow under them. */
 void ui_button(gfx_surface_t *s, int x, int y, int w, int h, const char *label, uint32_t bg, uint32_t fg, int hot)
 {
-    gfx_rrect(s, x, y, w, h, h / 4 > 9 ? 9 : h / 4, hot ? gfx_mix(bg, 0xFFFFFF, 50) : bg, 255);
-    gfx_text_center(s, &ui_font_medium, x, y + (h - 17) / 2, w, label, fg, 255);
+    int r = h >= 30 ? 7 : 6;
+    int coloured = bg != ui_theme.card2 && bg != ui_theme.card && bg != ui_theme.field;
+    uint32_t face = coloured ? bg : (ui_theme.dark ? 0x5A5A60 : 0xFFFFFF);
+    if (hot) face = gfx_mix(face, coloured ? 0xFFFFFF : 0x000000, coloured ? 40 : 18);
+    gfx_rrect(s, x, y + 1, w, h, r, 0x000000, ui_theme.dark ? 60 : 22);            /* the shadow under it */
+    gfx_rrect(s, x, y, w, h, r, face, 255);
+    gfx_rrect(s, x + 1, y + 1, w - 2, h / 2, r - 1, 0xFFFFFF, coloured ? 34 : (ui_theme.dark ? 16 : 0));   /* light from the top */
+    if (!coloured) gfx_rrect_outline(s, x, y, w, h, r, 0x000000, ui_theme.dark ? 70 : 34);
+    uint32_t tc = coloured ? fg : (fg == ui_theme.dim ? ui_theme.dim : ui_theme.text);
+    gfx_text_center(s, &ui_font_regular, x, y + (h - 17) / 2, w, label, tc, 255);
 }
 
 int ui_hit(int px, int py, int x, int y, int w, int h) { return px >= x && px < x + w && py >= y && py < y + h; }

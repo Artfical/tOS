@@ -106,4 +106,19 @@ void uihost_close_window(void *app);
 int  uihost_disk_job(int op, const char *dev, const char *fs, const char *name);
 int  uihost_disk_job_poll(char *report, int len);
 
+
+/* tOS Recovery and the first boot. session: 0 the desktop, 1 tOS Recovery, 2 the login window.
+ * Keyboard layouts: 0 U.S., 1 Turkish Q. Installing runs in the background like the disk jobs:
+ * start returns 0 when it began; poll gives -2 while it runs (with the percentage and what it
+ * is doing), 0 when tOS is installed, -1 when it failed. */
+int  uihost_session(void);
+int  uihost_keyboard(void);
+void uihost_keyboard_set(int layout);
+int  uihost_install_start(const char *dev, const char *host, const char *user, const char *full,
+                          const char *password, int keyboard, int picture);
+int  uihost_install_poll(int *percent, char *status, int len);
+void uihost_try_live(void);          /* leave Recovery for the live desktop */
+void uihost_restart(void);
+void uihost_shutdown(void);
+
 #endif

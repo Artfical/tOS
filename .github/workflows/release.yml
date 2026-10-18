@@ -33,19 +33,18 @@ jobs:
 
       - name: Boot it in QEMU
         # A release that cannot boot is worse than no release: the ISO is published only after
-        # the kernel has come up through memory, the file systems and the drivers to the first
-        # question it asks, and has answered it.
+        # the kernel has come up through memory, the file systems and the drivers, shown its boot
+        # screen and opened tOS Recovery (an empty disk: nothing is installed yet).
         run: |
           truncate -s 64M disk.img
-          ( sleep 25; printf '1'; sleep 3; printf 'n\n'; sleep 10 ) | \
-            timeout 60 qemu-system-i386 -cdrom tOS.iso -m 1024 -boot d \
+          timeout 90 qemu-system-i386 -cdrom tOS.iso -m 1024 -boot d -vga std \
               -drive file=disk.img,if=ide,format=raw \
               -display none -serial stdio -no-reboot > boot.log 2>&1 || true
-          cat boot.log | tr -d '\r' | tail -60
+          tr -d '\r' < boot.log | tail -60
           grep -q "Paging enabled"       boot.log
           grep -q "VFS initialized"      boot.log
           grep -q "Keyboard initialized" boot.log
-          grep -q "Keyboard layout"      boot.log
+          grep -q "session: recovery"    boot.log
 
       - name: Publish the release
         env:

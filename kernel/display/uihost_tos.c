@@ -1,4 +1,5 @@
 #include "uihost.h"
+#include "ramfs.h"
 #include "wm.h"
 #include "wm_internal.h"
 #include "fsbridge.h"
@@ -326,3 +327,99 @@ int uihost_disk_job_poll(char *report, int len)
     report[len - 1] = 0;
     return job_rc;
 }
+
+/* ---- tOS Recovery: keyboard, installing, the live session ---- */
+#include "keyboard.h"
+#include "installer.h"
+#include "io.h"
+
+int wm_gfx_session(void);
+void wm_gfx_set_session(int s);
+static int kbd_layout;
+
+int  uihost_session(void) { return wm_gfx_session(); }
+int  uihost_keyboard(void) { return kbd_layout; }
+void uihost_keyboard_set(int layout)
+{
+    kbd_layout = layout == 1 ? 1 : 0;
+    keyboard_set_layout(kbd_layout ? KBD_LAYOUT_TRQ : KBD_LAYOUT_US);
+}
+
+static volatile int inst_running, inst_rc, inst_pct;
+static char inst_status[96], inst_dev[16], inst_host[40], inst_user[32], inst_full[48], inst_pw[64];
+static int inst_kbd, inst_pic;
+
+static void inst_progress(int pct, const char *what)
+{
+    inst_pct = pct;
+    strncpy(inst_status, what, sizeof(inst_status) - 1);
+}
+
+static void inst_entry(void)
+{
+    blockdev_t *bd = blockdev_find(inst_dev);
+    ata_device_t *disk = bd && bd->type == BLOCKDEV_ATA ? (ata_device_t *)bd->driver_data : 0;
+    auth_saved_t saved;
+    auth_become(0, 0, &saved);
+    inst_rc = -1;
+    if (!disk) inst_progress(0, "That disk can't be used for tOS.");
+    else if (installer_install(disk, inst_progress) == 0 &&
+             installer_finish(disk, inst_host, inst_user, inst_full, inst_pw, inst_kbd ? "trq" : "us", inst_pic, inst_progress) == 0)
+        inst_rc = 0;
+    auth_restore(&saved);
+    memset(inst_pw, 0, sizeof(inst_pw));
+    inst_running = 0;
+    task_exit();
+}
+
+int uihost_install_start(const char *dev, const char *host, const char *user, const char *full,
+                         const char *password, int keyboard, int picture)
+{
+    if (inst_running || wm_gfx_session() != 1) return -1;          /* only from Recovery */
+    strncpy(inst_dev, dev, sizeof(inst_dev) - 1);
+    strncpy(inst_host, host, sizeof(inst_host) - 1);
+    strncpy(inst_user, user, sizeof(inst_user) - 1);
+    strncpy(inst_full, full, sizeof(inst_full) - 1);
+    strncpy(inst_pw, password, sizeof(inst_pw) - 1);
+    inst_kbd = keyboard; inst_pic = picture;
+    inst_pct = 0; inst_status[0] = 0; inst_rc = -1;
+    inst_running = 1;
+    if (task_spawn(inst_entry, "installer") < 0) { inst_running = 0; return -1; }
+    return 0;
+}
+
+int uihost_install_poll(int *percent, char *status, int len)
+{
+    *percent = inst_pct;
+    strncpy(status, inst_status, (size_t)len - 1);
+    status[len - 1] = 0;
+    return inst_running ? -2 : inst_rc;
+}
+
+/* the live session's user: "tos", no password, may use sudo (just press Return) */
+void uihost_try_live(void)
+{
+    if (wm_gfx_session() != 1) return;                 /* only Recovery leads to the live session */
+    auth_saved_t saved;
+    auth_become(0, 0, &saved);
+    auth_user_t u;
+    if (auth_lookup("tos", &u) != 0) {
+        uint32_t uid;
+        auth_add_user("tos", 0, "tOS Live", 1, &uid);
+        auth_lookup("tos", &u);
+    }
+    auth_restore(&saved);
+    auth_set_session(u.uid, u.gid);
+    if (!fsbridge_exists(u.home) || ramfs_chdir(u.home) != 0) ramfs_chdir("/");
+    wm_gfx_set_session(0);
+}
+
+void uihost_restart(void)
+{
+    asm volatile("cli");
+    outb(0x64, 0xFE);
+    for (;;) asm volatile("hlt");
+}
+
+void wm_gfx_shutdown(void);
+void uihost_shutdown(void) { wm_gfx_shutdown(); }

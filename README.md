@@ -10,8 +10,28 @@ The graphical desktop in QEMU (<code>-vga std</code>, 1280x720):
 
 <table>
 <tr>
+<td><img src="docs/screenshots/boot_screen.png" width="420"><br>The boot screen</td>
+<td><img src="docs/screenshots/recovery.png" width="420"><br>tOS Recovery: install, Disk Utility, or try tOS live</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/recovery_keyboard.png" width="420"><br>Choosing the keyboard, with a picture of it</td>
+<td><img src="docs/screenshots/recovery_account.png" width="420"><br>The account, with 29 pictures to choose from</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/recovery_disk.png" width="420"><br>Choosing the disk to install on</td>
+<td><img src="docs/screenshots/recovery_installed.png" width="420"><br>Installed</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/login.png" width="420"><br>The login window of an installed system</td>
 <td><img src="docs/screenshots/desktop.png" width="420"><br>Desktop: frosted top bar and dock, 1280x720 by default</td>
+</tr>
+<tr>
 <td><img src="docs/screenshots/launcher.png" width="420"><br>Applications launcher</td>
+<td><img src="docs/screenshots/diskutil.png" width="420"><br>Disk Utility, like the Mac's</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/diskutil_firstaid.png" width="420"><br>Disk Utility: First Aid</td>
+<td><img src="docs/screenshots/notifications.png" width="420"><br>Notifications</td>
 </tr>
 <tr>
 <td><img src="docs/screenshots/finder.png" width="420"><br>Files, made like the Finder (light appearance)</td>
@@ -57,6 +77,24 @@ The graphical desktop in QEMU (<code>-vga std</code>, 1280x720):
 <td><img src="docs/screenshots/crash.png" width="420"><br>Crash screen (<code>crash</code> command)</td>
 </tr>
 </table>
+
+## Starting tOS: tOS Recovery and the login window
+
+With a graphical display tOS asks nothing in text any more. It shows its boot screen (the logo on
+white with a progress bar) and then:
+
+- **on a computer where tOS is not installed** (the ISO in a fresh virtual machine), **tOS
+  Recovery**: *Install tOS* walks through the keyboard layout (with a picture of the keyboard and a
+  field to try it), the network, the account (full name, account name made from it, password,
+  one of 29 pictures) and the disk, then installs and restarts; *Disk Utility* opens Disk Utility;
+  *Try tOS in Live Environment* asks for the keyboard layout and starts a live desktop (user
+  `tos`, no password). Recovery has no dock and opens no other apps; it cannot be opened from a
+  running system.
+- **on an installed system**, the **login window**: the account pictures, a password field,
+  Restart and Shut Down. The keyboard layout chosen at installation is used.
+
+Without a graphical display the old text questions remain (keyboard layout, the text installer,
+GUI or CLI, login).
 
 ## Notifications and removable disks
 

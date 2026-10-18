@@ -25,6 +25,9 @@
 #include "scheduler.h"
 #include "vga_font.h"
 #include "bootsplash.h"
+#include "fsbridge.h"
+#include "uihost.h"
+void wm_gfx_set_session(int s);
 #include "vfs.h"
 #include "pcspkr.h"
 #include "ramfs.h"
@@ -422,7 +425,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
      * (the more common choice) skipped it entirely until now. */
     vga_font_capture_base();
 
-    bootsplash_end();
+    /* with a graphical display everything from here is asked on screen (tOS Recovery, the login
+     * window); the text questions below are for machines without one */
+    int graphical = bootsplash_active();
+    if (!graphical) {
     terminal_writestring("\nKeyboard layout: [US] (1) or [TR-Q] (2) ? ");
     for (;;) {
         char c = keyboard_getchar();
@@ -437,9 +443,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             break;
         }
     }
+    }
 
     if (!tfs_instance.mounted && ata_device_count > 0) {
-        if (!installer_check_installed()) {
+        if (!graphical && !installer_check_installed()) {
             terminal_writestring("\n");
             installer_run();
             terminal_setcolor(0x07);
@@ -457,18 +464,28 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     /* the folder layout and the accounts (root's file system comes before any login) */
     sysdirs_setup(tfs_instance.mounted);
     auth_init();
-    if (tfs_instance.mounted && !auth_have_accounts()) {
+    if (!graphical && tfs_instance.mounted && !auth_have_accounts()) {
         installer_setup_accounts();
         auth_init();
     }
+    /* an installed system's keyboard layout, chosen when it was installed */
+    if (tfs_instance.mounted) {
+        uint8_t *kb; uint32_t kn;
+        if (uihost_read("/etc/keyboard", &kb, &kn) == 0) {
+            if (kn >= 3 && kb[0] == 't' && kb[1] == 'r') { uihost_keyboard_set(1); vga_font_load_turkish(); }
+            free(kb);
+        }
+    }
 
-    int sel = 0;
+    int sel = graphical;
+    if (!graphical) {
     terminal_writestring("\nGUI? <[No] Yes>  (arrows/y/n, Enter)");
     for (;;) {
         int k = keyboard_yesno();
         if (k == 0) { sel = 0; terminal_writestring("\rGUI? <[No] Yes>  (arrows/y/n, Enter)"); }
         else if (k == 1) { sel = 1; terminal_writestring("\rGUI? < No [Yes]> (arrows/y/n, Enter)"); }
         else { terminal_putchar('\n'); break; }
+    }
     }
     if (sel) {
         terminal_writestring("[OK] GUI initialized\n");
@@ -483,21 +500,31 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     terminal_writestring("[OK] Syscalls initialized\n");
     klog_write("[OK] Syscalls initialized\n");
 
+    bootsplash_progress(88);
     net_init();
+    bootsplash_progress(93);
 
     micropython_init();
 
     scheduler_init();
+    bootsplash_progress(97);
     terminal_writestring("[OK] Scheduler initialized\n");
     klog_write("[OK] Scheduler initialized\n");
 
     /* from here on everything runs as whoever logs in; what the kernel started so far stays root */
-    shell_login();
+    if (!graphical) shell_login();
+    else auth_set_session(0, 0);
 
     shell_init();
 
     if (sel) {
         gui_init();
+        /* the first screen: the login window on an installed system, tOS Recovery otherwise */
+        extern int wm_gfx_mode;
+        if (graphical && wm_gfx_mode) {
+            int installed = tfs_instance.mounted && auth_have_accounts();
+            wm_gfx_set_session(installed ? 2 : 1);
+        } else if (graphical) { bootsplash_end(); shell_login(); }
         wm_run();
     } else {
         shell_run();

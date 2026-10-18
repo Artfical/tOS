@@ -123,3 +123,13 @@ void bootsplash_end(void)
     terminal_set_quiet(0);
     terminal_clear();
 }
+
+/* the desktop takes the screen over: VBE stays on (it sets its own mode), only the text console
+ * gets its voice back */
+void bootsplash_handoff(void)
+{
+    if (!active) return;
+    bootsplash_progress(100);
+    active = 0;
+    terminal_set_quiet(0);
+}
