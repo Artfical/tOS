@@ -210,7 +210,7 @@ static int installed(void)
 static void check_task(void)
 {
     info.err[0] = 0;
-    char path[64] = "/api/check?build=";
+    char path[64] = "/api/check?video=1&build=";       /* video=1: this build plays videos in the notes */
     char n[12]; int o = 0; unsigned v = tos_build;
     char r[12]; int ro = 0;
     do { r[ro++] = (char)('0' + v % 10); v /= 10; } while (v);

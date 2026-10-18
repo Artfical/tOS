@@ -248,6 +248,14 @@ static void mb(char *o, uint32_t bytes)
     strcat(o, " MB");
 }
 
+/* a speed: below a tenth of a megabyte a second it reads in KB, not as "0.0 MB/s" */
+static void rate(char *o, uint32_t bps)
+{
+    if (bps >= 100000) { mb(o, bps); return; }
+    ui_num(o, bps / 1000);
+    strcat(o, " KB");
+}
+
 static void draw_update(uiapp_t *a, set_t *st, gfx_surface_t *s, int px, int gy, int pw, int ph)
 {
     const update_info_t *u = uihost_update_status();
@@ -294,7 +302,7 @@ static void draw_update(uiapp_t *a, set_t *st, gfx_surface_t *s, int px, int gy,
         if (fw > 6) gfx_rrect(s, tx, by, fw, 6, 3, UI_ACCENT, 255);
         v[0] = 0; mb(v, u->got); strcat(v, " of "); mb(v, u->total);
         if (u->speed) {
-            strcat(v, " \xE2\x80\x94 "); mb(v, u->speed); strcat(v, "/s \xE2\x80\x94 about ");
+            strcat(v, " \xE2\x80\x94 "); rate(v, u->speed); strcat(v, "/s \xE2\x80\x94 about ");
             uint32_t left = (u->total - u->got) / (u->speed ? u->speed : 1);
             if (left < 60) { ui_num(v, left); strcat(v, " seconds"); } else { ui_num(v, left / 60 + 1); strcat(v, " minutes"); }
         }
