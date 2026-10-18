@@ -1,4 +1,5 @@
 #include "sysdirs.h"
+#include "build.h"
 #include "vfs.h"
 #include "fsbridge.h"
 #include "string.h"
@@ -15,7 +16,7 @@ static void ensure_dir(const char *path, uint32_t mode)
 }
 
 /* programs shipped in the initrd are copied into /system/programs once */
-static void seed_programs(void)
+static void seed_programs(int replace)
 {
     int n;
     vfs_entry_t *list = fsbridge_list_all("/programs", &n);
@@ -27,7 +28,7 @@ static void seed_programs(void)
         strncpy(src + strlen(src), list[i].name, sizeof(src) - strlen(src) - 1);
         strcpy(dst, "/system/programs/");
         strncpy(dst + strlen(dst), list[i].name, sizeof(dst) - strlen(dst) - 1);
-        if (vfs_exists(dst)) continue;
+        if (vfs_exists(dst)) { if (!replace) continue; vfs_unlink(dst); }   /* a new build brings new programs */
         uint32_t sz = list[i].size;
         char *buf = (char *)malloc(sz ? sz : 1);
         if (!buf) continue;
@@ -118,6 +119,22 @@ void sysdirs_setup(int have_disk)
 {
     /* programs are copied in once: when the system folder is first made, or on every live boot */
     int seed = !have_disk || !vfs_exists("/mnt/system/programs");
+    /* after Software Update installed another build, its programs replace the old ones */
+    int replace = 0;
+    if (have_disk) {
+        char want[16], have[16] = "";
+        unsigned v = tos_build; int o = 0; char r[12]; int ro = 0;
+        do { r[ro++] = (char)('0' + v % 10); v /= 10; } while (v);
+        while (ro) want[o++] = r[--ro];
+        want[o] = 0;
+        int got = fsbridge_read("/mnt/system/programs/.build", have, sizeof(have) - 1, 0);
+        if (got >= 0) have[got] = 0;
+        if (strcmp(have, want)) {
+            replace = seed = 1;
+            if (!vfs_exists("/mnt/system/programs/.build")) fsbridge_create("/mnt/system/programs/.build");
+            fsbridge_write("/mnt/system/programs/.build", want, (uint32_t)strlen(want), 0);
+        }
+    }
     if (have_disk) {
         ensure_dir("/mnt/system", 0755);
         ensure_dir("/mnt/system/programs", 0755);
@@ -138,7 +155,7 @@ void sysdirs_setup(int have_disk)
     install_system_layout();
     ensure_dir("/tmp", 01777);
     vfs_chown("/programs", 0, 0);
-    if (seed) seed_programs();
+    if (seed) seed_programs(replace);
     fix_program_modes("/system/programs", 0);
     fix_program_modes("/programs", 0);
     klog_write("sysdirs: /system /etc /home /root ready\n");

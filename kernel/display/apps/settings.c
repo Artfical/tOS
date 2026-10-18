@@ -2,17 +2,18 @@
 #include "../uihost.h"
 #include "string.h"
 #include "memory.h"
+#include "update.h"
 
 /*
  * System Settings, laid out like macOS's: the account at the top of a sidebar, sections with
  * coloured icons below, and on the right grouped rows with switches and segmented controls.
  */
 
-enum { S_NETWORK, S_APPEARANCE, S_DESKTOP, S_DISPLAYS, S_MOUSE, S_USERS, S_GENERAL, S_COUNT };
-static const char *const sec_name[S_COUNT] = { "Network", "Appearance", "Desktop & Dock", "Displays", "Mouse", "Users & Groups", "General" };
+enum { S_NETWORK, S_APPEARANCE, S_DESKTOP, S_DISPLAYS, S_MOUSE, S_USERS, S_GENERAL, S_UPDATE, S_COUNT };
+static const char *const sec_name[S_COUNT] = { "Network", "Appearance", "Desktop & Dock", "Displays", "Mouse", "Users & Groups", "General", "Software Update" };
 static const char *const sec_glyph[S_COUNT] = { "glyph_ethernet-port", "glyph_sun", "glyph_layout-panel-top", "glyph_monitor",
-                                                "glyph_mouse-pointer", "glyph_users", "glyph_info" };
-static const uint32_t sec_color[S_COUNT] = { 0x2F80ED, 0x1F1F24, 0x14B8A6, 0x3B82F6, 0x8E8E93, 0x8E8E93, 0x8E8E93 };
+                                                "glyph_mouse-pointer", "glyph_users", "glyph_info", "glyph_refresh-ccw" };
+static const uint32_t sec_color[S_COUNT] = { 0x2F80ED, 0x1F1F24, 0x14B8A6, 0x3B82F6, 0x8E8E93, 0x8E8E93, 0x8E8E93, 0x8E8E93 };
 
 #define SIDE 230
 
@@ -26,6 +27,8 @@ typedef struct {
     int pending;                  /* waiting for the password dialog: 1 add user */
     char msg[80];
     uint32_t last_sec;
+    int scroll;                   /* Software Update's notes */
+    int asked;                    /* checked for updates since the pane opened */
 } set_t;
 
 /* ---- controls ---- */
@@ -234,6 +237,150 @@ static void draw_section(uiapp_t *a, set_t *st, gfx_surface_t *s, int x, int y, 
     }
 }
 
+/* ---- Software Update ---- */
+
+static void wrap_text(gfx_surface_t *s, const ui_font_t *f, int x, int *y, int w, const char *t, uint32_t c)
+{
+    char line[200];
+    while (*t) {
+        int best = 0, i = 0;
+        while (t[i] && i < 198) {
+            line[i] = t[i]; line[i + 1] = 0;
+            if (gfx_text_width(f, line) > w) break;
+            if (t[i] == ' ') best = i;
+            i++;
+        }
+        int take = !t[i] ? i : (best ? best : i);
+        memcpy(line, t, (size_t)take);
+        line[take] = 0;
+        gfx_text(s, f, x, *y, line, c, 255);
+        *y += f->line_h + 2;
+        t += take;
+        while (*t == ' ') t++;
+    }
+}
+
+static void mb(char *o, uint32_t bytes)
+{
+    uint32_t tenths = bytes / 100000;
+    ui_num(o, tenths / 10);
+    char d[4] = { '.', (char)('0' + tenths % 10), 0 };
+    strcat(o, d);
+    strcat(o, " MB");
+}
+
+static void draw_update(uiapp_t *a, set_t *st, gfx_surface_t *s, int px, int gy, int pw, int ph)
+{
+    const update_info_t *u = uihost_update_status();
+    if (!st->asked) { st->asked = 1; if (u->state == UPD_IDLE || u->state == UPD_ERROR) uihost_update_check(); }
+    char v[160];
+    /* the card at the top: what this computer runs and what there is */
+    group(s, px, gy, pw, 2);
+    gfx_blit(s, gfx_image("rec_install"), px + 16, gy + 12, 255);
+    int tx = px + 96, ty = gy + 18;
+    if (u->state == UPD_AVAILABLE || u->state == UPD_DOWNLOADING || u->state == UPD_READY) {
+        gfx_text(s, &ui_font_medium, tx, ty, u->title[0] ? u->title : "A tOS update is available", UI_TEXT, 255);
+        v[0] = 0; strcat(v, "Build "); ui_num(v, u->latest); strcat(v, " \xC2\xB7 "); strcat(v, u->date);
+        strcat(v, " \xC2\xB7 "); mb(v, u->ksize + u->isize);
+        if (u->behind > 1) { strcat(v, " \xC2\xB7 "); ui_num(v, u->behind); strcat(v, " updates"); }
+        gfx_text(s, &ui_font_small, tx, ty + 22, v, UI_DIM, 255);
+    } else {
+        v[0] = 0; strcat(v, "tOS "); strcat(v, uihost_version()); strcat(v, " (build "); ui_num(v, uihost_build()); strcat(v, ")");
+        gfx_text(s, &ui_font_medium, tx, ty, v, UI_TEXT, 255);
+    }
+    int by = gy + 54, bx = px + pw - 150;
+    switch (u->state) {
+    case UPD_CHECKING: case UPD_IDLE: {
+        int ph2 = (int)(uihost_ms() / 90 % 12);
+        for (int k = 0; k < 12; k++) {
+            int ang = k * 30, al = 40 + ((k - ph2 + 12) % 12) * 18;
+            gfx_circle(s, tx + 8 + gfx_sin(ang) * 7 / 4096, by + 10 - gfx_cos(ang) * 7 / 4096, 2, UI_DIM, al > 255 ? 255 : al);
+        }
+        gfx_text(s, &ui_font_regular, tx + 24, by + 2, "Checking for updates\xE2\x80\xA6", UI_DIM, 255);
+        break;
+    }
+    case UPD_UPTODATE:
+        gfx_text(s, &ui_font_regular, tx, by + 2, "tOS is up to date.", UI_DIM, 255);
+        ui_button(s, bx, by - 4, 136, 28, "Check Now", UI_CARD2, UI_TEXT, 0);
+        break;
+    case UPD_AVAILABLE:
+        gfx_text(s, &ui_font_regular, tx, by + 2, u->far ? "This computer is far behind: update it." : "Installs while restarting.", u->far ? UI_ORANGE : UI_DIM, 255);
+        ui_button(s, bx, by - 4, 136, 28, "Update Now", UI_ACCENT, 0xFFFFFF, 0);
+        break;
+    case UPD_DOWNLOADING: {
+        int bw = pw - 96 - 24;
+        gfx_rrect(s, tx, by, bw, 6, 3, UI_LINE, 255);
+        int fw = u->total ? (int)((uint64_t)bw * u->got / u->total) : 0;
+        if (fw > 6) gfx_rrect(s, tx, by, fw, 6, 3, UI_ACCENT, 255);
+        v[0] = 0; mb(v, u->got); strcat(v, " of "); mb(v, u->total);
+        if (u->speed) {
+            strcat(v, " \xE2\x80\x94 "); mb(v, u->speed); strcat(v, "/s \xE2\x80\x94 about ");
+            uint32_t left = (u->total - u->got) / (u->speed ? u->speed : 1);
+            if (left < 60) { ui_num(v, left); strcat(v, " seconds"); } else { ui_num(v, left / 60 + 1); strcat(v, " minutes"); }
+        }
+        gfx_text(s, &ui_font_small, tx, by + 12, v, UI_DIM, 255);
+        break;
+    }
+    case UPD_READY:
+        gfx_text(s, &ui_font_regular, tx, by + 2, "Restart to finish installing the update.", UI_DIM, 255);
+        ui_button(s, bx, by - 4, 136, 28, "Restart Now", UI_ACCENT, 0xFFFFFF, 0);
+        break;
+    case UPD_ERROR:
+        gfx_text(s, &ui_font_regular, tx, by + 2, u->err[0] ? u->err : "Software Update failed.", UI_RED, 255);
+        ui_button(s, bx, by - 4, 136, 28, "Try Again", UI_CARD2, UI_TEXT, 0);
+        break;
+    case UPD_LIVE:
+        gfx_text(s, &ui_font_regular, tx, by + 2, "Software Update works once tOS is installed, not in the live environment.", UI_DIM, 255);
+        break;
+    }
+    /* what is new, app by app, with the commits and the pictures */
+    if (u->state != UPD_AVAILABLE && u->state != UPD_DOWNLOADING && u->state != UPD_READY) return;
+    int top = gy + 104;
+    gfx_text(s, &ui_font_medium, px, top, "What\xE2\x80\x99s New", UI_TEXT, 255);
+    gfx_surface_t c = *s;
+    gfx_clip(&c, px - 4, top + 26, pw + 8, ph - (top + 26 - gy) - 8);
+    int y = top + 32 - st->scroll;
+    const char *last_app = "";
+    unsigned last_build = 0;
+    for (int i = 0; i < u->nnotes; i++) {
+        const update_note_t *n = &u->notes[i];
+        if (strcmp(n->app, last_app) || n->build != last_build) {
+            y += 6;
+            char key[32] = "icon48_";
+            strcat(key, n->icon);
+            const gfx_image_t *ic = gfx_image(key);
+            if (!ic) ic = gfx_image("icon48_settings");
+            gfx_blit_scaled(&c, ic, px, y, 26, 26, 255);
+            gfx_text(&c, &ui_font_medium, px + 36, y + 4, n->app, UI_TEXT, 255);
+            v[0] = 0; strcat(v, "build "); ui_num(v, n->build);
+            gfx_text(&c, &ui_font_small, px + pw - gfx_text_width(&ui_font_small, v), y + 6, v, UI_DIM, 255);
+            y += 32;
+            last_app = n->app; last_build = n->build;
+        }
+        gfx_circle(&c, px + 41, y + 8, 2, UI_DIM, 255);
+        wrap_text(&c, &ui_font_regular, px + 50, &y, pw - 54, n->text, UI_TEXT);
+        if (i + 1 >= u->nnotes || strcmp(u->notes[i + 1].app, n->app) || u->notes[i + 1].build != n->build) {
+            gfx_text(&c, &ui_font_small, px + 50, y, n->url, UI_ACCENT, 255);
+            y += 22;
+        }
+    }
+    for (int i = 0; i < u->nshots; i++) {
+        const update_shot_t *sh = &u->shots[i];
+        y += 8;
+        if (sh->rgba) {
+            int w = sh->w > pw ? pw : sh->w, h2 = sh->h * w / (sh->w ? sh->w : 1);
+            gfx_image_t im = { sh->w, sh->h, sh->rgba };
+            gfx_blit_scaled(&c, &im, px, y, w, h2, 255);
+            gfx_rrect_outline(&c, px, y, w, h2, 8, UI_LINE, 255);
+            y += h2 + 4;
+        }
+        gfx_text(&c, &ui_font_small, px, y, sh->caption, UI_DIM, 255);
+        y += 22;
+    }
+    st->last_sec = (uint32_t)(y + st->scroll - (top + 32));        /* the notes' full height, for scrolling */
+    (void)a;
+}
+
 static void s_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
 {
     set_t *st = a->st;
@@ -261,13 +408,14 @@ static void s_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
     gfx_fill(s, x + SIDE + 1, y, w - SIDE - 1, h, UI_BG);
     gfx_surface_t c = *s;
     gfx_clip(&c, x + SIDE + 1, y, w - SIDE - 1, h);
-    draw_section(a, st, &c, x + SIDE + 1, y, w - SIDE - 1);
+    if (st->sec == S_UPDATE) draw_update(a, st, &c, x + SIDE + 1 + 28, y + 64, w - SIDE - 1 - 56, h - 64);
+    else draw_section(a, st, &c, x + SIDE + 1, y, w - SIDE - 1);
 }
 
 static void s_init(uiapp_t *a, const char *arg)
 {
     set_t *st = a->st;
-    st->sec = arg && !strcmp(arg, "network") ? S_NETWORK : S_APPEARANCE;
+    st->sec = arg && !strcmp(arg, "network") ? S_NETWORK : arg && !strcmp(arg, "update") ? S_UPDATE : S_APPEARANCE;
 }
 
 static void s_press(uiapp_t *a, int lx, int ly, int b)
@@ -277,12 +425,21 @@ static void s_press(uiapp_t *a, int lx, int ly, int b)
     a->dirty = 1;
     if (lx < SIDE) {
         int i = (ly - 116) / 34;
-        if (ly >= 116 && i >= 0 && i < S_COUNT) { st->sec = i; st->adding = 0; st->msg[0] = 0; }
+        if (ly >= 116 && i >= 0 && i < S_COUNT) { st->sec = i; st->adding = 0; st->msg[0] = 0; st->asked = 0; st->scroll = 0; }
         return;
     }
     int px = SIDE + 1 + 28, pw = a->w - SIDE - 1 - 56, gy = 64;
     lx -= 0;
     switch (st->sec) {
+    case S_UPDATE: {
+        const update_info_t *u = uihost_update_status();
+        if (ui_hit(lx, ly, px + pw - 150, gy + 50, 136, 28)) {
+            if (u->state == UPD_AVAILABLE) uihost_update_download();
+            else if (u->state == UPD_READY) uihost_update_restart();
+            else if (u->state == UPD_UPTODATE || u->state == UPD_ERROR) uihost_update_check();
+        }
+        break;
+    }
     case S_NETWORK:
         if (ui_hit(lx, ly, px + pw - 110, gy + 8, 96, 28)) uihost_open("netmon", 0);
         break;
@@ -359,6 +516,13 @@ static int s_tick(uiapp_t *a)
         st->pending = 0;
         return 1;
     }
+    if (st->sec == S_UPDATE) {
+        const update_info_t *u = uihost_update_status();
+        if (u->state == UPD_CHECKING || u->state == UPD_DOWNLOADING || u->state == UPD_IDLE) return 1;
+        static int was;
+        if (u->state != was) { was = u->state; return 1; }
+        return 0;
+    }
     if (st->sec == S_GENERAL || st->sec == S_NETWORK) {
         uint32_t sec = uihost_ms() / 1000;
         if (sec != st->last_sec) { st->last_sec = sec; return 1; }
@@ -366,8 +530,19 @@ static int s_tick(uiapp_t *a)
     return 0;
 }
 
+static void s_wheel(uiapp_t *a, int d)
+{
+    set_t *st = a->st;
+    if (st->sec != S_UPDATE) return;
+    st->scroll -= d * 40;
+    int max = (int)st->last_sec - 300;
+    if (st->scroll > max) st->scroll = max;
+    if (st->scroll < 0) st->scroll = 0;
+    a->dirty = 1;
+}
+
 const uiapp_class_t app_settings = {
     "settings", "System Settings", "settings", 820, 540, 0, sizeof(set_t),
-    s_init, s_draw, s_press, 0, 0, s_key, 0, s_tick, 0,
+    s_init, s_draw, s_press, 0, 0, s_key, s_wheel, s_tick, 0,
     0, 0, 0,
 };

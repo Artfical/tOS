@@ -188,6 +188,10 @@ KERNEL_OBJS = \
     kernel/shell/tos_api.o \
     kernel/display/gui.o \
     kernel/display/wm.o \
+    kernel/core/build.o \
+    kernel/core/update.o \
+    kernel/core/kexec.o \
+    kernel/core/kexec_tramp.o \
     kernel/display/wm_gfx.o \
     kernel/display/wm_notify.o \
     kernel/display/bootsplash.o \
@@ -444,6 +448,15 @@ run-noinstall: tOS.iso
 	qemu-system-x86_64 -cdrom tOS.iso -m 1024M \
 		-drive file=/tmp/tfs_test.img,if=ide,format=raw \
 		-serial stdio 2>/dev/null || true
+
+TOS_BUILD := $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
+TOS_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+
+# the build number and commit, fresh on every build
+kernel/core/build.o: FORCE
+	$(CC) $(CFLAGS) -DTOS_BUILD=$(TOS_BUILD) -DTOS_COMMIT='"$(TOS_COMMIT)"' -c kernel/core/build.c -o $@
+FORCE:
+.PHONY: FORCE
 
 clean:
 	rm -f $(KERNEL_OBJS) kernel/tOS.elf initrd.tar tOS.iso

@@ -25,6 +25,8 @@ int http_response_check(const uint8_t *r, int *total);
  * Returns the new total length, or HTTP_ERR_HEADER if the chunking is invalid. */
 int http_dechunk(uint8_t *r, int total);
 
+/* called with the bytes received so far while http_get()/https_get() read a response; NULL = off */
+extern void (*http_progress)(int received);
 int http_get(uint32_t ip, const char *host, uint16_t port, const char *path, uint8_t *response, int max_len);
 const char *http_strerror(int err);
 

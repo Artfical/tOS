@@ -28,6 +28,7 @@ typedef struct {
 int uhci_init(uhci_controller_t *ctrl);
 int uhci_port_detect(uhci_controller_t *ctrl, int port);
 int uhci_port_connected(uhci_controller_t *ctrl, int port);
+void uhci_stop(void);
 int uhci_port_attach(uhci_controller_t *ctrl, int port);      /* the port's device address, 0 = none */
 #define UHCI_INTR_SLOTS 2                                      /* 0: mouse, 1: keyboard */
 int uhci_interrupt_poll(uhci_controller_t *ctrl, int slot, int dev, int ep, int max_len, void *buf, int *toggle);

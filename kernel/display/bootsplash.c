@@ -92,6 +92,29 @@ int bootsplash_begin(void)
 
 int bootsplash_active(void) { return active; }
 
+/* a few words under the bar, drawn in the boot screen's 8x16 VGA font from the text mode */
+void bootsplash_status(const char *text)
+{
+    if (!active) return;
+    fill(0, bar_y + 24, SW, 20, 0xFFFFFF);
+    int n = 0;
+    for (const char *c = text; *c; c++) if (((unsigned char)*c & 0xC0) != 0x80) n++;
+    int x = (SW - n * 8) / 2, y = bar_y + 26;
+    for (const unsigned char *c = (const unsigned char *)text; *c; c++) {
+        unsigned ch = *c;
+        if ((ch & 0xE0) == 0xC0 || (ch & 0xF0) == 0xE0) {          /* the ellipsis and the like: shown as dots */
+            while ((c[1] & 0xC0) == 0x80) c++;
+            for (int d = 0; d < 3; d++) fill(x + 1 + d * 2, y + 12, 1, 1, 0x6E6E73);
+            x += 8;
+            continue;
+        }
+        const uint8_t *g = vga_font_get_glyph((unsigned char)ch);
+        for (int r = 0; r < 16; r++)
+            for (int b = 0; b < 8; b++) if (g[r] & (0x80 >> b)) fb[(y + r) * SW + x + b] = 0x6E6E73;
+        x += 8;
+    }
+}
+
 void bootsplash_paging_ready(void)
 {
     if (active) paging_map_range(dev.lfb, dev.lfb, 0x1000000, PTE_PRESENT | PTE_WRITABLE);

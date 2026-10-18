@@ -423,3 +423,15 @@ void uihost_restart(void)
 
 void wm_gfx_shutdown(void);
 void uihost_shutdown(void) { wm_gfx_shutdown(); }
+
+/* ---- Software Update ---- */
+#include "update.h"
+#include "build.h"
+#include "version.h"
+
+const void *uihost_update_status(void) { return update_info(); }
+void uihost_update_check(void) { if (wm_gfx_session() == 0) update_check_async(); }
+void uihost_update_download(void) { if (wm_gfx_session() == 0) update_download_async(); }
+void uihost_update_restart(void) { if (update_ready()) uihost_restart(); }
+unsigned uihost_build(void) { return tos_build; }
+const char *uihost_version(void) { return TOS_VERSION; }

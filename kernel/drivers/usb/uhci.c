@@ -142,6 +142,12 @@ int uhci_init(uhci_controller_t *c)
 }
 
 /* is something plugged into the root port? (no reset, just the connect status bit) */
+/* stops the controller (it reads its schedule from memory): before another kernel takes over */
+void uhci_stop(void)
+{
+    if (_uhci_ready) outw(_saved_ctrl.io_base, 0);
+}
+
 int uhci_port_connected(uhci_controller_t *c, int port)
 {
     uint16_t s = r16(c, 16 + port * 2);

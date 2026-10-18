@@ -22,6 +22,7 @@
 #include "volumes.h"
 #include "ramfs.h"
 #include "bootsplash.h"
+#include "update.h"
 
 /*
  * The graphical desktop.
@@ -1365,6 +1366,7 @@ void wm_gfx_set_session(int s)
 {
     int was = session;
     serial_write(s == 1 ? "session: recovery\n" : s == 2 ? "session: login\n" : "session: desktop\n");
+    if (s != 1) update_session_ok();
     session = s;
     menu_which = 0; launcher_open = 0;
     if (s == 1) {
@@ -1571,6 +1573,41 @@ static int desktop_disk_press(int x, int y)
     }
     if (desk_sel >= 0) { desk_sel = -1; dirty = 1; }
     return 0;
+}
+
+/* Software Update looks once, a little after the desktop is up, and says so when there is
+ * something new; with a far-behind computer it insists a little more */
+static void update_watch(void)
+{
+    static int phase, nid;
+    static uint32_t t0;
+    if (session != 0) return;
+    uint32_t now = debugmon_uptime_ms();
+    const update_info_t *u = update_info();
+    if (phase == 0) { t0 = now; phase = 1; return; }
+    if (phase == 1) { if (now - t0 > 15000) { update_check_async(); phase = 2; } return; }
+    if (phase == 2) {
+        if (u->state == UPD_CHECKING || u->state == UPD_IDLE) return;
+        if (u->state == UPD_AVAILABLE) {
+            char body[160] = "";
+            if (u->far) {
+                strcat(body, "tOS is ");
+                char n[12]; n[0] = 0; fmt_num(n, (uint32_t)u->behind);
+                strcat(body, n);
+                strcat(body, " updates behind. Update to get the latest fixes.");
+            } else {
+                strcat(body, u->title[0] ? u->title : "A new version of tOS is ready to download.");
+            }
+            nid = notify_post("settings", 0, u->far ? "Your tOS is out of date" : "Software Update", body, "Update", "Later");
+        }
+        phase = 3;
+        return;
+    }
+    if (phase == 3 && nid > 0) {
+        int r = notify_result(nid);
+        if (r == 1 || r == 3) wm_gfx_open_native("settings", "update");
+        if (r != 0) nid = 0;
+    }
 }
 
 static void poll_volumes(void)
@@ -2197,6 +2234,7 @@ void wm_gfx_tick(void)
 
     if (notify_tick()) dirty = 1;
     poll_volumes();
+    update_watch();
 
     cmos_time_t t;
     cmos_get_time(&t);

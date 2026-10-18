@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # the build number is the commit count
 
       - name: Install the toolchain and ISO tools
         run: |
@@ -46,6 +48,31 @@ jobs:
           grep -q "Keyboard initialized" boot.log
           grep -q "session: recovery"    boot.log
 
+      - name: Describe the update
+        # what update.artfical.com publishes: the build number, the commit, what it says and
+        # which files it touched (the release notes are made from these), and the files' hashes
+        run: |
+          python3 - <<'PY'
+          import json, hashlib, subprocess, os
+          def git(*a): return subprocess.check_output(['git', *a], text=True).strip()
+          def sha(p): return hashlib.sha256(open(p, 'rb').read()).hexdigest()
+          m = {
+            'build': int(git('rev-list', '--count', 'HEAD')),
+            'commit': git('rev-parse', 'HEAD'),
+            'short': git('rev-parse', '--short', 'HEAD'),
+            'date': git('log', '-1', '--format=%cI'),
+            'subject': git('log', '-1', '--format=%s'),
+            'body': git('log', '-1', '--format=%b'),
+            'files': git('diff', '--name-only', 'HEAD~1', 'HEAD').splitlines(),
+            # the release notes are written by hand in UPDATE_NOTES.md, with the commit they belong to
+            'notes': open('UPDATE_NOTES.md').read() if 'UPDATE_NOTES.md' in git('diff', '--name-only', 'HEAD~1', 'HEAD').splitlines() else None,
+            'kernel': {'name': 'tOS.elf', 'size': os.path.getsize('kernel/tOS.elf'), 'sha256': sha('kernel/tOS.elf')},
+            'initrd': {'name': 'initrd.tar', 'size': os.path.getsize('initrd.tar'), 'sha256': sha('initrd.tar')},
+          }
+          json.dump(m, open('manifest.json', 'w'), indent=1)
+          print(json.dumps({k: m[k] for k in ('build', 'short', 'subject')}))
+          PY
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -61,6 +88,9 @@ jobs:
           \`\`\`
           qemu-system-i386 -cdrom tOS-$SHORT.iso -m 1024 -vga std
           \`\`\`
-          or attach it to a VMware / VirtualBox machine as a CD (BIOS boot), or write it to a USB stick." \
+          or attach it to a VMware / VirtualBox machine as a CD (BIOS boot), or write it to a USB stick.
+          Installed systems get it through Software Update (update.artfical.com)." \
              "tOS-$SHORT.iso" \
-             "kernel/tOS.elf"
+             "kernel/tOS.elf" \
+             "initrd.tar" \
+             "manifest.json"

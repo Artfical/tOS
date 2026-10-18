@@ -121,4 +121,14 @@ void uihost_try_live(void);          /* leave Recovery for the live desktop */
 void uihost_restart(void);
 void uihost_shutdown(void);
 
+
+/* Software Update (update.artfical.com). The status is the kernel's update_info_t: see
+ * kernel/core/update.h for its fields. Not offered in the live session or in Recovery. */
+const void *uihost_update_status(void);      /* an update_info_t */
+void uihost_update_check(void);
+void uihost_update_download(void);
+void uihost_update_restart(void);            /* restart and install */
+unsigned uihost_build(void);
+const char *uihost_version(void);
+
 #endif

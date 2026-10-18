@@ -1,4 +1,7 @@
 #include "http.h"
+
+/* told how many bytes have arrived, while a response comes in (Software Update shows it) */
+void (*http_progress)(int received);
 #include "dns.h"
 #include "tcp.h"
 #include "net.h"
@@ -132,6 +135,7 @@ int http_get(uint32_t ip, const char *host, uint16_t port, const char *path, uin
         int n = tcp_recv(response + total, max_len - total);
         if (n <= 0) break;
         total += n;
+        if (http_progress) http_progress(total);
         int st = http_response_check(response, &total);
         if (st < 0) { tcp_close(); return st; }
         if (st == 1) break;

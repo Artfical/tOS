@@ -25,6 +25,8 @@
 #include "scheduler.h"
 #include "vga_font.h"
 #include "bootsplash.h"
+#include "update.h"
+#include "kexec.h"
 #include "fsbridge.h"
 #include "uihost.h"
 void wm_gfx_set_session(int s);
@@ -250,6 +252,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     if (mem_upper == 0) mem_upper = 32768;
     memory_init(mem_upper, have_initrd ? initrd_end : 0);
+    kexec_set_memory(640, mem_upper);
 
     paging_init();
     bootsplash_paging_ready();
@@ -402,6 +405,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             }
             terminal_writestring("[OK] tFS mounted at /mnt\n");
             klog_write("[OK] tFS mounted at /mnt\n");
+            /* Software Update: a staged update is installed now, then the newest build on the
+             * disk takes over (this call returns when this kernel is that build) */
+            update_apply_at_boot();
+            update_boot_chain();
         } else {
             terminal_writestring("[WARN] tFS mount failed\n");
             klog_write("[WARN] tFS mount failed\n");
