@@ -34,6 +34,7 @@ typedef struct {
     uint8_t indent;               /* list depth */
     uint8_t bullet;               /* starts a list item */
     int16_t link;                 /* index into links, -1 = none */
+    int16_t img;                  /* a picture (index into imgs) instead of text, -1 = none */
 } run_t;
 
 typedef struct {
@@ -43,7 +44,23 @@ typedef struct {
     uint16_t len;
     uint8_t style;
     int16_t link;
+    int16_t img;                  /* a picture, -1 = text */
+    int16_t h;                    /* a picture's height */
 } box_t;
+
+/* a picture on the page: fetched one after another once the page is there */
+#define IMG_WAIT 0
+#define IMG_LOADING 1
+#define IMG_OK 2
+#define IMG_FAILED 3
+#define IMG_MAX 48
+#define IMG_MAX_W 860
+typedef struct {
+    char *src;                    /* as the page wrote it */
+    int aw, ah;                   /* the width and height the page gave (0 = not given) */
+    int state;
+    gfx_image_t im;               /* IMG_OK: the pixels, already the size to show */
+} timg_t;
 
 typedef struct {
     char url[URL_MAX];            /* the page shown (or being loaded) */
@@ -58,6 +75,8 @@ typedef struct {
     run_t *runs; int nruns, runs_cap;
     char **links; int nlinks, links_cap;
     char title[96];
+    timg_t imgs[IMG_MAX]; int nimgs;
+    void *img_fetch; int img_cur;
     /* laid out */
     box_t *boxes; int nboxes, boxes_cap;
     int laid_w, doc_h;
@@ -67,8 +86,18 @@ typedef struct {
 
 /* ------------------------------------------------------------------ the page's text */
 
+static void imgs_free(tf_t *t)
+{
+    if (t->img_fetch) { uihost_fetch_free(t->img_fetch); t->img_fetch = 0; }
+    for (int i = 0; i < t->nimgs; i++) { free(t->imgs[i].src); free((void *)t->imgs[i].im.rgba); }
+    memset(t->imgs, 0, sizeof(t->imgs));
+    t->nimgs = 0;
+    t->img_cur = -1;
+}
+
 static void page_free(tf_t *t)
 {
+    imgs_free(t);
     for (int i = 0; i < t->nlinks; i++) free(t->links[i]);
     free(t->links); free(t->runs); free(t->pool); free(t->boxes);
     t->links = 0; t->runs = 0; t->pool = 0; t->boxes = 0;
@@ -116,6 +145,7 @@ static void put_bytes(build_t *b, const char *s, int n)
         r->style = (uint8_t)b->style; r->link = (int16_t)b->link;
         r->brk = (uint8_t)(t->nruns == 1 ? 0 : b->pending_brk);
         r->indent = (uint8_t)(b->indent + b->dd); r->bullet = (uint8_t)b->bullet;
+        r->img = -1;
         b->pending_brk = 0; b->bullet = 0; b->run_open = 1;
     }
     memcpy(t->pool + t->pool_len, s, (size_t)n);
@@ -290,6 +320,74 @@ static void attr_text(build_t *b, const char *v, int n, int max)
     }
 }
 
+/* a picture: a run of its own, whose text is the picture's alt text, shown when it can't be */
+static void put_image(build_t *b, int idx, const char *alt, int al)
+{
+    tf_t *t = b->t;
+    uint32_t off = t->pool_len, n = 0;
+    if (alt && al > 0) {
+        if (al > 120) al = 120;
+        int cap = (int)t->pool_cap;
+        if (grow((void **)&t->pool, &cap, (int)t->pool_len + al + 3, 1)) {
+            t->pool_cap = (uint32_t)cap;
+            t->pool[t->pool_len++] = '[';
+            for (int i = 0; i < al; i++) t->pool[t->pool_len++] = alt[i] == '\n' ? ' ' : alt[i];
+            t->pool[t->pool_len++] = ']';
+            n = t->pool_len - off;
+        }
+    }
+    if (!grow((void **)&t->runs, &t->runs_cap, t->nruns + 1, sizeof(run_t))) return;
+    run_t *r = &t->runs[t->nruns++];
+    memset(r, 0, sizeof(*r));
+    r->off = off;
+    r->len = n;
+    r->style = (uint8_t)(b->style | ST_DIM); r->link = (int16_t)b->link; r->img = (int16_t)idx;
+    r->brk = (uint8_t)(t->nruns == 1 ? 0 : b->pending_brk);
+    r->indent = (uint8_t)(b->indent + b->dd);
+    b->pending_brk = 0; b->bullet = 0; b->run_open = 0; b->space = 0;
+}
+
+static int num_attr(const char *a, const char *e, const char *name)
+{
+    int n;
+    const char *v = attr(a, e, name, &n);
+    int x = 0;
+    for (int i = 0; v && i < n && v[i] >= '0' && v[i] <= '9'; i++) x = x * 10 + (v[i] - '0');
+    return x > 4000 ? 4000 : x;
+}
+
+/* an element CSS would have hidden: hidden, aria-hidden="true", style="display:none" */
+static int is_hidden(const char *a, const char *e)
+{
+    int n;
+    const char *v;
+    for (const char *p = a; p + 6 <= e; p++)
+        if ((p == a || p[-1] == ' ' || p[-1] == '\t' || p[-1] == '\n') && !strncmp(p, "hidden", 6) &&
+            (p + 6 == e || p[6] == ' ' || p[6] == '/' || p[6] == '>' || p[6] == '='))
+            return 1;
+    /* class names that by convention mean "not shown until asked for" (menus, screen-reader text) or
+     * "not part of the article" (navigation boxes, edit links) */
+    static const char *const hide[] = { "dropdown", "sr-only", "visually-hidden", "screen-reader", "skip-link",
+        "noprint", "mw-editsection", "navbox", "vector-header", "vector-page-toolbar", "mw-jump-link",
+        "vector-column-start", "vector-sticky", "cookie", "modal", "popup", "mw-portlet", 0 };
+    v = attr(a, e, "class", &n);
+    for (int i = 0; v && hide[i]; i++) {
+        int hl = (int)strlen(hide[i]);
+        for (int k = 0; k + hl <= n; k++)
+            if (!strncmp(v + k, hide[i], (size_t)hl)) return 1;
+    }
+    v = attr(a, e, "aria-hidden", &n);
+    if (v && n == 4 && !strncmp(v, "true", 4)) return 1;
+    v = attr(a, e, "style", &n);
+    for (int i = 0; v && i + 12 <= n; i++) {
+        if (strncmp(v + i, "display", 7)) continue;
+        int k = i + 7;
+        while (k < n && (v[k] == ' ' || v[k] == ':')) k++;
+        if (k + 4 <= n && !strncmp(v + k, "none", 4)) return 1;
+    }
+    return 0;
+}
+
 static void parse_html(tf_t *t, const char *s, uint32_t len)
 {
     build_t b;
@@ -337,11 +435,35 @@ static void parse_html(tf_t *t, const char *s, uint32_t len)
             s = p < end ? p + 1 : end;
 
             if (skip) {
-                if (closing && !strcmp(tag, skip_tag)) skip = 0;
+                /* the same element nested inside the skipped one does not end it */
+                int void_tag = tag_is(tag, "img") || tag_is(tag, "br") || tag_is(tag, "input") || tag_is(tag, "meta") || tag_is(tag, "link") || tag_is(tag, "hr");
+                if (!strcmp(tag, skip_tag) && !void_tag && !(ae > ab && ae[-1] == '/')) {
+                    if (closing) { if (--skip == 0) skip_tag[0] = 0; }
+                    else skip++;
+                }
+                continue;
+            }
+            if (!closing && (tag_is(tag, "nav") || is_hidden(ab, ae)) &&
+                !tag_is(tag, "input") && !tag_is(tag, "img") && !tag_is(tag, "br") && !tag_is(tag, "body") && !tag_is(tag, "html")) {
+                skip = 1;
+                strcpy(skip_tag, tag);
                 continue;
             }
             if (!closing && (tag_is(tag, "script") || tag_is(tag, "style") || tag_is(tag, "svg") || tag_is(tag, "template") ||
                              tag_is(tag, "iframe") || tag_is(tag, "object") || tag_is(tag, "select") || tag_is(tag, "math"))) {
+                if (tag_is(tag, "script") || tag_is(tag, "style")) {
+                    /* raw text: nothing in it is a tag, it ends at </script> or </style> */
+                    int tl3 = (int)strlen(tag);
+                    while (s + tl3 + 2 < end) {
+                        if (s[0] == '<' && s[1] == '/') {
+                            int k = 0;
+                            while (k < tl3 && lower(s[2 + k]) == tag[k]) k++;
+                            if (k == tl3) break;
+                        }
+                        s++;
+                    }
+                    continue;                  /* the closing tag itself is read (and ignored) next */
+                }
                 skip = 1;
                 strcpy(skip_tag, tag);
                 continue;
@@ -418,9 +540,33 @@ static void parse_html(tf_t *t, const char *s, uint32_t len)
                 continue;
             }
             if (tag_is(tag, "img") && !closing) {
+                int sl;
+                const char *src = attr(ab, ae, "src", &sl);
+                int aw = num_attr(ab, ae, "width"), ah = num_attr(ab, ae, "height");
+                if (src && sl > 0 && strncmp(src, "data:", 5) && t->nimgs < IMG_MAX &&
+                    !((aw && aw < 24) || (ah && ah < 24))) {                 /* not icons and spacers */
+                    timg_t *im = &t->imgs[t->nimgs];
+                    im->src = malloc((size_t)sl + 1);
+                    if (im->src) {
+                        int o = 0;
+                        for (int i = 0; i < sl; i++) {
+                            uint32_t cp;
+                            int m = src[i] == '&' ? entity(src + i, src + sl, &cp) : 0;
+                            if (m && cp > 0 && cp < 0x80) { im->src[o++] = (char)cp; i += m - 1; }
+                            else im->src[o++] = src[i];
+                        }
+                        im->src[o] = 0;
+                        im->aw = aw;
+                        im->ah = ah;
+                        int al0;
+                        const char *alt0 = attr(ab, ae, "alt", &al0);
+                        put_image(&b, t->nimgs++, alt0, alt0 ? al0 : 0);
+                        continue;
+                    }
+                }
                 int al;
                 const char *alt = attr(ab, ae, "alt", &al);
-                if (alt && al > 0) {
+                if (alt && al > 0 && !(aw && aw < 24)) {
                     int st = b.style;
                     b.style |= ST_DIM;
                     restyle(&b);
@@ -517,6 +663,17 @@ static void add_box(tf_t *t, int x, int y, int w, uint32_t off, int len, int sty
     bx->x = (int16_t)x; bx->y = y; bx->w = (int16_t)w;
     bx->off = off; bx->len = (uint16_t)len;
     bx->style = (uint8_t)style; bx->link = (int16_t)link;
+    bx->img = -1; bx->h = 0;
+}
+
+/* how big picture i is shown, laid out in a column avail wide (0 x 0 = nothing to show yet) */
+static void img_size(tf_t *t, int i, int avail, int *w, int *h)
+{
+    timg_t *im = &t->imgs[i];
+    *w = *h = 0;
+    if (im->state == IMG_OK) { *w = im->im.w; *h = im->im.h; }
+    else if (im->state != IMG_FAILED && im->aw && im->ah) { *w = im->aw; *h = im->ah; }
+    if (*w > avail && avail > 0) { *h = *h * avail / *w; *w = avail; }
 }
 
 static void layout(tf_t *t, int width)
@@ -542,6 +699,22 @@ static void layout(tf_t *t, int width)
         }
         (void)line_start;
         if (ru->bullet) left = x + text_w(f, t->pool + ru->off, ru->len > 4 ? 4 : (int)ru->len);
+        if (ru->img >= 0) {
+            int iw, ih;
+            img_size(t, ru->img, right - left, &iw, &ih);
+            if (!iw || !ih) {
+                if (t->imgs[ru->img].state != IMG_FAILED || !ru->len) continue;
+                goto as_text;                           /* its alt text instead */
+            }
+            if (x + iw > right && x > left) { y += line_h ? line_h : lh; x = left; line_h = 0; }
+            add_box(t, x, y, iw, ru->off, 0, ru->style, ru->link);
+            t->boxes[t->nboxes - 1].img = ru->img;
+            t->boxes[t->nboxes - 1].h = (int16_t)ih;
+            if (ih + 6 > line_h) line_h = ih + 6;
+            x += iw + 6;
+            continue;
+        }
+    as_text:;
         const char *s = t->pool + ru->off;
         int n = (int)ru->len;
         if (n == 1 && s[0] == '\x01') {                 /* <hr> */
@@ -708,22 +881,23 @@ static void typed_to_url(const char *in, char *out)
 static const char home_page[] =
     "<title>tFire</title>"
     "<h1>tFire</h1>"
-    "<p><b>Project tFire, update 1.</b> This is the first update of tFire, the web browser for tOS. "
+    "<p><b>Project tFire, update 2.</b> tFire, the web browser for tOS, now shows pictures (PNG and JPEG) "
+    "and hides what a page keeps out of sight &mdash; menus, navigation, hidden text &mdash; so you start at the content. "
     "It opens web pages over HTTPS and HTTP, follows links and keeps your history. "
-    "Pictures, style sheets and scripts are not shown yet: they come in the next updates, "
-    "with parts of Firefox's own source.</p>"
+    "Style sheets and scripts come in the next updates, with parts of Firefox's own source.</p>"
     "<h3>Try</h3>"
     "<ul>"
-    "<li><a href=\"http://info.cern.ch/hypertext/WWW/TheProject.html\">The first website ever (CERN, 1991)</a></li>"
-    "<li><a href=\"https://example.com/\">example.com</a></li>"
+    "<li><a href=\"https://en.wikipedia.org/wiki/Firefox\">Firefox on Wikipedia</a> &mdash; with its pictures</li>"
     "<li><a href=\"https://html.duckduckgo.com/html/\">DuckDuckGo</a> &mdash; search the web</li>"
     "<li><a href=\"https://text.npr.org/\">NPR News</a> &mdash; the news, as plain text</li>"
     "<li><a href=\"http://68k.news/\">68k.news</a> &mdash; today's headlines, in plain pages</li>"
+    "<li><a href=\"http://info.cern.ch/hypertext/WWW/TheProject.html\">The first website ever (CERN, 1991)</a></li>"
     "<li><a href=\"https://update.artfical.com/\">tOS updates</a></li>"
     "</ul>"
     "<p>Type an address in the bar above, or words to search for them.</p>"
     "<h3>What works</h3>"
     "<ul><li>Headings, paragraphs, lists, links, bold text, preformatted text</li>"
+    "<li>Pictures: PNG and JPEG (WebP and progressive JPEG show their description)</li>"
     "<li>Redirects, back and forward, reload</li>"
     "<li>Plain text files</li></ul>";
 
@@ -935,8 +1109,19 @@ static void tf_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
         box_t *b = &t->boxes[i];
         int by = py + b->y - t->scroll;
         if (by > py + ph) break;
-        if (by + 40 < py) continue;
+        if (by + (b->img >= 0 ? b->h : 40) < py) continue;
         if (b->style == 0xFF) { gfx_hline(&c, x + b->x, by, b->w, 0xD4D4D8, 255); continue; }
+        if (b->img >= 0) {
+            timg_t *im = &t->imgs[b->img];
+            if (im->state == IMG_OK) {
+                if (im->im.w == b->w) gfx_blit(&c, &im->im, x + b->x, by, 255);
+                else gfx_blit_scaled(&c, &im->im, x + b->x, by, b->w, b->h, 255);
+            } else {
+                gfx_fill(&c, x + b->x, by, b->w, b->h, 0xF1F1F4);           /* still coming */
+            }
+            if (b->link >= 0) gfx_rrect_outline(&c, x + b->x - 1, by - 1, b->w + 2, b->h + 2, 2, 0x1A56DB, 90);
+            continue;
+        }
         const ui_font_t *f = font_of(b->style);
         int n = b->len > 255 ? 255 : b->len;
         memcpy(tmp, t->pool + b->off, (size_t)n);
@@ -979,7 +1164,7 @@ static void tf_press(uiapp_t *a, int px, int py, int button)
     for (int i = 0; i < t->nboxes; i++) {
         box_t *b = &t->boxes[i];
         if (b->link < 0 || b->style == 0xFF) continue;
-        int lh = font_of(b->style)->line_h;
+        int lh = b->img >= 0 ? b->h : font_of(b->style)->line_h;
         if (px >= b->x - 2 && px < b->x + b->w + 4 && dy >= b->y - 2 && dy < b->y + lh) {
             char next[URL_MAX];
             if (resolve(t->url, t->links[b->link], next)) go(a, t, next, 1);
@@ -1031,6 +1216,45 @@ static void tf_wheel(uiapp_t *a, int delta)
     a->dirty = 1;
 }
 
+/* the pictures, one at a time after the page: 1 = one arrived (the page needs laying out again) */
+static int imgs_step(tf_t *t)
+{
+    if (t->img_fetch) {
+        int st = uihost_fetch_poll(t->img_fetch);
+        if (st == 0) return 0;
+        timg_t *im = &t->imgs[t->img_cur];
+        im->state = IMG_FAILED;
+        if (st > 0) {
+            uint32_t len;
+            int status;
+            const char *ctype;
+            const uint8_t *d = uihost_fetch_result(t->img_fetch, &len, &status, &ctype, 0, 0);
+            uint8_t *px;
+            int w, h;
+            int mw = im->aw ? im->aw : IMG_MAX_W, mh = im->ah ? im->ah : 0;
+            if (mw > IMG_MAX_W) { if (mh) mh = mh * IMG_MAX_W / mw; mw = IMG_MAX_W; }
+            if (status < 400 && uihost_image_decode(d, len, mw, mh, &px, &w, &h) == 0) {
+                im->im.rgba = px; im->im.w = w; im->im.h = h;
+                im->state = IMG_OK;
+            }
+        }
+        uihost_fetch_free(t->img_fetch);
+        t->img_fetch = 0;
+        return 1;
+    }
+    for (int i = 0; i < t->nimgs; i++) {
+        if (t->imgs[i].state != IMG_WAIT) continue;
+        char url[URL_MAX];
+        if (!resolve(t->url, t->imgs[i].src, url)) { t->imgs[i].state = IMG_FAILED; continue; }
+        t->img_fetch = uihost_fetch(url);
+        if (!t->img_fetch) return 0;
+        t->imgs[i].state = IMG_LOADING;
+        t->img_cur = i;
+        return 0;
+    }
+    return 0;
+}
+
 static int tf_tick(uiapp_t *a)
 {
     tf_t *t = a->st;
@@ -1038,6 +1262,7 @@ static int tf_tick(uiapp_t *a)
         if (uihost_fetch_poll(t->fetch) != 0) loaded(a, t);
         return 1;                               /* the loading bar moves */
     }
+    if (t->nimgs && imgs_step(t)) { t->laid_w = 0; return 1; }
     if (t->editing) {
         uint32_t ph = uihost_ms() / 500;
         if (ph != t->blink) { t->blink = ph; return 1; }

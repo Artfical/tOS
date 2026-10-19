@@ -1,12 +1,10 @@
-# Project tFire, update 1
+# Project tFire, update 2: pictures
 
 ## tfire | tFire
-- This is the first update of Project tFire: tOS gets its own web browser, tFire, in the Dock.
-- Opens web pages over HTTPS and HTTP, follows redirects and links, with back, forward, reload
-  and a home page.
-- Type an address in the bar, or a few words to search the web (DuckDuckGo).
-- Shows headings, paragraphs, lists, links, bold and preformatted text, and plain text files.
-- Pictures, style sheets and scripts come in the next updates of Project tFire.
-![tFire's home page](docs/screenshots/tfire/home.png)
-![Searching from the address bar](docs/screenshots/tfire/search.png)
-![A news article](docs/screenshots/tfire/article.png)
+- This is the second update of Project tFire.
+- Pages show their pictures (PNG and JPEG); a picture that is a link can be clicked.
+- What a page keeps out of sight — menus, navigation, text for screen readers — stays hidden,
+  so Wikipedia and other sites start with the article instead of a wall of links.
+- WebP and progressive JPEG pictures show their description for now.
+![Wikipedia in tFire, with the article's picture](docs/screenshots/tfire/wikipedia.png)
+![tFire's home page](docs/screenshots/tfire/home2.png)

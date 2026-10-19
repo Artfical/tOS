@@ -110,6 +110,10 @@ int   uihost_fetch_poll(void *h);
 const uint8_t *uihost_fetch_result(void *h, uint32_t *len, int *status, const char **ctype, const char **final_url, const char **error);
 void  uihost_fetch_free(void *h);
 
+/* A PNG or (baseline) JPEG picture in memory -> RGBA (malloc'd), scaled down to fit max_w x max_h if it is
+ * bigger. Pictures too big to decode safely are refused. 0 = ok. */
+int   uihost_image_decode(const uint8_t *data, uint32_t len, int max_w, int max_h, uint8_t **rgba, int *w, int *h);
+
 /* closes the window an app (a uiapp_t) is in, like its red button */
 void uihost_close_window(void *app);
 int  uihost_disk_job(int op, const char *dev, const char *fs, const char *name);

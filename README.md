@@ -127,9 +127,11 @@ QEMU, start with `-usb` and plug a disk in from the monitor:
 ## tFire, the web browser (Project tFire)
 
 tFire (in the Dock) opens web pages over HTTPS and HTTP: type an address in its bar, or words to
-search the web with DuckDuckGo. Update 1 of Project tFire shows a page's text, headings, lists and
-links, follows redirects and keeps a back/forward history; pictures, style sheets and scripts come
-in later updates.
+search the web with DuckDuckGo. It shows a page's text, headings, lists, links and pictures (PNG
+and JPEG, fetched one after another once the page is there), hides what a page keeps out of sight
+(the `hidden` attribute, `display:none`, menus and navigation by their usual class names), follows
+redirects and keeps a back/forward history. Style sheets and scripts come in later updates of
+Project tFire.
 
 - `kernel/display/apps/tfire.c` is the browser: its HTML parser turns a page into runs of styled
   text, the layout breaks them into lines for the window's width.
@@ -138,8 +140,7 @@ in later updates.
 - `tools/tfire-test/host.c` runs the parser and layout on a saved page on the host:
   `gcc -m32 -I kernel/display -I kernel/lib tools/tfire-test/host.c -o /tmp/tfire_host -Wl,--unresolved-symbols=ignore-all && /tmp/tfire_host page.html`
 
-Sites whose certificates are ECDSA only (Wikipedia, for one) cannot be opened yet: tOS's TLS
-speaks ECDHE-RSA and RSA.
+WebP and progressive JPEG pictures are not decoded yet (their alt text is shown).
 
 ![tFire](docs/screenshots/tfire/home.png)
 

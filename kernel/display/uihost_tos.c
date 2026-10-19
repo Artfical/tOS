@@ -12,6 +12,7 @@
 #include "net.h"
 #include "nic.h"
 #include "webfetch.h"
+#include "imgload.h"
 
 /* uihost.h for tOS: the VFS, the scheduler and the network stack. */
 
@@ -157,6 +158,56 @@ const uint8_t *uihost_fetch_result(void *h, uint32_t *len, int *status, const ch
 }
 
 void uihost_fetch_free(void *h) { webfetch_free(h); }
+
+/* the size a PNG or JPEG says it has, before decoding it; 0 = can't tell (or a JPEG we can't decode) */
+static int image_size(const uint8_t *d, uint32_t n, uint32_t *w, uint32_t *h)
+{
+    if (n >= 24 && d[0] == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G') {
+        *w = (uint32_t)d[16] << 24 | (uint32_t)d[17] << 16 | (uint32_t)d[18] << 8 | d[19];
+        *h = (uint32_t)d[20] << 24 | (uint32_t)d[21] << 16 | (uint32_t)d[22] << 8 | d[23];
+        return 1;
+    }
+    if (n >= 4 && d[0] == 0xFF && d[1] == 0xD8) {
+        uint32_t i = 2;
+        while (i + 9 < n) {
+            if (d[i] != 0xFF) { i++; continue; }
+            uint8_t m = d[i + 1];
+            if (m == 0xD8 || m == 0x01 || (m >= 0xD0 && m <= 0xD7) || m == 0xFF) { i += m == 0xFF ? 1 : 2; continue; }
+            uint32_t l = (uint32_t)d[i + 2] << 8 | d[i + 3];
+            if (m == 0xC0 || m == 0xC1) {
+                *h = (uint32_t)d[i + 5] << 8 | d[i + 6];
+                *w = (uint32_t)d[i + 7] << 8 | d[i + 8];
+                return 1;
+            }
+            if (m >= 0xC2 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC) return 0;   /* progressive etc. */
+            i += 2 + l;
+        }
+    }
+    return 0;
+}
+
+int uihost_image_decode(const uint8_t *data, uint32_t len, int max_w, int max_h, uint8_t **rgba, int *w, int *h)
+{
+    uint32_t iw, ih;
+    if (!image_size(data, len, &iw, &ih) || !iw || !ih || iw > 6000 || ih > 6000 || iw * ih > 1600000) return -1;
+    uint8_t *px;
+    if (img_decode(data, len, &px, &iw, &ih, 0) != 0) return -1;
+    uint32_t tw = iw, th = ih;
+    if (max_w > 0 && tw > (uint32_t)max_w) { th = th * (uint32_t)max_w / tw; tw = (uint32_t)max_w; }
+    if (max_h > 0 && th > (uint32_t)max_h) { tw = tw * (uint32_t)max_h / th; th = (uint32_t)max_h; }
+    if (!tw) tw = 1;
+    if (!th) th = 1;
+    if (tw != iw || th != ih) {
+        uint8_t *sc = img_scale(px, iw, ih, tw, th);
+        free(px);
+        if (!sc) return -1;
+        px = sc;
+    }
+    *rgba = px;
+    *w = (int)tw;
+    *h = (int)th;
+    return 0;
+}
 
 const char *uihost_system_name(void) { return "tOS"; }
 
