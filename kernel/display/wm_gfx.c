@@ -23,6 +23,8 @@
 #include "ramfs.h"
 #include "bootsplash.h"
 #include "update.h"
+static void dbgn(const char *t, int a, int b, int c, int d);
+void serial_write(const char *s);
 
 /*
  * The graphical desktop.
