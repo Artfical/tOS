@@ -10,6 +10,7 @@ void (*http_progress)(int received);
 #include "ip.h"
 #include "string.h"
 #include "memory.h"
+#include "scheduler.h"
 
 static int req_put(char *req, int cap, int *off, const char *s, int check)
 {
@@ -36,7 +37,7 @@ static int build_request(char *req, int cap, const char *host, const char *path,
         if (req_put(req, cap, &off, "\r\nRange: bytes=", 0) || req_put(req, cap, &off, n, 0) || req_put(req, cap, &off, "-", 0))
             return -1;
     }
-    if (req_put(req, cap, &off, "\r\nConnection: close\r\n\r\n", 0)) return -1;
+    if (req_put(req, cap, &off, "\r\nUser-Agent: Lynx/2.9.0 libwww-FM/2.14 tFire/1 (tOS)\r\nAccept: */*\r\nConnection: close\r\n\r\n", 0)) return -1;
     req[off] = 0;
     return off;
 }
@@ -139,7 +140,46 @@ int http_get(uint32_t ip, const char *host, uint16_t port, const char *path, uin
     return http_get_from(ip, host, port, path, 0, response, max_len);
 }
 
+/* There is one TCP connection (tcp_connect() has no handle), so one request at a time: Software Update and
+ * tFire take turns. The owner is a task, so a request made while holding it does not wait for itself. */
+static volatile uint32_t net_owner;
+static int net_depth;
+
+void http_lock(void)
+{
+    uint32_t me = task_get_pid();
+    for (;;) {
+        uint32_t fl;
+        asm volatile("pushfl; popl %0; cli" : "=r"(fl));
+        task_t *o = net_owner ? task_by_pid(net_owner) : 0;
+        if (!net_owner || net_owner == me || !o || o->state == TASK_STATE_ZOMBIE) {   /* (an owner that died) */
+            if (net_owner != me) net_depth = 0;
+            net_owner = me;
+            net_depth++;
+            asm volatile("pushl %0; popfl" : : "r"(fl));
+            return;
+        }
+        asm volatile("pushl %0; popfl" : : "r"(fl));
+        task_yield();
+    }
+}
+
+void http_unlock(void)
+{
+    if (net_owner == task_get_pid() && --net_depth <= 0) { net_depth = 0; net_owner = 0; }
+}
+
+static int http_get_from_locked(uint32_t ip, const char *host, uint16_t port, const char *path, uint32_t from, uint8_t *response, int max_len);
+
 int http_get_from(uint32_t ip, const char *host, uint16_t port, const char *path, uint32_t from, uint8_t *response, int max_len)
+{
+    http_lock();
+    int n = http_get_from_locked(ip, host, port, path, from, response, max_len);
+    http_unlock();
+    return n;
+}
+
+static int http_get_from_locked(uint32_t ip, const char *host, uint16_t port, const char *path, uint32_t from, uint8_t *response, int max_len)
 {
     http_last_recv = 0;
     int rc = tcp_connect(ip, port);

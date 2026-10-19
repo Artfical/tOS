@@ -213,6 +213,7 @@ KERNEL_OBJS = \
     kernel/display/apps/network.o \
     kernel/display/apps/paint2.o \
     kernel/display/apps/notes.o \
+    kernel/display/apps/tfire.o \
     kernel/display/apps/settings.o \
     kernel/display/imgload.o \
     kernel/display/jpeg.o \
@@ -272,6 +273,7 @@ KERNEL_OBJS = \
     kernel/net/bignum.o \
     kernel/net/tls.o \
     kernel/net/https.o \
+    kernel/net/webfetch.o \
     kernel/net/http.o \
     kernel/audio/audio.o \
     kernel/audio/wav_decoder.o \

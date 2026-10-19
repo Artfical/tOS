@@ -106,6 +106,7 @@ enum { PANEL_SETTINGS = 1, PANEL_ABOUT = 2 };
 static const app_t apps[] = {
     { "files",       "Files",         "files",      WIN_KIND_FILEMGR,     1, 0 },
     { "terminal",    "Terminal",      "terminal",   WIN_KIND_TERMINAL,    1, 0 },
+    { "tfire",       "tFire",         "tfire",      WIN_KIND_NATIVE,      1, 0 },
     { "notepad",     "Notepad",       "notepad",    WIN_KIND_NOTEPAD,     1, 0 },
     { "calculator",  "Calculator",    "calculator", WIN_KIND_CALCULATOR,  1, 0 },
     { "paint",       "Paint",         "paint",      WIN_KIND_PAINT,       1, 0 },

@@ -124,6 +124,25 @@ QEMU, start with `-usb` and plug a disk in from the monitor:
 (qemu) device_del us
 ```
 
+## tFire, the web browser (Project tFire)
+
+tFire (in the Dock) opens web pages over HTTPS and HTTP: type an address in its bar, or words to
+search the web with DuckDuckGo. Update 1 of Project tFire shows a page's text, headings, lists and
+links, follows redirects and keeps a back/forward history; pictures, style sheets and scripts come
+in later updates.
+
+- `kernel/display/apps/tfire.c` is the browser: its HTML parser turns a page into runs of styled
+  text, the layout breaks them into lines for the window's width.
+- `kernel/net/webfetch.c` fetches a page in a task of its own, so the desktop keeps drawing.
+  There is a single TCP connection in tOS, so requests (tFire's, Software Update's) take turns.
+- `tools/tfire-test/host.c` runs the parser and layout on a saved page on the host:
+  `gcc -m32 -I kernel/display -I kernel/lib tools/tfire-test/host.c -o /tmp/tfire_host -Wl,--unresolved-symbols=ignore-all && /tmp/tfire_host page.html`
+
+Sites whose certificates are ECDSA only (Wikipedia, for one) cannot be opened yet: tOS's TLS
+speaks ECDHE-RSA and RSA.
+
+![tFire](docs/screenshots/tfire/home.png)
+
 ## System Requirements
 
 - **CPU:** i586 compatible (32-bit x86)

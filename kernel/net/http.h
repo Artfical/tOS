@@ -43,4 +43,9 @@ int http_build_request(char *req, int cap, const char *host, const char *path);
  * The returned pointer is inside `resp` and runs to the end of the line. */
 const char *http_header_value(const char *resp, int len, const char *name);
 
+/* one request at a time over the single TCP connection: http_get/https_get take this themselves; a caller
+ * that does several steps of its own (TLS by hand) can hold it around them */
+void http_lock(void);
+void http_unlock(void);
+
 #endif

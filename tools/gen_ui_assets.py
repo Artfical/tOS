@@ -231,6 +231,63 @@ for name, glyph, c1, c2 in APPS:
     add_image('icon48_' + name, app_icon(48, glyph, c1, c2))
     add_image('icon20_' + name, app_icon(20, glyph, c1, c2))
 
+# tFire, the browser: a globe in a flame, on a deep blue to violet tile
+def tfire_icon(size):
+    S = size * 4
+    c1, c2 = (40, 60, 160), (110, 30, 140)
+    im = Image.new('RGBA', (S, S))
+    d = ImageDraw.Draw(im)
+    for y in range(S):
+        t = y / (S - 1)
+        d.line([(0, y), (S, y)], fill=tuple(int(c1[i] * (1 - t) + c2[i] * t) for i in range(3)) + (255,))
+    cx, cy, r = S * 0.5, S * 0.56, S * 0.25
+    # the flame: the bottom of a circle round the globe, drawn up into a tip that leans right
+    def flame(scale):
+        R = r * scale
+        pts = []
+        for k in range(0, 121):                         # from upper right, round the bottom, to upper left
+            a = math.radians(-35 + 250 * k / 120)
+            pts.append((cx + R * math.cos(a), cy + R * math.sin(a)))
+        def bez(p0, p1, p2, n=40):
+            return [((1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t * t * p2[0],
+                     (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t * t * p2[1]) for t in (i / n for i in range(1, n + 1))]
+        tip = (cx + S * 0.14, S * 0.05)
+        left, right = pts[-1], pts[0]
+        pts += bez(left, (cx - R * 0.95, cy - R * 1.15), tip)
+        pts += bez(tip, (cx + R * 0.55, cy - R * 0.75), right)
+        return pts
+    fl = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(fl).polygon(flame(1.42), fill=255)
+    fire = Image.new('RGBA', (S, S))
+    fd = ImageDraw.Draw(fire)
+    for y in range(S):
+        t = min(1.0, max(0.0, (y - S * 0.1) / (S * 0.8)))
+        a, b = (255, 214, 60), (240, 70, 30)
+        fd.line([(0, y), (S, y)], fill=tuple(int(a[i] * (1 - t) + b[i] * t) for i in range(3)) + (255,))
+    im = Image.composite(fire, im, fl)
+    # the globe: white disc with blue meridians and parallels
+    g = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(g).ellipse([cx - r, cy - r, cx + r, cy + r], fill=255)
+    im = Image.composite(Image.new('RGBA', (S, S), (255, 255, 255, 255)), im, g)
+    gd = ImageDraw.Draw(im)
+    w = max(2, int(S * 0.025))
+    blue = (40, 90, 200, 255)
+    gd.ellipse([cx - r, cy - r, cx + r, cy + r], outline=blue, width=w)
+    gd.ellipse([cx - r * 0.45, cy - r, cx + r * 0.45, cy + r], outline=blue, width=w)
+    gd.line([(cx, cy - r), (cx, cy + r)], fill=blue, width=w)
+    gd.line([(cx - r, cy), (cx + r, cy)], fill=blue, width=w)
+    for f in (-0.55, 0.55):
+        hw = r * math.sqrt(1 - f * f)
+        gd.line([(cx - hw, cy + r * f), (cx + hw, cy + r * f)], fill=blue, width=w)
+    hl = Image.new('L', (S, S), 0)
+    ImageDraw.Draw(hl).ellipse([-S * 0.3, -S * 0.9, S * 1.3, S * 0.45], fill=36)
+    im = Image.composite(Image.new('RGBA', (S, S), (255, 255, 255, 255)), im, hl)
+    im = im.resize((size, size), Image.LANCZOS)
+    im.putalpha(squircle_mask(size))
+    return im
+add_image('icon48_tfire', tfire_icon(48))
+add_image('icon20_tfire', tfire_icon(20))
+
 # Finder-style document icons: a blue folder, and a page with a folded corner and a coloured tag
 def folder_icon(size):
     S = size * 4

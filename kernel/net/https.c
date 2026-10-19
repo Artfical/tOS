@@ -6,8 +6,20 @@
 
 static tls_ctx_t g_tls;  /* static: one HTTPS connection at a time */
 
+static int https_get_locked(uint32_t ip, const char *host, uint16_t port, const char *path,
+                            uint8_t *response, int max_len);
+
 int https_get(uint32_t ip, const char *host, uint16_t port, const char *path,
               uint8_t *response, int max_len)
+{
+    http_lock();
+    int n = https_get_locked(ip, host, port, path, response, max_len);
+    http_unlock();
+    return n;
+}
+
+static int https_get_locked(uint32_t ip, const char *host, uint16_t port, const char *path,
+                            uint8_t *response, int max_len)
 {
     /* host gets consumed by the request-building loop below, so grab
      * the SNI value before that happens. */

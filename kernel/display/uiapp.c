@@ -2,11 +2,11 @@
 #include "string.h"
 
 extern const uiapp_class_t app_calculator, app_clock, app_2048, app_notepad, app_files, app_viewer,
-                           app_activity, app_network, app_paint, app_notes, app_settings, app_diskutil, app_recovery, app_updatenotes;
+                           app_activity, app_network, app_paint, app_notes, app_settings, app_diskutil, app_recovery, app_updatenotes, app_tfire;
 
 const uiapp_class_t *const uiapp_classes[] = {
     &app_files, &app_notepad, &app_calculator, &app_paint, &app_viewer, &app_activity, &app_network,
-    &app_clock, &app_notes, &app_2048, &app_settings, &app_diskutil, &app_recovery, &app_updatenotes,
+    &app_clock, &app_notes, &app_2048, &app_settings, &app_diskutil, &app_recovery, &app_updatenotes, &app_tfire,
 };
 const int uiapp_class_count = (int)(sizeof(uiapp_classes) / sizeof(uiapp_classes[0]));
 

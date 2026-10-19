@@ -11,6 +11,7 @@
 #include "auth.h"
 #include "net.h"
 #include "nic.h"
+#include "webfetch.h"
 
 /* uihost.h for tOS: the VFS, the scheduler and the network stack. */
 
@@ -135,6 +136,27 @@ void uihost_net(uihost_net_t *n)
 }
 
 int uihost_net_start(void) { return nic_send ? 0 : -1; }    /* tOS brings the network up at boot */
+
+void *uihost_fetch(const char *url) { return webfetch_start(url); }
+
+int uihost_fetch_poll(void *h)
+{
+    webfetch_t *f = h;
+    return !f ? -1 : f->state == WEBFETCH_RUNNING ? 0 : f->state == WEBFETCH_DONE ? 1 : -1;
+}
+
+const uint8_t *uihost_fetch_result(void *h, uint32_t *len, int *status, const char **ctype, const char **final_url, const char **error)
+{
+    webfetch_t *f = h;
+    if (len) *len = f->body_len;
+    if (status) *status = f->status;
+    if (ctype) *ctype = f->ctype;
+    if (final_url) *final_url = f->final_url[0] ? f->final_url : f->url;
+    if (error) *error = f->error;
+    return f->body;
+}
+
+void uihost_fetch_free(void *h) { webfetch_free(h); }
 
 const char *uihost_system_name(void) { return "tOS"; }
 

@@ -101,6 +101,15 @@ int  uihost_disk_first_aid(const char *dev, char *report, int len);   /* 0 OK, 1
  * 2 = First Aid. While a job runs its disk can't be mounted, unmounted or ejected.
  * start: 0 started, -1 busy (this disk, or another job); poll: -2 still running, otherwise the
  * result, with the report copied out. Mount/unmount return -2 for a disk a job is using. */
+/* Web pages (tFire), fetched in the background: uihost_fetch starts one (NULL = could not), poll says
+ * 0 while it runs, 1 when the page is there, -1 when it failed. uihost_fetch_result gives the body
+ * (not 0-terminated), the HTTP status, the content type, the address it ended at after redirects, and
+ * the reason when it failed; they stay valid until uihost_fetch_free. */
+void *uihost_fetch(const char *url);
+int   uihost_fetch_poll(void *h);
+const uint8_t *uihost_fetch_result(void *h, uint32_t *len, int *status, const char **ctype, const char **final_url, const char **error);
+void  uihost_fetch_free(void *h);
+
 /* closes the window an app (a uiapp_t) is in, like its red button */
 void uihost_close_window(void *app);
 int  uihost_disk_job(int op, const char *dev, const char *fs, const char *name);
