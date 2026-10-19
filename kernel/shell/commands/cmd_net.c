@@ -7,6 +7,8 @@
 #include "dns.h"
 #include "icmp.h"
 #include "http.h"
+#include "klog.h"
+#include "debugmon.h"
 #include "https.h"
 #include "websocket.h"
 #include "tls.h"
@@ -291,6 +293,7 @@ follow:;
      * instead. Capped well under KERNEL_HEAP_MAX_SIZE (64MB total, the
      * whole kernel heap's hard ceiling, not just this buffer's) so one
      * wget doesn't leave nothing for anything else running. */
+    uint32_t wget_t0 = debugmon_uptime_ms();
     #define WGET_BUF_SIZE (32 * 1024 * 1024)
     uint8_t *resp = (uint8_t *)malloc(WGET_BUF_SIZE);
     if (!resp) { terminal_writestring("FAILED (out of memory)\n"); return; }
@@ -321,9 +324,28 @@ follow:;
         if (n == 0) { terminal_writestring("FAILED (connected, but received no data)\n"); free(resp); return; }
     }
     resp[n] = '\0';
-    terminal_writestring("OK (");
-    print_num(n);
-    terminal_writestring(" bytes)\n");
+    {
+        /* how long it took and how fast: also in the kernel log */
+        uint32_t ms = debugmon_uptime_ms() - wget_t0;
+        if (!ms) ms = 1;
+        uint32_t kbps = (uint32_t)((uint64_t)n * 1000 / ms / 1024);
+        terminal_writestring("OK (");
+        print_num(n);
+        terminal_writestring(" bytes in ");
+        print_num((int)ms);
+        terminal_writestring(" ms, ");
+        print_num((int)kbps);
+        terminal_writestring(" KB/s)\n");
+        char line[96] = "wget: ";
+        char num[12];
+        int nl;
+        #define WGET_APPEND_NUM(v) do { uint32_t x_ = (v); int i_ = 0; char r_[12]; do { r_[i_++] = (char)('0' + x_ % 10); x_ /= 10; } while (x_); nl = 0; while (i_) num[nl++] = r_[--i_]; num[nl] = 0; strcat(line, num); } while (0)
+        WGET_APPEND_NUM((uint32_t)n); strcat(line, " bytes in ");
+        WGET_APPEND_NUM(ms); strcat(line, " ms, ");
+        WGET_APPEND_NUM(kbps); strcat(line, " KB/s\n");
+        #undef WGET_APPEND_NUM
+        klog_write(line);
+    }
 
     {
         /* 3xx with a Location header: go there instead, up to a few hops so a loop of
