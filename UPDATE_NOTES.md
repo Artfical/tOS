@@ -1,5 +1,5 @@
-# Videos in the release notes for everyone
+# Faster disks in virtual machines
 
-## settings | Software Update
-- Release notes show their videos on every build that can play them.
-- A slow download shows its speed in KB/s instead of "0.0 MB/s".
+## terminal | tOS
+- Reading and writing the disk is many times faster in virtual machines (VMware, VirtualBox,
+  QEMU with KVM): installing an update took minutes there.

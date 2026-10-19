@@ -40,6 +40,21 @@ static int ata_poll(ata_device_t *dev, int need_drq)
     return -1;
 }
 
+/* A sector in one string instruction: under a hypervisor every separate in/out of a word is an
+ * exit to the emulator (20 MB of an update took minutes), while rep insw/outsw is handled a page
+ * at a time; on real hardware it is the usual way too. */
+static inline void pio_in_sector(uint16_t port, uint16_t *buf)
+{
+    void *d = buf; uint32_t c = 256;
+    __asm__ volatile ("cld; rep insw" : "+D"(d), "+c"(c) : "d"(port) : "memory");
+}
+
+static inline void pio_out_sector(uint16_t port, const uint16_t *buf)
+{
+    const void *src = buf; uint32_t c = 256;
+    __asm__ volatile ("cld; rep outsw" : "+S"(src), "+c"(c) : "d"(port) : "memory");
+}
+
 static void ata_hex(char *b, int *n, uint64_t v, int digits)
 {
     const char *hex = "0123456789ABCDEF";
@@ -166,8 +181,7 @@ static int read_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, void *b
         uint16_t *ptr = (uint16_t *)out;
         for (uint32_t s = 0; s < n; s++) {
             if (ata_poll(dev, 1)) { ata_report("ata_read", dev, lba + s, n); return -1; }
-            for (int i = 0; i < 256; i++)
-                ptr[s * 256 + i] = inw(dev->io_base + ATA_REG_DATA);
+            pio_in_sector(dev->io_base + ATA_REG_DATA, ptr + s * 256);
         }
         lba += n; out += n * 512; count -= n;
     }
@@ -188,8 +202,7 @@ static int write_sectors(ata_device_t *dev, uint64_t lba, uint32_t count, const 
         const uint16_t *ptr = (const uint16_t *)in;
         for (uint32_t s = 0; s < n; s++) {
             if (ata_poll(dev, 1)) { ata_report("ata_write", dev, lba + s, n); return -1; }
-            for (int i = 0; i < 256; i++)
-                outw(dev->io_base + ATA_REG_DATA, ptr[s * 256 + i]);
+            pio_out_sector(dev->io_base + ATA_REG_DATA, ptr + s * 256);
         }
         if (ata_poll(dev, 0)) { ata_report("ata_write", dev, lba, n); return -1; }
         dev->unflushed += n;
