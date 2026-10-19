@@ -1750,6 +1750,7 @@ static void dock_target(window_t *w, int *tx, int *ty, int *ts)
  * picture of the window are taken once; every frame bends the picture row by row. */
 static void genie(window_t *w, int restore)
 {
+    dbgn("DBG genie", restore, session, launcher_open, 0);
     if (session != 0 || launcher_open) { w->minimized = !restore; if (restore) wm_focus_window(w); return; }
     int x = w->gx, y = w->gy, ww = w->gw, hh = w->gh;
     if (ww < 8 || hh < 8) { w->minimized = !restore; return; }
@@ -2119,8 +2120,16 @@ static void toggle_about(void)
     open_panel(PANEL_ABOUT, "About tOS");
 }
 
+static void dbgn(const char *t, int a, int b, int c, int d)
+{
+    char o[96]; int n = 0; while (*t) o[n++] = *t++;
+    int v[4] = { a, b, c, d };
+    for (int k = 0; k < 4; k++) { int x = v[k]; o[n++] = ' '; if (x < 0) { o[n++] = '-'; x = -x; } char r[12]; int m = 0; do { r[m++] = (char)('0' + x % 10); x /= 10; } while (x); while (m) o[n++] = r[--m]; }
+    o[n++] = '\n'; o[n] = 0; serial_write(o);
+}
 static void press(int x, int y)
 {
+    dbgn("DBG press", x, y, session, menu_which);
     if (session == 2) { login_press(x, y); return; }
     if (session == 1) {
         if (y < TOPBAR_H) { if (x < 44) { toggle_about(); sound_click(); } return; }
@@ -2192,6 +2201,7 @@ static void press(int x, int y)
         return;
     }
     window_t *w = window_at(x, y);
+    dbgn("DBG window_at", w ? w->gx : -1, w ? w->gy : -1, w ? w->gw : -1, w ? w->gh : -1);
     if (!w) { desktop_disk_press(x, y); return; }
     int was_focused = (w == wm_focused);
     wm_focus_window(w);
