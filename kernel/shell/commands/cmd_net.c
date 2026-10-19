@@ -294,8 +294,15 @@ follow:;
      * whole kernel heap's hard ceiling, not just this buffer's) so one
      * wget doesn't leave nothing for anything else running. */
     uint32_t wget_t0 = debugmon_uptime_ms();
-    #define WGET_BUF_SIZE (32 * 1024 * 1024)
-    uint8_t *resp = (uint8_t *)malloc(WGET_BUF_SIZE);
+    /* the desktop already holds much of the heap: take the largest buffer that leaves
+     * room for the connection itself */
+    int WGET_BUF_SIZE = 32 * 1024 * 1024;
+    uint8_t *resp = 0;
+    while (WGET_BUF_SIZE >= 2 * 1024 * 1024) {
+        resp = (uint8_t *)malloc((size_t)WGET_BUF_SIZE + 4 * 1024 * 1024);
+        if (resp) { free(resp); resp = (uint8_t *)malloc((size_t)WGET_BUF_SIZE); break; }
+        WGET_BUF_SIZE /= 2;
+    }
     if (!resp) { terminal_writestring("FAILED (out of memory)\n"); return; }
     int n;
     if (use_tls) {
