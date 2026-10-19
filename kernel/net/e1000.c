@@ -7,7 +7,7 @@
 #include "string.h"
 #include "terminal.h"
 
-#define E1000_NUM_RX_DESC 8
+#define E1000_NUM_RX_DESC 256        /* 8 overflowed as soon as a peer sent a window's worth at once */
 #define E1000_NUM_TX_DESC 8
 #define E1000_BUF_SIZE    2048
 

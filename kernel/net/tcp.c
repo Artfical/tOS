@@ -35,7 +35,9 @@ typedef struct {
     uint32_t seq;
     uint32_t ack;
     uint32_t snd_una;
-    uint32_t snd_wnd;   /* window the peer advertised in its latest valid ACK */
+    uint32_t snd_wnd;   /* window the peer advertised in its latest valid ACK (scaled) */
+    uint8_t  snd_wscale; /* the peer's window-scale shift (RFC 7323), 0 when it sent none */
+    uint8_t  rcv_wscale; /* ours: what our window field is shifted by, once both sides agreed */
 
     uint8_t *rx_buf;
     int      rx_len;
@@ -96,8 +98,11 @@ static uint16_t alloc_port(void)
 }
 
 /* Per-socket receive buffer limit. Data beyond it is not acknowledged, so
- * the peer retransmits once the application has drained the buffer. */
-#define TCP_RX_MAX (64 * 1024)
+ * the peer retransmits once the application has drained the buffer. Above
+ * 64 KB it is advertised through window scaling: a fast link needs far more
+ * in flight than 64 KB per round trip. */
+#define TCP_RX_MAX (4 * 1024 * 1024)
+#define TCP_WSCALE 7                    /* 4 MB / 128 fits the 16-bit window field */
 
 static int rx_free(const tcp_sock_t *s)
 {
@@ -117,12 +122,18 @@ static int rx_append(tcp_sock_t *s, const uint8_t *data, int len)
         s->rx_len = len;
         s->rx_cap = len;
     } else {
-        uint8_t *tmp = (uint8_t *)krealloc(s->rx_buf, (size_t)s->rx_len + (size_t)len);
-        if (!tmp) return 0;
-        memcpy(tmp + s->rx_len, data, (size_t)len);
-        s->rx_buf = tmp;
+        /* grow by doubling: a realloc for every segment copied the whole buffer each time */
+        if (s->rx_len + len > s->rx_cap) {
+            int cap = s->rx_cap * 2;
+            if (cap < s->rx_len + len) cap = s->rx_len + len;
+            if (cap < 16384) cap = 16384;
+            uint8_t *tmp = (uint8_t *)krealloc(s->rx_buf, (size_t)cap);
+            if (!tmp) return 0;
+            s->rx_buf = tmp;
+            s->rx_cap = cap;
+        }
+        memcpy(s->rx_buf + s->rx_len, data, (size_t)len);
         s->rx_len += len;
-        s->rx_cap  = s->rx_len;
     }
     return 1;
 }
@@ -142,7 +153,10 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     int arc = arp_resolve(nh, mac);
     if (arc != 0) return arc;
 
-    int tcp_len = 20 + plen;
+    /* A SYN carries our MSS and window scale. Without an MSS option the peer
+     * falls back to 536-byte segments; without scaling the window stops at 64 KB. */
+    int opt = (flags & TCP_FLAG_SYN) ? 8 : 0;
+    int tcp_len = 20 + opt + plen;
     int total   = 14 + 20 + tcp_len;
     uint8_t *pkt = (uint8_t *)malloc(total);
     if (!pkt) return IP_ERR_NOMEM;
@@ -169,15 +183,21 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     *(uint16_t *)(tcp + 2)  = htons(s->dst_port);
     *(uint32_t *)(tcp + 4)  = htonl(s->seq);
     *(uint32_t *)(tcp + 8)  = htonl(s->ack);
-    *(tcp + 12) = 0x50;
+    *(tcp + 12) = (uint8_t)((20 + opt) / 4) << 4;
     *(tcp + 13) = flags;
     {
-        /* advertise the real remaining receive space */
+        /* advertise the real remaining receive space (a SYN's window is never scaled) */
         int w = rx_free(s);
+        if (!(flags & TCP_FLAG_SYN)) w >>= s->rcv_wscale;
         if (w > 65535) w = 65535;
         *(uint16_t *)(tcp + 14) = htons((uint16_t)w);
     }
-    if (plen > 0) memcpy(tcp + 20, payload, plen);
+    if (opt) {
+        uint16_t mss = TCP_MSS;
+        uint8_t o[8] = { 2, 4, (uint8_t)(mss >> 8), (uint8_t)mss, 1, 3, 3, TCP_WSCALE };
+        memcpy(tcp + 20, o, 8);
+    }
+    if (plen > 0) memcpy(tcp + 20 + opt, payload, plen);
 
     /* Pseudo header + checksum: built and read as plain bytes, never
      * through a mismatched pointer-cast onto this buffer. Doing that
@@ -599,6 +619,18 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
     int       data_len = len - hdr_len;
     if (data_len < 0) data_len = 0;
     const uint8_t *data = tcp + hdr_len;
+    /* the window-scale option of a SYN (only a SYN may carry one) */
+    int peer_ws = -1;
+    if ((flags & TCP_FLAG_SYN) && hdr_len > 20 && hdr_len <= len) {
+        for (int k = 20; k < hdr_len; ) {
+            uint8_t kind = tcp[k];
+            if (kind == 0) break;
+            if (kind == 1) { k++; continue; }
+            if (k + 1 >= hdr_len || tcp[k + 1] < 2) break;
+            if (kind == 3 && tcp[k + 1] == 3 && k + 2 < hdr_len) peer_ws = tcp[k + 2] > 14 ? 14 : tcp[k + 2];
+            k += tcp[k + 1];
+        }
+    }
 
     tcp_sock_t *s = 0;
     int i;
@@ -699,6 +731,9 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
             s->ack     = pkt_seq + 1;
             s->seq     = pkt_ack;
             s->snd_una = s->seq;
+            /* scaling holds only when both SYNs offered it */
+            s->snd_wscale = peer_ws >= 0 ? (uint8_t)peer_ws : 0;
+            s->rcv_wscale = peer_ws >= 0 ? TCP_WSCALE : 0;
             s->snd_wnd = peer_win;
             s->state   = TCP_ESTABLISHED;
             send_seg(s, TCP_FLAG_ACK, 0, 0);
@@ -746,7 +781,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
     /* ACK */
     if (flags & TCP_FLAG_ACK) {
         /* the peer's window travels with every valid ACK (also pure window updates) */
-        if (SEQ_LEQ(s->snd_una, pkt_ack) && SEQ_LEQ(pkt_ack, s->seq)) s->snd_wnd = peer_win;
+        if (SEQ_LEQ(s->snd_una, pkt_ack) && SEQ_LEQ(pkt_ack, s->seq)) s->snd_wnd = (uint32_t)peer_win << s->snd_wscale;
         if (SEQ_GT(pkt_ack, s->snd_una) && SEQ_LEQ(pkt_ack, s->seq)) {
             s->snd_una = pkt_ack;
             if (s->cwnd < s->ssthresh)
