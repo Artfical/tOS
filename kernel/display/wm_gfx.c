@@ -346,6 +346,8 @@ enum {
 typedef struct { const char *label; int action; int sep_after; int disabled; } menu_item_t;
 
 static menu_item_t menu_items[16];
+/* recording only: every animation this many times slower, sped up again in the video */
+#define ANIM_SLOW 4
 static uint32_t menu_open_ms;          /* menus fade in and drop a few pixels, like the Mac's */
 static int menu_count, menu_x, menu_y, menu_w, menu_which;   /* 0 = closed */
 enum { MENU_SYS = 1, MENU_FILE_, MENU_WINDOW, MENU_CTX, MENU_EJECT, MENU_APP0 = 10 };
@@ -903,8 +905,8 @@ static void draw_menu(void)
     if (!menu_which) return;
     int h = menu_height();
     uint32_t el = debugmon_uptime_ms() - menu_open_ms;
-    int fading = el < 180;
-    int e = fading ? ease((int)(el * 1024 / 180)) : 1024;
+    int fading = el < 180 * ANIM_SLOW;
+    int e = fading ? ease((int)(el * 1024 / (180 * ANIM_SLOW))) : 1024;
     int my0 = menu_y;
     int rx = menu_x - 24, ry = menu_y - 24, rw = menu_w + 48, rh = h + 56;
     if (fading) {
@@ -1721,7 +1723,6 @@ static void present(void)
 /* ------------------------------------------------------------------ animations */
 
 /* recordings of the animations are made with this raised (slow motion), then sped up */
-#define ANIM_SLOW 1
 
 /* 0..1024 in, eased 0..1024 out: slow start, slow end */
 static int ease(int t)
