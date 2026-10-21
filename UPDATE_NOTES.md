@@ -8,7 +8,7 @@
 - JavaScript runs (QuickJS, ES2023): pages change themselves, react to clicks and the mouse, and
   fetch data. Forms and cookies work.
 - Pictures in SVG and WebP as well as PNG and JPEG; icons drawn from inline SVG.
-- Hover effects and the link under the pointer shown at the bottom of the window.
+- Hover effects, and the address of the link under the pointer at the bottom of the window.
 ![Wikipedia in tFire, inside tOS](docs/screenshots/tfire/u3-wikipedia.png)
 ![GitHub](docs/screenshots/tfire/u3-github.png)
 ![Hacker News](docs/screenshots/tfire/u3-hackernews.png)
