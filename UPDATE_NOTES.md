@@ -23,5 +23,5 @@
 ![tfire:licenses](docs/screenshots/tfire/u3-licenses.png)
 
 ## settings | Software Update
-- Restarting to install an update starts the new build again: build 580, larger than the builds
-  before it, was installed but could not be started from them until the computer was turned off and on.
+- Restarting to install this update starts the new build right away, although it is larger than the
+  builds before it.

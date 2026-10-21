@@ -519,7 +519,9 @@ run-noinstall: tOS.iso
 		-drive file=/tmp/tfs_test.img,if=ide,format=raw \
 		-serial stdio 2>/dev/null || true
 
-TOS_BUILD := $(shell git rev-list --count HEAD 2>/dev/null || echo 0)
+# A build's number is the count of commits, less BUILD_OFFSET: commits that never became a published build
+# (577-581, withdrawn or failed) are not counted, so the numbers people see go on one by one
+TOS_BUILD := $(shell expr $$(git rev-list --count HEAD 2>/dev/null || echo 0) - $$(cat BUILD_OFFSET 2>/dev/null || echo 0))
 TOS_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 # the build number and commit, fresh on every build

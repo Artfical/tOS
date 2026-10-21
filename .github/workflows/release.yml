@@ -48,6 +48,21 @@ jobs:
           grep -q "Keyboard initialized" boot.log
           grep -q "session: recovery"    boot.log
 
+      - name: Check the kernel can be started by Software Update
+        # The old system reads the new kernel into its heap, which begins where the old kernel ends
+        # (0x20A15000 for build 574, the lowest); a kernel reaching past that cannot be started from it.
+        run: |
+          python3 - <<'PY'
+          import subprocess, sys
+          end = 0
+          for line in subprocess.check_output(['readelf', '-lW', 'kernel/tOS.elf'], text=True).splitlines():
+              f = line.split()
+              if f and f[0] == 'LOAD':
+                  end = max(end, int(f[3], 16) + int(f[5], 16))
+          print('kernel ends at 0x%X' % end)
+          sys.exit(0 if end <= 0x20A00000 else 'the kernel ends past 0x20A00000: older builds could not restart into it')
+          PY
+
       - name: Describe the update
         # what update.artfical.com publishes: the build number, the commit, what it says and
         # which files it touched (the release notes are made from these), and the files' hashes
@@ -57,7 +72,7 @@ jobs:
           def git(*a): return subprocess.check_output(['git', *a], text=True).strip()
           def sha(p): return hashlib.sha256(open(p, 'rb').read()).hexdigest()
           m = {
-            'build': int(git('rev-list', '--count', 'HEAD')),
+            'build': int(git('rev-list', '--count', 'HEAD')) - int(open('BUILD_OFFSET').read()),
             'commit': git('rev-parse', 'HEAD'),
             'short': git('rev-parse', '--short', 'HEAD'),
             'date': git('log', '-1', '--format=%cI'),
