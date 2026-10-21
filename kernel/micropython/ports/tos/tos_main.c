@@ -12,7 +12,11 @@
 #include "serial.h"
 #include "keyboard.h"
 
-static char heap[512 * 1024 * 1024];
+/* 504 MB, not 512: the kernel has to end below where the builds before it end. Software Update reads the
+ * new kernel into the old one's heap, which starts at the old kernel's end, and a newer kernel reaching
+ * past that cannot be started from there (kexec refuses an image that overlaps its own source: build 580,
+ * 2.6 MB larger, ended past 574-576's 0x20A15000-0x20A1E000). */
+static char heap[504 * 1024 * 1024];
 
 void tos_module_init(void);
 void tosgui_module_init(void);
