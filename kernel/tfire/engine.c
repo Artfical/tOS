@@ -135,6 +135,8 @@ static void run_big(void (*fn)(void *), void *arg)
         "movl (%%esp), %%esp\n\t"
         : : "r"(top) : "eax", "ecx", "edx", "esi", "memory", "cc");
     on_big_stack = 0;
+    big_fn = 0;
+    big_arg = 0;                        /* (it pointed at the caller's locals) */
 }
 
 /* ------------------------------------------------------------------ small things */
