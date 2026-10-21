@@ -458,4 +458,5 @@ const uiapp_class_t app_recovery = {
     "recovery", "tOS Recovery", "launcher", 860, 560, 0, sizeof(rc_t),
     rc_init, rc_draw, rc_press, 0, 0, rc_key, 0, rc_tick, 0,
     0, 0, 0,
+    0,
 };

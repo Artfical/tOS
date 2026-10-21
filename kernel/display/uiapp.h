@@ -46,6 +46,7 @@ typedef struct {
     const char *const *menus;
     int  (*menu_items)(uiapp_t *a, int menu, const char **labels, int *enabled, int max);
     void (*menu_pick)(uiapp_t *a, int menu, int item);
+    void (*hover)(uiapp_t *a, int x, int y);        /* the pointer moved over it, no button held (-1, -1: it left) */
 } uiapp_class_t;
 
 struct uiapp {

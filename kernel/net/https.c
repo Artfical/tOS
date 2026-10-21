@@ -28,13 +28,18 @@ static int https_get_locked(uint32_t ip, const char *host, uint16_t port, const 
     if (rc != 0) return rc;
 
     /* Build HTTP/1.0 request */
-    char req[1024];
-    int off = http_build_request(req, sizeof(req), host, path);
+    static char req[HTTP_MAX_REQUEST];              /* (only the holder of http_lock() is here) */
+    int off = http_build_full_request(req, sizeof(req), host, path);
     if (off < 0) { tls_close(&g_tls); return HTTP_ERR_REQUEST; }
 
     if (tls_write(&g_tls, (const uint8_t*)req, off) != 0) {
         tls_close(&g_tls);
         return TCP_ERR_TIMEOUT; /* connection dropped between connect() and send() */
+    }
+    if (http_extra && http_extra->body && http_extra->body_len > 0 &&
+        tls_write(&g_tls, (const uint8_t *)http_extra->body, http_extra->body_len) != 0) {
+        tls_close(&g_tls);
+        return TCP_ERR_TIMEOUT;
     }
 
     int total = 0;

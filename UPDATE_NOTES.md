@@ -1,10 +1,24 @@
-# Project tFire, update 2: pictures
+# Project tFire, update 3: the engine
 
 ## tfire | tFire
-- This is the second update of Project tFire.
-- Pages show their pictures (PNG and JPEG); a picture that is a link can be clicked.
-- What a page keeps out of sight — menus, navigation, text for screen readers — stays hidden,
-  so Wikipedia and other sites start with the article instead of a wall of links.
-- WebP and progressive JPEG pictures show their description for now.
-![Wikipedia in tFire, with the article's picture](docs/screenshots/tfire/wikipedia.png)
-![tFire's home page](docs/screenshots/tfire/home2.png)
+- This is the third update of Project tFire: tFire gets a real web engine, so pages look the way
+  their designers made them.
+- HTML is read the way browsers read it (libhubbub), style sheets are applied (libcss), with grid,
+  flex, floats, CSS variables and calc().
+- JavaScript runs (QuickJS, ES2023): pages change themselves, react to clicks and the mouse, and
+  fetch data. Forms and cookies work.
+- Pictures in SVG and WebP as well as PNG and JPEG; icons drawn from inline SVG.
+- Hover effects and the link under the pointer shown at the bottom of the window.
+![Wikipedia in tFire, inside tOS](docs/screenshots/tfire/u3-wikipedia.png)
+![GitHub](docs/screenshots/tfire/u3-github.png)
+![Hacker News](docs/screenshots/tfire/u3-hackernews.png)
+![Python.org](docs/screenshots/tfire/u3-python.png)
+![Hover and mouse events](docs/screenshots/tfire/u3-hover.png)
+![tFire's home page](docs/screenshots/tfire/u3-home.png)
+
+## about | Added tFire licences
+- tFire is built on the work of others, and their licences come with it: tFire shows them all at
+  tfire:licenses, and THIRD_PARTY_NOTICES.md lists them.
+- libhubbub, libcss, libparserutils, libwapcaplet (NetSurf, MIT), QuickJS (MIT), musl's maths (MIT),
+  compiler-rt builtins (Apache 2.0 with LLVM exception), NanoSVG (zlib), libwebp (BSD).
+![tfire:licenses](docs/screenshots/tfire/u3-licenses.png)

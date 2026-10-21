@@ -52,6 +52,7 @@ int  gfx_wallpaper_from(uint32_t *out, int w, int h, uint32_t *blurred, const ui
 /* text: UTF-8, returns the advance width */
 int  gfx_text(gfx_surface_t *s, const ui_font_t *f, int x, int y, const char *str, uint32_t c, int alpha);
 int  gfx_text_width(const ui_font_t *f, const char *str);
+int  gfx_text_italic(gfx_surface_t *s, const ui_font_t *f, int x, int y, const char *str, uint32_t c, int alpha);
 void gfx_text_center(gfx_surface_t *s, const ui_font_t *f, int x, int y, int w, const char *str, uint32_t c, int alpha);
 
 /* integer trigonometry: sine and cosine of whole degrees, scaled by 4096 */

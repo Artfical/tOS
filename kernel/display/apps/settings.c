@@ -510,4 +510,5 @@ const uiapp_class_t app_settings = {
     "settings", "System Settings", "settings", 820, 540, 0, sizeof(set_t),
     s_init, s_draw, s_press, 0, 0, s_key, s_wheel, s_tick, 0,
     0, 0, 0,
+    0,
 };

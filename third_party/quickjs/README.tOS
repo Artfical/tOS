@@ -1,0 +1,13 @@
+QuickJS, the JavaScript engine of tFire (tOS's web browser).
+
+  Version 2025-09-13   https://bellard.org/quickjs/   MIT (LICENSE)
+  Copyright (c) 2017-2021 Fabrice Bellard, Charlie Gordon
+
+Files kept: quickjs.c/h, quickjs-atom.h, quickjs-opcode.h, libregexp.c/h, libregexp-opcode.h, libunicode.c/h,
+libunicode-table.h, cutils.c/h, dtoa.c/h, list.h, LICENSE, VERSION.
+
+Local changes (both behind TOS_TFIRE, which tOS's build defines):
+  quickjs.c: CONFIG_ATOMICS is not defined (tOS has no OS threads for Atomics.wait);
+             the local time zone offset is 0 (tOS's clock is UTC) instead of localtime_r().
+
+Built for software floating point (-mno-80387) against tFire's own C library (kernel/tfire/libc).

@@ -409,6 +409,38 @@ int gfx_text(gfx_surface_t *s, const ui_font_t *f, int x, int y, const char *str
     return pen - x;
 }
 
+/* the same, slanted (there are no italic fonts): each row of a glyph moved right by a quarter of its height above the
+ * baseline, split between two pixels so the edges stay smooth */
+int gfx_text_italic(gfx_surface_t *s, const ui_font_t *f, int x, int y, const char *str, uint32_t c, int alpha)
+{
+    int pen = x;
+    while (*str) {
+        const ui_glyph_t *g = find_glyph(f, utf8_next(&str));
+        if (!g) { pen += f->size / 3; continue; }
+        if (g->w && g->h && assets) {
+            const uint8_t *m = assets + g->off;
+            for (int j = 0; j < g->h; j++) {
+                int py = y + g->y + j;
+                if (py < s->cy0 || py >= s->cy1) continue;
+                int up = f->ascent - (g->y + j);                 /* above the baseline (in pixels) */
+                int sh4 = up;                                    /* the shift in quarter pixels */
+                int whole = sh4 >= 0 ? sh4 / 4 : -((-sh4 + 3) / 4), frac = sh4 - whole * 4;
+                uint32_t *row = s->px + py * s->w;
+                for (int i = 0; i <= g->w; i++) {
+                    /* this pixel: what the glyph has here and to its left, weighted by the fraction */
+                    int a0 = i < g->w ? m[j * g->w + i] : 0, a1 = i > 0 ? m[j * g->w + i - 1] : 0;
+                    int a = (a0 * (4 - frac) + a1 * frac) / 4;
+                    int px = pen + g->x + i + whole;
+                    if (!a || px < s->cx0 || px >= s->cx1) continue;
+                    blend(&row[px], c, a * alpha / 255);
+                }
+            }
+        }
+        pen += g->adv;
+    }
+    return pen - x;
+}
+
 void gfx_text_center(gfx_surface_t *s, const ui_font_t *f, int x, int y, int w, const char *str, uint32_t c, int alpha)
 {
     gfx_text(s, f, x + (w - gfx_text_width(f, str)) / 2, y, str, c, alpha);

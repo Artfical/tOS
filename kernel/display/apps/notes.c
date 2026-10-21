@@ -179,4 +179,5 @@ const uiapp_class_t app_notes = {
     "notes", "Sticky Notes", "sticky", 680, 460, 1, sizeof(notes_t),
     n_init, n_draw, n_press, 0, 0, n_key, 0, n_tick, 0,
     0, 0, 0,
+    0,
 };

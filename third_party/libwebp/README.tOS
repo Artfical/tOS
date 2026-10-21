@@ -1,0 +1,8 @@
+The WebP decoder of Google's libwebp, used by tFire (tOS's web browser) for WebP pictures.
+
+  libwebp 1.4.0 (decoder only)   https://chromium.googlesource.com/webm/libwebp   BSD-3-Clause (COPYING), patent grant (PATENTS)
+  Copyright (c) 2010, Google Inc.
+
+Kept: src/dec, the decoding half of src/utils and src/dsp (plain C; the SSE/NEON/MIPS files are left out), the public
+headers in src/webp, and src/enc/histogram_enc.h, vp8i_enc.h and backward_references_enc.h (headers the decoder's
+lossless code includes). The sources are unchanged.

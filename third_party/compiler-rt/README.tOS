@@ -1,0 +1,7 @@
+Software floating point from LLVM's compiler-rt builtins, for tFire's engine (which never uses the FPU: the tOS
+kernel does not save its state between tasks).
+
+  LLVM 18.1.8 (compiler-rt/lib/builtins subset)   https://github.com/llvm/llvm-project   Apache-2.0 WITH LLVM-exception (LICENSE.TXT)
+
+Only the single- and double-precision add, sub, mul, div, compare, conversion and negation routines and their
+headers are kept. The sources are unchanged.

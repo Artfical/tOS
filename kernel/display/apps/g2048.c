@@ -149,4 +149,5 @@ const uiapp_class_t app_2048 = {
     "2048", "2048", "2048", 4 * CELL + 5 * GAP2 + 40, 4 * CELL + 5 * GAP2 + 140, 0, sizeof(g2048_t),
     g_init, g_draw, g_press, 0, 0, g_key, 0, 0, 0,
     0, 0, 0,
+    0,
 };

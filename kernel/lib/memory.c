@@ -4,6 +4,9 @@
 
 static uint32_t *page_bitmap = NULL;
 static uint32_t total_pages = 0;
+/* how far the heap may grow: KERNEL_HEAP_MAX_SIZE, or with plenty of memory most of it (tFire's pages and
+ * scripts need more than 64 MB), always leaving 192 MB for page tables, user programs and the like */
+static uint32_t heap_max_size = KERNEL_HEAP_MAX_SIZE;
 static uint32_t used_pages = 0;
 
 static uint32_t heap_start = KERNEL_HEAP_START;
@@ -59,6 +62,13 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
 {
     total_pages = (mem_upper * 1024) / PAGE_SIZE;
     if (total_pages > 0x100000) total_pages = 0x100000;
+    {
+        uint32_t mem = total_pages * PAGE_SIZE;
+        if (mem >= 0x20000000) {                                      /* 512 MB or more */
+            heap_max_size = mem - 0xC000000;
+            if (heap_max_size > 0x10000000) heap_max_size = 0x10000000;      /* 256 MB */
+        }
+    }
 
     uint32_t bitmap_size = total_pages / 8 + 1;
 
@@ -128,7 +138,7 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
      * import's first multi-MB malloc() for doom1.wad/Wolf3D assets
      * grows the heap into memory usermode_init() had already claimed)
      * and then get silently overwritten once heap growth reaches it. */
-    uint32_t heap_max_page = (heap_start + KERNEL_HEAP_MAX_SIZE + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint32_t heap_max_page = (heap_start + heap_max_size + PAGE_SIZE - 1) / PAGE_SIZE;
     if (heap_max_page > total_pages) heap_max_page = total_pages;
     for (uint32_t i = bitmap_end / PAGE_SIZE; i < heap_max_page; i++) {
         page_bitmap[i / 32] |= (1 << (i % 32));
@@ -225,7 +235,7 @@ static int heap_ptr_ok(heap_header_t *h)
 
 static void *heap_alloc(uint32_t size)
 {
-    if (size == 0 || size > KERNEL_HEAP_MAX_SIZE) return NULL;
+    if (size == 0 || size > heap_max_size) return NULL;
     size = (size + 3) & ~3;
 
     uint32_t flags = heap_irq_save();
@@ -279,8 +289,8 @@ static void *heap_alloc(uint32_t size)
      * heap_start, permanently inverting the heap's valid range and
      * making every later heap_ptr_ok() check on heap_list itself fail
      * -- which is exactly what used to happen. */
-    if (heap_end > heap_start + KERNEL_HEAP_MAX_SIZE)
-        heap_end = heap_start + KERNEL_HEAP_MAX_SIZE;
+    if (heap_end > heap_start + heap_max_size)
+        heap_end = heap_start + heap_max_size;
 
     if (old_heap_end + HEAP_SLOT(size) > heap_end) {
         heap_irq_restore(flags);

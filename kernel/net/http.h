@@ -39,6 +39,20 @@ const char *http_strerror(int err);
  * (request splitting). */
 int http_build_request(char *req, int cap, const char *host, const char *path);
 
+/* What a request is beyond "GET path": set by the holder of http_lock() around http_get()/https_get() and put
+ * back to NULL after. method NULL = GET; headers are whole lines, each ending in \r\n; body is sent after them
+ * with its Content-Length. */
+typedef struct {
+    const char *method;
+    const char *headers;
+    const void *body;
+    int body_len;
+} http_extra_t;
+extern const http_extra_t *http_extra;
+#define HTTP_MAX_REQUEST 8192
+/* builds the request for http_get() (with http_extra) into req; its length, or -1 */
+int http_build_full_request(char *req, int cap, const char *host, const char *path);
+
 /* The value of a response header (case-insensitive name, including the colon), or NULL.
  * The returned pointer is inside `resp` and runs to the end of the line. */
 const char *http_header_value(const char *resp, int len, const char *name);

@@ -284,4 +284,5 @@ const uiapp_class_t app_notepad = {
     "notepad", "Notepad", "notepad", 760, 470, 1, sizeof(np_t),
     np_init, np_draw, np_press, 0, 0, np_key, np_wheel, np_tick, np_close,
     0, 0, 0,
+    0,
 };

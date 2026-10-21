@@ -1388,6 +1388,12 @@ System calls are invoked via `int 0x80` with the syscall number in `eax`:
 
 tOS itself is distributed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See the `LICENSE` file for details.
 
+The work of others that tOS is built from — with its licence, version, origin and any local changes — is listed in
+**`THIRD_PARTY_NOTICES.md`**, which also carries the full text of each permissive licence (made by
+`tools/gen_notices.py`). The kernel carries that file too: tFire shows it at `tfire:licenses`, so every copy of tOS,
+the ISO included, has the notices with it. Each directory under `third_party/` keeps its upstream licence files and
+a `README.tOS` saying where it came from and what was changed.
+
 ### MicroPython Licensing
 
 This software includes the **MicroPython** core library (version 1.24.1), which is copyright (c) 2013--2024 Damien P. George and contributors. MicroPython is licensed under the **MIT License**:
@@ -1418,6 +1424,12 @@ THE SOFTWARE.
 
 tOS is developed by Talha Berk. The system is built from scratch with the exception of:
 - MicroPython (MIT License) — embedded scripting runtime
+- NetSurf's libcss, libhubbub, libparserutils and libwapcaplet (MIT) — tFire's HTML parser and CSS engine
+- QuickJS by Fabrice Bellard and Charlie Gordon (MIT) — tFire's JavaScript engine
+- musl's maths functions (MIT) and LLVM compiler-rt's floating point (Apache-2.0 with LLVM exception) — for tFire's engine
+- NanoSVG by Mikko Mononen (zlib) and Google's libwebp decoder (BSD-3-Clause) — SVG and WebP pictures in tFire
+- doomgeneric (GPL-2.0) and Wolf4SDL (GPL-2.0) — the DOOM and Wolfenstein 3D ports
+- Inter and JetBrains Mono (SIL OFL 1.1) and Lucide (ISC) — the desktop's fonts and icons
 - GRUB (GPLv3) — bootloader (not distributed in source, only used to generate the ISO)
 - htop (GPL-2.0-only) — inspiration for the `htop` process monitor command (original implementation, see `third_party/htop/`)
 

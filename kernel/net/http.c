@@ -23,10 +23,13 @@ static int req_put(char *req, int cap, int *off, const char *s, int check)
     return 0;
 }
 
+const http_extra_t *http_extra;
+
 static int build_request(char *req, int cap, const char *host, const char *path, uint32_t from)
 {
     int off = 0;
-    if (req_put(req, cap, &off, "GET ", 0) || req_put(req, cap, &off, path, 1) ||
+    const http_extra_t *x = http_extra;
+    if (req_put(req, cap, &off, x && x->method ? x->method : "GET", 1) || req_put(req, cap, &off, " ", 0) || req_put(req, cap, &off, path, 1) ||
         req_put(req, cap, &off, " HTTP/1.0\r\nHost: ", 0) || req_put(req, cap, &off, host, 1))
         return -1;
     if (from) {
@@ -37,12 +40,36 @@ static int build_request(char *req, int cap, const char *host, const char *path,
         if (req_put(req, cap, &off, "\r\nRange: bytes=", 0) || req_put(req, cap, &off, n, 0) || req_put(req, cap, &off, "-", 0))
             return -1;
     }
-    if (req_put(req, cap, &off, "\r\nUser-Agent: Lynx/2.9.0 libwww-FM/2.14 tFire/1 (tOS)\r\nAccept: */*\r\nConnection: close\r\n\r\n", 0)) return -1;
+    if (req_put(req, cap, &off, "\r\nUser-Agent: Lynx/2.9.0 libwww-FM/2.14 tFire/1 (tOS)\r\nAccept: */*\r\nConnection: close\r\n", 0)) return -1;
+    if (x && x->headers) {
+        /* the asker's own header lines, each ending in \r\n: no bare line breaks that would start a new request */
+        for (const char *h = x->headers; *h; h++)
+            if ((*h == '\n' && (h == x->headers || h[-1] != '\r')) || (*h == '\r' && h[1] != '\n')) return -1;
+        if (req_put(req, cap, &off, x->headers, 0)) return -1;
+    }
+    if (x && x->body) {
+        char n[12]; int o = 0; char r[12]; int ro = 0;
+        uint32_t v = (uint32_t)x->body_len;
+        do { r[ro++] = (char)('0' + v % 10); v /= 10; } while (v);
+        while (ro) n[o++] = r[--ro];
+        n[o] = 0;
+        if (req_put(req, cap, &off, "Content-Length: ", 0) || req_put(req, cap, &off, n, 0) || req_put(req, cap, &off, "\r\n", 0)) return -1;
+    }
+    if (req_put(req, cap, &off, "\r\n", 0)) return -1;
     req[off] = 0;
     return off;
 }
 
 int http_build_request(char *req, int cap, const char *host, const char *path)
+{
+    const http_extra_t *x = http_extra;
+    http_extra = 0;
+    int n = build_request(req, cap, host, path, 0);
+    http_extra = x;
+    return n;
+}
+
+int http_build_full_request(char *req, int cap, const char *host, const char *path)
 {
     return build_request(req, cap, host, path, 0);
 }
@@ -185,11 +212,13 @@ static int http_get_from_locked(uint32_t ip, const char *host, uint16_t port, co
     int rc = tcp_connect(ip, port);
     if (rc != 0) return rc;
 
-    char req[1024];
+    static char req[HTTP_MAX_REQUEST];              /* (only the holder of http_lock() is here) */
     int off = build_request(req, sizeof(req), host, path, from);
     if (off < 0) { tcp_close(); return HTTP_ERR_REQUEST; }
 
     if (tcp_send(req, off) != 0) { tcp_close(); return TCP_ERR_TIMEOUT; /* connection dropped between connect() and send() */ }
+    if (http_extra && http_extra->body && http_extra->body_len > 0 &&
+        tcp_send((void *)http_extra->body, http_extra->body_len) != 0) { tcp_close(); return TCP_ERR_TIMEOUT; }
 
     int total = 0;
     while (total < max_len) {

@@ -133,4 +133,5 @@ const uiapp_class_t app_network = {
     "netmon", "Network", "netmon", 560, 420, 0, sizeof(net_t),
     net_init, net_draw, net_press, 0, 0, 0, 0, net_tick, 0,
     0, 0, 0,
+    0,
 };

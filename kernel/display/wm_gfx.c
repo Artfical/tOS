@@ -2346,6 +2346,17 @@ void wm_gfx_tick(void)
         else { if (ap->cls->release) ap->cls->release(ap, lx, ly); native_grab = 0; }
     }
 
+    /* the pointer over a native app with no button held: it may show what is under it (links, hover styles) */
+    if (moved && !native_grab && !(btn & 1)) {
+        static window_t *hover_win;
+        window_t *u = window_at(mx, my);
+        if (u && (u->kind != WIN_KIND_NATIVE || !u->native || my < u->gy + TITLE_H)) u = 0;
+        if (hover_win && hover_win != u && hover_win->open && hover_win->native && ((uiapp_t *)hover_win->native)->cls->hover)
+            ((uiapp_t *)hover_win->native)->cls->hover(hover_win->native, -1, -1);
+        hover_win = u;
+        if (u && ((uiapp_t *)u->native)->cls->hover) ((uiapp_t *)u->native)->cls->hover(u->native, mx - u->gx, my - u->gy - TITLE_H);
+    }
+
     /* the keyboard belongs to a focused native app: no task has the focus then */
     if (wm_focused && wm_focused->open && wm_focused->kind == WIN_KIND_NATIVE && wm_focused->native) {
         uiapp_t *ap = wm_focused->native;

@@ -1,0 +1,7 @@
+The maths functions of musl, used by tFire's JavaScript engine (QuickJS) and image libraries.
+
+  musl 1.2.5 (src/math subset)   https://musl.libc.org/   MIT (COPYRIGHT)
+  Copyright (c) 2005-2020 Rich Felker, et al.
+
+Only the double-precision functions QuickJS needs, and their helpers, are kept. The sources are unchanged; they are
+built with -Dhidden= (musl's internal visibility attribute) and software floating point.

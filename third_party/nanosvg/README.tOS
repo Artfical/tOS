@@ -1,0 +1,6 @@
+NanoSVG, which draws SVG pictures (logos, icons) for tFire, tOS's web browser.
+
+  nanosvg.h, nanosvgrast.h (master, October 2026)   https://github.com/memononen/nanosvg   zlib (LICENSE.txt)
+  Copyright (c) 2013-14 Mikko Mononen
+
+Unchanged. Compiled into kernel/tfire/images.c for software floating point.

@@ -187,4 +187,5 @@ const uiapp_class_t app_updatenotes = {
     "updatenotes", "What\xE2\x80\x99s New in tOS", "settings", 700, 560, 1, sizeof(un_t),
     un_init, un_draw, un_press, un_drag, un_release, un_key, un_wheel, un_tick, 0,
     0, 0, 0,
+    0,
 };
