@@ -413,6 +413,10 @@ TFIRE_BASE = -MMD -MP -m32 -ffreestanding -nostdlib -fno-builtin -fno-stack-prot
              -U__linux__ -U__linux -Ulinux -U__unix__ -U__unix -Uunix -DTOS_TFIRE \
              -DWITHOUT_ICONV_FILTER -DNDEBUG -DCONFIG_VERSION=\"2025-09-13\" -Ikernel/tfire/libc -Ikernel/lib
 NS = third_party/netsurf
+# Newer compilers (GCC 14 and on) make some old C an error; third-party code still writes it, and -w is meant to
+# keep it quiet, so those are warnings again there
+TFIRE_TP_OLDC = -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=int-conversion \
+                -Wno-error=incompatible-pointer-types
 TFIRE_NS_INC = -I$(NS)/libparserutils/include -I$(NS)/libwapcaplet/include -I$(NS)/libhubbub/include -I$(NS)/libcss/include
 TFIRE_CFLAGS = $(TFIRE_BASE) -Wall -Wextra -Werror -Wno-unused-parameter $(TFIRE_NS_INC) -Ithird_party/quickjs \
              -Ikernel/tfire -Ithird_party/nanosvg -Ithird_party/libwebp -Ikernel/core -Ikernel/display -Ikernel/net -Ikernel/fs -Ikernel/drivers/include
@@ -429,21 +433,21 @@ TFIRE_API = page_open page_open_html page_close page_tick page_loading page_url 
     page_take_url_change page_resolve page_hover page_link_at dom_attr tf_free tf_malloc tf_alloc_usage
 
 $(NS)/libparserutils/%.o: $(NS)/libparserutils/%.c
-	$(CC) $(TFIRE_BASE) -w -I$(NS)/libparserutils/include -I$(NS)/libparserutils/src -c $< -o $@
+	$(CC) $(TFIRE_BASE) -w $(TFIRE_TP_OLDC) -I$(NS)/libparserutils/include -I$(NS)/libparserutils/src -c $< -o $@
 $(NS)/libwapcaplet/%.o: $(NS)/libwapcaplet/%.c
-	$(CC) $(TFIRE_BASE) -w -I$(NS)/libwapcaplet/include -c $< -o $@
+	$(CC) $(TFIRE_BASE) -w $(TFIRE_TP_OLDC) -I$(NS)/libwapcaplet/include -c $< -o $@
 $(NS)/libhubbub/%.o: $(NS)/libhubbub/%.c
-	$(CC) $(TFIRE_BASE) -w -I$(NS)/libhubbub/include -I$(NS)/libhubbub/src -I$(NS)/libparserutils/include -c $< -o $@
+	$(CC) $(TFIRE_BASE) -w $(TFIRE_TP_OLDC) -I$(NS)/libhubbub/include -I$(NS)/libhubbub/src -I$(NS)/libparserutils/include -c $< -o $@
 $(NS)/libcss/%.o: $(NS)/libcss/%.c
-	$(CC) $(TFIRE_BASE) -w -I$(NS)/libcss/include -I$(NS)/libcss/src -I$(NS)/libparserutils/include -I$(NS)/libwapcaplet/include -c $< -o $@
+	$(CC) $(TFIRE_BASE) -w $(TFIRE_TP_OLDC) -I$(NS)/libcss/include -I$(NS)/libcss/src -I$(NS)/libparserutils/include -I$(NS)/libwapcaplet/include -c $< -o $@
 third_party/quickjs/%.o: third_party/quickjs/%.c
-	$(CC) $(TFIRE_BASE) -w -Ithird_party/quickjs -c $< -o $@
+	$(CC) $(TFIRE_BASE) -w $(TFIRE_TP_OLDC) -Ithird_party/quickjs -c $< -o $@
 third_party/musl-libm/%.o: third_party/musl-libm/%.c
-	$(CC) $(TFIRE_BASE) -w -Dhidden= -Ithird_party/musl-libm/src -c $< -o $@
+	$(CC) $(TFIRE_BASE) -w $(TFIRE_TP_OLDC) -Dhidden= -Ithird_party/musl-libm/src -c $< -o $@
 third_party/libwebp/%.o: third_party/libwebp/%.c
-	$(CC) $(TFIRE_BASE) -w -Ithird_party/libwebp -c $< -o $@
+	$(CC) $(TFIRE_BASE) -w $(TFIRE_TP_OLDC) -Ithird_party/libwebp -c $< -o $@
 third_party/compiler-rt/%.o: third_party/compiler-rt/%.c
-	$(CC) $(TFIRE_BASE) -w -Ithird_party/compiler-rt -c $< -o $@
+	$(CC) $(TFIRE_BASE) -w $(TFIRE_TP_OLDC) -Ithird_party/compiler-rt -c $< -o $@
 kernel/tfire/%.o: kernel/tfire/%.c
 	$(CC) $(TFIRE_CFLAGS) -c $< -o $@
 kernel/tfire/libc/%.o: kernel/tfire/libc/%.c

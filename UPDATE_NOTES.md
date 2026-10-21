@@ -13,7 +13,6 @@
 ![GitHub](docs/screenshots/tfire/u3-github.png)
 ![Hacker News](docs/screenshots/tfire/u3-hackernews.png)
 ![Python.org](docs/screenshots/tfire/u3-python.png)
-![Hover and mouse events](docs/screenshots/tfire/u3-hover.png)
 ![tFire's home page](docs/screenshots/tfire/u3-home.png)
 
 ## about | Added tFire licences
