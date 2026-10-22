@@ -1,4 +1,5 @@
 #include "layout.h"
+#include "anim.h"
 #include "tfire_libc.h"
 
 /*
@@ -75,6 +76,8 @@ static int add_item(ctx *c, int kind, int x, int y, int w, int h, uint32_t color
     it->x = x; it->y = y; it->w = w; it->h = h;
     it->color = color;
     it->alpha = 255;
+    it->ow = (uint16_t)(w > 0 && w < 65535 ? w : 0);
+    it->oh = (uint16_t)(h > 0 && h < 65535 ? h : 0);
     if (y + h > L->doc_h) L->doc_h = y + h;
     return L->n++;
 }
@@ -130,7 +133,7 @@ static void box_place(ctx *c, tf_layout *b, int x, int y)
         if (k < 0) continue;
         tf_item *it = &c->L->items[k];
         it->font = src->font; it->deco = src->deco; it->len = src->len; it->node = src->node;
-        it->radius = src->radius; it->alpha = src->alpha;
+        it->radius = src->radius; it->alpha = src->alpha; it->px = src->px; it->rot = src->rot; it->ow = src->ow; it->oh = src->oh;
         it->text = src->text + shift;
     }
     c->hidden = was;
@@ -147,6 +150,7 @@ static int is_blocky(const tf_style *s)
 }
 
 static int out_of_flow(const tf_style *s) { return s->position == TP_ABSOLUTE || s->position == TP_FIXED; }
+static int has_xf(const tf_style *s) { return s->nxf || s->ind[0].kind || s->ind[1].kind || s->ind[2].kind; }
 
 /* a box that is a formatting context of its own: floats stay inside it, and it keeps clear of those outside */
 static int new_bfc(const tf_style *s)
@@ -381,7 +385,7 @@ static void intrinsic(ctx *c, tf_node *n, int *min, int *max)
 enum { P_WORD, P_ATOM, P_BOX, P_BR };
 
 typedef struct {
-    uint8_t kind, font, deco;
+    uint8_t kind, font, deco, px;
     int w, h, asc;                 /* asc: how far above the baseline it reaches */
     int space;                     /* width of the space after it (0 = none) */
     int line_px;
@@ -457,7 +461,7 @@ static void flush_line(lines_t *ln, int forced)
             int k = add_item(c, IT_TEXT, x, top, p->w + p->space, p->h, p->color);
             if (k >= 0) {
                 tf_item *it = &c->L->items[k];
-                it->font = p->font; it->deco = p->deco; it->text = p->text; it->len = p->len; it->node = p->link;
+                it->font = p->font; it->deco = p->deco; it->text = p->text; it->len = p->len; it->node = p->link; it->px = p->px;
             }
         } else if (p->kind == P_ATOM) {
             int k = add_item(c, p->item_kind, x, top, p->w, p->h, p->color);
@@ -567,7 +571,8 @@ static void put_word(lines_t *ln, tf_node *textnode, const tf_style *s, const ch
     if (s->valign == TV_SUPER) p->asc += p->h / 3;
     else if (s->valign == TV_SUB) p->asc -= p->h / 4;
     p->color = s->color;
-    p->deco = (uint8_t)((s->underline ? 1 : 0) | (s->strike ? 2 : 0) | (s->italic ? 4 : 0));
+    p->deco = (uint8_t)((s->underline ? 1 : 0) | (s->strike ? 2 : 0) | (s->italic ? 4 : 0) | (s->bold ? 8 : 0));
+    p->px = (uint8_t)(s->font_px > 255 ? 255 : s->font_px);
     p->text = pool_add(c->L, w, n);
     p->len = (uint16_t)n;
     p->link = textnode->type == TF_TEXT ? textnode->parent : textnode;     /* what a click on it reaches first */
@@ -1032,6 +1037,49 @@ static void border_items(ctx *c, const tf_style *s, int x, int y, int w, int h)
     if (s->border[1] && s->border_color[1] != 0xFFFFFFFFu) add_item(c, IT_RECT, x + w - s->border[1], y, s->border[1], h, s->border_color[1]);
 }
 
+/* ------------------------------------------------------------------ transforms and opacity */
+
+/* what a box's transform and opacity do to what was drawn for it (items from first on) and to the boxes in it:
+ * moved, scaled, turned about its transform-origin; made see-through */
+static void effects(ctx *c, tf_node *n, const tf_style *s, int first, int bx, int by, int bw, int bh)
+{
+    tf_layout *L = c->L;
+    if (s->opacity < 255 && s->opacity > 0)
+        for (int i = first; i < L->n; i++) L->items[i].alpha = (uint8_t)(L->items[i].alpha * s->opacity / 255);
+    float m[6];
+    if (!has_xf(s) || !anim_matrix(s, bw, bh, m)) return;
+    float ox = (float)(bx + len_of(s->origin[0], bw, bw / 2)), oy = (float)(by + len_of(s->origin[1], bh, bh / 2));
+    float sx, sy, rot;
+    anim_matrix_parts(m, &sx, &sy, &rot);
+    if (sx < 0) sx = -sx;
+    if (sy < 0) sy = -sy;
+    int r10 = (int)(rot * 10);
+    for (int i = first; i < L->n; i++) {
+        tf_item *it = &L->items[i];
+        float cx = (float)it->x + (float)it->w / 2 - ox, cy = (float)it->y + (float)it->h / 2 - oy;
+        float nx = m[0] * cx + m[2] * cy + m[4] + ox, ny = m[1] * cx + m[3] * cy + m[5] + oy;
+        int w = (int)((float)it->w * sx + 0.5f), h = (int)((float)it->h * sy + 0.5f);
+        if (it->radius) { int r = (int)((float)it->radius * (sx < sy ? sx : sy)); it->radius = (uint8_t)(r > 255 ? 255 : r); }
+        it->x = (int)(nx - (float)w / 2 + (nx < 0 ? -0.5f : 0.5f));
+        it->y = (int)(ny - (float)h / 2 + (ny < 0 ? -0.5f : 0.5f));
+        it->w = w;
+        it->h = h;
+        int nr = it->rot + r10;
+        while (nr > 1800) nr -= 3600;
+        while (nr < -1800) nr += 3600;
+        it->rot = (int16_t)nr;
+        if (it->y + it->h > L->doc_h) L->doc_h = it->y + it->h;
+    }
+    /* the boxes (for clicks and scripts): where they went, roughly (the box around a turned one) */
+    for (tf_node *k = n; k; k = dom_next(k, n)) {
+        if (!k->laid) continue;
+        float cx = (float)k->lx + (float)k->lw / 2 - ox, cy = (float)k->ly + (float)k->lh / 2 - oy;
+        float nx = m[0] * cx + m[2] * cy + m[4] + ox, ny = m[1] * cx + m[3] * cy + m[5] + oy;
+        int w = (int)((float)k->lw * sx), h = (int)((float)k->lh * sy);
+        k->lx = (int)nx - w / 2; k->ly = (int)ny - h / 2; k->lw = w; k->lh = h;
+    }
+}
+
 static int list_number(tf_node *li)
 {
     int n = 1;
@@ -1098,6 +1146,7 @@ static int layout_block(ctx *c, tf_node *n, int x, int y, int avail, int *mb_out
     } else if (s->bg >> 24) {
         bg = add_item(c, IT_RECT, bx, by, w + frame, 0, s->bg & 0xFFFFFF);
         if (bg >= 0 && s->radius) c->L->items[bg].radius = (uint8_t)(s->radius > 255 ? 255 : s->radius);
+        if (bg >= 0) c->L->items[bg].alpha = (uint8_t)(s->bg >> 24);
     }
     int cx = bx + bl + pl, cy = by + bt + pt;
 
@@ -1155,7 +1204,7 @@ static int layout_block(ctx *c, tf_node *n, int x, int y, int avail, int *mb_out
     n->lx = bx; n->ly = by; n->lw = w + frame; n->lh = h; n->laid = 1;
     if (bx + w + frame > c->L->doc_w) c->L->doc_w = bx + w + frame;
     /* the absolutely positioned boxes this one is the containing block of */
-    if (s->position != TP_STATIC) abs_resolve(c, n, bx + bl, by + bt, w + pl + pr, h - bt - bb);
+    if (s->position != TP_STATIC || has_xf(s)) abs_resolve(c, n, bx + bl, by + bt, w + pl + pr, h - bt - bb);
     /* relative: moved where its offsets say, after its place was taken */
     if (s->position == TP_RELATIVE) {
         int dx = !s->offs[3].autov ? len_of(s->offs[3], avail, 0) : !s->offs[1].autov ? -len_of(s->offs[1], avail, 0) : 0;
@@ -1165,6 +1214,7 @@ static int layout_block(ctx *c, tf_node *n, int x, int y, int avail, int *mb_out
             shift_nodes(n, dx, dy);
         }
     }
+    effects(c, n, s, first_item, n->lx, n->ly, n->lw, n->lh);
     if (hid) c->hidden--;
     *mb_out = mb;
     return mt + h;
@@ -1174,9 +1224,8 @@ static int layout_block(ctx *c, tf_node *n, int x, int y, int avail, int *mb_out
 
 static tf_node *containing_block(tf_node *n, int fixed)
 {
-    if (fixed) return 0;
     for (tf_node *a = n->parent; a && a->type == TF_ELEM; a = a->parent)
-        if (a->style && a->style->position != TP_STATIC) return a;
+        if (a->style && ((!fixed && a->style->position != TP_STATIC) || has_xf(a->style))) return a;   /* (a transform holds fixed ones too) */
     return 0;
 }
 

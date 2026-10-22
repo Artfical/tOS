@@ -44,6 +44,7 @@ typedef struct tf_node {
     char *inline_css;                      /* style="" as last parsed (to see when a script changed it) */
     void *inline_sheet;                    /* that, as a libcss style sheet */
     void *js_obj;                          /* the JavaScript object standing for it (a heap pointer) */
+    void *anim;                            /* what moves on it (anim.c), or 0 */
     char *value;                           /* form fields: what is typed in */
     int checked;
     int lx, ly, lw, lh;                    /* where layout put it (document coordinates) */
@@ -90,7 +91,9 @@ tf_node *dom_find(tf_node *from, const char *tag);              /* first such el
 tf_node *dom_by_id(tf_doc *d, const char *id);
 tf_node *dom_next(tf_node *n, tf_node *top);                    /* depth-first order, staying below top */
 
-/* selectors for querySelector: tag, #id, .class, [attr], [attr=v], descendant and child combinators, lists */
+/* selectors for querySelector: tag, #id, .class, [attr], [attr=v], descendant and child combinators, lists;
+ * :hover and :focus as these say (style_set_state sets them) */
+extern tf_node *dom_hover, *dom_focus;
 int dom_matches(tf_node *n, const char *selector);
 tf_node *dom_query(tf_node *top, const char *selector);
 int dom_query_all(tf_node *top, const char *selector, tf_node **out, int max);

@@ -592,6 +592,34 @@ void dom_set_inner_html(tf_doc *d, tf_node *node, const char *html, int len)
 
 /* ------------------------------------------------------------------ selectors (for scripts) */
 
+tf_node *dom_hover, *dom_focus;
+
+/* :nth-child(an+b) (odd, even, 3, 2n+1, -n+3): does position k (from 1) match? */
+static int nth_ok(const char *p, const char *e, int k)
+{
+    while (p < e && *p == ' ') p++;
+    while (e > p && e[-1] == ' ') e--;
+    int a = 0, b = 0;
+    if (e - p == 3 && !strncasecmp(p, "odd", 3)) { a = 2; b = 1; }
+    else if (e - p == 4 && !strncasecmp(p, "even", 4)) { a = 2; b = 0; }
+    else {
+        const char *n = memchr(p, 'n', (size_t)(e - p));
+        if (n) {
+            if (n == p || (n == p + 1 && *p == '+')) a = 1;
+            else if (n == p + 1 && *p == '-') a = -1;
+            else a = atoi(p);
+            const char *q = n + 1;
+            while (q < e && *q == ' ') q++;
+            int sign = 1;
+            if (q < e && (*q == '+' || *q == '-')) { sign = *q == '-' ? -1 : 1; q++; }
+            while (q < e && *q == ' ') q++;
+            b = q < e ? sign * atoi(q) : 0;
+        } else b = atoi(p);
+    }
+    if (!a) return k == b;
+    return (k - b) % a == 0 && (k - b) / a >= 0;
+}
+
 /* one compound selector, e.g. div.note#x[data-a=b] */
 static int match_compound(tf_node *n, const char *s, const char *e)
 {
@@ -650,9 +678,28 @@ static int match_compound(tf_node *n, const char *s, const char *e)
             p = q < e ? q + 1 : q;
         } else if (*p == ':') {
             const char *q = ++p;
-            while (q < e && *q != '.' && *q != '#' && *q != '[' && *q != ':') q++;
+            while (q < e && *q != '.' && *q != '#' && *q != '[' && *q != ':' && *q != '(') q++;
+            if (q < e && *q == '(') {
+                /* a pseudo-class with an argument: :nth-child(...) is checked, others are not */
+                const char *close = q + 1;
+                int depth = 1;
+                for (; close < e; close++) { if (*close == '(') depth++; else if (*close == ')' && --depth == 0) break; }
+                if ((q - p == 9 && !memcmp(p, "nth-child", 9)) || (q - p == 14 && !memcmp(p, "nth-last-child", 14))) {
+                    int k = 1;
+                    if (q - p == 9) { for (tf_node *s2 = n->prev; s2; s2 = s2->prev) if (s2->type == TF_ELEM) k++; }
+                    else { for (tf_node *s2 = n->next; s2; s2 = s2->next) if (s2->type == TF_ELEM) k++; }
+                    if (!nth_ok(q + 1, close, k)) return 0;
+                }
+                p = close < e ? close + 1 : close;
+                continue;
+            }
             if (q - p == 11 && !memcmp(p, "first-child", 11)) { tf_node *s2 = n->prev; while (s2 && s2->type != TF_ELEM) s2 = s2->prev; if (s2) return 0; }
             else if (q - p == 10 && !memcmp(p, "last-child", 10)) { tf_node *s2 = n->next; while (s2 && s2->type != TF_ELEM) s2 = s2->next; if (s2) return 0; }
+            else if (q - p == 5 && !memcmp(p, "hover", 5)) { if (!dom_hover || !dom_contains(n, dom_hover)) return 0; }
+            else if ((q - p == 5 && !memcmp(p, "focus", 5)) || (q - p == 13 && !memcmp(p, "focus-visible", 13))) { if (n != dom_focus) return 0; }
+            else if (q - p == 12 && !memcmp(p, "focus-within", 12)) { if (!dom_focus || !dom_contains(n, dom_focus)) return 0; }
+            else if (q - p == 7 && !memcmp(p, "checked", 7)) { if (!n->checked && !dom_attr(n, "checked")) return 0; }
+            else if (q - p == 6 && !memcmp(p, "active", 6)) return 0;
             p = q;                                      /* other pseudo-classes: not checked */
         } else {
             const char *q = p;

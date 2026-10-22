@@ -34,5 +34,5 @@ fi
 INC="-I$N/libparserutils/include -I$N/libwapcaplet/include -I$N/libhubbub/include -I$N/libcss/include -I$Q -Ikernel/tfire -Ikernel/net -Ikernel/display -Ithird_party/nanosvg -Ithird_party/libwebp"
 as --32 kernel/tfire/js_prelude.s -o $O/prelude.o
 gcc -m32 -isystem /tmp/tfire_inc32 -O1 -g -fsanitize=address -Wall -Wextra -Wno-unused-parameter -std=gnu99 -DTFIRE_HOST $INC \
-    kernel/tfire/dom.c kernel/tfire/style.c kernel/tfire/layout.c kernel/tfire/engine.c kernel/tfire/js.c kernel/tfire/images.c \
+    kernel/tfire/dom.c kernel/tfire/style.c kernel/tfire/anim.c kernel/tfire/layout.c kernel/tfire/engine.c kernel/tfire/js.c kernel/tfire/images.c \
     tools/tfire-test/page_host.c $O/prelude.o $O/libqjs.a $O/libns.a $O/libwebp.a -lm -lpthread -fsanitize=address -fno-omit-frame-pointer -o /tmp/tfire_page_asan

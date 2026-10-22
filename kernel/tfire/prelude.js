@@ -158,8 +158,8 @@ class PopStateEvent extends Event { constructor(t, i) { super(t, i); this.state 
 class HashChangeEvent extends Event { constructor(t, i) { super(t, i); i = i || {}; this.oldURL = i.oldURL || ''; this.newURL = i.newURL || ''; } }
 class ErrorEvent extends Event { constructor(t, i) { super(t, i); i = i || {}; this.message = i.message || ''; this.error = i.error || null; this.filename = i.filename || ''; this.lineno = i.lineno || 0; this.colno = 0; } }
 class PromiseRejectionEvent extends Event { constructor(t, i) { super(t, i); i = i || {}; this.promise = i.promise; this.reason = i.reason; } }
-class TransitionEvent extends Event {}
-class AnimationEvent extends Event {}
+class TransitionEvent extends Event { constructor(t, i) { super(t, i); i = i || {}; this.propertyName = i.propertyName || ''; this.elapsedTime = i.elapsedTime || 0; this.pseudoElement = i.pseudoElement || ''; } }
+class AnimationEvent extends Event { constructor(t, i) { super(t, i); i = i || {}; this.animationName = i.animationName || ''; this.elapsedTime = i.elapsedTime || 0; this.pseudoElement = i.pseudoElement || ''; } }
 class ClipboardEvent extends Event { constructor(t, i) { super(t, i); this.clipboardData = null; } }
 class TouchEvent extends UIEvent { constructor(t, i) { super(t, i); this.touches = []; this.targetTouches = []; this.changedTouches = []; } }
 
@@ -261,7 +261,7 @@ function reportError(e) {
 }
 
 /* on<event> properties for every kind of target */
-const EVENTS = ['abort', 'blur', 'cancel', 'change', 'click', 'close', 'contextmenu', 'dblclick', 'drag', 'dragend', 'dragenter',
+const EVENTS = ['abort', 'animationcancel', 'animationiteration', 'transitioncancel', 'transitionrun', 'transitionstart', 'blur', 'cancel', 'change', 'click', 'close', 'contextmenu', 'dblclick', 'drag', 'dragend', 'dragenter',
     'dragleave', 'dragover', 'dragstart', 'drop', 'error', 'focus', 'focusin', 'focusout', 'input', 'invalid', 'keydown', 'keypress', 'keyup',
     'load', 'loadend', 'loadstart', 'mousedown', 'mouseenter', 'mouseleave', 'mousemove', 'mouseout', 'mouseover', 'mouseup', 'wheel',
     'pointerdown', 'pointerup', 'pointermove', 'pointerover', 'pointerout', 'pointerenter', 'pointerleave', 'pointercancel',
@@ -929,8 +929,8 @@ class Element extends Node {
     scroll(x, y) { this.scrollTo(x, y); }
     attachShadow(init) { hidden(this, '__shadow', this); return this; }
     get shadowRoot() { return this.__shadow || null; }
-    animate() { const a = { finished: Promise.resolve(), cancel() {}, play() {}, pause() {}, finish() {}, onfinish: null, addEventListener() {} }; setTimeout(() => a.onfinish && a.onfinish(), 0); return a; }
-    getAnimations() { return []; }
+    animate(keyframes, options) { return elementAnimate(this, keyframes, options); }
+    getAnimations() { return [...waapi.values()].filter(a => a.effect && a.effect.target === this && a.playState !== 'idle'); }
     requestFullscreen() { return Promise.reject(new DOMException('not allowed', 'NotAllowedError')); }
     requestPointerLock() {}
     setPointerCapture() {}
@@ -1707,7 +1707,8 @@ class Document extends Node {
     get fullscreenEnabled() { return false; }
     get pictureInPictureEnabled() { return false; }
     get pointerLockElement() { return null; }
-    get timeline() { return { currentTime: T.perf() }; }
+    get timeline() { return timeline; }
+    getAnimations() { return [...waapi.values()].filter(a => a.playState !== 'idle'); }
     get implementation() { return implementation; }
     get children() { return list(elemChildren(this)); }
     get childElementCount() { return elemChildren(this).length; }
@@ -2476,6 +2477,156 @@ function getComputedStyle(el, pseudo) {
     return o;
 }
 
+/* ------------------------------------------------------------------ element.animate() (the Web Animations API) */
+
+/* the engine moves them (anim.c), like CSS animations: here only the objects that stand for them */
+const waapi = new Map();                  /* engine id -> Animation */
+const timeline = { get currentTime() { return T.perf(); } };
+class AnimationPlaybackEvent extends Event {
+    constructor(t, i) { super(t, i); i = i || {}; this.currentTime = i.currentTime ?? null; this.timelineTime = i.timelineTime ?? null; }
+}
+class AnimationEffect {
+    constructor(timing) { this._timing = timing || {}; }
+    getTiming() { return Object.assign({ delay: 0, endDelay: 0, fill: 'auto', iterationStart: 0, iterations: 1, duration: 'auto', direction: 'normal', easing: 'linear' }, this._timing); }
+    getComputedTiming() {
+        const t = this.getTiming(), d = +t.duration || 0;
+        return Object.assign(t, { duration: d, activeDuration: d * t.iterations, endTime: t.delay + d * t.iterations + t.endDelay, localTime: null, progress: null, currentIteration: null });
+    }
+    updateTiming(t) { Object.assign(this._timing, t || {}); }
+}
+class KeyframeEffect extends AnimationEffect {
+    constructor(target, keyframes, options) {
+        super(typeof options === 'number' ? { duration: options } : Object.assign({}, options || {}));
+        this.target = target || null;
+        this._kf = keyframes;
+        this.composite = 'replace';
+        this.pseudoElement = null;
+    }
+    getKeyframes() { return framesOf(this._kf); }
+    setKeyframes(k) { this._kf = k; }
+}
+/* keyframes as given (a list of frames, or one object of lists) -> frames with offsets */
+function framesOf(kf) {
+    let frames = [];
+    if (kf == null) return frames;
+    if (typeof kf[Symbol.iterator] === 'function' && typeof kf !== 'string') frames = [...kf].map(f => Object.assign({}, f));
+    else if (typeof kf === 'object') {
+        const keys = Object.keys(kf).filter(k => k !== 'offset' && k !== 'easing' && k !== 'composite');
+        const n = Math.max(1, ...keys.map(k => Array.isArray(kf[k]) ? kf[k].length : 1));
+        for (let i = 0; i < n; i++) {
+            const f = {};
+            for (const k of keys) {
+                const v = kf[k];
+                if (Array.isArray(v)) { if (v.length === 1 ? i === n - 1 : i < v.length) f[k] = v.length === 1 ? v[0] : v[i]; }
+                else if (i === n - 1) f[k] = v;
+            }
+            if (Array.isArray(kf.offset) && kf.offset[i] != null) f.offset = kf.offset[i];
+            if (kf.easing) f.easing = Array.isArray(kf.easing) ? kf.easing[i % kf.easing.length] : kf.easing;
+            frames.push(f);
+        }
+    }
+    const n = frames.length;
+    if (n === 1 && frames[0].offset == null) frames[0].offset = 1;          /* one frame: where it goes */
+    frames.forEach((f, i) => { if (f.offset == null) f.offset = n > 1 ? i / (n - 1) : 1; f.computedOffset = f.offset; });
+    return frames;
+}
+function framesText(kf) {
+    return framesOf(kf).map(f => {
+        let d = '';
+        for (const k of Object.keys(f)) {
+            if (k === 'offset' || k === 'computedOffset' || k === 'composite') continue;
+            if (k === 'easing') { d += 'animation-timing-function:' + f[k] + ';'; continue; }
+            d += (k === 'cssFloat' ? 'float' : kebab(k)) + ':' + f[k] + ';';
+        }
+        return (Math.max(0, Math.min(1, +f.offset)) * 100) + '%{' + d + '}';
+    }).join('');
+}
+const DIRS = { normal: 0, reverse: 1, alternate: 2, 'alternate-reverse': 3 };
+const FILLS = { none: 0, auto: 0, forwards: 1, backwards: 2, both: 3 };
+class Animation extends EventTarget {
+    constructor(effect, tl) {
+        super();
+        this.effect = effect || null;
+        this.timeline = tl || timeline;
+        this.id = '';
+        this.onfinish = null; this.oncancel = null; this.onremove = null;
+        this.replaceState = 'active';
+        hidden(this, '_id', 0); hidden(this, '_rate', 1); hidden(this, '_idle', true);
+        this._promise();
+    }
+    _promise() {
+        let res, rej;
+        hidden(this, '_finished', new Promise((a, b) => { res = a; rej = b; }));
+        this._finished.catch(() => {});
+        hidden(this, '_res', res); hidden(this, '_rej', rej);
+    }
+    _start() {
+        if (this._id || !this.effect || !this.effect.target) return;
+        const t = this.effect.getTiming();
+        const it = t.iterations === Infinity ? -1 : Math.max(0, Math.round((+t.iterations || 0) * 1000));
+        this._id = T.animate(this.effect.target, framesText(this.effect._kf), Math.max(0, +t.duration || 0), +t.delay || 0,
+            String(t.easing || 'linear'), it, DIRS[t.direction] || 0, FILLS[t.fill] || 0);
+        this._idle = false;
+        if (this._id) waapi.set(this._id, this);
+        if (this._rate < 0) T.animCtl(this._id, 4, 0);
+    }
+    get finished() { return this._finished; }
+    get ready() { return Promise.resolve(this); }
+    get pending() { return false; }
+    get playState() { return this._idle || !this._id ? 'idle' : ['idle', 'running', 'paused', 'finished'][T.animInfo(this._id)[0]]; }
+    get currentTime() { return this._id && !this._idle ? T.animInfo(this._id)[1] : null; }
+    set currentTime(v) { if (!this._id) this._start(); if (this._id) T.animCtl(this._id, 5, Math.max(0, +v | 0)); }
+    get startTime() { const c = this.currentTime; return c == null ? null : T.perf() - c; }
+    set startTime(v) { if (v != null) this.currentTime = T.perf() - v; }
+    get playbackRate() { return this._rate; }
+    set playbackRate(v) { v = +v; if ((v < 0) !== (this._rate < 0) && this._id) T.animCtl(this._id, 4, 0); this._rate = v; }
+    updatePlaybackRate(v) { this.playbackRate = v; }
+    play() {
+        if (!this._id) { this._start(); return; }
+        if (this.playState === 'finished') this._promise();
+        T.animCtl(this._id, 0, 0);
+    }
+    pause() { if (!this._id) this._start(); if (this._id) T.animCtl(this._id, 1, 0); }
+    finish() { if (!this._id) this._start(); if (this._id) T.animCtl(this._id, 3, 0); }
+    reverse() {
+        if (!this._id) { this._rate = -this._rate; this._start(); return; }
+        if (this.playState === 'finished') this._promise();
+        this._rate = -this._rate;
+        T.animCtl(this._id, 4, 0);
+        T.animCtl(this._id, 0, 0);
+    }
+    cancel() {
+        if (this._id) { T.animCtl(this._id, 2, 0); waapi.delete(this._id); this._id = 0; }
+        if (this._idle) return;
+        this._idle = true;
+        this._rej(new DOMException('The user aborted a request.', 'AbortError'));
+        this._promise();
+        const ev = new AnimationPlaybackEvent('cancel', { timelineTime: T.perf() });
+        if (typeof this.oncancel === 'function') try { this.oncancel(ev); } catch (e) { reportError(e); }
+        this.dispatchEvent(ev);
+    }
+    persist() { this.replaceState = 'persisted'; }
+    commitStyles() {
+        const el = this.effect && this.effect.target;
+        const f = this.effect ? framesOf(this.effect._kf) : [];
+        const last = this._rate < 0 ? f[0] : f[f.length - 1];
+        if (el && last) for (const k of Object.keys(last)) if (!/^(offset|computedOffset|easing|composite)$/.test(k)) el.style[camel(kebab(k))] = last[k];
+    }
+    _done() {
+        const ev = new AnimationPlaybackEvent('finish', { currentTime: this.currentTime, timelineTime: T.perf() });
+        this._res(this);
+        if (typeof this.onfinish === 'function') try { this.onfinish(ev); } catch (e) { reportError(e); }
+        this.dispatchEvent(ev);
+    }
+}
+function elementAnimate(el, keyframes, options) {
+    const o = typeof options === 'number' ? { duration: options } : Object.assign({}, options || {});
+    const a = new Animation(new KeyframeEffect(el, keyframes, o));
+    if (o.id) a.id = String(o.id);
+    a.play();
+    return a;
+}
+
 class IntersectionObserver {
     constructor(cb, opts) { this._cb = cb; this.root = (opts && opts.root) || null; this.rootMargin = (opts && opts.rootMargin) || '0px'; this.thresholds = [].concat((opts && opts.threshold) || 0); this._t = []; }
     observe(el) {
@@ -2550,7 +2701,8 @@ const windowProps = {
     length: 0, origin: undefined, isSecureContext: true, crossOriginIsolated: false, devicePixelRatio: 1, locationbar: { visible: true },
     menubar: { visible: true }, toolbar: { visible: true }, statusbar: { visible: true }, scrollbars: { visible: true }, personalbar: { visible: true },
     EventTarget, Event, UIEvent, MouseEvent, PointerEvent, WheelEvent, KeyboardEvent, FocusEvent, InputEvent, CustomEvent, SubmitEvent, ProgressEvent,
-    MessageEvent, PopStateEvent, HashChangeEvent, ErrorEvent, PromiseRejectionEvent, TransitionEvent, AnimationEvent, ClipboardEvent, TouchEvent,
+    MessageEvent, PopStateEvent, HashChangeEvent, ErrorEvent, PromiseRejectionEvent, TransitionEvent, AnimationEvent,
+    Animation, AnimationEffect, KeyframeEffect, AnimationPlaybackEvent, ClipboardEvent, TouchEvent,
     Node, CharacterData, Text, CDATASection, Comment, DocumentType, DocumentFragment, ShadowRoot, Element, HTMLElement, Document, HTMLDocument, XMLDocument,
     Attr, NamedNodeMap, DOMTokenList, DOMRect, DOMRectReadOnly, DOMException, CSSStyleDeclaration, CSSStyleSheet, FontFace,
     MutationObserver, IntersectionObserver, ResizeObserver, PerformanceObserver, DOMParser, XMLSerializer, Range, StaticRange, Selection, NodeFilter, TreeWalker,
@@ -2614,6 +2766,9 @@ function engineEvent(node, type, x, y, key, keyname) {
     else if (type === 'submit') ev = new SubmitEvent(type, { bubbles: true, cancelable: true, submitter: null });
     else if (type === 'load' || type === 'error') ev = new Event(type, { bubbles: false });
     else if (type === 'toggle' || type === 'close') ev = new Event(type, { bubbles: false });
+    else if (type === '__waapi') { const a = waapi.get(x); if (a) a._done(); return false; }
+    else if (/^animation/.test(type)) ev = new AnimationEvent(type, { bubbles: true, animationName: keyname, elapsedTime: key / 1000, pseudoElement: '' });
+    else if (/^transition/.test(type)) ev = new TransitionEvent(type, { bubbles: true, propertyName: keyname, elapsedTime: key / 1000, pseudoElement: '' });
     else ev = new Event(type, { bubbles: true, cancelable: type !== 'change' });
     ev.isTrusted = true;
     dispatch(node, ev);

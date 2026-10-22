@@ -19,6 +19,33 @@ enum { TL_NONE, TL_DISC, TL_CIRCLE, TL_SQUARE, TL_DECIMAL };
 /* a length that may be auto or a percentage of the containing block */
 typedef struct { int v; uint8_t pct, autov; } tf_len;     /* pct: v is a percentage times 100 */
 
+/* ------------------------------------------------------------------ transforms, transitions, animations */
+
+/* one transform function: translate (a, b in px, or percent x100 of the box itself where pct says: bit 1 a,
+ * bit 2 b), scale (x1000), rotate (a: degrees x100) */
+enum { XT_NONE, XT_TRANSLATE, XT_SCALE, XT_ROTATE };
+typedef struct { uint8_t kind, pct; int a, b; } tf_xop;
+#define TF_MAXX 4
+
+/* a timing function: linear, cubic-bezier (x1000; ease and the rest are ones of these) or steps */
+enum { TT_LINEAR, TT_BEZIER, TT_STEPS };
+typedef struct { uint8_t kind, pos; int x1, y1, x2, y2; int steps; } tf_timing;   /* pos: steps' 0 end, 1 start, 2 none, 3 both */
+
+/* what can move (anim.c): the properties transitions and animations change */
+enum { AP_OPACITY, AP_COLOR, AP_BG, AP_BORDER_COLOR, AP_TRANSFORM, AP_TRANSLATE, AP_ROTATE, AP_SCALE, AP_WIDTH, AP_HEIGHT,
+       AP_LEFT, AP_TOP, AP_RIGHT, AP_BOTTOM, AP_MARGIN_LEFT, AP_MARGIN_TOP, AP_FONT_SIZE, AP_RADIUS, AP_MAX_HEIGHT, AP_N,
+       AP_ALL = 255 };
+
+typedef struct { uint8_t prop; int dur, delay; tf_timing tf; } tf_trans;          /* transition-*: ms */
+enum { AD_NORMAL, AD_REVERSE, AD_ALTERNATE, AD_ALT_REVERSE };
+enum { AF_NONE = 0, AF_FORWARDS = 1, AF_BACKWARDS = 2, AF_BOTH = 3 };
+typedef struct { int16_t kf; uint8_t dir, fill, paused; int dur, delay, iter; tf_timing tf; } tf_animdecl;  /* kf: style_keyframes(), -1 none;
+                                                                                                           iter x1000, -1 infinite */
+/* @keyframes: its frames (offset x1000), each with the declarations it makes, as written */
+typedef struct { uint8_t prop; char *value; } tf_kdecl;
+typedef struct { int off; uint8_t has_tf; tf_timing tf; int ndecl; tf_kdecl *decl; } tf_kframe;
+typedef struct { char *name; int nf; tf_kframe *f; } tf_keyframes;
+
 typedef struct tf_style {
     uint8_t display, position, white_space, text_align, list_style, visible, flex_row, flex_wrap, floated;
     uint8_t bold, italic, underline, strike, upper;
@@ -52,6 +79,15 @@ typedef struct tf_style {
     /* what libcss does not know (style.c's own small cascade): grid, as written */
     const char *grid_cols, *grid_rows, *grid_areas, *grid_area, *grid_col, *grid_row;
     const char *mask;                    /* mask-image: url(...), as written: an icon painted in the background colour */
+    /* transform (functions in order), the translate, rotate and scale properties (kind XT_NONE: not given), transform-origin */
+    uint8_t nxf;
+    tf_xop xf[TF_MAXX];
+    tf_xop ind[3];
+    tf_len origin[2];
+    /* transition-* and animation-* */
+    uint8_t ntrans, nanim;
+    tf_trans trans[4];
+    tf_animdecl anim[3];
 } tf_style;
 
 enum { TV_BASELINE, TV_TOP, TV_MIDDLE, TV_BOTTOM, TV_SUB, TV_SUPER, TV_TEXT_TOP, TV_TEXT_BOTTOM };
@@ -79,5 +115,8 @@ void style_compute_begin(tf_styler *s, tf_doc *d, int viewport_w, int viewport_h
 int style_compute_step(tf_styler *s, int max_elements);
 int style_computing(tf_styler *s);
 void style_node_free(tf_node *n);
+/* the page's @keyframes rule number i (tf_animdecl.kf), or 0 */
+const tf_keyframes *style_keyframes(tf_styler *s, int i);
+int style_uses_transitions(tf_styler *s);             /* any transition-* in the page's sheets (or style="") */
 
 #endif

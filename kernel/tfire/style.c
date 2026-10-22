@@ -1,4 +1,5 @@
 #include "style.h"
+#include "anim.h"
 #include "tfire_libc.h"
 #include <libcss/libcss.h>
 #include <hubbub/types.h>
@@ -54,7 +55,11 @@ static const char ua_css[] =
 
 /* a declaration libcss does not know (grid, border-radius, gap), with the selector and media it came with */
 enum { SP_GRID_COLS, SP_GRID_ROWS, SP_GRID_AREAS, SP_GRID_TEMPLATE, SP_GRID_AREA, SP_GRID_COLUMN, SP_GRID_ROW,
-       SP_RADIUS, SP_GAP, SP_ROW_GAP, SP_MASK, SP_WMASK, SP_N };
+       SP_RADIUS, SP_GAP, SP_ROW_GAP, SP_MASK, SP_WMASK,
+       /* what moves (anim.c): transforms, transitions, animations (-webkit- ones too) */
+       SP_TRANSFORM, SP_ORIGIN, SP_TRANSLATE, SP_ROTATE, SP_SCALE,
+       SP_TRANSITION, SP_TR_PROP, SP_TR_DUR, SP_TR_TF, SP_TR_DELAY,
+       SP_ANIM, SP_AN_NAME, SP_AN_DUR, SP_AN_TF, SP_AN_DELAY, SP_AN_ITER, SP_AN_DIR, SP_AN_FILL, SP_AN_PLAY, SP_N };
 typedef struct {
     char *sel;
     char *key;                 /* the class, id or tag the selector's last part needs (0 = any) */
@@ -129,6 +134,9 @@ struct tf_styler {
     tf_node *hover, *focus;    /* the element under the pointer, the one with the keyboard */
     char **hover_keys;         /* what rules with :hover are about (".class", "#id", "tag", "*"): whether a move matters */
     int nhover_keys;
+    tf_keyframes **kfs;        /* @keyframes, in the order they came */
+    int nkfs;
+    int transitions;           /* the page has transition-* somewhere */
 };
 
 static void envs_clear(tf_styler *st);
@@ -512,7 +520,22 @@ static css_stylesheet *make_sheet(const char *css, size_t len, const char *url, 
 /* ------------------------------------------------------------------ what libcss does not know */
 
 static const char *const side_names[SP_N] = { "grid-template-columns", "grid-template-rows", "grid-template-areas",
-    "grid-template", "grid-area", "grid-column", "grid-row", "border-radius", "gap", "row-gap", "mask-image", "-webkit-mask-image" };
+    "grid-template", "grid-area", "grid-column", "grid-row", "border-radius", "gap", "row-gap", "mask-image", "-webkit-mask-image",
+    "transform", "transform-origin", "translate", "rotate", "scale",
+    "transition", "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
+    "animation", "animation-name", "animation-duration", "animation-timing-function", "animation-delay",
+    "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state" };
+
+/* the side property a declaration's name is (-webkit-transform is transform), or -1 */
+static int side_prop(const char *d, int nl)
+{
+    for (int pi = 0; pi < SP_N; pi++)
+        if ((int)strlen(side_names[pi]) == nl && !strncasecmp(d, side_names[pi], (size_t)nl)) return pi;
+    if (nl > 8 && !strncasecmp(d, "-webkit-", 8))
+        for (int pi = SP_TRANSFORM; pi < SP_N; pi++)
+            if ((int)strlen(side_names[pi]) == nl - 8 && !strncasecmp(d + 8, side_names[pi], (size_t)nl - 8)) return pi;
+    return -1;
+}
 
 static int css_ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
 
@@ -567,6 +590,7 @@ static int media_query(const char *p, const char *e, int *minw, int *maxw)
     if (strstr(q, "print") && !strstr(q, "screen") && !strstr(q, "all")) return 0;
     if (strstr(q, "not ")) return 0;
     if (strstr(q, "prefers-color-scheme") && strstr(q, "dark")) return 0;
+    if (strstr(q, "prefers-reduced-motion") && strstr(q, "reduce")) return 0;     /* (tFire moves things) */
     char *m;
     if ((m = strstr(q, "min-width"))) { m = strchr(m, ':'); if (m) { int w = media_len(m + 1, 16); if (w > *minw) *minw = w; } }
     if ((m = strstr(q, "max-width"))) { m = strchr(m, ':'); if (m) { int w = media_len(m + 1, 16); if (w < *maxw) *maxw = w; } }
@@ -593,9 +617,12 @@ static void side_add(tf_styler *st, const char *sel, int sl, int prop, const cha
     while (vl && css_ws(*val)) { val++; vl--; }
     if (vl > 10 && !strncmp(val + vl - 10, "!important", 10)) { vl -= 10; while (vl && css_ws(val[vl - 1])) vl--; }
     if (sl <= 0 || vl <= 0) return;
-    /* rules for hover, focus and the like are left out: tFire cannot tell those states anyway */
+    /* pseudo-classes dom_matches can tell (:hover and :focus from style_set_state); rules with others are left out */
     for (const char *c = memchr(sel, ':', (size_t)sl); c && c < sel + sl; c = memchr(c + 1, ':', (size_t)(sel + sl - c - 1)))
-        if (strncmp(c, ":root", 5) && strncmp(c, ":not(", 5) && strncmp(c, ":first-child", 12) && strncmp(c, ":last-child", 11)) return;
+        if (strncmp(c, ":root", 5) && strncmp(c, ":not(", 5) && strncmp(c, ":first-child", 12) && strncmp(c, ":last-child", 11) &&
+            strncmp(c, ":hover", 6) && strncmp(c, ":focus", 6) && strncmp(c, ":checked", 8) && strncmp(c, ":active", 7) &&
+            strncmp(c, ":nth-child(", 11) && strncmp(c, ":nth-last-child(", 16)) return;
+    if (prop >= SP_TRANSITION) st->transitions |= prop <= SP_TR_DELAY;
     if (st->nside == st->side_cap) {
         int nc = st->side_cap ? st->side_cap * 2 : 64;
         side_rule *nr = realloc(st->side, (size_t)nc * sizeof(side_rule));
@@ -637,6 +664,53 @@ static void side_add(tf_styler *st, const char *sel, int sl, int prop, const cha
     st->nside++;
 }
 
+static void keyframes_add(tf_styler *st, tf_keyframes *k)
+{
+    if (!k) return;
+    tf_keyframes **nk = realloc(st->kfs, (size_t)(st->nkfs + 1) * sizeof(*nk));
+    if (!nk) { anim_free_keyframes(k); return; }
+    st->kfs = nk;
+    st->kfs[st->nkfs++] = k;
+}
+
+const tf_keyframes *style_keyframes(tf_styler *s, int i) { return s && i >= 0 && i < s->nkfs ? s->kfs[i] : 0; }
+int style_uses_transitions(tf_styler *s) { return s && s->transitions; }
+
+/* animation-name -> the @keyframes of that name (the last one wins) */
+static int kf_lookup(void *ctx, const char *name, int len)
+{
+    tf_styler *st = ctx;
+    for (int i = st->nkfs - 1; i >= 0; i--)
+        if (st->kfs[i]->name && (int)strlen(st->kfs[i]->name) == len && !strncmp(st->kfs[i]->name, name, (size_t)len)) return i;
+    return -1;
+}
+
+/* transform-origin: "left top", "50% 100%", "10px 20px" (both default to the centre) */
+static void parse_origin(const char *v, int font, tf_len out[2])
+{
+    out[0] = (tf_len){ 5000, 1, 0 };
+    out[1] = (tf_len){ 5000, 1, 0 };
+    const char *p = v, *e = v + strlen(v);
+    int n = 0;
+    while (p < e && n < 2) {
+        while (p < e && css_ws(*p)) p++;
+        const char *w = p;
+        while (p < e && !css_ws(*p)) p++;
+        int l = (int)(p - w);
+        if (!l) break;
+        int axis = n;
+        tf_len x;
+        if ((l == 4 && !strncasecmp(w, "left", 4)) || (l == 3 && !strncasecmp(w, "top", 3))) x = (tf_len){ 0, 1, 0 };
+        else if ((l == 5 && !strncasecmp(w, "right", 5)) || (l == 6 && !strncasecmp(w, "bottom", 6))) x = (tf_len){ 10000, 1, 0 };
+        else if (l == 6 && !strncasecmp(w, "center", 6)) x = (tf_len){ 5000, 1, 0 };
+        else if (!anim_parse_len(w, p, font, &x)) continue;
+        if ((l == 3 && !strncasecmp(w, "top", 3)) || (l == 6 && !strncasecmp(w, "bottom", 6))) axis = 1;
+        if (n == 0 && axis == 1) { out[1] = x; n = 2; continue; }       /* ("top left": the vertical one first) */
+        out[axis] = x;
+        n++;
+    }
+}
+
 static void side_block(tf_styler *st, const char *p, const char *e, int minw, int maxw)
 {
     for (;;) {
@@ -659,6 +733,11 @@ static void side_block(tf_styler *st, const char *p, const char *e, int minw, in
             } else if ((alen == 8 && !strncasecmp(a, "supports", 8)) || (alen == 5 && !strncasecmp(a, "layer", 5)) ||
                        (alen == 9 && !strncasecmp(a, "container", 9))) {
                 side_block(st, brace + 1, close, minw, maxw);
+            } else if ((alen == 9 && !strncasecmp(a, "keyframes", 9)) || (alen == 17 && !strncasecmp(a, "-webkit-keyframes", 17))) {
+                const char *nm = skip_ws_comments(ae, brace), *ne = brace;
+                while (ne > nm && css_ws(ne[-1])) ne--;
+                if (ne - nm >= 2 && (*nm == '"' || *nm == '\'')) { nm++; ne--; }
+                keyframes_add(st, anim_parse_keyframes(nm, (int)(ne - nm), brace + 1, close));
             }
             p = close + 1;
             continue;
@@ -674,8 +753,8 @@ static void side_block(tf_styler *st, const char *p, const char *e, int minw, in
             if (colon < end) {
                 int nl = (int)(colon - d);
                 while (nl && css_ws(d[nl - 1])) nl--;
-                for (int pi = 0; pi < SP_N; pi++) {
-                    if ((int)strlen(side_names[pi]) != nl || strncasecmp(d, side_names[pi], (size_t)nl)) continue;
+                int pi = side_prop(d, nl);
+                if (pi >= 0) {
                     /* each selector of the list by itself */
                     const char *sel = p;
                     while (sel < brace) {
@@ -751,6 +830,63 @@ static void side_apply(tf_styler *st, tf_node *n, tf_style *t, int vw)
     /* an icon drawn as a mask over its background colour */
     const side_rule *mk = best[SP_MASK] ? best[SP_MASK] : best[SP_WMASK];
     t->mask = mk && strstr(mk->value, "url(") ? mk->value : 0;
+
+    /* what moves: the rules' values, and style="" over them */
+    const char *val[SP_N];
+    for (int i = 0; i < SP_N; i++) val[i] = best[i] ? best[i]->value : 0;
+    /* a shorthand beats the longhands written before it (or less specific) */
+    for (int sh = SP_TRANSITION; sh <= SP_ANIM; sh += SP_ANIM - SP_TRANSITION) {
+        int last = sh == SP_TRANSITION ? SP_TR_DELAY : SP_AN_PLAY;
+        const side_rule *b = best[sh];
+        for (int i = sh + 1; b && i <= last; i++)
+            if (best[i] && (best[i]->spec < b->spec || (best[i]->spec == b->spec && best[i]->order < b->order))) val[i] = 0;
+    }
+    char *own[SP_N] = { 0 };
+    const char *inl = dom_attr(n, "style");
+    if (inl && (strstr(inl, "transform") || strstr(inl, "transition") || strstr(inl, "animation") || strstr(inl, "translate") ||
+                strstr(inl, "rotate") || strstr(inl, "scale"))) {
+        const char *e = inl + strlen(inl);
+        for (const char *d = inl; d < e;) {
+            d = skip_ws_comments(d, e);
+            const char *colon = skip_to(d, e, ':'), *end = skip_to(d, e, ';');
+            if (colon < end) {
+                int nl = (int)(colon - d);
+                while (nl && css_ws(d[nl - 1])) nl--;
+                int pi = side_prop(d, nl);
+                if (pi >= SP_TRANSFORM) {
+                    free(own[pi]);
+                    own[pi] = strndup_(colon + 1, (size_t)(end - colon - 1));
+                    val[pi] = own[pi];
+                    if (pi == SP_TRANSITION) for (int i = SP_TR_PROP; i <= SP_TR_DELAY; i++) if (!own[i]) val[i] = 0;
+                    if (pi == SP_ANIM) for (int i = SP_AN_NAME; i <= SP_AN_PLAY; i++) if (!own[i]) val[i] = 0;
+                    if (pi >= SP_TRANSITION && pi <= SP_TR_DELAY) st->transitions = 1;
+                }
+            }
+            d = end + 1;
+        }
+    }
+    if (val[SP_TRANSFORM]) t->nxf = (uint8_t)anim_parse_transform(val[SP_TRANSFORM], val[SP_TRANSFORM] + strlen(val[SP_TRANSFORM]), t->font_px, t->xf, TF_MAXX);
+    parse_origin(val[SP_ORIGIN] ? val[SP_ORIGIN] : "", t->font_px, t->origin);
+    static const int ind_kind[3] = { XT_TRANSLATE, XT_ROTATE, XT_SCALE };
+    for (int i = 0; i < 3; i++) {
+        const char *v = val[SP_TRANSLATE + i];
+        if (!v) continue;
+        /* the property is written like a transform function: "translate: 10px 20px" is translate(10px, 20px) */
+        char fn[200];
+        int k = 0;
+        const char *names[3] = { "translate(", "rotate(", "scale(" };
+        for (const char *q = names[i]; *q; q++) fn[k++] = *q;
+        for (const char *q = v; *q && k < 196; q++) fn[k++] = css_ws(*q) ? ',' : *q;
+        fn[k++] = ')';
+        fn[k] = 0;
+        tf_xop o;
+        if (anim_parse_transform(fn, fn + k, t->font_px, &o, 1) == 1 && o.kind == ind_kind[i]) t->ind[i] = o;
+    }
+    if (val[SP_TRANSITION] || val[SP_TR_PROP] || val[SP_TR_DUR])
+        anim_set_transitions(t, val[SP_TRANSITION], val[SP_TR_PROP], val[SP_TR_DUR], val[SP_TR_TF], val[SP_TR_DELAY]);
+    if (val[SP_ANIM] || val[SP_AN_NAME])
+        anim_set_animations(t, val[SP_ANIM], &val[SP_AN_NAME], kf_lookup, st);
+    for (int i = 0; i < SP_N; i++) free(own[i]);
 }
 
 tf_styler *style_new(void)
@@ -786,6 +922,8 @@ void style_free(tf_styler *s)
     free(s->envs);
     for (int i = 0; i < s->nhover_keys; i++) free(s->hover_keys[i]);
     free(s->hover_keys);
+    for (int i = 0; i < s->nkfs; i++) anim_free_keyframes(s->kfs[i]);
+    free(s->kfs);
     variants_clear(s);
     if (current_styler == s) current_styler = 0;
     free(s->stk);
@@ -2153,6 +2291,8 @@ void style_set_state(tf_styler *s, tf_node *hover, tf_node *focus)
     if (!s) return;
     s->hover = hover;
     s->focus = focus;
+    dom_hover = hover;
+    dom_focus = focus;
 }
 
 void style_add_sheet(tf_styler *s, const char *css, uint32_t len, const char *base)

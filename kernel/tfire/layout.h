@@ -18,9 +18,12 @@ enum { IT_RECT, IT_TEXT, IT_IMAGE, IT_HLINE, IT_FIELD };
 typedef struct tf_item {
     uint8_t kind;
     uint8_t font;                  /* IT_TEXT: which font (tf_env.font_of) */
-    uint8_t deco;                  /* IT_TEXT: 1 underline, 2 line-through, 4 italic; IT_IMAGE: 1 a link, 2 a mask (icon) */
+    uint8_t deco;                  /* IT_TEXT: 1 underline, 2 line-through, 4 italic, 8 bold; IT_IMAGE: 1 a link, 2 a mask (icon) */
     uint8_t radius;                /* IT_RECT: rounded corners */
     uint8_t alpha;                 /* 255 = opaque */
+    uint8_t px;                    /* IT_TEXT: the font size it was laid out for (a scale picks another font) */
+    int16_t rot;                   /* turned by a transform: degrees x10, clockwise, around its centre */
+    uint16_t ow, oh;               /* its size before a transform scaled it (a word is drawn that size, then scaled) */
     int x, y, w, h;
     uint32_t color;
     uint32_t text;                 /* IT_TEXT, IT_FIELD: offset of its text in the layout's pool */

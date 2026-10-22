@@ -349,37 +349,7 @@ static void home_icon(gfx_surface_t *s, int cx, int cy, uint32_t c)
     gfx_capsule(s, cx - 5, cy + 7, cx + 5, cy + 7, 5, c, 255);
 }
 
-/* a mask (an icon: only its alpha counts) painted in colour col, scaled to w x h */
-static void blit_mask(gfx_surface_t *s, const tf_picture *pic, int x, int y, int w, int h, uint32_t col)
-{
-    if (w <= 0 || h <= 0 || !pic->w || !pic->h) return;
-    for (int j = 0; j < h; j++) {
-        int py = y + j;
-        if (py < s->cy0 || py >= s->cy1) continue;
-        const uint8_t *row = pic->rgba + (size_t)((int64_t)j * pic->h / h) * pic->w * 4;
-        uint32_t *dst = s->px + py * s->w;
-        for (int i = 0; i < w; i++) {
-            int px = x + i;
-            if (px < s->cx0 || px >= s->cx1) continue;
-            int a = row[(size_t)((int64_t)i * pic->w / w) * 4 + 3];
-            if (a) dst[px] = a == 255 ? col : gfx_mix(dst[px], col, a);
-        }
-    }
-}
-
-/* a rectangle of the page: plain, rounded, or a rounded outline (font = 1, deco = its width) */
-static void draw_rect(gfx_surface_t *s, const tf_item *it, int x, int y)
-{
-    if (!it->radius) { gfx_fill(s, x, y, it->w, it->h, it->color); return; }
-    int r = it->radius;
-    if (r > it->w / 2) r = it->w / 2;
-    if (r > it->h / 2) r = it->h / 2;
-    if (it->font == 1) {
-        for (int k = 0; k < it->deco && k < 8; k++) gfx_rrect_outline(s, x + k, y + k, it->w - 2 * k, it->h - 2 * k, r > k ? r - k : 0, it->color, 255);
-        return;
-    }
-    gfx_rrect(s, x, y, it->w, it->h, r, it->color, 255);
-}
+#include "tfire_paint.h"
 
 /* a word of the page: its text from the layout's pool, 0-terminated */
 static void item_text(tf_layout *L, tf_item *it, char *out, int cap)
@@ -475,37 +445,15 @@ static void tf_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
     if (t->scroll < 0) t->scroll = 0;
     gfx_surface_t c = *s;
     gfx_clip(&c, x, py, w, ph);
-    char tmp[512];
     for (int i = 0; i < L->n; i++) {
         tf_item *it = &L->items[i];
         int ix = x + it->x, iy = py + it->y - t->scroll;
-        if (iy > py + ph || iy + it->h < py) continue;
+        int reach = it->rot ? (it->w > it->h ? it->w : it->h) : 0;     /* (turned: its corners reach further) */
+        if (iy - reach > py + ph || iy + it->h + reach < py) continue;
         switch (it->kind) {
-        case IT_RECT:
-            draw_rect(&c, it, ix, iy);
+        case IT_RECT: case IT_TEXT: case IT_IMAGE:
+            tfp_item(&c, pg, L, it, ix, iy, fonts);
             break;
-        case IT_TEXT: {
-            const ui_font_t *f = fonts[it->font < 5 ? it->font : 1];
-            item_text(L, it, tmp, sizeof(tmp));
-            if (it->deco & 4) gfx_text_italic(&c, f, ix, iy, tmp, it->color, 255); else gfx_text(&c, f, ix, iy, tmp, it->color, 255);
-            if (it->deco & 1) gfx_hline(&c, ix, iy + f->ascent + 2, it->w, it->color, 200);
-            if (it->deco & 2) gfx_hline(&c, ix, iy + f->ascent * 2 / 3, it->w, it->color, 220);
-            break;
-        }
-        case IT_IMAGE: {
-            if (it->deco & 2) {                              /* an icon (mask-image) */
-                tf_picture *m = page_mask(pg, it->node);
-                if (m) blit_mask(&c, m, ix, iy, it->w, it->h, it->color);
-                break;
-            }
-            tf_picture *pic = page_picture(pg, it->node);
-            if (pic) {
-                gfx_image_t im = { pic->w, pic->h, pic->rgba };
-                if (pic->w == it->w && pic->h == it->h) gfx_blit(&c, &im, ix, iy, 255);
-                else gfx_blit_scaled(&c, &im, ix, iy, it->w, it->h, 255);
-            } else gfx_fill(&c, ix, iy, it->w, it->h, 0xEEEEF2);
-            break;
-        }
         case IT_FIELD:
             draw_field(&c, t, L, it, ix, iy);
             break;

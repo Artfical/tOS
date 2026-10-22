@@ -115,6 +115,10 @@ char *page_storage_get(tf_page *p, int session, const char *key);     /* malloc'
 void page_storage_set(tf_page *p, int session, const char *key, const char *value);   /* value 0 = remove */
 int page_storage_keys(tf_page *p, int session, char ***keys);          /* malloc'd array of malloc'd */
 void page_storage_clear(tf_page *p, int session);
+/* element.animate() (anim.c's anim_js_*) */
+int page_anim_add(tf_page *p, tf_node *n, const char *frames, int len, int dur, int delay, const char *easing, int iter, int dir, int fill);
+void page_anim_ctl(tf_page *p, int id, int op, int value);
+int page_anim_info(tf_page *p, int id, int *current);
 
 /* ------------------------------------------------------------------ js.c: the scripts of a page */
 

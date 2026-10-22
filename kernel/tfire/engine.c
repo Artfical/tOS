@@ -5,6 +5,7 @@
  * recurse further than a desktop task's stack allows.
  */
 #include "engine.h"
+#include "anim.h"
 #include "tfire_libc.h"
 #include "webfetch.h"
 #include "uiapp.h"
@@ -76,6 +77,12 @@ struct tf_page {
     uint32_t last_style, last_layout;
     int styling, style_rate;               /* styling a slice at a time (style_compute_step); elements a millisecond */
     int styled_once;
+    int layout_soon;                       /* styles changed: lay out on the next tick (not after pictures' half second) */
+    int style_soon;                        /* the pointer moved onto something :hover cares about: style now */
+    /* what moves (anim.c) */
+    tf_anims *anims;
+    int anim_moving;
+    uint32_t last_frame, layout_ms;
     /* what it needs */
     css_t *css; int ncss;
     script_t *scripts; int nscripts;
@@ -1047,9 +1054,14 @@ static void restyle_finish(tf_page *p)
     dom_find_title(p->doc);
     strncpy(p->title, p->doc->title, sizeof(p->title) - 1);
     p->need_layout = 1;
+    p->layout_soon = 1;
     p->last_style = uihost_ms();
     p->styled_once = 1;
     images_want(p);
+    /* transitions start, animations come and go, and the values of the moment go into the styles */
+    if (!p->anims) p->anims = anim_new();
+    anim_restyled(p->anims, p->doc, p->styler, p->last_style);
+    p->anim_moving = (anim_apply(p->anims, p->last_style) & 2) != 0;
 }
 
 static void restyle_begin(tf_page *p)
@@ -1102,7 +1114,9 @@ static void relayout(tf_page *p)
     layout_page = 0;
     p->laid_w = p->vw;
     p->need_layout = 0;
+    p->layout_soon = 0;
     p->last_layout = uihost_ms();
+    p->layout_ms = p->last_layout - t0;
 #ifdef TFIRE_DEBUG
     uint32_t sm, bg;
     tf_alloc_usage(&sm, &bg);
@@ -1431,6 +1445,7 @@ static void close_on_stack(void *a)
     if (p->fetch) webfetch_free(p->fetch);
     if (p->dl_raw) free(p->dl_raw);                    /* a download nobody took (tf_free gives kernel blocks back) */
     if (p->js) tfjs_free(p->js);
+    anim_free(p->anims);
     style_free(p->styler);
     layout_clear(&p->L);
     if (p->doc) dom_free(p->doc);
@@ -1455,6 +1470,37 @@ void page_close(tf_page *p)
 }
 
 /* ------------------------------------------------------------------ ticking */
+
+/* animationstart, transitionend and the rest, to the page's scripts */
+static void anim_events(tf_page *p)
+{
+    tf_node *n;
+    char type[24], name[64];
+    int el, id;
+    while (anim_take_event(p->anims, &n, type, sizeof(type), name, sizeof(name), &el, &id)) {
+        if (!p->js || !n || !dom_connected(p->doc, n)) continue;
+        tfjs_event(p->js, n, type, id, 0, el, name);
+    }
+}
+
+int page_anim_add(tf_page *p, tf_node *n, const char *frames, int len, int dur, int delay, const char *easing, int iter, int dir, int fill)
+{
+    if (!p->anims) p->anims = anim_new();
+    page_layout_now(p);
+    int id = anim_js_add(p->anims, n, frames, len, dur, delay, easing, iter, dir, fill, uihost_ms());
+    p->anim_moving = 1;
+    p->last_frame = 0;
+    return id;
+}
+
+void page_anim_ctl(tf_page *p, int id, int op, int value)
+{
+    anim_js_ctl(p->anims, id, op, value, uihost_ms());
+    p->anim_moving = 1;
+    p->last_frame = 0;
+}
+
+int page_anim_info(tf_page *p, int id, int *current) { return anim_js_info(p->anims, id, current, uihost_ms()); }
 
 typedef struct { tf_page *p; int w, h, changed; } tick_args;
 
@@ -1534,13 +1580,29 @@ static void tick_on_stack(void *a)
             }
         }
         if (p->doc->changed) p->need_style = 1;
-        if ((p->need_style || p->need_sheets) && !css_pending(p) && uihost_ms() - p->last_style >= RESTYLE_MS) {
+        if ((p->need_style || p->need_sheets) && !css_pending(p) && (p->style_soon || uihost_ms() - p->last_style >= RESTYLE_MS)) {
+            p->style_soon = 0;
             restyle_begin(p);
             if (!restyle_step(p, 40)) { p->loading = 1; current = 0; return; }
             t->changed = 1;
         }
-        /* pictures arriving one after another: laid out again at most every half second (a width change: now) */
-        if (p->laid_w != p->vw || (p->need_layout && uihost_ms() - p->last_layout >= 500)) { relayout(p); t->changed = 1; }
+        /* what moves: a frame, as often as layout lets (at most 60 a second) */
+        if (p->anim_moving && p->anims) {
+            uint32_t now = uihost_ms(), gap = p->layout_ms * 2;
+            if (gap < 16) gap = 16;
+            if (gap > 250) gap = 250;
+            if (now - p->last_frame >= gap) {
+                p->last_frame = now;
+                int r = anim_apply(p->anims, now);
+                p->anim_moving = (r & 2) != 0;
+                if (r & 1) p->layout_soon = 1;
+            }
+        }
+        /* pictures arriving one after another: laid out again at most every half second (a width change, new
+         * styles, a frame: now) */
+        if (p->laid_w != p->vw || (p->need_layout && p->layout_soon) || (p->need_layout && uihost_ms() - p->last_layout >= 500) ||
+            (p->layout_soon && p->anims)) { relayout(p); t->changed = 1; }
+        anim_events(p);
     }
     int waiting = p->fetch != 0 || css_pending(p) || scripts_pending(p);
     for (int i = 0; i < p->nimgs && !waiting; i++) if (p->imgs[i].state == S_WAIT || p->imgs[i].state == S_FETCHING) waiting = 1;
@@ -1998,7 +2060,7 @@ static void hover_on_stack(void *a)
             tfjs_event(p->js, t, "mousemove", in->x, in->y, 0, 0);
         }
     }
-    if (style_hover_matters(p->styler, old) || style_hover_matters(p->styler, t)) p->need_style = 1;
+    if (style_hover_matters(p->styler, old) || style_hover_matters(p->styler, t)) { p->need_style = 1; p->style_soon = 1; }
     in->r = 1;
     current = 0;
 }

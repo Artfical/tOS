@@ -107,7 +107,7 @@ enum {
     N_COOKIE, N_SETCOOKIE, N_SCROLLY, N_SCROLLTO, N_VW, N_VH,
     N_ALERT, N_LOG, N_WRITE, N_FOCUS, N_FOCUSED, N_SUBMIT,
     N_FETCH, N_ABORT, N_STORE_GET, N_STORE_SET, N_STORE_KEYS, N_STORE_CLEAR,
-    N_NOW, N_PERF, N_RANDOM, N_CHANGED, N_SETUP, N_NS, N_RESOLVE, N_HIT,
+    N_NOW, N_PERF, N_RANDOM, N_CHANGED, N_SETUP, N_NS, N_RESOLVE, N_HIT, N_ANIMATE, N_ANIMCTL, N_ANIMINFO,
 };
 
 static void changed(tf_js *j) { page_changed(j->page); }
@@ -508,6 +508,24 @@ static JSValue native(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
         if (s2) JS_FreeCString(ctx, s2);
         return r;
     }
+    case N_ANIMATE: {
+        /* element.animate(): (el, frames, duration, delay, easing, iterations x1000, direction, fill) */
+        if (!n || n->type != TF_ELEM || !(s1 = str_arg(ctx, a1, &l1))) return JS_NewInt32(ctx, 0);
+        s2 = argc > 4 ? str_arg(ctx, a4, 0) : 0;
+        int id = page_anim_add(j->page, n, s1, (int)l1, int_arg(ctx, a2), int_arg(ctx, a3), s2,
+                               argc > 5 ? int_arg(ctx, argv[5]) : 1000, argc > 6 ? int_arg(ctx, argv[6]) : 0, argc > 7 ? int_arg(ctx, argv[7]) : 0);
+        JS_FreeCString(ctx, s1);
+        if (s2) JS_FreeCString(ctx, s2);
+        return JS_NewInt32(ctx, id);
+    }
+    case N_ANIMCTL: page_anim_ctl(j->page, int_arg(ctx, a0), int_arg(ctx, a1), int_arg(ctx, a2)); return JS_UNDEFINED;
+    case N_ANIMINFO: {
+        int cur = 0, st = page_anim_info(j->page, int_arg(ctx, a0), &cur);
+        JSValue arr = JS_NewArray(ctx);
+        JS_SetPropertyUint32(ctx, arr, 0, JS_NewInt32(ctx, st));
+        JS_SetPropertyUint32(ctx, arr, 1, JS_NewInt32(ctx, cur));
+        return arr;
+    }
     case N_HIT:
         page_layout_now(j->page);
         return wrap(j, layout_hit(page_layout(j->page), d, int_arg(ctx, a0), int_arg(ctx, a1) + page_scroll_y(j->page)));
@@ -547,6 +565,7 @@ static const JSCFunctionListEntry natives[] = {
     NATIVE("storeGet", 2, N_STORE_GET), NATIVE("storeSet", 3, N_STORE_SET), NATIVE("storeKeys", 1, N_STORE_KEYS), NATIVE("storeClear", 1, N_STORE_CLEAR),
     NATIVE("now", 0, N_NOW), NATIVE("perf", 0, N_PERF), NATIVE("random", 1, N_RANDOM), NATIVE("changed", 0, N_CHANGED),
     NATIVE("setup", 7, N_SETUP), NATIVE("resolve", 2, N_RESOLVE), NATIVE("hit", 2, N_HIT),
+    NATIVE("animate", 8, N_ANIMATE), NATIVE("animCtl", 3, N_ANIMCTL), NATIVE("animInfo", 1, N_ANIMINFO),
 };
 
 /* ------------------------------------------------------------------ running things */
