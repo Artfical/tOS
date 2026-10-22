@@ -35,6 +35,8 @@ typedef struct {
     char *body;                                /* malloc'd (or 0) */
     int body_len;
     int replace;                               /* not a new entry in the history (location.replace) */
+    int download;                              /* save what comes, whatever it is (<a download>) */
+    char dl_name[128];                         /* the name <a download="..."> gives it */
 } tf_request;
 
 /* a decoded picture */
@@ -54,6 +56,12 @@ void page_close(tf_page *p);
 int page_tick(tf_page *p, int w, int h);
 /* 1 while the page itself or what it needs to be shown is still coming (the loading bar) */
 int page_loading(tf_page *p);
+/* 1 once the answer to the page's own request is here (a page to show, an error, or a download) */
+int page_fetched(tf_page *p);
+/* The page was a file to save rather than show (a type tFire cannot show, Content-Disposition: attachment, or
+ * <a download>): 1, its name, its bytes (data, len) and the buffer they are in (raw: the caller frees it with
+ * the kernel's free). Once. */
+int page_take_download(tf_page *p, char *name, int cap, void **raw, const uint8_t **data, uint32_t *len);
 
 const char *page_url(tf_page *p);
 const char *page_title(tf_page *p);

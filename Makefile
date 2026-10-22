@@ -428,7 +428,7 @@ TFIRE_TP_SRCS := $(TFIRE_NS_SRCS) \
     $(wildcard third_party/libwebp/src/dec/*.c) $(wildcard third_party/libwebp/src/utils/*.c) $(wildcard third_party/libwebp/src/dsp/*.c)
 TFIRE_OWN_SRCS := $(wildcard kernel/tfire/*.c) $(wildcard kernel/tfire/libc/*.c)
 TFIRE_PARTS := $(TFIRE_TP_SRCS:.c=.o) $(TFIRE_OWN_SRCS:.c=.o) kernel/tfire/js_prelude.o
-TFIRE_API = page_open page_open_html page_close page_tick page_loading page_url page_title page_layout page_picture \
+TFIRE_API = page_open page_open_html page_close page_tick page_loading page_fetched page_take_download page_url page_title page_layout page_picture \
     page_mask page_focus page_caret_on page_click page_key page_scrolled page_take_scroll page_take_navigation \
     page_take_url_change page_resolve page_hover page_link_at dom_attr tf_free tf_malloc tf_alloc_usage
 

@@ -97,6 +97,12 @@ struct tf_page {
     int has_nav;
     tf_request nav;
     int has_url_change;
+    /* a download (page_take_download) */
+    int has_download;
+    char dl_name[128];
+    void *dl_raw;
+    const uint8_t *dl_data;
+    uint32_t dl_len;
     int scroll_req;
     int scroll_y;
     char *console[CONSOLE_LINES];
@@ -1235,6 +1241,71 @@ static void show_error(tf_page *p, const char *head, const char *msg)
     p->phase = p->doc ? 1 : 2;
 }
 
+/* Content-Disposition: 1 when it says attachment; its filename (or filename*=UTF-8''...) into name */
+static int disposition(webfetch_t *f, char *name, int cap)
+{
+    const char *h = (const char *)f->raw;
+    int hl = (int)f->head_len, attach = 0;
+    for (int i = 0; i + 20 < hl; i++) {
+        if (i && h[i - 1] != '\n') continue;
+        if (!istarts(h + i, "content-disposition:")) continue;
+        int e = i;
+        while (e < hl && h[e] != '\n') e++;
+        for (int k = i + 20; k < e; k++) {
+            if (istarts(h + k, "attachment")) attach = 1;
+            int star = istarts(h + k, "filename*="), plain = istarts(h + k, "filename=");
+            if (!star && !plain) continue;
+            k += star ? 10 : 9;
+            if (star) { while (k < e && h[k] != '\'') k++; while (k < e && h[k] == '\'') k++; }   /* UTF-8''name */
+            if (k < e && h[k] == '"') k++;
+            int o = 0;
+            while (k < e && h[k] != '"' && h[k] != ';' && h[k] != '\r' && o < cap - 1) {
+                if (h[k] == '%' && k + 2 < e && hexv(h[k + 1]) >= 0 && hexv(h[k + 2]) >= 0) { name[o++] = (char)(hexv(h[k + 1]) * 16 + hexv(h[k + 2])); k += 3; }
+                else name[o++] = h[k++];
+            }
+            name[o] = 0;
+            if (star) break;                              /* (the UTF-8 one wins) */
+        }
+    }
+    return attach;
+}
+
+/* a name to save url under: the last part of its path, %-escapes decoded ("download" if there is none) */
+static void name_from_url(const char *url, char *name, int cap)
+{
+    const char *s = strstr(url, "://");
+    s = s ? s + 3 : url;
+    const char *path = strchr(s, '/');
+    const char *last = 0;
+    for (const char *c = path; c && *c && *c != '?' && *c != '#'; c++) if (*c == '/') last = c + 1;
+    int o = 0;
+    for (const char *c = last; c && *c && *c != '?' && *c != '#' && o < cap - 1; c++) {
+        if (*c == '%' && hexv(c[1]) >= 0 && hexv(c[2]) >= 0) { name[o++] = (char)(hexv(c[1]) * 16 + hexv(c[2])); c += 2; }
+        else name[o++] = *c;
+    }
+    name[o] = 0;
+    if (!o) { strncpy(name, "download", (size_t)cap - 1); name[cap - 1] = 0; }
+}
+
+/* the answer is a file to save: kept for the window to take (page_take_download) */
+static void make_download(tf_page *p, webfetch_t *f, const char *given)
+{
+    char name[128] = "";
+    disposition(f, name, sizeof(name));
+    if (given && *given) { strncpy(name, given, sizeof(name) - 1); name[sizeof(name) - 1] = 0; }
+    if (!name[0]) name_from_url(f->final_url[0] ? f->final_url : f->url, name, sizeof(name));
+    for (char *c = name; *c; c++) if (*c == '/' || *c == '\\' || *c == ':' || (unsigned char)*c < 32) *c = '_';
+    if (name[0] == '.') name[0] = '_';
+    strcpy(p->dl_name, name);
+    p->dl_raw = f->raw;
+    p->dl_data = f->body;
+    p->dl_len = f->body_len;
+    f->raw = 0;                                           /* (it is the window's now) */
+    f->body = 0;
+    p->has_download = 1;
+    p->phase = 1;
+}
+
 static void doc_fetched(tf_page *p)
 {
     webfetch_t *f = p->docfetch;
@@ -1253,6 +1324,16 @@ static void doc_fetched(tf_page *p)
 #endif
     if (f->final_url[0]) { strncpy(p->url, f->final_url, URL_CAP - 1); p->url[URL_CAP - 1] = 0; p->has_url_change = 1; }
     const char *ct = f->ctype;
+    {
+        char dn[8];
+        int shows = !ct[0] || starts(ct, "text/") || starts(ct, "application/xhtml") || starts(ct, "application/json") ||
+                    starts(ct, "application/javascript") || starts(ct, "application/xml") || starts(ct, "image/");
+        if (f->status < 400 && (p->req.download || disposition(f, dn, sizeof(dn)) || !shows)) {
+            make_download(p, f, p->req.download ? p->req.dl_name : 0);
+            webfetch_free(f);
+            return;
+        }
+    }
     if (!ct[0] || starts(ct, "text/html") || starts(ct, "application/xhtml")) {
         char cs[40];
         header_charset(f, cs, sizeof(cs));
@@ -1348,6 +1429,7 @@ static void close_on_stack(void *a)
     tf_page *p = a;
     if (p->docfetch) webfetch_free(p->docfetch);
     if (p->fetch) webfetch_free(p->fetch);
+    if (p->dl_raw) free(p->dl_raw);                    /* a download nobody took (tf_free gives kernel blocks back) */
     if (p->js) tfjs_free(p->js);
     style_free(p->styler);
     layout_clear(&p->L);
@@ -1474,6 +1556,20 @@ int page_tick(tf_page *p, int w, int h)
 }
 
 int page_loading(tf_page *p) { return p->loading || p->docfetch != 0; }
+int page_fetched(tf_page *p) { return p->phase != 0; }
+
+int page_take_download(tf_page *p, char *name, int cap, void **raw, const uint8_t **data, uint32_t *len)
+{
+    if (!p->has_download) return 0;
+    p->has_download = 0;
+    strncpy(name, p->dl_name, (size_t)cap - 1);
+    name[cap - 1] = 0;
+    *raw = p->dl_raw;
+    *data = p->dl_data;
+    *len = p->dl_len;
+    p->dl_raw = 0;
+    return 1;
+}
 const char *page_url(tf_page *p) { return p->url; }
 const char *page_title(tf_page *p) { return p->title; }
 tf_layout *page_layout(tf_page *p) { return &p->L; }
@@ -1812,7 +1908,14 @@ static void click_on_stack(void *a)
                 page_navigate(p, href, 0);                  /* tFire's own pages (the window opens them) */
             } else {
                 char u[URL_CAP];
-                if (page_resolve(p->url, href, u, sizeof(u))) page_navigate(p, u, 0);
+                if (page_resolve(p->url, href, u, sizeof(u))) {
+                    page_navigate(p, u, 0);
+                    const char *dl = dom_attr(a2, "download");
+                    if (dl) {                                 /* <a download>: saved, whatever it is */
+                        p->nav.download = 1;
+                        strncpy(p->nav.dl_name, dl, sizeof(p->nav.dl_name) - 1);
+                    }
+                }
             }
             break;
         }

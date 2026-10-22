@@ -7,7 +7,7 @@
 #include "memory.h"
 #include "string.h"
 
-#define WEBFETCH_MAX   (6 * 1024 * 1024)
+#define WEBFETCH_MAX   (24 * 1024 * 1024)      /* (a download is kept whole too) */
 #define WEBFETCH_HOPS  8
 
 /* jobs waiting for their task to pick them up (task_spawn() passes no argument) */

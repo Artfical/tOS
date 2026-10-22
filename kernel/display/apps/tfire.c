@@ -13,6 +13,9 @@
  */
 
 #define TB_H     46              /* toolbar */
+#define DL_H     40              /* the download bar, along the top of the page */
+#define DL_SHOW_X  184           /* its buttons, from the right edge */
+#define DL_CLOSE_X 44
 #define URL_MAX  1024
 #define HIST_MAX 32
 #define SEARCH   "https://html.duckduckgo.com/html/?q="
@@ -34,7 +37,18 @@ typedef struct {
     uint32_t blink;
     uiapp_t *app;
     char status[URL_MAX];         /* the link under the pointer, shown at the bottom */
+    /* the page that was shown, kept on screen until the next one's answer is here (and back if that is a download) */
+    tf_page *prev;
+    char prev_url[URL_MAX];
+    int prev_hpos, prev_nhist;
+    /* the last download, in a bar at the bottom */
+    char dl_text[256];
+    char dl_dir[200];
+    int dl_ok;
 } tf_t;
+
+/* the page on screen: the one that was there, while the new one is still coming */
+static tf_page *shown(tf_t *t) { return t->prev ? t->prev : t->page; }
 
 /* ------------------------------------------------------------------ fonts for the engine */
 
@@ -77,6 +91,14 @@ static const tf_host host = { { font_of, text_w, font_h, font_ascent, 0 }, alert
 /* ------------------------------------------------------------------ addresses */
 
 static int starts(const char *s, const char *p) { return !strncmp(s, p, strlen(p)); }
+
+/* appends src to dst (cap bytes in all), cut short if it must be */
+static void strncat_(char *dst, const char *src, int cap)
+{
+    int l = (int)strlen(dst);
+    while (*src && l < cap - 1) dst[l++] = *src++;
+    dst[l] = 0;
+}
 
 /* what was typed in the address bar -> an address: a web address as it is, a name like "example.com"
  * gets https://, anything else is a search */
@@ -169,12 +191,17 @@ static void go_req(uiapp_t *a, tf_t *t, const tf_request *req, int record)
         }
         return;
     }
-    if (t->page) { page_close(t->page); t->page = 0; }
+    if (t->page) {
+        if (t->prev) page_close(t->prev);                    /* (one still waiting for its answer: gone) */
+        else { strcpy(t->prev_url, t->url); t->prev_hpos = t->hpos; t->prev_nhist = t->nhist; }
+        t->prev = t->page;
+        t->page = 0;
+    }
     strncpy(t->url, req->url, URL_MAX - 1);
     t->url[URL_MAX - 1] = 0;
     strcpy(t->field, t->url);
     t->editing = 0;
-    t->scroll = 0;
+    if (!t->prev) t->scroll = 0;
     if (record && !req->replace) {
         if (t->hpos < t->nhist - 1) t->nhist = t->hpos + 1;
         if (t->nhist == HIST_MAX) { for (int i = 1; i < HIST_MAX; i++) strcpy(t->hist[i - 1], t->hist[i]); t->nhist--; }
@@ -197,6 +224,75 @@ static void go(uiapp_t *a, tf_t *t, const char *url, int record)
     go_req(a, t, &r, record);
 }
 
+/* ------------------------------------------------------------------ downloads */
+
+static void size_text(uint32_t n, char *out)
+{
+    const char *unit = "bytes";
+    uint32_t whole = n, tenth = 0;
+    if (n >= 1024 * 1024) { whole = n / (1024 * 1024); tenth = n % (1024 * 1024) * 10 / (1024 * 1024); unit = "MB"; }
+    else if (n >= 1024) { whole = n / 1024; tenth = n % 1024 * 10 / 1024; unit = "KB"; }
+    char num[16];
+    int k = 0;
+    char r[12];
+    int rl = 0;
+    do { r[rl++] = (char)('0' + whole % 10); whole /= 10; } while (whole);
+    while (rl) num[k++] = r[--rl];
+    if (unit[0] != 'b') { num[k++] = '.'; num[k++] = (char)('0' + tenth); }
+    num[k] = 0;
+    strcpy(out, num);
+    strcat(out, " ");
+    strcat(out, unit);
+}
+
+/* the file saved in ~/Downloads (as "name (2).ext" when name is taken), told in the bar and a notification */
+static void save_download(tf_t *t, const char *name, const uint8_t *data, uint32_t len)
+{
+    strcpy(t->dl_dir, uihost_home());
+    if (strcmp(t->dl_dir, "/")) strcat(t->dl_dir, "/");
+    strcat(t->dl_dir, "Downloads");
+    uihost_mkdir(t->dl_dir);
+    static uihost_entry_t have[256];
+    int n = uihost_list(t->dl_dir, have, 256);
+    char fname[128];
+    strcpy(fname, name);
+    for (int k = 2; k < 100; k++) {
+        int taken = 0;
+        for (int i = 0; i < n && !taken; i++) taken = !strcmp(have[i].name, fname);
+        if (!taken) break;
+        const char *dot = 0;
+        for (const char *c = name; *c; c++) if (*c == '.') dot = c;
+        int base = dot && dot != name ? (int)(dot - name) : (int)strlen(name);
+        if (base > 100) base = 100;
+        memcpy(fname, name, (size_t)base);
+        fname[base] = 0;
+        char num[8] = " (", d[4];
+        int dl = 0, v = k;
+        while (v) { d[dl++] = (char)('0' + v % 10); v /= 10; }
+        int o = 2;
+        while (dl) num[o++] = d[--dl];
+        num[o++] = ')';
+        num[o] = 0;
+        strcat(fname, num);
+        if (dot && dot != name) strcat(fname, dot);
+    }
+    char path[340];
+    strcpy(path, t->dl_dir);
+    strcat(path, "/");
+    strcat(path, fname);
+    t->dl_ok = uihost_write(path, data, len) == 0;
+    char size[24];
+    size_text(len, size);
+    strcpy(t->dl_text, t->dl_ok ? "Downloaded " : "Could not save ");
+    strncat_(t->dl_text, fname, sizeof(t->dl_text));
+    if (t->dl_ok) {
+        strncat_(t->dl_text, "  \xE2\x80\x94  ", sizeof(t->dl_text));
+        strncat_(t->dl_text, size, sizeof(t->dl_text));
+        strncat_(t->dl_text, ", in Downloads", sizeof(t->dl_text));
+    }
+    uihost_notify("tfire", "tfire", t->dl_ok ? "Download finished" : "Download failed", fname, 0, 0);
+}
+
 /* ------------------------------------------------------------------ the window */
 
 static void tf_init(uiapp_t *a, const char *arg)
@@ -213,7 +309,8 @@ static void tf_close(uiapp_t *a)
 {
     tf_t *t = a->st;
     if (t->page) page_close(t->page);
-    t->page = 0;
+    if (t->prev) page_close(t->prev);
+    t->page = t->prev = 0;
 }
 
 #define BTN 32
@@ -298,7 +395,7 @@ static void draw_field(gfx_surface_t *c, tf_t *t, tf_layout *L, tf_item *it, int
     item_text(L, it, label, sizeof(label));
     int kind = (int)it->color;
     const ui_font_t *f = fonts[it->font < 5 ? it->font : 1];
-    int focused = t->page && it->node && page_focus(t->page) == it->node;
+    int focused = shown(t) && it->node && page_focus(shown(t)) == it->node;
     if (kind == 2) {                                         /* a check box or radio button */
         const char *type = dom_attr(it->node, "type");
         int radio = type && !strcmp(type, "radio");
@@ -326,7 +423,7 @@ static void draw_field(gfx_surface_t *c, tf_t *t, tf_layout *L, tf_item *it, int
         if (focused && tw > it->w - 14) tx = x + it->w - 9 - tw;            /* the end, where the caret is, in view */
         gfx_text(&in, f, tx, ty, ph ? ph : label, ph ? 0x9CA3AF : 0x111827, 255);
         if (kind == 3) arrow(&in, x + it->w - 10, y + it->h / 2, 1, 0x6B7280);
-        if (focused && page_caret_on(t->page)) gfx_fill(&in, tx + (ph ? 0 : tw) + 1, ty, 2, f->ascent + f->descent, 0x111827);
+        if (focused && page_caret_on(shown(t))) gfx_fill(&in, tx + (ph ? 0 : tw) + 1, ty, 2, f->ascent + f->descent, 0x111827);
     }
 }
 
@@ -367,7 +464,8 @@ static void tf_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
     int py = y + TB_H, ph = h - TB_H;
     t->view_w = w;
     t->view_h = ph;
-    tf_layout *L = t->page ? page_layout(t->page) : 0;
+    tf_page *pg = shown(t);
+    tf_layout *L = pg ? page_layout(pg) : 0;
     gfx_fill(s, x, py, w, ph, L && L->n ? L->page_bg : 0xFFFFFF);
     if (!L) return;
     int doc_h = L->doc_h + 16;
@@ -396,11 +494,11 @@ static void tf_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
         }
         case IT_IMAGE: {
             if (it->deco & 2) {                              /* an icon (mask-image) */
-                tf_picture *m = page_mask(t->page, it->node);
+                tf_picture *m = page_mask(pg, it->node);
                 if (m) blit_mask(&c, m, ix, iy, it->w, it->h, it->color);
                 break;
             }
-            tf_picture *pic = page_picture(t->page, it->node);
+            tf_picture *pic = page_picture(pg, it->node);
             if (pic) {
                 gfx_image_t im = { pic->w, pic->h, pic->rgba };
                 if (pic->w == it->w && pic->h == it->h) gfx_blit(&c, &im, ix, iy, 255);
@@ -415,15 +513,33 @@ static void tf_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
             break;
         }
     }
+    /* the last download: a bar along the top of the page (the bottom can be under the Dock) */
+    if (t->dl_text[0]) {
+        int by = py;
+        gfx_fill(s, x, by, w, DL_H, 0xF3F4F6);
+        gfx_hline(s, x, by + DL_H - 1, w, 0xD1D5DB, 255);
+        int cx = x + 22, cy = by + DL_H / 2;                  /* an arrow down onto a line */
+        uint32_t ic = t->dl_ok ? UI_ACCENT : 0xDC2626;
+        gfx_capsule(s, cx, cy - 8, cx, cy + 3, 6, ic, 255);
+        gfx_capsule(s, cx, cy + 3, cx - 5, cy - 2, 6, ic, 255);
+        gfx_capsule(s, cx, cy + 3, cx + 5, cy - 2, 6, ic, 255);
+        gfx_capsule(s, cx - 7, cy + 8, cx + 7, cy + 8, 6, ic, 255);
+        gfx_surface_t ct = *s;
+        gfx_clip(&ct, x + 40, by, w - 40 - 190, DL_H);
+        gfx_text(&ct, &ui_font_regular, x + 40, by + (DL_H - 18) / 2, t->dl_text, 0x111827, 255);
+        if (t->dl_ok) ui_button(s, x + w - DL_SHOW_X, by + 6, 130, DL_H - 12, "Show in Files", 0xFFFFFF, 0x111827, 0);
+        gfx_text_center(s, &ui_font_title, x + w - DL_CLOSE_X, by + 2, 28, "\xC3\x97", 0x6B7280, 255);
+    }
     /* the link under the pointer, at the bottom left (as other browsers show it) */
     if (t->status[0]) {
         int sw = gfx_text_width(&ui_font_small, t->status) + 16;
         if (sw > w - 20) sw = w - 20;
+        int sy = py + ph;
         gfx_surface_t c2 = *s;
-        gfx_clip(&c2, x, py + ph - 24, sw, 24);
-        gfx_rrect(&c2, x, py + ph - 22, sw + 6, 22, 6, 0xF3F4F6, 255);
-        gfx_rrect_outline(&c2, x, py + ph - 22, sw + 6, 22, 6, 0xD1D5DB, 255);
-        gfx_text(&c2, &ui_font_small, x + 8, py + ph - 18, t->status, 0x374151, 255);
+        gfx_clip(&c2, x, sy - 24, sw, 24);
+        gfx_rrect(&c2, x, sy - 22, sw + 6, 22, 6, 0xF3F4F6, 255);
+        gfx_rrect_outline(&c2, x, sy - 22, sw + 6, 22, 6, 0xD1D5DB, 255);
+        gfx_text(&c2, &ui_font_small, x + 8, sy - 18, t->status, 0x374151, 255);
     }
     /* scroll bar */
     if (maxs > 0) {
@@ -451,7 +567,12 @@ static void tf_press(uiapp_t *a, int px, int py, int button)
         return;
     }
     if (t->editing) { t->editing = 0; strcpy(t->field, t->url); }
-    if (t->page) page_click(t->page, px, py - TB_H + t->scroll);
+    if (t->dl_text[0] && py < TB_H + DL_H) {                       /* the download bar */
+        if (t->dl_ok && px >= t->view_w - DL_SHOW_X && px < t->view_w - DL_SHOW_X + 130) uihost_open("files", t->dl_dir);
+        else if (px >= t->view_w - DL_CLOSE_X) t->dl_text[0] = 0;
+        return;
+    }
+    if (shown(t)) page_click(shown(t), px, py - TB_H + t->scroll);
 }
 
 static void tf_key(uiapp_t *a, int k)
@@ -505,6 +626,34 @@ static int tf_tick(uiapp_t *a)
     int redraw = 0;
     if (!t->page) return 0;
     if (page_tick(t->page, t->view_w, t->view_h)) redraw = 1;
+    {
+        char name[128];
+        void *raw;
+        const uint8_t *data;
+        uint32_t len;
+        if (page_take_download(t->page, name, sizeof(name), &raw, &data, &len)) {
+            save_download(t, name, data, len);
+            free(raw);
+            page_close(t->page);
+            t->page = 0;
+            if (t->prev) {                                   /* the page it was on stays */
+                t->page = t->prev;
+                t->prev = 0;
+                strcpy(t->url, t->prev_url);
+                strcpy(t->field, t->url);
+                t->hpos = t->prev_hpos;
+                t->nhist = t->prev_nhist;
+            } else go(a, t, HOME, 0);
+            set_title(a, t);
+            return 1;
+        }
+        if (t->prev && page_fetched(t->page)) {              /* the new page's answer is here: it takes over */
+            page_close(t->prev);
+            t->prev = 0;
+            t->scroll = 0;
+            redraw = 1;
+        }
+    }
     tf_request nav;
     if (page_take_navigation(t->page, &nav)) {
         go_req(a, t, &nav, 1);
@@ -534,12 +683,13 @@ static int tf_tick(uiapp_t *a)
 static void tf_hover(uiapp_t *a, int px, int py)
 {
     tf_t *t = a->st;
-    if (!t->page) return;
-    int in = px >= 0 && py >= TB_H;
-    if (page_hover(t->page, in ? px : -1, in ? py - TB_H + t->scroll : -1)) a->dirty = 1;
-    const char *href = in ? page_link_at(t->page, px, py - TB_H + t->scroll) : 0;
+    tf_page *pg = shown(t);
+    if (!pg) return;
+    int in = px >= 0 && py >= TB_H && !(t->dl_text[0] && py < TB_H + DL_H);
+    if (page_hover(pg, in ? px : -1, in ? py - TB_H + t->scroll : -1)) a->dirty = 1;
+    const char *href = in ? page_link_at(pg, px, py - TB_H + t->scroll) : 0;
     char want[URL_MAX] = "";
-    if (href && strncmp(href, "javascript:", 11) && href[0] != '#') page_resolve(page_url(t->page), href, want, sizeof(want));
+    if (href && strncmp(href, "javascript:", 11) && href[0] != '#') page_resolve(page_url(pg), href, want, sizeof(want));
     if (strcmp(want, t->status)) { strcpy(t->status, want); a->dirty = 1; }
 }
 
