@@ -1,0 +1,36 @@
+WhiteSur icon theme, for tOS
+============================
+
+From https://github.com/vinceliuice/WhiteSur-icon-theme (commit 73d8040da51a9ed74e47c7366e7e9ff437601a5c),
+by Vince Liuice and its contributors (AUTHORS), under the GNU General Public License v3 (COPYING).
+
+Only the app icons tOS uses are here, renamed after the tOS app they stand for (svg/<tOS name     WhiteSur file
+files        apps/file-manager.svg
+terminal     apps/terminal.svg
+notepad      apps/text-editor.svg
+calculator   apps/calc.svg
+paint        apps/gnome-paint.svg
+media        apps/gnome-music.svg
+netmon       apps/network-workgroup.svg
+taskmgr      apps/utilities-system-monitor.svg
+settings     apps/preferences-system.svg
+viewer       apps/eog.svg
+pdf          apps/gnome-documents.svg
+sticky       apps/sticky.svg
+clock        apps/preferences-system-time.svg
+diskmgr      apps/gnome-disks.svg
+snake        apps/gnome-nibbles.svg
+2048         apps/2048.svg
+doom         apps/applications-games.svg
+about        apps/help.svg
+launcher     apps/view-app-grid.svg
+trash        places/user-trash.svg
+doc_folder   places/folder.svg
+doc_text     mimes/text-x-generic.svg
+doc_image    mimes/image-x-generic.svg
+doc_audio    mimes/audio-x-generic.svg
+doc_app      mimes/application-x-executable.svg
+doc_generic  mimes/unknown.svg
+doc_disk     devices/drive-removable-media-usb.svg
+doc_hdd      devices/drive-harddisk.svg
+rec_diskutil apps/gnome-disks.svg

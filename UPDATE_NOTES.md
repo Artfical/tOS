@@ -1,14 +1,19 @@
-# Project tFire, update 4: links and downloads
+# New icons, and the update notification fixed
 
-## tfire | tFire
-- Click a link and the page you are on stays on screen, with the loading bar, until the next one
-  arrives: no more blank window while a big page like Wikipedia loads.
-- Downloads: files tFire cannot show (zip, PDF and the like), files a site sends as attachments and
-  links marked download are saved in Downloads, and you stay on the page.
-- A bar at the top says what was saved and how big it is; Show in Files opens it in Files. A file
-  whose name is taken is kept as "name (2)".
-![tFire in build 578: a link on Wikipedia, then downloads](docs/screenshots/tfire/u4-tfire.mp4)
-![Clicking a link on Wikipedia: the page stays while the next one loads](docs/screenshots/tfire/u4-wikipedia-link.png)
-![The page the link leads to](docs/screenshots/tfire/u4-netscape.png)
-![A download saved in Downloads](docs/screenshots/tfire/u4-download.png)
-![Show in Files](docs/screenshots/tfire/u4-files.png)
+## launcher | tOS
+- New macOS-like icons for every app, in the Dock, the launcher and the menus, from the WhiteSur icon
+  theme by Vince Liuice (GPL-3.0).
+- Files, folders and disks have new icons too: in Files, on the desktop and in Disk Utility.
+![The Dock with the new icons](docs/screenshots/icons/desktop.png)
+![The launcher](docs/screenshots/icons/launcher.png)
+![Disk Utility's hard disk](docs/screenshots/icons/diskutil.png)
+![Folders in Files](docs/screenshots/icons/files.png)
+
+## settings | Software Update
+- The notification that a new version is ready no longer stops builds 577 and 578: until this one
+  is installed, they find it in Settings > Software Update instead.
+![The update notification](docs/screenshots/icons/notification.png)
+
+## about | Licences
+- The WhiteSur icon theme is in third_party/whitesur-icons with its licence (GPL-3.0); tFire lists
+  it at tfire:licenses with the rest.

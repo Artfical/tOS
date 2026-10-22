@@ -227,9 +227,23 @@ APPS = [  # name, glyph, top colour, bottom colour
     ('gpio',       'cpu',             (120, 224, 130),(20, 140, 70)),
     ('trash',      'trash-2',         (200, 205, 215),(130, 136, 150)),
 ]
+# The app icons come from the WhiteSur icon theme (third_party/whitesur-icons, GPL-3.0; macOS-like, its own
+# drawings): third_party/whitesur-icons/svg/<name>.svg, drawn by rsvg-convert at four times the size and scaled
+# down. An app without one there keeps the icon drawn above.
+WHITESUR = os.path.join(HERE, '..', 'third_party', 'whitesur-icons', 'svg')
+
+def svg_icon(name, size):
+    import subprocess, io
+    path = os.path.join(WHITESUR, name + '.svg')
+    if not os.path.exists(path):
+        return None
+    png = subprocess.run(['rsvg-convert', '-w', str(size * 4), '-h', str(size * 4), path],
+                         capture_output=True, check=True).stdout
+    return Image.open(io.BytesIO(png)).convert('RGBA').resize((size, size), Image.LANCZOS)
+
 for name, glyph, c1, c2 in APPS:
-    add_image('icon48_' + name, app_icon(48, glyph, c1, c2))
-    add_image('icon20_' + name, app_icon(20, glyph, c1, c2))
+    add_image('icon48_' + name, svg_icon(name, 48) or app_icon(48, glyph, c1, c2))
+    add_image('icon20_' + name, svg_icon(name, 20) or app_icon(20, glyph, c1, c2))
 
 # tFire, the browser: a globe in a flame, on a deep blue to violet tile
 def tfire_icon(size):
@@ -331,11 +345,12 @@ def doc_icon(size, label, color):
         d.text((S // 2, int(S * 0.75)), label, font=f, fill=(255, 255, 255, 255), anchor='mm')
     return im.resize((size, size), Image.LANCZOS)
 
+# (WhiteSur's where there is one: third_party/whitesur-icons/svg/doc_<kind>.svg)
 for sz in (64, 20):
-    add_image(f'doc{sz}_folder', folder_icon(sz))
+    add_image(f'doc{sz}_folder', svg_icon('doc_folder', sz) or folder_icon(sz))
     for key, label, col in [('text', 'TXT', (120, 124, 134)), ('image', 'IMG', (52, 168, 90)), ('pdf', 'PDF', (220, 60, 50)),
                             ('audio', 'AUD', (220, 50, 110)), ('app', 'APP', (60, 110, 230)), ('generic', '', (0, 0, 0))]:
-        add_image(f'doc{sz}_{key}', doc_icon(sz, label if sz > 32 else '', col))
+        add_image(f'doc{sz}_{key}', svg_icon('doc_' + key, sz) or doc_icon(sz, label if sz > 32 else '', col))
 
 # the padlock of the password dialog: a steel shackle over a golden body, like macOS's
 def padlock(size):
@@ -427,7 +442,7 @@ def disk_icon(size):
     return im.resize((size, size), Image.LANCZOS)
 
 for sz in (64, 48, 20):
-    add_image(f'doc{sz}_disk', disk_icon(sz))
+    add_image(f'doc{sz}_disk', svg_icon('doc_disk', sz) or disk_icon(sz))
 
 # an internal disk: a darker metal drive with screws in its corners, the kind of icon macOS
 # gives the startup disk (drawn here, not taken from Apple)
@@ -464,7 +479,7 @@ def hdd_icon(size):
     return im.resize((size, size), Image.LANCZOS)
 
 for sz in (64, 48, 20):
-    add_image(f'doc{sz}_hdd', hdd_icon(sz))
+    add_image(f'doc{sz}_hdd', svg_icon('doc_hdd', sz) or hdd_icon(sz))
 
 # the eject mark, drawn on the 16 px grid at 8x so the triangle and the bar stay crisp: the
 # triangle fills rows 3-9 with rounded corners, the bar rows 12-13, a clean gap between
@@ -627,7 +642,7 @@ def rec_try_icon(size=64):
     return out.resize((size, size), Image.LANCZOS)
 
 add_image('rec_install', rec_install_icon(64))
-add_image('rec_diskutil', rec_diskutil_icon(64))
+add_image('rec_diskutil', svg_icon('rec_diskutil', 64) or rec_diskutil_icon(64))
 add_image('rec_try', rec_try_icon(64))
 
 # ---------------------------------------------------------------- write it out

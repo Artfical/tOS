@@ -9,7 +9,8 @@ const uiapp_class_t *const uiapp_classes[] = {
     &app_clock, &app_notes, &app_2048, &app_settings, &app_diskutil, &app_recovery, &app_updatenotes, &app_tfire,
     0,
 };
-const int uiapp_class_count = (int)(sizeof(uiapp_classes) / sizeof(uiapp_classes[0]));
+/* (the 0 at the end is not an app) */
+const int uiapp_class_count = (int)(sizeof(uiapp_classes) / sizeof(uiapp_classes[0])) - 1;
 
 static const ui_theme_t dark_theme = {
     1, 0x1E1F25, 0x2A2B33, 0x33343D, 0x3A3C46, 0xF2F3F5, 0xA1A4AE,
@@ -31,8 +32,10 @@ void ui_set_dark(int dark) { ui_theme = dark ? dark_theme : light_theme; }
 
 const uiapp_class_t *uiapp_find(const char *id)
 {
-    for (int i = 0; i < uiapp_class_count; i++)
-        if (!strcmp(uiapp_classes[i]->id, id)) return uiapp_classes[i];
+    /* an id that is no app's ("Software Update", "System" from a notification) finds nothing: builds 577 and 578
+     * counted the 0 at the end of the list and read past it here, which crashed drawing such a notification */
+    for (int i = 0; i < uiapp_class_count && uiapp_classes[i]; i++)
+        if (id && !strcmp(uiapp_classes[i]->id, id)) return uiapp_classes[i];
     return 0;
 }
 

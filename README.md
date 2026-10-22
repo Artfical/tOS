@@ -1430,6 +1430,7 @@ tOS is developed by Talha Berk. The system is built from scratch with the except
 - NanoSVG by Mikko Mononen (zlib) and Google's libwebp decoder (BSD-3-Clause) — SVG and WebP pictures in tFire
 - doomgeneric (GPL-2.0) and Wolf4SDL (GPL-2.0) — the DOOM and Wolfenstein 3D ports
 - Inter and JetBrains Mono (SIL OFL 1.1) and Lucide (ISC) — the desktop's fonts and icons
+- The WhiteSur icon theme by Vince Liuice (GPL-3.0) — the macOS-like app icons in the Dock and the menus
 - GRUB (GPLv3) — bootloader (not distributed in source, only used to generate the ISO)
 - htop (GPL-2.0-only) — inspiration for the `htop` process monitor command (original implementation, see `third_party/htop/`)
 

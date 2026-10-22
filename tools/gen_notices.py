@@ -60,6 +60,8 @@ GPL = [
     ("doomgeneric (id Software DOOM)", "GPL-2.0", "kernel/doom/", "kernel/doom/LICENSE, kernel/doom/README.md"),
     ("Wolf4SDL (id Software Wolfenstein 3D)", "GPL-2.0 (and id Software's original licence)", "kernel/wolf3d/",
      "kernel/wolf3d/LICENSE, kernel/wolf3d/LICENSE-id.txt"),
+    ("WhiteSur icon theme (Vince Liuice) — the desktop's app icons", "GPL-3.0", "third_party/whitesur-icons/",
+     "third_party/whitesur-icons/COPYING, third_party/whitesur-icons/README.tOS"),
     ("htop (inspiration only: no htop code is in tOS)", "GPL-2.0-only", "third_party/htop/", "third_party/htop/LICENSE"),
 ]
 
