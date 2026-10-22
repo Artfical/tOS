@@ -56,6 +56,21 @@ make_font('ui_font_small',   os.path.join(UI, 'Inter-Regular.ttf'), 12)
 make_font('ui_font_title',   os.path.join(UI, 'Inter-Bold.ttf'), 22)
 make_font('ui_font_huge',    os.path.join(UI, 'Inter-Bold.ttf'), 48)
 
+# tFire's fonts: web pages ask for every size, so many sizes of Inter (regular and bold) and a monospace one for
+# code; tFire picks the nearest (kernel/display/apps/tfire.c)
+TFIRE_SIZES = [10, 11, 12, 13, 14, 15, 16, 18, 20, 24, 28, 32, 40]
+TFIRE_MONO = [12, 13, 14, 16]
+tfire_fonts = []
+for sz in TFIRE_SIZES:
+    for bold in (0, 1):
+        name = f'tf_font_{"b" if bold else "r"}{sz}'
+        make_font(name, os.path.join(UI, 'Inter-Bold.ttf' if bold else 'Inter-Regular.ttf'), sz)
+        tfire_fonts.append((name, sz, bold))
+for sz in TFIRE_MONO:
+    name = f'tf_font_m{sz}'
+    make_font(name, os.path.join(UI, 'JetBrainsMono-Regular.ttf'), sz)
+    tfire_fonts.append((name, sz, 2))
+
 # ---------------------------------------------------------------- the terminal cell font
 # 256 cells in code page 437 order, because that is what the apps' character surfaces hold.
 CELL_W, CELL_H = 9, 18
@@ -659,6 +674,10 @@ with open(os.path.join(OUT, 'ui_assets.c'), 'w') as f:
     f.write('};\n\n')
     for fc in fonts_c: f.write(fc + '\n')
     f.write(f'const uint32_t ui_mono_off = {mono_off}u;\n\n')
+    f.write('const ui_font_t *const tfire_fonts[] = { ' + ', '.join('&' + n for n, _, _ in tfire_fonts) + ' };\n')
+    f.write('const uint8_t tfire_font_size[] = { ' + ', '.join(str(z) for _, z, _ in tfire_fonts) + ' };\n')
+    f.write('const uint8_t tfire_font_kind[] = { ' + ', '.join(str(k) for _, _, k in tfire_fonts) + ' };\n')
+    f.write(f'const int tfire_font_count = {len(tfire_fonts)};\n\n')
     f.write('const ui_image_t ui_images[] = {\n')
     for name, w, h, o in images:
         f.write(f'    {{"{name}", {w}, {h}, {o}u}},\n')

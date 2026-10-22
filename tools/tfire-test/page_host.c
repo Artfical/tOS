@@ -78,7 +78,7 @@ webfetch_t *webfetch_request(const char *url, const char *method, const char *he
     f->head_len = (uint32_t)(he + 4 - (char *)f->raw);
     f->body = f->raw + f->head_len;
     f->body_len = (uint32_t)(n - f->head_len);
-    f->status = atoi((char *)f->raw + 9);
+    { const char *sp = strchr((char *)f->raw, ' '); f->status = sp ? atoi(sp + 1) : 0; }   /* ("HTTP/2 200" and "HTTP/1.1 200") */
     char *ct = strcasestr((char *)f->raw, "\ncontent-type:");
     if (ct && ct < he) { ct += 14; while (*ct == ' ') ct++; int i = 0; while (ct[i] && ct[i] != ';' && ct[i] != '\r' && i < 63) { f->ctype[i] = (char)(ct[i] >= 'A' && ct[i] <= 'Z' ? ct[i] + 32 : ct[i]); i++; } }
     f->state = WEBFETCH_DONE;

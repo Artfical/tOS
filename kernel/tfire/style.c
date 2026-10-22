@@ -55,7 +55,7 @@ static const char ua_css[] =
 
 /* a declaration libcss does not know (grid, border-radius, gap), with the selector and media it came with */
 enum { SP_GRID_COLS, SP_GRID_ROWS, SP_GRID_AREAS, SP_GRID_TEMPLATE, SP_GRID_AREA, SP_GRID_COLUMN, SP_GRID_ROW,
-       SP_RADIUS, SP_GAP, SP_ROW_GAP, SP_MASK, SP_WMASK,
+       SP_RADIUS, SP_GAP, SP_ROW_GAP, SP_MASK, SP_WMASK, SP_SHADOW, SP_BG, SP_BG_IMAGE,
        /* what moves (anim.c): transforms, transitions, animations (-webkit- ones too) */
        SP_TRANSFORM, SP_ORIGIN, SP_TRANSLATE, SP_ROTATE, SP_SCALE,
        SP_TRANSITION, SP_TR_PROP, SP_TR_DUR, SP_TR_TF, SP_TR_DELAY,
@@ -521,6 +521,7 @@ static css_stylesheet *make_sheet(const char *css, size_t len, const char *url, 
 
 static const char *const side_names[SP_N] = { "grid-template-columns", "grid-template-rows", "grid-template-areas",
     "grid-template", "grid-area", "grid-column", "grid-row", "border-radius", "gap", "row-gap", "mask-image", "-webkit-mask-image",
+    "box-shadow", "background", "background-image",
     "transform", "transform-origin", "translate", "rotate", "scale",
     "transition", "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
     "animation", "animation-name", "animation-duration", "animation-timing-function", "animation-delay",
@@ -609,6 +610,8 @@ static int specificity(const char *s)
     return sp;
 }
 
+static const char *memmem_(const char *h, size_t hl, const char *n, size_t nl);
+
 static void side_add(tf_styler *st, const char *sel, int sl, int prop, const char *val, int vl, int minw, int maxw)
 {
     while (sl && css_ws(sel[sl - 1])) sl--;
@@ -623,6 +626,8 @@ static void side_add(tf_styler *st, const char *sel, int sl, int prop, const cha
             strncmp(c, ":hover", 6) && strncmp(c, ":focus", 6) && strncmp(c, ":checked", 8) && strncmp(c, ":active", 7) &&
             strncmp(c, ":nth-child(", 11) && strncmp(c, ":nth-last-child(", 16)) return;
     if (prop >= SP_TRANSITION) st->transitions |= prop <= SP_TR_DELAY;
+    /* backgrounds: only gradients (and "none", which takes one away) are tFire's business; libcss has the rest */
+    if ((prop == SP_BG || prop == SP_BG_IMAGE) && !memmem_(val, (size_t)vl, "gradient(", 9) && !(vl == 4 && !strncasecmp(val, "none", 4))) return;
     if (st->nside == st->side_cap) {
         int nc = st->side_cap ? st->side_cap * 2 : 64;
         side_rule *nr = realloc(st->side, (size_t)nc * sizeof(side_rule));
@@ -830,6 +835,12 @@ static void side_apply(tf_styler *st, tf_node *n, tf_style *t, int vw)
     /* an icon drawn as a mask over its background colour */
     const side_rule *mk = best[SP_MASK] ? best[SP_MASK] : best[SP_WMASK];
     t->mask = mk && strstr(mk->value, "url(") ? mk->value : 0;
+
+    /* a shadow; a gradient for a background (whichever of background and background-image comes last) */
+    if (best[SP_SHADOW]) anim_set_shadow(t, best[SP_SHADOW]->value);
+    const side_rule *bgr = best[SP_BG], *bgi = best[SP_BG_IMAGE];
+    if (bgi && (!bgr || bgi->spec > bgr->spec || (bgi->spec == bgr->spec && bgi->order > bgr->order))) bgr = bgi;
+    if (bgr && strstr(bgr->value, "gradient(")) anim_set_gradient(t, bgr->value);
 
     /* what moves: the rules' values, and style="" over them */
     const char *val[SP_N];
@@ -2363,6 +2374,13 @@ static uint32_t over_white(css_color c)
     return (r << 16) | (g << 8) | b;
 }
 
+static int strcasestr_(const char *h, const char *n)
+{
+    size_t l = strlen(n);
+    for (; *h; h++) if (!strncasecmp(h, n, l)) return 1;
+    return 0;
+}
+
 static void convert(const css_computed_style *cs, const css_unit_ctx *u, tf_style *t, int is_root)
 {
     css_fixed v;
@@ -2424,6 +2442,17 @@ static void convert(const css_computed_style *cs, const css_unit_ctx *u, tf_styl
 
     uint8_t fw = css_computed_font_weight(cs);
     t->bold = fw == CSS_FONT_WEIGHT_BOLD || fw == CSS_FONT_WEIGHT_BOLDER || fw >= CSS_FONT_WEIGHT_600;
+    /* code: a monospace font (bit 2 of bold, which is what the window's font_of gets) */
+    {
+        lwc_string **names = NULL;
+        uint8_t fam = css_computed_font_family(cs, &names);
+        int mono = fam == CSS_FONT_FAMILY_MONOSPACE;
+        for (int i = 0; names && names[i] && !mono; i++) {
+            const char *n = lwc_string_data(names[i]);
+            mono = strcasestr_(n, "mono") || strcasestr_(n, "courier") || strcasestr_(n, "consolas") || strcasestr_(n, "menlo");
+        }
+        if (mono) t->bold |= 2;
+    }
     uint8_t fs = css_computed_font_style(cs);
     t->italic = fs == CSS_FONT_STYLE_ITALIC || fs == CSS_FONT_STYLE_OBLIQUE;
     uint8_t td = css_computed_text_decoration(cs);

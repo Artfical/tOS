@@ -3,6 +3,7 @@
 #include "string.h"
 #include "memory.h"
 #include "update.h"
+#include "imgload.h"
 
 /*
  * What's New in tOS: the release notes of the updates this computer is missing, in a window of
@@ -38,9 +39,45 @@ static void wrap_text(gfx_surface_t *s, const ui_font_t *f, int x, int *y, int w
     }
 }
 
+/* a video played frame by frame: the one frame decoded now, per shot */
+static struct { const uint8_t *src; int idx; uint8_t *rgba; uint32_t w, h; } cur[UPD_MAX_SHOTS];
+
+static void frames_free(void)
+{
+    for (int i = 0; i < UPD_MAX_SHOTS; i++) { if (cur[i].rgba) free(cur[i].rgba); cur[i].rgba = 0; cur[i].src = 0; }
+}
+
+static void mjpeg_shot(gfx_surface_t *s, const update_shot_t *sh, int slot, int x, int y, int w, int *h, uint32_t edge)
+{
+    int fi = (int)(uihost_ms() / (uint32_t)sh->mj_ms % (uint32_t)sh->mjn);
+    if (cur[slot].src != sh->mj) { if (cur[slot].rgba) free(cur[slot].rgba); cur[slot].rgba = 0; cur[slot].src = sh->mj; cur[slot].idx = -1; }
+    /* the frame for now, decoded only while the video is in view */
+    int fh = cur[slot].rgba ? (int)cur[slot].h * w / (int)(cur[slot].w ? cur[slot].w : 1) : w * 9 / 16;
+    int seen = y < s->cy1 && y + fh > s->cy0;
+    if (seen && fi != cur[slot].idx) {
+        uint32_t a = sh->mjoff[fi], b = fi + 1 < sh->mjn ? sh->mjoff[fi + 1] : sh->mjlen;
+        uint8_t *rgba; uint32_t iw, ih; const char *err;
+        if (b > a && img_decode(sh->mj + a, b - a, &rgba, &iw, &ih, &err) == 0) {
+            if (cur[slot].rgba) free(cur[slot].rgba);
+            cur[slot].rgba = rgba; cur[slot].w = iw; cur[slot].h = ih; cur[slot].idx = fi;
+        }
+    }
+    *h = cur[slot].rgba ? (int)cur[slot].h * w / (int)(cur[slot].w ? cur[slot].w : 1) : w * 9 / 16;
+    if (cur[slot].rgba) {
+        gfx_image_t im = { (int)cur[slot].w, (int)cur[slot].h, cur[slot].rgba };
+        gfx_blit_scaled(s, &im, x, y, w, *h, 255);
+    } else gfx_fill(s, x, y, w, *h, 0x000000);
+    gfx_fill_alpha(s, x + 10, y + *h - 12, w - 20, 3, 0xFFFFFF, 90);
+    gfx_fill_alpha(s, x + 10, y + *h - 12, (w - 20) * (fi + 1) / sh->mjn, 3, 0xFFFFFF, 230);
+    gfx_rrect_outline(s, x, y, w, *h, 8, edge, 255);
+}
+
 static void shot(gfx_surface_t *s, const update_shot_t *sh, int x, int y, int w, int *h, uint32_t edge)
 {
     *h = 0;
+    const update_info_t *in = uihost_update_status();
+    int slot = (int)(sh - in->shots);
+    if (sh->mj && sh->mjn > 1 && sh->mj_ms > 0 && slot >= 0 && slot < UPD_MAX_SHOTS) { mjpeg_shot(s, sh, slot, x, y, w, h, edge); return; }
     if (!sh->rgba) return;
     /* a video arrives as its frames one under the other: show the one for now, round and round */
     int video = sh->frames > 1 && sh->frame_ms > 0;
@@ -174,7 +211,10 @@ static int un_tick(uiapp_t *a)
     const update_info_t *in = uihost_update_status();
     uint32_t step = 1000;
     for (int i = 0; i < in->nshots; i++)
+    {
         if (in->shots[i].rgba && in->shots[i].frames > 1 && (uint32_t)in->shots[i].frame_ms < step) step = (uint32_t)in->shots[i].frame_ms;
+        if (in->shots[i].mj && in->shots[i].mj_ms > 0 && (uint32_t)in->shots[i].mj_ms < step) step = (uint32_t)in->shots[i].mj_ms;
+    }
     uint32_t t = uihost_ms() / step;
     (void)a;
     if (t != last) { last = t; return 1; }
@@ -182,10 +222,11 @@ static int un_tick(uiapp_t *a)
 }
 
 static void un_init(uiapp_t *a, const char *arg) { (void)a; (void)arg; }
+static void un_close(uiapp_t *a) { (void)a; frames_free(); }
 
 const uiapp_class_t app_updatenotes = {
     "updatenotes", "What\xE2\x80\x99s New in tOS", "settings", 700, 560, 1, sizeof(un_t),
-    un_init, un_draw, un_press, un_drag, un_release, un_key, un_wheel, un_tick, 0,
+    un_init, un_draw, un_press, un_drag, un_release, un_key, un_wheel, un_tick, un_close,
     0, 0, 0,
     0,
 };

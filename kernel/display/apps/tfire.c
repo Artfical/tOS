@@ -5,7 +5,7 @@
 #include "engine.h"
 
 /*
- * tFire, the web browser (Project tFire, update 3: the engine).
+ * tFire, the web browser (Project tFire, update 6: type, shadows and gradients).
  *
  * The window around the engine (kernel/tfire): the toolbar, the address bar and the history are here; the page
  * itself (HTML parsed by NetSurf's libhubbub, CSS by libcss, scripts by QuickJS, tFire's own layout) comes from
@@ -52,14 +52,19 @@ static tf_page *shown(tf_t *t) { return t->prev ? t->prev : t->page; }
 
 /* ------------------------------------------------------------------ fonts for the engine */
 
-static const ui_font_t *const fonts[] = { &ui_font_small, &ui_font_regular, &ui_font_medium, &ui_font_title, &ui_font_huge };
+/* tFire's own fonts (ui_assets: many sizes of Inter, and JetBrains Mono): the nearest size of the kind asked for */
+#define fonts tfire_fonts
 
-static int font_of(int px, int bold)
+static int font_of(int px, int flags)
 {
-    if (px <= 12) return 0;
-    if (px <= 17) return bold ? 2 : 1;
-    if (px <= 36) return 3;
-    return 4;
+    int kind = (flags & 2) ? 2 : (flags & 1), best = 0, bd = 1 << 30;
+    for (int i = 0; i < tfire_font_count; i++) {
+        if (tfire_font_kind[i] != kind) continue;
+        int d = tfire_font_size[i] - px;
+        d = d < 0 ? -d * 2 + 1 : d * 2;                  /* (between two: the smaller one) */
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
 }
 
 static int text_w(int f, const char *s, int n)
@@ -138,7 +143,7 @@ static const char home_page[] =
     "h3{margin:22px 0 10px;color:#374151}ul{margin:0;padding-left:22px}li{margin:4px 0}"
     "#clock{color:#6b7280;font-size:13px}"
     "</style></head><body>"
-    "<div class=top><h1>tFire</h1><p>Project tFire, update 3: the engine. CSS, JavaScript and the web as it is.</p></div>"
+    "<div class=top><h1>tFire</h1><p>Project tFire, update 6: type, shadows and gradients. CSS, JavaScript and the web as it is.</p></div>"
     "<div class=wrap>"
     "<p id=clock>&nbsp;</p>"
     "<div class=card><a href=\"https://en.wikipedia.org/wiki/Firefox\">Wikipedia</a> <span>&mdash; Firefox, with its style sheets and pictures</span></div>"
@@ -364,7 +369,7 @@ static void draw_field(gfx_surface_t *c, tf_t *t, tf_layout *L, tf_item *it, int
     char label[256];
     item_text(L, it, label, sizeof(label));
     int kind = (int)it->color;
-    const ui_font_t *f = fonts[it->font < 5 ? it->font : 1];
+    const ui_font_t *f = fonts[it->font < tfire_font_count ? it->font : 0];
     int focused = shown(t) && it->node && page_focus(shown(t)) == it->node;
     if (kind == 2) {                                         /* a check box or radio button */
         const char *type = dom_attr(it->node, "type");
@@ -448,10 +453,10 @@ static void tf_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
     for (int i = 0; i < L->n; i++) {
         tf_item *it = &L->items[i];
         int ix = x + it->x, iy = py + it->y - t->scroll;
-        int reach = it->rot ? (it->w > it->h ? it->w : it->h) : 0;     /* (turned: its corners reach further) */
+        int reach = it->rot ? (it->w > it->h ? it->w : it->h) : it->kind == IT_SHADOW ? it->deco : 0;   /* (turned: its corners reach further) */
         if (iy - reach > py + ph || iy + it->h + reach < py) continue;
         switch (it->kind) {
-        case IT_RECT: case IT_TEXT: case IT_IMAGE:
+        case IT_RECT: case IT_TEXT: case IT_IMAGE: case IT_SHADOW: case IT_GRAD:
             tfp_item(&c, pg, L, it, ix, iy, fonts);
             break;
         case IT_FIELD:

@@ -13,7 +13,13 @@
 #include "dom.h"
 #include "style.h"
 
-enum { IT_RECT, IT_TEXT, IT_IMAGE, IT_HLINE, IT_FIELD };
+enum { IT_RECT, IT_TEXT, IT_IMAGE, IT_HLINE, IT_FIELD,
+       IT_SHADOW,                  /* box-shadow: x, y, w, h the shadow's box, deco its blur, radius its corners; the box
+                                      itself at (int16) text, (int16) text >> 16 from it, len (the spread) in from each side */
+       IT_GRAD };                  /* linear-gradient: its stops in the pool at text (tf_grad), radius its corners */
+
+/* a gradient as IT_GRAD keeps it in the pool */
+typedef struct { int16_t angle, n; int16_t pos[4]; uint32_t color[4]; } tf_grad;
 
 typedef struct tf_item {
     uint8_t kind;

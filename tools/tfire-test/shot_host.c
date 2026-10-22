@@ -30,8 +30,18 @@ int uihost_image_decode(const uint8_t *data, uint32_t len, int max_w, int max_h,
 int uihost_read(const char *path, uint8_t **d, uint32_t *n) { (void)path; (void)d; (void)n; return -1; }
 int uihost_write(const char *path, const void *d, uint32_t n) { (void)path; (void)d; (void)n; return -1; }
 
-static const ui_font_t *const fonts[] = { &ui_font_small, &ui_font_regular, &ui_font_medium, &ui_font_title, &ui_font_huge };
-static int r_font_of(int px, int bold) { return px <= 12 ? 0 : px <= 17 ? (bold ? 2 : 1) : px <= 36 ? 3 : 4; }
+#define fonts tfire_fonts
+static int r_font_of(int px, int flags)
+{
+    int kind = (flags & 2) ? 2 : (flags & 1), best = 0, bd = 1 << 30;
+    for (int i = 0; i < tfire_font_count; i++) {
+        if (tfire_font_kind[i] != kind) continue;
+        int d = tfire_font_size[i] - px;
+        d = d < 0 ? -d * 2 + 1 : d * 2;
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
 static int r_text_w(int f, const char *s, int n)
 {
     char tmp[256];
@@ -52,15 +62,15 @@ static void draw(tf_page *p, gfx_surface_t *s, int W, int H, int scroll)
     for (int i = 0; i < L->n; i++) {
         tf_item *it = &L->items[i];
         int x = it->x, y = it->y - scroll;
-        int reach = it->rot ? (it->w > it->h ? it->w : it->h) : 0;
+        int reach = it->rot ? (it->w > it->h ? it->w : it->h) : it->kind == IT_SHADOW ? it->deco : 0;
         if (y - reach > H || y + it->h + reach < 0) continue;
-        if (it->kind == IT_RECT || it->kind == IT_TEXT || it->kind == IT_IMAGE) tfp_item(s, p, L, it, x, y, fonts);
+        if (it->kind == IT_RECT || it->kind == IT_TEXT || it->kind == IT_IMAGE || it->kind == IT_SHADOW || it->kind == IT_GRAD) tfp_item(s, p, L, it, x, y, fonts);
         else if (it->kind == IT_FIELD) {
             int n = it->len < 511 ? it->len : 511;
             memcpy(tmp, L->pool + it->text, (size_t)n); tmp[n] = 0;
             gfx_rrect(s, x, y, it->w, it->h, 4, it->color == 1 ? 0xE5E5EA : 0xFFFFFF, 255);
             gfx_rrect_outline(s, x, y, it->w, it->h, 4, 0x8E8E93, 255);
-            gfx_text(s, fonts[it->font < 5 ? it->font : 1], x + 5, y + 3, tmp, 0x111827, 255);
+            gfx_text(s, fonts[it->font < tfire_font_count ? it->font : 0], x + 5, y + 3, tmp, 0x111827, 255);
         }
     }
 }

@@ -121,11 +121,114 @@ static void tfp_rect(gfx_surface_t *s, const tf_item *it, int x, int y)
     gfx_rrect(s, x, y, it->w, it->h, r, it->color, al);
 }
 
+static int tfp_isqrt(int v)
+{
+    if (v <= 0) return 0;
+    int r = 0, b = 1 << 30;
+    while (b > v) b >>= 2;
+    while (b) { if (v >= r + b) { v -= r + b; r = (r >> 1) + b; } else r >>= 1; b >>= 2; }
+    return r;
+}
+
+/* how far (px, py) is outside a w x h box at (x, y) with corners r round (negative: inside) */
+static int tfp_dist(int px, int py, int x, int y, int w, int h, int r)
+{
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    int qx = x + r - px > 0 ? x + r - px : px - (x + w - 1 - r) > 0 ? px - (x + w - 1 - r) : 0;
+    int qy = y + r - py > 0 ? y + r - py : py - (y + h - 1 - r) > 0 ? py - (y + h - 1 - r) : 0;
+    if (!qx || !qy) {
+        if (qx || qy) return (qx > qy ? qx : qy) - r;
+        /* inside the inner box: how far in from the nearest edge */
+        int in = px - x; if (x + w - 1 - px < in) in = x + w - 1 - px;
+        if (py - y < in) in = py - y;
+        if (y + h - 1 - py < in) in = y + h - 1 - py;
+        return -in;
+    }
+    return tfp_isqrt(qx * qx + qy * qy) - r;
+}
+
+/* a box-shadow: the box, its edges blurred over it->deco pixels */
+static void tfp_shadow(gfx_surface_t *d, const tf_item *it, int x, int y)
+{
+    int b = it->deco, half = b / 2;
+    int x0 = x - half - 1, y0 = y - half - 1, x1 = x + it->w + half + 1, y1 = y + it->h + half + 1;
+    if (x0 < d->cx0) x0 = d->cx0;
+    if (y0 < d->cy0) y0 = d->cy0;
+    if (x1 > d->cx1) x1 = d->cx1;
+    if (y1 > d->cy1) y1 = d->cy1;
+    /* the box casting it: nothing under it (CSS clips an outer shadow to outside the box) */
+    int bx = x + (int16_t)(it->text & 0xFFFF), by = y + (int16_t)(it->text >> 16);
+    int bw = it->w - 2 * it->len, bh = it->h - 2 * it->len;
+    for (int py = y0; py < y1; py++) {
+        uint32_t *row = d->px + py * d->w;
+        for (int px = x0; px < x1; px++) {
+            if (bw > 0 && bh > 0 && px >= bx && px < bx + bw && py >= by && py < by + bh &&
+                (!it->radius || tfp_dist(px, py, bx, by, bw, bh, it->radius) <= 0)) continue;
+            int dist = tfp_dist(px, py, x, y, it->w, it->h, it->radius);
+            int a;
+            if (!b) a = dist <= 0 ? 255 : 0;
+            else { a = (half - dist) * 255 / b; if (a < 0) a = 0; if (a > 255) a = 255; a = a * a / 255; }   /* (a softer fall-off) */
+            a = a * it->alpha / 255;
+            if (a) row[px] = gfx_mix(row[px], it->color, a);
+        }
+    }
+}
+
+/* a linear-gradient background */
+static void tfp_gradient(gfx_surface_t *d, tf_layout *L, const tf_item *it, int x, int y)
+{
+    tf_grad g;
+    if (it->len < sizeof(g)) return;
+    memcpy(&g, L->pool + it->text, sizeof(g));
+    if (g.n < 2 || g.n > 4) return;
+    int sn = gfx_sin(g.angle), cs = gfx_cos(g.angle);          /* x4096: the direction (sin, -cos) on the screen */
+    int asn = sn < 0 ? -sn : sn, acs = cs < 0 ? -cs : cs;
+    int len = (it->w * asn + it->h * acs) / 4096;               /* the gradient line, corner to corner */
+    if (len < 1) len = 1;
+    int cx2 = 2 * x + it->w, cy2 = 2 * y + it->h;
+    int x0 = x, y0 = y, x1 = x + it->w, y1 = y + it->h;
+    if (x0 < d->cx0) x0 = d->cx0;
+    if (y0 < d->cy0) y0 = d->cy0;
+    if (x1 > d->cx1) x1 = d->cx1;
+    if (y1 > d->cy1) y1 = d->cy1;
+    for (int py = y0; py < y1; py++) {
+        uint32_t *row = d->px + py * d->w;
+        int Y = 2 * py + 1 - cy2;
+        for (int px = x0; px < x1; px++) {
+            if (it->radius && tfp_dist(px, py, x, y, it->w, it->h, it->radius) > 0) continue;
+            int X = 2 * px + 1 - cx2;
+            int t = (int)(((int64_t)X * sn - (int64_t)Y * cs) * 500 / ((int64_t)len * 4096)) + 500;   /* 0..1000 along it */
+            uint32_t c;
+            if (t <= g.pos[0]) c = g.color[0];
+            else if (t >= g.pos[g.n - 1]) c = g.color[g.n - 1];
+            else {
+                int k = 0;
+                while (k + 1 < g.n - 1 && t > g.pos[k + 1]) k++;
+                int span = g.pos[k + 1] - g.pos[k], f = span > 0 ? (t - g.pos[k]) * 256 / span : 256;
+                uint32_t a = g.color[k], b2 = g.color[k + 1];
+                if (!(a >> 24)) a = b2 & 0xFFFFFF;
+                if (!(b2 >> 24)) b2 = a & 0xFFFFFF;
+                c = 0;
+                for (int sh = 0; sh < 32; sh += 8) {
+                    int va = (int)((a >> sh) & 255), vb = (int)((b2 >> sh) & 255);
+                    c |= (uint32_t)(va + (vb - va) * f / 256) << sh;
+                }
+            }
+            int al = (int)(c >> 24) * it->alpha / 255;
+            if (al >= 255) row[px] = c & 0xFFFFFF;
+            else if (al) row[px] = gfx_mix(row[px], c & 0xFFFFFF, al);
+        }
+    }
+}
+
 /* a rectangle, a word or a picture of the page at (x, y) of s (fields are the window's own business) */
 static void tfp_item(gfx_surface_t *s, tf_page *pg, tf_layout *L, const tf_item *it, int x, int y, const ui_font_t *const *fonts)
 {
     if (!it->alpha) return;
-    const ui_font_t *f = fonts[it->font < 5 ? it->font : 1];
+    if (it->kind == IT_SHADOW) { tfp_shadow(s, it, x, y); return; }
+    if (it->kind == IT_GRAD) { tfp_gradient(s, L, it, x, y); return; }
+    const ui_font_t *f = fonts[it->font < tfire_font_count ? it->font : 0];
     char tmp[512];
     int turned = it->rot && !(it->kind == IT_RECT && it->radius * 2 >= it->w && it->w == it->h);   /* (a circle looks the same) */
     if (it->kind == IT_TEXT) {

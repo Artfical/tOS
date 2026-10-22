@@ -21,9 +21,15 @@ jobs:
           fetch-depth: 0          # the build number is the commit count
 
       - name: Install the toolchain and ISO tools
+        timeout-minutes: 25
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q gcc-multilib g++-multilib grub-pc-bin grub-common xorriso mtools qemu-system-x86
+          # (the runners' own package mirror stalls at times: Ubuntu's main one, and each try cut short)
+          echo 'Acquire::Retries "5"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99retry
+          sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          for i in 1 2 3; do
+            timeout 420 sh -c 'sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib g++-multilib grub-pc-bin grub-common xorriso mtools qemu-system-x86' && break
+            echo "try $i stalled; again"
+          done
 
       - name: Build tOS.iso
         # from scratch: objects must never come from the checkout

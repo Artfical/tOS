@@ -143,7 +143,7 @@ static JSValue computed(tf_js *j, tf_node *n)
     put_str(ctx, o, "display", s->display < 13 ? css_display[s->display] : "block");
     put_str(ctx, o, "position", s->position < 5 ? css_position[s->position] : "static");
     put_str(ctx, o, "visibility", s->visible ? "visible" : "hidden");
-    put_str(ctx, o, "fontWeight", s->bold ? "700" : "400");
+    put_str(ctx, o, "fontWeight", s->bold & 1 ? "700" : "400");
     put_str(ctx, o, "fontStyle", s->italic ? "italic" : "normal");
     put_str(ctx, o, "textAlign", s->text_align == TA_RIGHT ? "right" : s->text_align == TA_CENTER ? "center" : s->text_align == TA_JUSTIFY ? "justify" : "start");
     put_str(ctx, o, "whiteSpace", s->white_space == TWS_PRE ? "pre" : s->white_space == TWS_NOWRAP ? "nowrap" : s->white_space == TWS_PRE_WRAP ? "pre-wrap" : s->white_space == TWS_PRE_LINE ? "pre-line" : "normal");

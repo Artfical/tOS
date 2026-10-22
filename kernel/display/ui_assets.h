@@ -32,6 +32,11 @@ extern const uint32_t ui_blob_len, ui_blob_raw_len;
 
 extern const ui_font_t ui_font_regular, ui_font_medium, ui_font_small, ui_font_title, ui_font_huge;
 
+/* tFire's: many sizes of Inter regular (kind 0) and bold (1), and JetBrains Mono (2) */
+extern const ui_font_t *const tfire_fonts[];
+extern const uint8_t tfire_font_size[], tfire_font_kind[];
+extern const int tfire_font_count;
+
 /* the 9x18 terminal cell font, 256 cells in code page 437 order */
 #define UI_CELL_W 9
 #define UI_CELL_H 18

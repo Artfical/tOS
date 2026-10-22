@@ -134,7 +134,7 @@ static void box_place(ctx *c, tf_layout *b, int x, int y)
         tf_item *it = &c->L->items[k];
         it->font = src->font; it->deco = src->deco; it->len = src->len; it->node = src->node;
         it->radius = src->radius; it->alpha = src->alpha; it->px = src->px; it->rot = src->rot; it->ow = src->ow; it->oh = src->oh;
-        it->text = src->text + shift;
+        it->text = src->kind == IT_SHADOW ? src->text : src->text + shift;   /* (a shadow keeps its box there, not text) */
     }
     c->hidden = was;
     if (b->doc_h + y > c->L->doc_h) c->L->doc_h = b->doc_h + y;
@@ -571,7 +571,7 @@ static void put_word(lines_t *ln, tf_node *textnode, const tf_style *s, const ch
     if (s->valign == TV_SUPER) p->asc += p->h / 3;
     else if (s->valign == TV_SUB) p->asc -= p->h / 4;
     p->color = s->color;
-    p->deco = (uint8_t)((s->underline ? 1 : 0) | (s->strike ? 2 : 0) | (s->italic ? 4 : 0) | (s->bold ? 8 : 0));
+    p->deco = (uint8_t)((s->underline ? 1 : 0) | (s->strike ? 2 : 0) | (s->italic ? 4 : 0) | (s->bold & 1 ? 8 : 0));
     p->px = (uint8_t)(s->font_px > 255 ? 255 : s->font_px);
     p->text = pool_add(c->L, w, n);
     p->len = (uint16_t)n;
@@ -1138,8 +1138,35 @@ static int layout_block(ctx *c, tf_node *n, int x, int y, int avail, int *mb_out
     else if (s->margin[3].autov && rest > 0) ml = rest - mr;
     int bx = x + ml, by = y + mt;
     int first_item = c->L->n;
-    int bg = -1;
-    if ((s->bg >> 24) && s->mask) {
+    int bg = -1, shadow = -1;
+    if (s->shadow_color >> 24) {
+        /* a box-shadow under it (its height when the box's is known, below) */
+        int sp = s->shadow_spread;
+        shadow = add_item(c, IT_SHADOW, bx + s->shadow_x - sp, by + s->shadow_y - sp, w + frame + 2 * sp, 0, s->shadow_color & 0xFFFFFF);
+        if (shadow >= 0) {
+            tf_item *it = &c->L->items[shadow];
+            it->alpha = (uint8_t)(s->shadow_color >> 24);
+            it->deco = (uint8_t)(s->shadow_blur > 255 ? 255 : s->shadow_blur < 0 ? 0 : s->shadow_blur);
+            it->radius = (uint8_t)(s->radius > 255 ? 255 : s->radius);
+            /* where the box itself is, from the shadow's corner: no shadow is drawn under it */
+            it->text = (uint32_t)(uint16_t)(int16_t)(sp - s->shadow_x) | (uint32_t)(uint16_t)(int16_t)(sp - s->shadow_y) << 16;
+            it->len = (uint16_t)(sp < 0 ? 0 : sp);
+        }
+    }
+    if (s->ngrad >= 2 && !s->mask) {
+        tf_grad g;
+        memset(&g, 0, sizeof(g));
+        g.angle = s->grad_angle;
+        g.n = s->ngrad;
+        for (int i = 0; i < s->ngrad && i < 4; i++) { g.pos[i] = s->grad_p[i]; g.color[i] = s->grad_c[i]; }
+        bg = add_item(c, IT_GRAD, bx, by, w + frame, 0, s->grad_c[0] & 0xFFFFFF);
+        if (bg >= 0) {
+            tf_item *it = &c->L->items[bg];
+            it->text = pool_add(c->L, (const char *)&g, (int)sizeof(g));
+            it->len = (uint16_t)sizeof(g);
+            it->radius = (uint8_t)(s->radius > 255 ? 255 : s->radius);
+        }
+    } else if ((s->bg >> 24) && s->mask) {
         /* an icon: the mask's picture, painted in the background colour */
         bg = add_item(c, IT_IMAGE, bx, by, w + frame, 0, s->bg & 0xFFFFFF);
         if (bg >= 0) { c->L->items[bg].deco = 2; c->L->items[bg].node = n; }
@@ -1200,6 +1227,7 @@ static int layout_block(ctx *c, tf_node *n, int x, int y, int avail, int *mb_out
     if (!s->min_height.autov && !s->min_height.pct) { int m = s->min_height.v - (s->border_box ? bt + bb + pt + pb : 0); if (inner < m) inner = m; }
     int h = bt + pt + inner + pb + bb;
     if (bg >= 0) c->L->items[bg].h = h;
+    if (shadow >= 0) c->L->items[shadow].h = h + 2 * s->shadow_spread;
     border_items(c, s, bx, by, w + frame, h);
     n->lx = bx; n->ly = by; n->lw = w + frame; n->lh = h; n->laid = 1;
     if (bx + w + frame > c->L->doc_w) c->L->doc_w = bx + w + frame;
@@ -1993,7 +2021,7 @@ tf_node *layout_hit(tf_layout *L, tf_doc *d, int x, int y)
 {
     for (int i = L->n - 1; i >= 0; i--) {
         tf_item *it = &L->items[i];
-        if (!it->node || it->kind == IT_RECT) continue;
+        if (!it->node || it->kind == IT_RECT || it->kind == IT_SHADOW || it->kind == IT_GRAD) continue;
         if (x >= it->x && x < it->x + it->w && y >= it->y - 2 && y < it->y + it->h + 2) return it->node;
     }
     return d ? box_hit(d->root, x, y) : 0;

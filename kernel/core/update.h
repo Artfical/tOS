@@ -29,6 +29,13 @@ typedef struct {
     uint8_t *rgba;                      /* decoded once downloaded, NULL until then */
     int w, h;
     int frames, frame_ms;               /* a video: `frames` pictures stacked in rgba, shown frame_ms each */
+    /* or, when the server has it, the video frame by frame: its JPEGs one after another (MJPEG), each shown mj_ms;
+     * the notes window decodes only the one it shows (any length, little memory) */
+    char mjpath[64];
+    uint8_t *mj, *mj_buf;               /* the frames (inside mj_buf, which is what is freed) */
+    uint32_t mjlen;
+    uint32_t *mjoff;                    /* where each frame starts in mj */
+    int mjn, mj_ms;
 } update_shot_t;
 
 typedef struct {

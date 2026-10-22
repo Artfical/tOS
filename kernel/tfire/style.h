@@ -48,7 +48,7 @@ typedef struct { char *name; int nf; tf_kframe *f; } tf_keyframes;
 
 typedef struct tf_style {
     uint8_t display, position, white_space, text_align, list_style, visible, flex_row, flex_wrap, floated;
-    uint8_t bold, italic, underline, strike, upper;
+    uint8_t bold, italic, underline, strike, upper;   /* bold: 1 bold, 2 monospace (both bits as font_of gets them) */
     uint32_t color;                      /* 0xRRGGBB */
     uint32_t bg;                         /* 0xAARRGGBB, AA = 0: none */
     int font_px, line_px;
@@ -79,6 +79,13 @@ typedef struct tf_style {
     /* what libcss does not know (style.c's own small cascade): grid, as written */
     const char *grid_cols, *grid_rows, *grid_areas, *grid_area, *grid_col, *grid_row;
     const char *mask;                    /* mask-image: url(...), as written: an icon painted in the background colour */
+    /* box-shadow (the first one, not inset; colour 0 = none) and a linear-gradient background (up to 4 stops) */
+    uint32_t shadow_color;               /* 0xAARRGGBB */
+    int16_t shadow_x, shadow_y, shadow_blur, shadow_spread;
+    uint8_t ngrad;
+    int16_t grad_angle;                  /* degrees, CSS's: 180 = to bottom */
+    uint32_t grad_c[4];                  /* 0xAARRGGBB */
+    int16_t grad_p[4];                   /* positions x1000 */
     /* transform (functions in order), the translate, rotate and scale properties (kind XT_NONE: not given), transform-origin */
     uint8_t nxf;
     tf_xop xf[TF_MAXX];

@@ -113,6 +113,16 @@ static unsigned num(const char *s) { unsigned v = 0; while (*s >= '0' && *s <= '
  * *buf, which the caller frees */
 static int fetch_via(const char *path, uint32_t expect, uint8_t **buf, uint8_t **body, uint32_t *blen, int secure);
 
+static void shot_free(update_shot_t *sh)
+{
+    if (sh->rgba) free(sh->rgba);
+    sh->rgba = 0;
+    sh->mj = 0;
+    if (sh->mj_buf) free(sh->mj_buf);
+    if (sh->mjoff) free(sh->mjoff);
+    sh->mj_buf = 0; sh->mjoff = 0; sh->mjn = 0;
+}
+
 static int fetch(const char *path, uint32_t expect, uint8_t **buf, uint8_t **body, uint32_t *blen)
 {
     return fetch_via(path, expect, buf, body, blen, 1);
@@ -237,8 +247,9 @@ static void check_task(void)
         char *sp1 = strchr(v2, ' '), *sp2 = sp1 ? strchr(sp1 + 1, ' ') : 0;
         if (sp1 && sp2) { *sp1 = 0; *sp2 = 0; strncpy(info.ipath, v2, 63); info.isize = num(sp1 + 1); strncpy(info.isha, sp2 + 1, 64); }
     }
-    /* the notes: note=<build>\t<icon>\t<app>\t<text>\t<url>, shot=<build>\t<path>\t<caption>\t<app> */
-    for (int i = 0; i < info.nshots; i++) if (info.shots[i].rgba) free(info.shots[i].rgba);
+    /* the notes: note=<build>\t<icon>\t<app>\t<text>\t<url>, shot=<build>\t<path>\t<caption>\t<app>, and for a video
+     * \t<frames in the strip>\t<ms each>\t<MJPEG path>\t<ms each> */
+    for (int i = 0; i < info.nshots; i++) shot_free(&info.shots[i]);
     info.nnotes = info.nshots = 0;
     for (const char *p = t; p && *p; ) {
         const char *nl = strchr(p, '\n');
@@ -247,11 +258,11 @@ static void check_task(void)
         if (ll > (int)sizeof(line) - 1) ll = (int)sizeof(line) - 1;
         memcpy(line, p, (size_t)ll);
         line[ll] = 0;
-        char *f[6] = { 0 }; int k = 0;
+        char *f[8] = { 0 }; int k = 0;
         int is_note = !strncmp(line, "note=", 5), is_shot = !strncmp(line, "shot=", 5);
         if (is_note || is_shot) {
             f[k++] = line + 5;
-            int most = is_shot ? 6 : 5;              /* a note's last field is the rest of the line */
+            int most = is_shot ? 8 : 5;              /* a note's last field is the rest of the line */
             for (char *q = line + 5; *q && k < most; q++) if (*q == '\t') { *q = 0; f[k++] = q + 1; }
         }
         if (is_note && k == 5 && info.nnotes < UPD_MAX_NOTES) {
@@ -266,6 +277,7 @@ static void check_task(void)
             strncpy(sh->path, f[1], sizeof sh->path - 1); strncpy(sh->caption, f[2], sizeof sh->caption - 1);
             if (k > 3) strncpy(sh->app, f[3], sizeof sh->app - 1);
             if (k > 5) { sh->frames = (int)num(f[4]); sh->frame_ms = (int)num(f[5]); }
+            if (k > 7) { strncpy(sh->mjpath, f[6], sizeof sh->mjpath - 1); sh->mj_ms = (int)num(f[7]); }
         }
         p = nl ? nl + 1 : 0;
     }
@@ -274,6 +286,21 @@ static void check_task(void)
     /* the pictures of the notes, small PNGs */
     for (int i = 0; i < info.nshots; i++) {
         uint8_t *b2, *bd; uint32_t bl;
+        update_shot_t *sh = &info.shots[i];
+        if (sh->mjpath[0] && sh->mj_ms > 0 && fetch(sh->mjpath, 0, &b2, &bd, &bl) == 0) {
+            /* a video frame by frame: where each JPEG starts (FF D8 FF: inside a JPEG an FF byte is never followed by D8) */
+            int n = 0;
+            for (uint32_t o = 0; o + 2 < bl; o++) if (bd[o] == 0xFF && bd[o + 1] == 0xD8 && bd[o + 2] == 0xFF) n++;
+            uint32_t *off = n > 1 ? malloc((size_t)n * sizeof(uint32_t)) : 0;
+            if (off) {
+                int k2 = 0;
+                for (uint32_t o = 0; o + 2 < bl && k2 < n; o++) if (bd[o] == 0xFF && bd[o + 1] == 0xD8 && bd[o + 2] == 0xFF) off[k2++] = o;
+                sh->mjoff = off; sh->mjn = n; sh->mjlen = bl; sh->mj_buf = b2;
+                sh->mj = bd;                         /* (last: the notes window plays it once this is set) */
+                continue;
+            }
+            free(b2);
+        }
         if (fetch(info.shots[i].path, 0, &b2, &bd, &bl) != 0) continue;
         uint8_t *rgba; uint32_t w, h; const char *err;
         if (img_decode(bd, bl, &rgba, &w, &h, &err) == 0) { info.shots[i].rgba = rgba; info.shots[i].w = (int)w; info.shots[i].h = (int)h; }
@@ -321,9 +348,12 @@ static void download_task(void)
     /* a video in the notes holds all its frames (~12 MB): give them back first, or the
      * kernel and initrd may find no room. The notes window stops drawing them once the pointer
      * is gone; wait a frame before freeing what it may still be drawing from. */
-    uint8_t *frames[UPD_MAX_SHOTS]; int nf = 0;
-    for (int i = 0; i < info.nshots; i++)
-        if (info.shots[i].rgba && info.shots[i].frames > 1) { frames[nf++] = info.shots[i].rgba; info.shots[i].rgba = 0; }
+    uint8_t *frames[UPD_MAX_SHOTS * 3]; int nf = 0;
+    for (int i = 0; i < info.nshots; i++) {
+        update_shot_t *sh = &info.shots[i];
+        if (sh->rgba && sh->frames > 1) { frames[nf++] = sh->rgba; sh->rgba = 0; }
+        if (sh->mj) { sh->mj = 0; frames[nf++] = sh->mj_buf; frames[nf++] = (uint8_t *)sh->mjoff; sh->mj_buf = 0; sh->mjoff = 0; sh->mjn = 0; }
+    }
     if (nf) { task_sleep(100); while (nf) free(frames[--nf]); }
     if (!vfs_exists(STAGE)) vfs_mkdir(STAGE, 0700);
     vfs_unlink(STAGE "/ready");                      /* an older staged update is replaced */

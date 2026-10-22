@@ -40,6 +40,10 @@ void anim_matrix_parts(const float m[6], float *sx, float *sy, float *rot_deg);
 int anim_prop_id(const char *name, int len);                 /* AP_*, AP_ALL for "all", -1 = not one that moves */
 int anim_parse_transform(const char *v, const char *e, int font_px, tf_xop *out, int max);   /* functions found */
 int anim_parse_len(const char *v, const char *e, int font_px, tf_len *out);
+int anim_parse_color(const char *v, const char *e, uint32_t current, uint32_t *argb);
+/* box-shadow and linear-gradient(), into the style */
+void anim_set_shadow(tf_style *t, const char *v);
+void anim_set_gradient(tf_style *t, const char *v);
 void anim_set_transitions(tf_style *t, const char *shorthand, const char *props, const char *durs,
                           const char *timings, const char *delays);
 /* name -> keyframes index, for animation-name */

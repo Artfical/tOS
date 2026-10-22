@@ -1,20 +1,18 @@
-# Project tFire, update 5: animations
+# Project tFire, update 6: type, shadows and gradients
 
 ## tfire | tFire
-- CSS animations: @keyframes, with every animation property (duration, delay, iteration count,
-  direction, fill mode, play state) and the animation shorthand.
-- CSS transitions: when the pointer moves onto something (:hover), when a field gets the keyboard
-  (:focus) and when a script changes a class or a style.
-- Transforms: translate, scale, rotate and matrix, transform-origin, and the translate, rotate and
-  scale properties. Turned boxes, words and pictures are drawn with smooth edges.
-- Timing functions: linear, ease, ease-in, ease-out, ease-in-out, cubic-bezier() and steps().
-- What can move: opacity, colours (text, background, border), sizes and positions (width, height,
-  top, left, margins, max-height), font size and rounded corners.
-- The Web Animations API: element.animate(), with play, pause, reverse, finish, cancel, currentTime
-  and the finished promise, and getAnimations().
-- Scripts hear about it: animationstart, animationiteration and animationend; transitionrun,
-  transitionstart, transitionend and transitioncancel.
-- Try them all at gorun.artfical.com/anim.
-![tFire in build 580: gorun.artfical.com/anim](docs/screenshots/tfire/u5-anim.mp4)
-![Six kinds of animation on one page](docs/screenshots/tfire/u5-anim.png)
-![A transition on hover: the button grows and turns pink](docs/screenshots/tfire/u5-hover.png)
+- Pages are drawn in the font sizes they ask for: Inter in 13 sizes from 10 to 40 pixels, regular and
+  bold, instead of five. Wikipedia's text is now its real 16 pixels.
+- Code is drawn in a monospace font (JetBrains Mono): pre, code and anything set in monospace.
+- box-shadow: soft shadows under cards, buttons and menus, with their blur, spread and colour.
+- linear-gradient(): backgrounds that blend from colour to colour, at any angle, with up to four stops.
+- A cache: style sheets, scripts and pictures are kept for ten minutes, so the next page of a site
+  comes with what it shares with the last one already there (on Wikipedia, about half of it).
+- Try them at gorun.artfical.com/style.
+![tFire in build 581: gorun.artfical.com/style, then Wikipedia](docs/screenshots/tfire/u6-style.mp4)
+![Every size, gradients, shadows and code](docs/screenshots/tfire/u6-style.png)
+![Wikipedia in its real sizes](docs/screenshots/tfire/u6-wikipedia.png)
+
+## settings | Software Update
+- Videos in the release notes play smoothly: frame by frame, ten a second, however long they are,
+  instead of a few frames a second.

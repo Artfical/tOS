@@ -45,6 +45,9 @@ int anim_prop_id(const char *name, int len)
 
 /* ------------------------------------------------------------------ reading what the sheets write */
 
+static int list_items(const char *v, const char **is, const char **ie, int max);
+static const char *word_end(const char *p, const char *e);
+
 static int ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'; }
 static const char *skip(const char *p, const char *e) { while (p < e && ws(*p)) p++; return p; }
 
@@ -273,6 +276,13 @@ static int parse_individual(int prop, const char *v, const char *e, int font_px,
     return 1;
 }
 
+static int memmem_s(const char *p, const char *e, const char *w)
+{
+    size_t l = strlen(w);
+    for (; p + l <= e; p++) if (!strncasecmp(p, w, l)) return 1;
+    return 0;
+}
+
 static int hexd(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
 
 static const struct { const char *n; uint32_t c; } named[] = {
@@ -365,6 +375,96 @@ static int parse_color(const char *v, const char *e, uint32_t cur, uint32_t *out
     for (size_t i = 0; i < sizeof(named) / sizeof(named[0]); i++)
         if ((int)strlen(named[i].n) == n && !strncasecmp(p, named[i].n, (size_t)n)) { *out = 0xFF000000u | named[i].c; return 1; }
     return 0;
+}
+
+int anim_parse_color(const char *v, const char *e, uint32_t cur, uint32_t *out) { return parse_color(v, e, cur, out); }
+
+/* box-shadow: x y [blur [spread]] colour, the first of the list that is not inset */
+void anim_set_shadow(tf_style *t, const char *v)
+{
+    t->shadow_color = 0;
+    const char *is[4], *ie[4];
+    int n = list_items(v, is, ie, 4);
+    for (int i = 0; i < n; i++) {
+        int lens[4], nl = 0, inset = 0;
+        uint32_t col = 0xFF000000u | t->color;
+        int got_col = 0;
+        for (const char *p = is[i]; p < ie[i];) {
+            p = skip(p, ie[i]);
+            const char *we = word_end(p, ie[i]);
+            if (we == p) { p++; continue; }
+            tf_len l;
+            if ((int)(we - p) == 5 && !strncasecmp(p, "inset", 5)) inset = 1;
+            else if (!got_col && parse_color(p, we, t->color, &col)) got_col = 1;
+            else if (nl < 4 && anim_parse_len(p, we, t->font_px, &l) && !l.pct && !l.autov) lens[nl++] = l.v;
+            p = we;
+        }
+        if (inset || nl < 2 || !(col >> 24)) continue;
+        t->shadow_x = (int16_t)lens[0]; t->shadow_y = (int16_t)lens[1];
+        t->shadow_blur = (int16_t)(nl > 2 ? lens[2] : 0); t->shadow_spread = (int16_t)(nl > 3 ? lens[3] : 0);
+        t->shadow_color = col;
+        return;
+    }
+}
+
+/* linear-gradient([angle | to side], colour [pos], ...): up to 4 stops; other gradients as their first colour */
+void anim_set_gradient(tf_style *t, const char *v)
+{
+    t->ngrad = 0;
+    const char *g = v ? strstr(v, "gradient(") : 0;
+    if (!g) return;
+    int linear = g - v >= 7 && !strncasecmp(g - 7, "linear-", 7);
+    const char *open = g + 8, *close = open + 1;
+    int depth = 1;
+    for (; *close; close++) { if (*close == '(') depth++; else if (*close == ')' && --depth == 0) break; }
+    char buf[400];
+    int bl = (int)(close - open - 1);
+    if (bl <= 0) return;
+    if (bl > 399) bl = 399;
+    memcpy(buf, open + 1, (size_t)bl);
+    buf[bl] = 0;
+    const char *is[8], *ie[8];
+    int n = list_items(buf, is, ie, 8), first = 0;
+    t->grad_angle = 180;
+    if (n && linear) {
+        const char *p = is[0];
+        int a;
+        if (!strncasecmp(p, "to ", 3)) {
+            int top = memmem_s(p, ie[0], "top"), bot = memmem_s(p, ie[0], "bottom"), lef = memmem_s(p, ie[0], "left"), rig = memmem_s(p, ie[0], "right");
+            int ang = bot ? 180 : top ? 0 : 180;
+            if (rig) ang = top ? 45 : bot ? 135 : 90;
+            if (lef) ang = top ? 315 : bot ? 225 : 270;
+            t->grad_angle = (int16_t)ang;
+            first = 1;
+        } else if (angle(&p, ie[0], &a)) { t->grad_angle = (int16_t)(a / 100); first = 1; }
+    } else if (n && !linear) {
+        /* radial and conic: their first colour, as a plain background */
+        for (int i = 0; i < n; i++) {
+            const char *we = word_end(is[i], ie[i]);
+            uint32_t c;
+            if (parse_color(is[i], we, t->color, &c)) { t->bg = c; return; }
+        }
+        return;
+    }
+    int k = 0;
+    for (int i = first; i < n && k < 4; i++) {
+        const char *we = word_end(is[i], ie[i]);
+        uint32_t c;
+        if (!parse_color(is[i], we, t->color, &c)) continue;
+        tf_len pos;
+        int p = -1;
+        const char *q = skip(we, ie[i]);
+        if (q < ie[i] && anim_parse_len(q, ie[i], t->font_px, &pos) && pos.pct) p = pos.v / 10;
+        t->grad_c[k] = c;
+        t->grad_p[k] = (int16_t)p;
+        k++;
+    }
+    if (k < 2) { if (k == 1) t->bg = t->grad_c[0]; return; }
+    /* stops without a position spread out between the ones that have */
+    if (t->grad_p[0] < 0) t->grad_p[0] = 0;
+    if (t->grad_p[k - 1] < 0) t->grad_p[k - 1] = 1000;
+    for (int i = 1; i < k - 1; i++) if (t->grad_p[i] < 0) t->grad_p[i] = (int16_t)(t->grad_p[i - 1] + (1000 - t->grad_p[i - 1]) / (k - i));
+    t->ngrad = (uint8_t)k;
 }
 
 /* a value of prop as written, for an element with this style (em, currentColor) */

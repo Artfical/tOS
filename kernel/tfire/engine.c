@@ -797,6 +797,62 @@ static int image_size_cb(tf_node *img, int *w, int *h)
     return 0;
 }
 
+/* ------------------------------------------------------------------ what was fetched before */
+
+/* Style sheets, scripts and pictures stay for ten minutes (the next page of a site wants the same ones), up to
+ * CACHE_MAX bytes, the least recently used going first. What a server says not to keep (no-store) is not kept. */
+#define CACHE_N 256
+#define CACHE_MAX (24u << 20)
+#define CACHE_MS (10u * 60 * 1000)
+typedef struct { char *url; uint8_t *data; uint32_t len, at, used; } cache_e;
+static cache_e cache[CACHE_N];
+static uint32_t cache_bytes, cache_clock;
+
+static void cache_drop(cache_e *e) { cache_bytes -= e->len; free(e->url); free(e->data); memset(e, 0, sizeof(*e)); }
+
+static cache_e *cache_get(const char *url)
+{
+    uint32_t now = uihost_ms();
+    for (int i = 0; i < CACHE_N; i++) {
+        cache_e *e = &cache[i];
+        if (!e->url || strcmp(e->url, url)) continue;
+        if (now - e->at > CACHE_MS) { cache_drop(e); return 0; }
+        e->used = ++cache_clock;
+        return e;
+    }
+    return 0;
+}
+
+static void cache_put(const char *url, const webfetch_t *f)
+{
+    if (f->status != 200 || !f->body_len || f->body_len > CACHE_MAX / 6 || strncmp(url, "http", 4)) return;
+    /* Cache-Control: no-store (or private, for pages that differ per person) */
+    for (uint32_t i = 0; i + 8 < f->head_len; i++)
+        if ((f->raw[i] == 'n' || f->raw[i] == 'N') && !strncasecmp((const char *)f->raw + i, "no-store", 8)) return;
+    if (cache_get(url)) return;
+    while (cache_bytes + f->body_len > CACHE_MAX) {
+        cache_e *old = 0;
+        for (int i = 0; i < CACHE_N; i++) if (cache[i].url && (!old || cache[i].used < old->used)) old = &cache[i];
+        if (!old) break;
+        cache_drop(old);
+    }
+    cache_e *e = 0;
+    for (int i = 0; i < CACHE_N && !e; i++) if (!cache[i].url) e = &cache[i];
+    if (!e) {
+        for (int i = 0; i < CACHE_N; i++) if (!e || cache[i].used < e->used) e = &cache[i];
+        cache_drop(e);
+    }
+    e->url = strdup(url);
+    e->data = malloc(f->body_len + 1);
+    if (!e->url || !e->data) { free(e->url); free(e->data); memset(e, 0, sizeof(*e)); return; }
+    memcpy(e->data, f->body, f->body_len);
+    e->data[f->body_len] = 0;
+    e->len = f->body_len;
+    e->at = uihost_ms();
+    e->used = ++cache_clock;
+    cache_bytes += e->len;
+}
+
 /* ------------------------------------------------------------------ fetching, one at a time */
 
 static int fetch_tries;
@@ -822,12 +878,27 @@ static int fetch_retry(int *state)
     return 0;
 }
 
+static void deliver(tf_page *p, int kind, int i, int ok, const uint8_t *body, uint32_t blen, const webfetch_t *f);
+
+/* found in the cache: delivered now, without a fetch (1) */
+static int cached(tf_page *p, int kind, int i, const char *url)
+{
+    cache_e *e = cache_get(url);
+    if (!e) return 0;
+    deliver(p, kind, i, 1, e->data, e->len, 0);
+#ifdef TFIRE_HOST
+    if (getenv("TFCACHE")) fprintf(stderr, "  [cache %s]\n", url);
+#endif
+    return 1;
+}
+
 /* the next thing to fetch, by priority; 0 = nothing waits */
 static int fetch_next(tf_page *p)
 {
     for (int i = 0; i < p->ncss; i++)
         if (p->css[i].state == S_WAIT) {
             p->css[i].state = S_FETCHING;
+            if (cached(p, R_CSS, i, p->css[i].url)) continue;
             if (fetch_start(p, R_CSS, i, p->css[i].url, 0, 0, 0, 0)) return 1;
             if (fetch_retry(&p->css[i].state)) p->need_sheets = 1;
             return 0;
@@ -835,6 +906,7 @@ static int fetch_next(tf_page *p)
     for (int i = 0; i < p->nscripts; i++)
         if (p->scripts[i].state == S_WAIT) {
             p->scripts[i].state = S_FETCHING;
+            if (cached(p, R_SCRIPT, i, p->scripts[i].url)) continue;
             if (fetch_start(p, R_SCRIPT, i, p->scripts[i].url, 0, 0, 0, 0)) return 1;
             fetch_retry(&p->scripts[i].state);
             return 0;
@@ -842,6 +914,7 @@ static int fetch_next(tf_page *p)
     for (int i = 0; i < p->nmods; i++)
         if (p->mods[i].state == S_WAIT) {
             p->mods[i].state = S_FETCHING;
+            if (cached(p, R_MODULE, i, p->mods[i].url)) continue;
             if (fetch_start(p, R_MODULE, i, p->mods[i].url, 0, 0, 0, 0)) return 1;
             if (fetch_retry(&p->mods[i].state) && p->js) tfjs_module_source(p->js, p->mods[i].url, 0, 0);
             return 0;
@@ -860,6 +933,7 @@ static int fetch_next(tf_page *p)
         if (im->state != S_WAIT) continue;
         if (istarts(im->url, "data:")) { image_data_url(p, im); p->need_layout = 1; if (p->js && im->notify) tfjs_image_loaded(p->js, im->notify, im->state == S_READY); continue; }
         im->state = S_FETCHING;
+        if (cached(p, R_IMG, i, im->url)) continue;
         if (fetch_start(p, R_IMG, i, im->url, 0, 0, 0, 0)) return 1;
         fetch_retry(&im->state);
         return 0;
@@ -867,18 +941,15 @@ static int fetch_next(tf_page *p)
     return 0;
 }
 
-/* a fetch ended: its result goes where it belongs */
-static void fetch_finish(tf_page *p)
+/* what was fetched (or found in the cache) goes where it belongs; f is the fetch, 0 for a cached one */
+static void deliver(tf_page *p, int kind, int i, int ok, const uint8_t *body, uint32_t blen, const webfetch_t *f)
 {
-    webfetch_t *f = p->fetch;
-    int ok = f->state == WEBFETCH_DONE && f->status < 400;
-    int i = p->fetch_idx;
-    switch (p->fetch_kind) {
+    switch (kind) {
     case R_CSS:
         if (i < p->ncss) {
             css_t *c = &p->css[i];
             c->state = S_FAILED;
-            if (ok) { c->css = dupn((const char *)f->body, (int)f->body_len); if (c->css) { c->len = (int)f->body_len; c->state = S_READY; } }
+            if (ok) { c->css = dupn((const char *)body, (int)blen); if (c->css) { c->len = (int)blen; c->state = S_READY; } }
             p->need_sheets = 1;
         }
         break;
@@ -886,7 +957,7 @@ static void fetch_finish(tf_page *p)
         if (i < p->nscripts) {
             script_t *s = &p->scripts[i];
             s->state = S_FAILED;
-            if (ok) { s->src = dupn((const char *)f->body, (int)f->body_len); if (s->src) { s->len = (int)f->body_len; s->state = S_READY; } }
+            if (ok) { s->src = dupn((const char *)body, (int)blen); if (s->src) { s->len = (int)blen; s->state = S_READY; } }
             if (s->state == S_FAILED) {
                 char m[URL_CAP + 40];
                 snprintf(m, sizeof(m), "could not fetch the script %s", s->url);
@@ -898,14 +969,14 @@ static void fetch_finish(tf_page *p)
     case R_MODULE:
         if (i < p->nmods) {
             p->mods[i].state = ok ? S_READY : S_FAILED;
-            if (p->js) tfjs_module_source(p->js, p->mods[i].url, ok ? (const char *)f->body : 0, ok ? (int)f->body_len : 0);
+            if (p->js) tfjs_module_source(p->js, p->mods[i].url, ok ? (const char *)body : 0, ok ? (int)blen : 0);
         }
         break;
     case R_XHR:
         if (i < p->nxhrs) {
             xhr_t *x = &p->xhrs[i];
             x->state = S_DONE;
-            if (p->js) {
+            if (p->js && f) {
                 if (f->state == WEBFETCH_DONE)
                     tfjs_fetch_done(p->js, x->id, f->status, f->final_url[0] ? f->final_url : f->url, (const char *)f->raw, (int)f->head_len,
                                   (const char *)f->body, (int)f->body_len, 0);
@@ -917,9 +988,9 @@ static void fetch_finish(tf_page *p)
         if (i < p->nimgs) {
             image_t *im = &p->imgs[i];
             im->state = S_FAILED;
-            if (ok) image_decode(p, im, f->body, f->body_len);
+            if (ok) image_decode(p, im, body, blen);
 #ifdef TFIRE_DEBUG
-            if (im->state != S_READY) {
+            if (im->state != S_READY && f) {
                 char m[URL_CAP + 80];
                 snprintf(m, sizeof(m), "picture not shown (status %d, %u bytes, %s): %s", f->status, (unsigned)f->body_len, f->ctype, im->url);
                 page_console(p, 1, m);
@@ -930,6 +1001,15 @@ static void fetch_finish(tf_page *p)
         }
         break;
     }
+}
+
+/* a fetch ended */
+static void fetch_finish(tf_page *p)
+{
+    webfetch_t *f = p->fetch;
+    int ok = f->state == WEBFETCH_DONE && f->status < 400;
+    if (ok && p->fetch_kind != R_XHR) cache_put(f->url, f);
+    deliver(p, p->fetch_kind, p->fetch_idx, ok, f->body, f->body_len, f);
     webfetch_free(f);
     p->fetch = 0;
 }
