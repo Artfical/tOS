@@ -598,3 +598,8 @@ int sprintf(char *buf, const char *fmt, ...)
     va_end(ap);
     return r;
 }
+
+/* what GCC calls for __builtin_popcount and __builtin_ctzll on i386 (WebAssembly's popcnt and ctz, in wasm3) */
+int __popcountsi2(unsigned a) { int n = 0; while (a) { a &= a - 1; n++; } return n; }
+int __popcountdi2(unsigned long long a) { return __popcountsi2((unsigned)a) + __popcountsi2((unsigned)(a >> 32)); }
+int __ctzdi2(unsigned long long a) { unsigned lo = (unsigned)a; return lo ? __builtin_ctz(lo) : 32 + __builtin_ctz((unsigned)(a >> 32)); }

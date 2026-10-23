@@ -18,6 +18,7 @@ tFire, tOS's web browser, shows it at `tfire:licenses`.
 | [compiler-rt builtins (LLVM)](https://github.com/llvm/llvm-project) | 18.1.8 | Apache-2.0 WITH LLVM-exception | `third_party/compiler-rt/` | tFire: software floating point | none (a subset of the files) |
 | [NanoSVG](https://github.com/memononen/nanosvg) | master (2026-10) | Zlib | `third_party/nanosvg/` | tFire: drawing SVG pictures | none |
 | [libwebp (decoder)](https://chromium.googlesource.com/webm/libwebp) | 1.4.0 | BSD-3-Clause (+ patent grant) | `third_party/libwebp/` | tFire: decoding WebP pictures | none (the decoder's files only) |
+| [wasm3](https://github.com/wasm3/wasm3) | 0.5.0 | MIT | `third_party/wasm3/` | tFire: WebAssembly (an interpreter) | an imported table's type is read past; an imported memory is allocated by the instance (see third_party/wasm3/README.tOS) |
 | [Inter (font)](https://github.com/rsms/inter) |  | OFL-1.1 | `third_party/ui/Inter-*.ttf` | the desktop's text | rasterised into bitmaps at build time (kernel/display/ui_assets.c) |
 | [JetBrains Mono (font)](https://github.com/JetBrains/JetBrainsMono) |  | OFL-1.1 | `third_party/ui/JetBrainsMono-Regular.ttf` | monospaced text | none |
 | [Lucide (icons)](https://lucide.dev/) |  | ISC | `third_party/ui/lucide.ttf` | the desktop's icons | rasterised into bitmaps at build time |
@@ -827,6 +828,32 @@ constitute direct or contributory patent infringement, or inducement of
 patent infringement, then any patent rights granted to you under this License
 for these implementations of WebM shall terminate as of the date such
 litigation is filed.
+```
+
+### wasm3 — `third_party/wasm3/LICENSE`
+
+```
+MIT License
+
+Copyright (c) 2019 Steven Massey, Volodymyr Shymanskyy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ### Inter (font) — `third_party/ui/Inter-LICENSE.txt`

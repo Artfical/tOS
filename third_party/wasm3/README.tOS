@@ -1,0 +1,15 @@
+wasm3, a WebAssembly interpreter, used by tFire (tOS's web browser) for the WebAssembly object of web pages.
+
+  wasm3 0.5.0   https://github.com/wasm3/wasm3   MIT (LICENSE)
+  Copyright (c) 2019 Steven Massey, Volodymyr Shymanskyy
+
+Kept: the interpreter in source/ (m3_bind, m3_code, m3_compile, m3_core, m3_emit, m3_env, m3_exec, m3_function, m3_info,
+m3_module, m3_optimize, m3_parse and their headers). Left out: the WASI, libc and tracer APIs, the extensions, the
+platforms, tests and docs. Built with -Dd_m3Use32BitSlots=0 (64-bit stack slots) and soft-float, like the rest of tFire;
+kernel/tfire/wasm.c binds it to QuickJS.
+
+Two changes, both marked "tOS:":
+  - source/m3_parse.c: an imported table's type is read past. wasm3 left those bytes in the stream, so every import
+    after a table import was read from the middle of it and the module failed to load.
+  - source/m3_env.c (InitMemory): an imported memory is allocated by the instance too. wasm3 expects the embedder to
+    supply it; tFire's WebAssembly.Memory then refers to the instance's memory.

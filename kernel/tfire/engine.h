@@ -68,6 +68,7 @@ const char *page_title(tf_page *p);
 tf_layout *page_layout(tf_page *p);            /* the display list (document coordinates); never 0 */
 tf_picture *page_picture(tf_page *p, tf_node *img);   /* an <img>'s picture, or 0 while there is none */
 tf_picture *page_mask(tf_page *p, tf_node *n);        /* an element's mask-image (an icon), or 0 */
+tf_page *page_frame(tf_page *p, tf_node *iframe);    /* the page in an <iframe> (an IT_FRAME item's node), or 0 */
 tf_node *page_focus(tf_page *p);               /* the form field being typed in, or 0 */
 int page_caret_on(tf_page *p);
 
@@ -92,6 +93,7 @@ int page_resolve(const char *base, const char *href, char *out, int cap);
 
 tf_doc *page_doc(tf_page *p);
 void page_changed(tf_page *p);                 /* the tree changed: style and layout again */
+void page_timers_changed(tf_page *p);          /* a script ran outside a timer: when the next timer is due may differ */
 void page_layout_now(tf_page *p);              /* layout made current before a script reads sizes */
 void page_node_inserted(tf_page *p, tf_node *n);   /* a script put n in the document: scripts and sheets in it */
 void page_navigate(tf_page *p, const char *url, int replace);
@@ -115,6 +117,9 @@ char *page_storage_get(tf_page *p, int session, const char *key);     /* malloc'
 void page_storage_set(tf_page *p, int session, const char *key, const char *value);   /* value 0 = remove */
 int page_storage_keys(tf_page *p, int session, char ***keys);          /* malloc'd array of malloc'd */
 void page_storage_clear(tf_page *p, int session);
+/* postMessage: to the page in iframe frame, or (frame 0) to the page around this one */
+void page_post_message(tf_page *p, tf_node *frame, const char *data);
+int page_is_frame(tf_page *p);
 /* element.animate() (anim.c's anim_js_*) */
 int page_anim_add(tf_page *p, tf_node *n, const char *frames, int len, int dur, int delay, const char *easing, int iter, int dir, int fill);
 void page_anim_ctl(tf_page *p, int id, int op, int value);
@@ -141,5 +146,7 @@ void tfjs_fetch_done(tf_js *j, int id, int status, const char *url, const char *
                    const char *body, int blen, const char *error);
 void tfjs_node_gone(tf_js *j, tf_node *n);       /* (the page is closing) */
 void tfjs_image_loaded(tf_js *j, tf_node *img, int ok);
+/* a message (postMessage, as JSON) from the page in the iframe from, or (from 0) from the page around this one */
+void tfjs_message(tf_js *j, tf_node *from, const char *data, const char *origin);
 
 #endif

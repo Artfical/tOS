@@ -1,18 +1,17 @@
-# Project tFire, update 6: type, shadows and gradients
+# Project tFire, update 7: iframes, Web Workers and WebAssembly
 
 ## tfire | tFire
-- Pages are drawn in the font sizes they ask for: Inter in 13 sizes from 10 to 40 pixels, regular and
-  bold, instead of five. Wikipedia's text is now its real 16 pixels.
-- Code is drawn in a monospace font (JetBrains Mono): pre, code and anything set in monospace.
-- box-shadow: soft shadows under cards, buttons and menus, with their blur, spread and colour.
-- linear-gradient(): backgrounds that blend from colour to colour, at any angle, with up to four stops.
-- A cache: style sheets, scripts and pictures are kept for ten minutes, so the next page of a site
-  comes with what it shares with the last one already there (on Wikipedia, about half of it).
-- Try them at gorun.artfical.com/style.
-![tFire in build 581: gorun.artfical.com/style, then Wikipedia](docs/screenshots/tfire/u6-style.mp4)
-![Every size, gradients, shadows and code](docs/screenshots/tfire/u6-style.png)
-![Wikipedia in its real sizes](docs/screenshots/tfire/u6-wikipedia.png)
+- iframes: a page inside a page, drawn in its box, with its own scripts; clicks, keys and the pointer
+  go to it, and the two talk with postMessage. srcdoc frames too.
+- Web Workers: new Worker(), importScripts, workers from Blob URLs, MessageChannel and ports, and
+  BroadcastChannel.
+- WebAssembly: modules run on wasm3 (MIT), with Module, Instance, instantiate, memory and
+  memory.grow, globals, tables, i64 as BigInt, JavaScript imports, and instantiateStreaming.
+- fetch() and XMLHttpRequest give binary bodies exactly (arrayBuffer, blob).
+- Try them at gorun.artfical.com/frames, /workers and /wasm.
+![iframes, talking to the page around them](docs/screenshots/tfire/u7-iframes.png)
+![Web Workers: 10 of 10 tests](docs/screenshots/tfire/u7-workers.png)
+![WebAssembly: 13 of 13 tests](docs/screenshots/tfire/u7-wasm.png)
 
-## settings | Software Update
-- Videos in the release notes play smoothly: frame by frame, ten a second, however long they are,
-  instead of a few frames a second.
+## about | Licences
+- wasm3 (MIT) is in third_party/wasm3 with its licence; tFire lists it at tfire:licenses.

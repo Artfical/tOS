@@ -288,6 +288,15 @@ static void intrinsic_walk(ctx *c, tf_node *n, intr *r, int depth)
             if (r->line > r->max) r->max = r->line;
             continue;
         }
+        if (dom_is(k, "iframe")) {
+            const char *aw = dom_attr(k, "width");
+            int w = !s->width.autov && !s->width.pct ? s->width.v : aw && !strchr(aw, '%') ? atoi(aw) : 300;
+            w += extra;
+            if (w > r->min) r->min = w;
+            r->line += w;
+            if (r->line > r->max) r->max = r->line;
+            continue;
+        }
         if (dom_is(k, "input") || dom_is(k, "select") || dom_is(k, "textarea")) {
             int w, h;
             char lab[8];
@@ -808,6 +817,34 @@ static void put_element(lines_t *ln, tf_node *k)
         p->valign = s->valign;
         return;
     }
+    if (dom_is(k, "iframe")) {
+        /* a page in the page: as big as it says (300 x 150 when it does not) */
+        int w = !s->width.autov ? len_of(s->width, ln->w, 300) : 0, h = !s->height.autov && !s->height.pct ? s->height.v : 0;
+        if (!w) { const char *a = dom_attr(k, "width"); w = a && !strchr(a, '%') ? atoi(a) : a ? ln->w * atoi(a) / 100 : 300; }
+        if (!h) { const char *a = dom_attr(k, "height"); h = a && !strchr(a, '%') ? atoi(a) : 150; }
+        if (s->border_box) { w -= s->border[1] + s->border[3]; h -= s->border[0] + s->border[2]; }
+        if (w > ln->w) w = ln->w;
+        if (w <= 0 || h <= 0) return;
+        piece *p = place(ln, w + mh, 1);
+        if (!p) return;
+        p->kind = P_ATOM; p->item_kind = IT_FRAME; p->h = h; p->asc = h; p->node = k;
+        p->valign = s->valign;
+        return;
+    }
+    if (dom_is(k, "iframe")) {
+        /* a page in the page: as big as it says (300 x 150 when it does not) */
+        int w = !s->width.autov ? len_of(s->width, ln->w, 300) : 0, h = !s->height.autov && !s->height.pct ? s->height.v : 0;
+        if (!w) { const char *a = dom_attr(k, "width"); w = a && !strchr(a, '%') ? atoi(a) : a ? ln->w * atoi(a) / 100 : 300; }
+        if (!h) { const char *a = dom_attr(k, "height"); h = a && !strchr(a, '%') ? atoi(a) : 150; }
+        if (s->border_box) { w -= s->border[1] + s->border[3]; h -= s->border[0] + s->border[2]; }
+        if (w > ln->w) w = ln->w;
+        if (w <= 0 || h <= 0) return;
+        piece *p = place(ln, w + mh, 1);
+        if (!p) return;
+        p->kind = P_ATOM; p->item_kind = IT_FRAME; p->h = h; p->asc = h; p->node = k;
+        p->valign = s->valign;
+        return;
+    }
     if (dom_is(k, "input") || dom_is(k, "select") || dom_is(k, "textarea")) {
         int w, h;
         char label[200];
@@ -848,7 +885,7 @@ static void inline_walk(lines_t *ln, tf_node *n)
             continue;
         }
         if (dom_is(k, "br")) { flush_line(ln, 1); ln->pending_space = 0; continue; }
-        if (dom_is(k, "img") || dom_is(k, "svg") || dom_is(k, "input") || dom_is(k, "button") || dom_is(k, "select") || dom_is(k, "textarea") ||
+        if (dom_is(k, "img") || dom_is(k, "svg") || dom_is(k, "iframe") || dom_is(k, "input") || dom_is(k, "button") || dom_is(k, "select") || dom_is(k, "textarea") ||
             s->display == TD_INLINE_BLOCK || s->display == TD_INLINE_FLEX) {
             int hid = !s->visible || s->opacity == 0;
             if (hid) ln->c->hidden++;
@@ -1103,9 +1140,16 @@ static int layout_block(ctx *c, tf_node *n, int x, int y, int avail, int *mb_out
     int pt = s->padding[0], pr = s->padding[1], pb = s->padding[2], pl = s->padding[3];
     int frame = bl + br + pl + pr;
     int w;
-    int is_img = dom_is(n, "img"), is_svg = dom_is(n, "svg");
+    int is_img = dom_is(n, "img"), is_svg = dom_is(n, "svg"), is_frame = dom_is(n, "iframe");
     int iw = 0, ih = 0;
     if (is_svg) { svg_size(n, avail, &iw, &ih); is_img = 1; }
+    else if (is_frame) {
+        const char *aw = dom_attr(n, "width"), *ah = dom_attr(n, "height");
+        iw = !s->width.autov ? len_of(s->width, avail, 300) : aw && !strchr(aw, '%') ? atoi(aw) : aw ? avail * atoi(aw) / 100 : 300;
+        ih = !s->height.autov && !s->height.pct ? s->height.v : ah && !strchr(ah, '%') ? atoi(ah) : 150;
+        if (iw > avail) iw = avail;
+        is_img = 1;
+    }
     else if (is_img) {
         /* a picture as a block: its own size, or what the page says (keeping its proportions) */
         int have = c->env->image_size(n, &iw, &ih) == 0 && iw > 0 && ih > 0;
@@ -1207,8 +1251,8 @@ static int layout_block(ctx *c, tf_node *n, int x, int y, int avail, int *mb_out
     if (is_img) {
         inner = ih;
         if (iw > 0 && ih > 0) {
-            int k = add_item(c, IT_IMAGE, cx, cy, w, ih, 0);
-            if (k >= 0) { c->L->items[k].node = n; c->L->items[k].deco = link_of(n) ? 1 : 0; }
+            int k = add_item(c, is_frame ? IT_FRAME : IT_IMAGE, cx, cy, w, ih, 0);
+            if (k >= 0) { c->L->items[k].node = n; c->L->items[k].deco = !is_frame && link_of(n) ? 1 : 0; }
         }
     } else if (s->display == TD_TABLE) inner = layout_table(c, n, cx, cy, w);
     else if (s->display == TD_FLEX || s->display == TD_INLINE_FLEX) inner = layout_flex(c, n, cx, cy, w);

@@ -456,7 +456,7 @@ static void tf_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
         int reach = it->rot ? (it->w > it->h ? it->w : it->h) : it->kind == IT_SHADOW ? it->deco : 0;   /* (turned: its corners reach further) */
         if (iy - reach > py + ph || iy + it->h + reach < py) continue;
         switch (it->kind) {
-        case IT_RECT: case IT_TEXT: case IT_IMAGE: case IT_SHADOW: case IT_GRAD:
+        case IT_RECT: case IT_TEXT: case IT_IMAGE: case IT_SHADOW: case IT_GRAD: case IT_FRAME:
             tfp_item(&c, pg, L, it, ix, iy, fonts);
             break;
         case IT_FIELD:

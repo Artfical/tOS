@@ -31,8 +31,14 @@ if [ ! -f $O/libwebp.a ]; then
     done
     ar rcs $O/libwebp.a $O/webp_*.o
 fi
-INC="-I$N/libparserutils/include -I$N/libwapcaplet/include -I$N/libhubbub/include -I$N/libcss/include -I$Q -Ikernel/tfire -Ikernel/net -Ikernel/display -Ithird_party/nanosvg -Ithird_party/libwebp"
+if [ ! -f $O/libwasm3.a ]; then
+    for f in third_party/wasm3/source/*.c; do
+        gcc -m32 -isystem /tmp/tfire_inc32 -O2 -w -std=gnu99 -Dd_m3Use32BitSlots=0 -Ithird_party/wasm3/source -c $f -o $O/w3_$(basename $f .c).o
+    done
+    ar rcs $O/libwasm3.a $O/w3_*.o
+fi
+INC="-I$N/libparserutils/include -I$N/libwapcaplet/include -I$N/libhubbub/include -I$N/libcss/include -I$Q -Ikernel/tfire -Ikernel/net -Ikernel/display -Ithird_party/nanosvg -Ithird_party/libwebp -Ithird_party/wasm3/source -Dd_m3Use32BitSlots=0"
 as --32 kernel/tfire/js_prelude.s -o $O/prelude.o
 gcc -m32 -isystem /tmp/tfire_inc32 -O1 -g -Wall -Wextra -Wno-unused-parameter -std=gnu99 -DTFIRE_HOST $INC \
-    kernel/tfire/dom.c kernel/tfire/style.c kernel/tfire/anim.c kernel/tfire/layout.c kernel/tfire/engine.c kernel/tfire/js.c kernel/tfire/images.c \
-    tools/tfire-test/page_host.c $O/prelude.o $O/libqjs.a $O/libns.a $O/libwebp.a -lm -lpthread -o /tmp/tfire_page
+    kernel/tfire/dom.c kernel/tfire/style.c kernel/tfire/anim.c kernel/tfire/layout.c kernel/tfire/engine.c kernel/tfire/js.c kernel/tfire/images.c kernel/tfire/wasm.c \
+    tools/tfire-test/page_host.c $O/prelude.o $O/libqjs.a $O/libns.a $O/libwebp.a $O/libwasm3.a -lm -lpthread -o /tmp/tfire_page

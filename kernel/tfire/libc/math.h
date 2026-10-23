@@ -61,6 +61,10 @@ static inline float fabsf(float x) { return x < 0 ? -x : x; }
 static inline float floorf(float x) { return (float)floor(x); }
 static inline float ceilf(float x) { return (float)ceil(x); }
 static inline float roundf(float x) { return (float)round(x); }
+static inline float rintf(float x) { return (float)rint(x); }
+static inline float nearbyintf(float x) { return (float)nearbyint(x); }
+static inline float truncf(float x) { return (float)trunc(x); }
+static inline float copysignf(float x, float y) { return (float)copysign(x, y); }
 static inline float fmodf(float x, float y) { return (float)fmod(x, y); }
 static inline float sinf(float x) { return (float)sin(x); }
 static inline float cosf(float x) { return (float)cos(x); }

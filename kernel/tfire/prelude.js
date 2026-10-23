@@ -153,7 +153,7 @@ class InputEvent extends UIEvent { constructor(t, i) { super(t, i); i = i || {};
 class CustomEvent extends Event { constructor(t, i) { super(t, i); this.detail = i && i.detail !== undefined ? i.detail : null; } initCustomEvent(t, b, c, d) { this.initEvent(t, b, c); this.detail = d; } }
 class SubmitEvent extends Event { constructor(t, i) { super(t, i); this.submitter = (i && i.submitter) || null; } }
 class ProgressEvent extends Event { constructor(t, i) { super(t, i); i = i || {}; this.lengthComputable = !!i.lengthComputable; this.loaded = i.loaded || 0; this.total = i.total || 0; } }
-class MessageEvent extends Event { constructor(t, i) { super(t, i); i = i || {}; this.data = i.data; this.origin = i.origin || ''; this.source = i.source || null; this.ports = []; this.lastEventId = ''; } }
+class MessageEvent extends Event { constructor(t, i) { super(t, i); i = i || {}; this.data = i.data; this.origin = i.origin || ''; this.source = i.source || null; this.ports = i.ports || []; this.lastEventId = ''; } }
 class PopStateEvent extends Event { constructor(t, i) { super(t, i); this.state = i && i.state !== undefined ? i.state : null; } }
 class HashChangeEvent extends Event { constructor(t, i) { super(t, i); i = i || {}; this.oldURL = i.oldURL || ''; this.newURL = i.newURL || ''; } }
 class ErrorEvent extends Event { constructor(t, i) { super(t, i); i = i || {}; this.message = i.message || ''; this.error = i.error || null; this.filename = i.filename || ''; this.lineno = i.lineno || 0; this.colno = 0; } }
@@ -1098,7 +1098,54 @@ class HTMLImageElement extends HTMLElement {
 reflect(HTMLImageElement, { src: 'url', alt: 'str', srcset: 'str', sizes: 'str', useMap: ['str', 'usemap'], isMap: ['bool', 'ismap'], loading: 'str', decoding: 'str', crossOrigin: ['str', 'crossorigin'], referrerPolicy: ['str', 'referrerpolicy'], fetchPriority: ['str', 'fetchpriority'] });
 class HTMLPictureElement extends HTMLElement {}
 class HTMLSourceElement extends HTMLElement {} reflect(HTMLSourceElement, { src: 'url', srcset: 'str', type: 'str', media: 'str', sizes: 'str' });
-class HTMLIFrameElement extends HTMLElement { get contentWindow() { return null; } get contentDocument() { return null; } }
+class HTMLIFrameElement extends HTMLElement {
+    /* the page inside is a page of its own (the engine opens it): seen from here as a window to post messages to */
+    get contentWindow() { return frameWindow(this); }
+    get contentDocument() { return null; }
+    get src() { const v = T.getAttr(this, 'src'); return v ? T.resolve(v, T.url()) || v : ''; }
+    set src(v) { setAttribute(this, 'src', str(v)); }
+    get srcdoc() { return T.getAttr(this, 'srcdoc') || ''; }
+    set srcdoc(v) { setAttribute(this, 'srcdoc', str(v)); }
+    get name() { return T.getAttr(this, 'name') || ''; }
+    set name(v) { setAttribute(this, 'name', str(v)); }
+    get width() { return T.getAttr(this, 'width') || ''; }
+    set width(v) { setAttribute(this, 'width', str(v)); }
+    get height() { return T.getAttr(this, 'height') || ''; }
+    set height(v) { setAttribute(this, 'height', str(v)); }
+    get allow() { return T.getAttr(this, 'allow') || ''; }
+    set allow(v) { setAttribute(this, 'allow', str(v)); }
+}
+
+/* ------------------------------------------------------------------ other pages: iframes and the page around this one */
+
+/* messages go between pages as JSON (what the web sends between origins is plain data) */
+function serialize(d) { try { return JSON.stringify(d === undefined ? null : d); } catch (e) { return JSON.stringify(String(d)); } }
+function remoteWindow(post) {
+    const w = Object.create(null);
+    const loc = { get href() { return ''; }, set href(v) {}, replace() {}, assign() {}, toString() { return ''; } };
+    Object.assign(w, {
+        postMessage(data, origin) { post(serialize(data)); },
+        focus() {}, blur() {}, close() {},
+        closed: false, length: 0, location: loc, opener: null,
+    });
+    w.window = w; w.self = w; w.frames = w;
+    return w;
+}
+function frameWindow(el) {
+    if (!el.__cw) hidden(el, '__cw', remoteWindow(d => T.post(el, d)));
+    return el.__cw;
+}
+const parentWindow = T.isFrame() ? remoteWindow(d => T.post(null, d)) : null;
+
+function engineMessage(from, data, origin) {
+    let v;
+    try { v = JSON.parse(data); } catch (e) { v = data; }
+    const source = from ? frameWindow(from) : parentWindow;
+    const ev = new MessageEvent('message', { data: v, origin, source, lastEventId: '', ports: [] });
+    ev.isTrusted = true;
+    ev.target = G; ev._path = [G]; ev.eventPhase = 2;
+    invoke(G, ev, 2);
+}
 reflect(HTMLIFrameElement, { src: 'url', srcdoc: 'str', name: 'str', width: 'str', height: 'str', allow: 'str', loading: 'str', sandbox: 'str', allowFullscreen: ['bool', 'allowfullscreen'] });
 class HTMLEmbedElement extends HTMLElement {} reflect(HTMLEmbedElement, { src: 'url', type: 'str', width: 'str', height: 'str' });
 class HTMLObjectElement extends HTMLElement {} reflect(HTMLObjectElement, { data: 'url', type: 'str', width: 'str', height: 'str', name: 'str' });
@@ -1989,23 +2036,35 @@ function startRequest(method, url, headers, body, done) {
     return id;
 }
 /* the engine: a request ended */
-function fetchDone(id, status, url, headers, body, error) {
+function fetchDone(id, status, url, headers, body, error, bytes) {
     const d = pending.get(id);
     if (!d) return;
     pending.delete(id);
-    d(status, url, headers, body, error);
+    d(status, url, headers, body, error, bytes);
 }
+/* bytes as a "binary string" (one char per byte, as Blob keeps them) and back */
+function binaryString(u8) { let s = ''; for (let i = 0; i < u8.length; i += 8192) s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192)); return s; }
+function stringBytes(s) { const b = new Uint8Array(s.length); for (let i = 0; i < b.length; i++) b[i] = s.charCodeAt(i) & 255; return b; }
 
 class Body {
-    _init(body) { hidden(this, '_body', body === undefined || body === null ? null : String(body)); hidden(this, '_used', false); }
+    _init(body, bytes) {
+        hidden(this, '_used', false);
+        hidden(this, '_buf', bytes instanceof ArrayBuffer ? bytes : null);
+        if (!this._buf && (body instanceof ArrayBuffer || ArrayBuffer.isView(body))) {
+            const u8 = body instanceof ArrayBuffer ? new Uint8Array(body) : new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+            this._buf = u8.slice().buffer;
+            body = new TextDecoder().decode(u8);
+        } else if (!this._buf && body instanceof Blob) { this._buf = stringBytes(body._text).buffer; body = new TextDecoder().decode(new Uint8Array(this._buf)); }
+        hidden(this, '_body', body === undefined || body === null ? null : String(body));
+    }
     get bodyUsed() { return this._used; }
     get body() { const t = this._body; return t === null ? null : new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(t)); c.close(); } }); }
     _take() { if (this._used) return Promise.reject(new TypeError('Body has already been consumed.')); this._used = true; return Promise.resolve(this._body || ''); }
     text() { return this._take(); }
     json() { return this._take().then(t => JSON.parse(t)); }
-    arrayBuffer() { return this._take().then(t => new TextEncoder().encode(t).buffer); }
-    bytes() { return this._take().then(t => new TextEncoder().encode(t)); }
-    blob() { return this._take().then(t => new Blob([t], { type: this.headers.get('content-type') || '' })); }
+    arrayBuffer() { return this._take().then(t => this._buf ? this._buf.slice(0) : new TextEncoder().encode(t).buffer); }
+    bytes() { return this.arrayBuffer().then(b => new Uint8Array(b)); }
+    blob() { return this.arrayBuffer().then(b => new Blob([new Uint8Array(b)], { type: this.headers.get('content-type') || '' })); }
     formData() { return this._take().then(t => { const f = new FormData(); new URLSearchParams(t).forEach((v, k) => f.append(k, v)); return f; }); }
 }
 class Request extends Body {
@@ -2013,7 +2072,7 @@ class Request extends Body {
         super();
         init = init || {};
         const src = input instanceof Request ? input : null;
-        this.url = src ? src.url : T.resolve(T.url(), String(input)) || String(input);
+        this.url = src ? src.url : T.resolve(document.baseURI, String(input)) || String(input);
         this.method = String(init.method || (src ? src.method : 'GET')).toUpperCase();
         this.headers = new Headers(init.headers || (src ? src.headers : undefined));
         this.signal = init.signal || (src ? src.signal : null) || new AbortController().signal;
@@ -2052,12 +2111,14 @@ function fetch(input, init) {
     try { req = new Request(input, init); } catch (e) { return Promise.reject(e); }
     return new Promise((resolve, reject) => {
         if (req.signal && req.signal.aborted) { reject(req.signal.reason || new DOMException('The operation was aborted.', 'AbortError')); return; }
-        if (/^data:/.test(req.url)) { const m = /^data:([^,]*?)(;base64)?,(.*)$/s.exec(req.url); const d = m ? (m[2] ? atob(m[3]) : decodeURIComponent(m[3])) : ''; resolve(new Response(d, { headers: { 'content-type': m ? m[1] : '' } })); return; }
-        if (/^blob:/.test(req.url)) { const b = blobs.get(req.url); if (b) resolve(new Response(b._text, { headers: { 'content-type': b.type } })); else reject(new TypeError('Failed to fetch')); return; }
-        const id = startRequest(req.method, req.url, req.headers, req._body, (status, url, raw, body, error) => {
+        if (/^data:/.test(req.url)) { const m = /^data:([^,]*?)(;base64)?,(.*)$/s.exec(req.url); const d = m ? (m[2] ? stringBytes(atob(m[3])) : decodeURIComponent(m[3])) : ''; resolve(new Response(d, { headers: { 'content-type': m ? m[1] : '' } })); return; }
+        if (/^blob:/.test(req.url)) { const b = blobs.get(req.url); if (b) resolve(new Response(b, { headers: { 'content-type': b.type } })); else reject(new TypeError('Failed to fetch')); return; }
+        const id = startRequest(req.method, req.url, req.headers, req._body, (status, url, raw, body, error, bytes) => {
             if (error || !status) { reject(new TypeError('Failed to fetch' + (error ? ': ' + error : ''))); return; }
             const p = parseHeaders(raw);
-            resolve(new Response(body, { status, statusText: p.statusText, headers: p.headers, url, redirected: url !== req.url }));
+            const res = new Response(body, { status, statusText: p.statusText, headers: p.headers, url, redirected: url !== req.url });
+            if (bytes) res._buf = bytes;
+            resolve(res);
         });
         if (req.signal) req.signal.addEventListener('abort', () => { T.abort(id); pending.delete(id); reject(req.signal.reason || new DOMException('The operation was aborted.', 'AbortError')); });
     });
@@ -2074,7 +2135,7 @@ class XMLHttpRequest extends XMLHttpRequestEventTarget {
         hidden(this, '_h', new Headers()); hidden(this, '_rh', new Headers()); hidden(this, '_id', 0); hidden(this, '_resp', null);
     }
     _state(s) { this.readyState = s; dispatch(this, new Event('readystatechange')); }
-    open(method, url) { this._method = String(method).toUpperCase(); this._url = String(url); this._h = new Headers(); this.status = 0; this.responseText = ''; this._resp = null; this._state(1); }
+    open(method, url) { this._method = String(method).toUpperCase(); this._url = T.resolve(document.baseURI, String(url)) || String(url); this._h = new Headers(); this.status = 0; this.responseText = ''; this._resp = null; this._state(1); }
     setRequestHeader(k, v) { this._h.append(k, v); }
     overrideMimeType() {}
     send(body) {
@@ -2083,7 +2144,8 @@ class XMLHttpRequest extends XMLHttpRequestEventTarget {
         dispatch(this, new ProgressEvent('loadstart'));
         let timedOut = false;
         const tm = this.timeout ? setTimeout(() => { timedOut = true; T.abort(this._id); pending.delete(this._id); this._state(4); dispatch(this, new ProgressEvent('timeout')); dispatch(this, new ProgressEvent('loadend')); }, this.timeout) : 0;
-        this._id = startRequest(this._method, this._url, this._h, b, (status, url, raw, text, error) => {
+        this._id = startRequest(this._method, this._url, this._h, b, (status, url, raw, text, error, bytes) => {
+            this._buf = bytes || null;
             if (timedOut) return;
             if (tm) clearTimeout(tm);
             if (error || !status) {
@@ -2114,8 +2176,8 @@ class XMLHttpRequest extends XMLHttpRequestEventTarget {
         switch (this.responseType) {
         case 'json': try { return JSON.parse(this.responseText); } catch (e) { return null; }
         case 'document': return detachedDocument(this.responseText);
-        case 'arraybuffer': return new TextEncoder().encode(this.responseText).buffer;
-        case 'blob': return new Blob([this.responseText], { type: this._rh.get('content-type') || '' });
+        case 'arraybuffer': return this._buf ? this._buf.slice(0) : new TextEncoder().encode(this.responseText).buffer;
+        case 'blob': return new Blob([this._buf ? new Uint8Array(this._buf) : this.responseText], { type: this._rh.get('content-type') || '' });
         default: return this.responseText;
         }
     }
@@ -2678,8 +2740,327 @@ function structuredClone(v) {
     return c(v);
 }
 
-class BroadcastChannel extends EventTarget { constructor(n) { super(); this.name = n; } postMessage() {} close() {} }
-class MessageChannel { constructor() { const mk = () => Object.assign(Object.create(EventTarget.prototype), { postMessage() {}, start() {}, close() {}, onmessage: null }); this.port1 = mk(); this.port2 = mk(); } }
+/* ------------------------------------------------------------------ messages: ports, channels and workers */
+
+/* what postMessage sends: a copy, except ports and transferred buffers, which go across as they are (one thread) */
+function cloneForPost(data, transfer) {
+    const keep = new Set(transfer || []);
+    const seen = new Map();
+    const c = x => {
+        if (x === null || typeof x !== 'object') { if (typeof x === 'function' || typeof x === 'symbol') throw new DOMException('could not be cloned', 'DataCloneError'); return x; }
+        if (x instanceof MessagePort || keep.has(x)) return x;
+        if (seen.has(x)) return seen.get(x);
+        let r;
+        if (x instanceof Date) r = new Date(x.getTime());
+        else if (x instanceof RegExp) r = new RegExp(x.source, x.flags);
+        else if (x instanceof Map) { r = new Map(); seen.set(x, r); for (const [k, v] of x) r.set(c(k), c(v)); return r; }
+        else if (x instanceof Set) { r = new Set(); seen.set(x, r); for (const v of x) r.add(c(v)); return r; }
+        else if (ArrayBuffer.isView(x)) r = keep.has(x.buffer) ? x : x.slice();
+        else if (x instanceof ArrayBuffer) r = x.slice(0);
+        else if (x instanceof Blob) r = x;
+        else if (x instanceof Node) throw new DOMException('could not be cloned', 'DataCloneError');
+        else { r = Array.isArray(x) ? [] : {}; seen.set(x, r); for (const k of Object.keys(x)) r[k] = c(x[k]); return r; }
+        seen.set(x, r);
+        return r;
+    };
+    return c(data);
+}
+function transferList(t) { return Array.isArray(t) ? t : t && Array.isArray(t.transfer) ? t.transfer : []; }
+
+class MessagePort extends EventTarget {
+    constructor() { super(); hidden(this, '_other', null); hidden(this, '_closed', false); }
+    postMessage(data, transfer) {
+        const to = this._other, t = transferList(transfer);
+        if (!to || this._closed) return;
+        const d = cloneForPost(data, t), ports = t.filter(x => x instanceof MessagePort);
+        setTimeout(() => { if (!to._closed) dispatch(to, new MessageEvent('message', { data: d, ports })); }, 0);
+    }
+    start() {}
+    close() { this._closed = true; }
+}
+onProps(MessagePort.prototype, ['message', 'messageerror']);
+class MessageChannel {
+    constructor() { this.port1 = new MessagePort(); this.port2 = new MessagePort(); this.port1._other = this.port2; this.port2._other = this.port1; }
+}
+
+/* channels by name: every other one of the page (and of its workers) hears a message */
+const channels = new Map();
+class BroadcastChannel extends EventTarget {
+    constructor(name) {
+        super();
+        this.name = String(name);
+        hidden(this, '_closed', false);
+        if (!channels.has(this.name)) channels.set(this.name, new Set());
+        channels.get(this.name).add(this);
+    }
+    postMessage(data) {
+        if (this._closed) throw new DOMException('channel is closed', 'InvalidStateError');
+        const d = cloneForPost(data);
+        for (const ch of channels.get(this.name) || [])
+            if (ch !== this) setTimeout(() => { if (!ch._closed) dispatch(ch, new MessageEvent('message', { data: cloneForPost(d), origin: location.origin })); }, 0);
+    }
+    close() { this._closed = true; const s = channels.get(this.name); if (s) s.delete(this); }
+}
+onProps(BroadcastChannel.prototype, ['message', 'messageerror']);
+
+/* Web workers. tFire has one thread, so a worker runs on it too, by turns with the page: its script runs in a global
+ * of its own (self), with the page's window and document out of sight, and the two talk only through postMessage,
+ * whose messages arrive later as events, as they do between threads. importScripts() takes the scripts the worker
+ * names as plain strings (they are fetched before it starts). */
+const WORKER_HIDDEN = ['window', 'document', 'parent', 'top', 'frames', 'opener', 'frameElement', 'localStorage', 'sessionStorage', 'history',
+    'customElements', 'alert', 'confirm', 'prompt', 'open', 'getComputedStyle', 'matchMedia', 'scrollTo', 'scrollBy', 'Node', 'Element',
+    'HTMLElement', 'Document', 'Image', 'Audio'];
+const IMPORT_RE = /importScripts\s*\(([^)]*)\)/g;
+const STRING_RE = /(["'`])((?:\\.|(?!\1)[^\\])*)\1/g;
+
+function workerText(href) {
+    if (href.startsWith('blob:')) { const b = blobs.get(href); return b ? Promise.resolve(b._text) : Promise.reject(new TypeError('no such blob: ' + href)); }
+    if (href.startsWith('data:')) return fetch(href).then(r => r.text());
+    return fetch(href).then(r => { if (!r.ok) throw new TypeError('worker script: HTTP ' + r.status); return r.text(); });
+}
+
+/* the scripts a worker's source names in importScripts('...'), and theirs, fetched */
+async function workerImports(src, base, got, depth) {
+    if (depth > 4) return;
+    const urls = [];
+    for (const m of src.matchAll(IMPORT_RE)) for (const q of m[1].matchAll(STRING_RE)) { try { urls.push(new URL(q[2], base).href); } catch (e) {} }
+    for (const u of urls) {
+        if (got.has(u)) continue;
+        try { const t = await workerText(u); got.set(u, t); await workerImports(t, u, got, depth + 1); } catch (e) { got.set(u, null); }
+    }
+}
+
+/* the names a script declares at its top level (function f, class C, var/let/const x): in a worker they are
+ * properties of self, for the scripts after it (importScripts) to see */
+function topLevelNames(src) {
+    const names = new Set();
+    let depth = 0;
+    for (let i = 0, n = src.length; i < n; i++) {
+        const c = src[i];
+        if (c === '"' || c === "'" || c === '`') { const q = c; for (i++; i < n && src[i] !== q; i++) if (src[i] === '\\') i++; continue; }
+        if (c === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') i++; continue; }
+        if (c === '/' && src[i + 1] === '*') { i = src.indexOf('*/', i + 2); if (i < 0) break; i++; continue; }
+        if (c === '{' || c === '(' || c === '[') { depth++; continue; }
+        if (c === '}' || c === ')' || c === ']') { depth--; continue; }
+        if (depth || !/[a-z]/.test(c) || (i && /[\w$.]/.test(src[i - 1]))) continue;
+        const m = /^(?:async\s+)?(?:function\s*\*?\s*|class\s+|var\s+|let\s+|const\s+)([A-Za-z_$][\w$]*)/.exec(src.slice(i, i + 80));
+        if (m) { names.add(m[1]); i += m[0].length - 1; }
+    }
+    return [...names];
+}
+
+class WorkerGlobalScope extends EventTarget {}
+onProps(WorkerGlobalScope.prototype, ['message', 'messageerror', 'error', 'rejectionhandled', 'unhandledrejection']);
+
+class Worker extends EventTarget {
+    constructor(url, opts) {
+        super();
+        const s = String(url);
+        let href;
+        try { href = s.startsWith('blob:') ? s : new URL(s, location.href).href; } catch (e) { throw new DOMException('bad worker address: ' + s, 'SyntaxError'); }
+        hidden(this, '_q', []);
+        hidden(this, '_scope', null);
+        hidden(this, '_alive', true);
+        hidden(this, '_timers', new Set());
+        const module = opts && opts.type === 'module';
+        const name = opts && opts.name ? String(opts.name) : '';
+        workerText(href).then(async src => {
+            const imports = new Map();
+            await workerImports(src, href, imports, 0);
+            if (this._alive) this._start(src, href, name, imports, module);
+        }).catch(e => this._fail(e));
+    }
+    _fail(e) {
+        const ev = new ErrorEvent('error', { message: e && e.message ? e.message : String(e), error: e, cancelable: true });
+        setTimeout(() => { if (this._alive && dispatch(this, ev)) T.log(2, 'Worker: ' + ev.message); }, 0);
+    }
+    _start(src, href, name, imports, module) {
+        const w = this, scope = new WorkerGlobalScope();
+        const timers = w._timers;
+        const later = (fn, args, ms, repeat) => {
+            const run = () => { if (!w._alive) return; if (!repeat) timers.delete(id); try { typeof fn === 'function' ? fn(...args) : (0, eval)(String(fn)); } catch (e) { report(e); } };
+            const id = (repeat ? setInterval : setTimeout)(run, ms);
+            timers.add(id);
+            return id;
+        };
+        const clear = id => { timers.delete(id); clearTimeout(id); };
+        const report = e => {
+            const ev = new ErrorEvent('error', { message: e && e.message ? e.message : String(e), error: e, cancelable: true, filename: href, lineno: e && e.lineNumber || 0 });
+            if (dispatch(scope, ev)) setTimeout(() => { if (w._alive && dispatch(w, new ErrorEvent('error', { message: ev.message, error: e, cancelable: true, filename: href }))) T.log(2, 'Uncaught in worker: ' + ev.message); }, 0);
+        };
+        let wloc;
+        try { wloc = new URL(href.startsWith('blob:') ? location.href : href); } catch (e) { wloc = location; }
+        const run = (code, file) => {
+            const keep = topLevelNames(code).filter(k => k !== '__scope' && !(k in props)).map(k => 'try { __scope.' + k + ' = ' + k + '; } catch (e) {}').join('\n');
+            const f = new Function('__scope', 'with (__scope) {\n' + code + '\n;' + keep + '\n}');
+            f.call(scope, scope);
+        };
+        const props = {
+            self: scope, globalThis: scope, name, location: wloc, navigator,
+            postMessage(data, transfer) {
+                const t = transferList(transfer), d = cloneForPost(data, t), ports = t.filter(x => x instanceof MessagePort);
+                setTimeout(() => { if (w._alive) dispatch(w, new MessageEvent('message', { data: d, ports })); }, 0);
+            },
+            close() { w.terminate(); },
+            importScripts(...urls) {
+                for (const u0 of urls) {
+                    const u = new URL(String(u0), href).href;
+                    const t = imports.get(u);
+                    if (t == null) throw new DOMException('importScripts: could not load ' + u, 'NetworkError');
+                    run(t, u);
+                }
+            },
+            setTimeout: (fn, ms, ...a) => later(fn, a, ms, false), setInterval: (fn, ms, ...a) => later(fn, a, ms, true),
+            clearTimeout: clear, clearInterval: clear,
+            requestAnimationFrame: fn => later(() => fn(performance.now()), [], 16, false), cancelAnimationFrame: clear,
+        };
+        for (const k of WORKER_HIDDEN) Object.defineProperty(scope, k, { value: undefined, writable: true, configurable: true });
+        for (const [k, v] of Object.entries(props)) Object.defineProperty(scope, k, { value: v, writable: true, configurable: true });
+        w._scope = scope;
+        if (module) { report(new SyntaxError('module workers are not supported in tFire yet')); return; }
+        try { run(src, href); } catch (e) { report(e); }
+        /* what the page sent before the script was there */
+        for (const m of w._q.splice(0)) w._deliver(m.d, m.ports);
+        hidden(w, '_report', report);
+    }
+    _deliver(d, ports) {
+        const scope = this._scope;
+        setTimeout(() => {
+            if (!this._alive) return;
+            try { dispatch(scope, new MessageEvent('message', { data: d, ports: ports || [] })); } catch (e) { this._report && this._report(e); }
+        }, 0);
+    }
+    postMessage(data, transfer) {
+        if (!this._alive) return;
+        const t = transferList(transfer), d = cloneForPost(data, t), ports = t.filter(x => x instanceof MessagePort);
+        if (!this._scope) this._q.push({ d, ports }); else this._deliver(d, ports);
+    }
+    terminate() {
+        this._alive = false;
+        for (const id of this._timers) clearTimeout(id);
+        this._timers.clear();
+    }
+}
+onProps(Worker.prototype, ['message', 'messageerror', 'error']);
+/* ------------------------------------------------------------------ WebAssembly (wasm3 underneath, wasm.c) */
+
+const WebAssembly = (() => {
+    class CompileError extends Error { constructor(m) { super(m); this.name = 'CompileError'; } }
+    class LinkError extends Error { constructor(m) { super(m); this.name = 'LinkError'; } }
+    class RuntimeError extends Error { constructor(m) { super(m); this.name = 'RuntimeError'; } }
+    const wrapErr = e => {
+        if (!e || !e.wasmKind) return e;
+        return new (e.wasmKind === 'compile' ? CompileError : e.wasmKind === 'link' ? LinkError : RuntimeError)(e.message);
+    };
+    const guard = f => { try { return f(); } catch (e) { throw wrapErr(e); } };
+    const KINDS = ['function', 'table', 'memory', 'global'];
+    const VT = { i: 'i32', I: 'i64', f: 'f32', F: 'f64' };
+    const bytesOf = src => {
+        if (src instanceof ArrayBuffer || ArrayBuffer.isView(src)) return src;
+        throw new TypeError('WebAssembly: an ArrayBuffer or a typed array, please');
+    };
+
+    class Module {
+        constructor(src) { const d = guard(() => T.wasmCompile(bytesOf(src))); hidden(this, '_d', d); }
+        static imports(m) { return m._d.imports.map(i => ({ module: i.module, name: i.name, kind: KINDS[i.kind] })); }
+        static exports(m) { return m._d.exports.map(e => ({ name: e.name, kind: KINDS[e.kind] })); }
+        static customSections() { return []; }
+    }
+
+    class Memory {
+        constructor(desc) {
+            const pages = desc && desc.initial !== undefined ? desc.initial : desc && desc.minimum || 0;
+            hidden(this, '_inst', null);
+            hidden(this, '_own', new ArrayBuffer(pages * 65536));
+            hidden(this, '_max', desc && desc.maximum);
+        }
+        get buffer() { return this._inst ? T.wasmMemory(this._inst) : this._own; }
+        grow(n) {
+            if (this._inst) { const r = T.wasmGrow(this._inst, n >>> 0); if (r < 0) throw new RangeError('WebAssembly.Memory.grow(): could not grow'); return r; }
+            const old = this._own.byteLength / 65536, nb = new ArrayBuffer((old + (n >>> 0)) * 65536);
+            new Uint8Array(nb).set(new Uint8Array(this._own));
+            this._own = nb;
+            return old;
+        }
+    }
+
+    class Global {
+        constructor(desc, v) {
+            hidden(this, '_inst', null); hidden(this, '_name', null);
+            this._type = desc && desc.value || 'i32';
+            this._mutable = !!(desc && desc.mutable);
+            hidden(this, '_v', v === undefined ? (this._type === 'i64' ? 0n : 0) : v);
+        }
+        get value() { return this._inst ? T.wasmGlobal(this._inst, this._name) : this._v; }
+        set value(v) { if (!this._mutable) throw new TypeError('WebAssembly.Global: not mutable'); if (this._inst) T.wasmGlobal(this._inst, this._name, v); else this._v = v; }
+        valueOf() { return this.value; }
+    }
+
+    class Table {
+        constructor(desc) { hidden(this, '_a', new Array(desc && desc.initial || 0).fill(null)); }
+        get length() { return this._a.length; }
+        get(i) { return this._a[i]; }
+        set(i, v) { this._a[i] = v; }
+        grow(n) { const old = this._a.length; for (let i = 0; i < n; i++) this._a.push(null); return old; }
+    }
+
+    class Instance {
+        constructor(module, importObject) {
+            if (!(module instanceof Module)) throw new TypeError('WebAssembly.Instance: not a Module');
+            const d = module._d, values = [], memories = [];
+            for (const im of d.imports) {
+                const ns = importObject && importObject[im.module];
+                const v = ns === undefined || ns === null ? undefined : ns[im.name];
+                if (im.kind === 0) {
+                    if (typeof v !== 'function') throw new LinkError('import ' + im.module + '.' + im.name + ' must be a function');
+                    values.push(v);
+                } else if (im.kind === 2) {
+                    if (!(v instanceof Memory)) throw new LinkError('import ' + im.module + '.' + im.name + ' must be a WebAssembly.Memory');
+                    values.push(v._own); memories.push(v);
+                } else if (im.kind === 3) values.push(v instanceof Global ? v.value : v);
+                else values.push(v);
+            }
+            const inst = guard(() => T.wasmInstantiate(d.mod, values));
+            for (const m of memories) m._inst = inst;
+            const exports = Object.create(null);
+            let memory = memories[0] || null;
+            for (const ex of d.exports) {
+                if (ex.kind === 0) {
+                    const name = ex.name, nargs = ex.type ? ex.type.indexOf(':') : 0;
+                    const f = function (...a) { return guard(() => T.wasmCall(inst, name, a)); };
+                    Object.defineProperty(f, 'name', { value: String(d.exports.indexOf(ex)) });
+                    Object.defineProperty(f, 'length', { value: nargs });
+                    exports[name] = f;
+                } else if (ex.kind === 2) {
+                    if (!memory) { memory = new Memory({ initial: 0 }); memory._inst = inst; }
+                    exports[ex.name] = memory;
+                } else if (ex.kind === 3) {
+                    const g = new Global({ value: VT[ex.type] || 'i32', mutable: true });
+                    g._inst = inst; g._name = ex.name;
+                    exports[ex.name] = g;
+                } else if (ex.kind === 1) exports[ex.name] = new Table({ initial: 0 });
+            }
+            hidden(this, '_h', inst);
+            this.exports = Object.freeze(exports);
+        }
+    }
+
+    const toBytes = src => src instanceof Response || (src && typeof src.then === 'function')
+        ? Promise.resolve(src).then(r => r.arrayBuffer()) : Promise.resolve(src);
+    return {
+        Module, Instance, Memory, Global, Table, CompileError, LinkError, RuntimeError,
+        validate(src) { try { T.wasmCompile(bytesOf(src)); return true; } catch (e) { return false; } },
+        compile(src) { return new Promise((ok, no) => setTimeout(() => { try { ok(new Module(src)); } catch (e) { no(e); } }, 0)); },
+        instantiate(src, imports) {
+            if (src instanceof Module) return new Promise((ok, no) => setTimeout(() => { try { ok(new Instance(src, imports)); } catch (e) { no(e); } }, 0));
+            return WebAssembly.compile(src).then(module => ({ module, instance: new Instance(module, imports) }));
+        },
+        compileStreaming(src) { return toBytes(src).then(b => WebAssembly.compile(b)); },
+        instantiateStreaming(src, imports) { return toBytes(src).then(b => WebAssembly.instantiate(b, imports)); },
+        [Symbol.toStringTag]: 'WebAssembly',
+    };
+})();
+
 function Image(w, h) { const i = T.create('img'); if (w !== undefined) T.setAttr(i, 'width', String(w)); if (h !== undefined) T.setAttr(i, 'height', String(h)); return i; }
 Image.prototype = HTMLImageElement.prototype;
 function Audio(src) { const a = T.create('audio'); if (src) T.setAttr(a, 'src', String(src)); return a; }
@@ -2693,10 +3074,10 @@ function scrollTo(x, y) {
 
 /* ------------------------------------------------------------------ window */
 
-T.setup(protoFor, engineEvent, windowEvent, tick, fetchDone, imageLoaded, s => { currentScript = s; });
+T.setup(protoFor, engineEvent, windowEvent, tick, fetchDone, imageLoaded, s => { currentScript = s; }, engineMessage);
 const document = T.doc();
 const windowProps = {
-    window: G, self: G, top: G, parent: G, frames: G, globalThis: G, document, location, history, navigator, screen, console, performance, crypto,
+    window: G, self: G, top: parentWindow || G, parent: parentWindow || G, frames: G, globalThis: G, document, location, history, navigator, screen, console, performance, crypto,
     localStorage, sessionStorage, customElements, visualViewport: null, frameElement: null, opener: null, closed: false, name: '', status: '',
     length: 0, origin: undefined, isSecureContext: true, crossOriginIsolated: false, devicePixelRatio: 1, locationbar: { visible: true },
     menubar: { visible: true }, toolbar: { visible: true }, statusbar: { visible: true }, scrollbars: { visible: true }, personalbar: { visible: true },
@@ -2708,7 +3089,7 @@ const windowProps = {
     MutationObserver, IntersectionObserver, ResizeObserver, PerformanceObserver, DOMParser, XMLSerializer, Range, StaticRange, Selection, NodeFilter, TreeWalker,
     URL, URLSearchParams, Headers, Request, Response, AbortController, AbortSignal, XMLHttpRequest, XMLHttpRequestUpload, XMLHttpRequestEventTarget,
     EventSource, WebSocket, TextEncoder, TextDecoder, Blob, File, FileReader, FormData, ReadableStream, WritableStream, TransformStream, Storage,
-    BroadcastChannel, MessageChannel, Image, Audio, Option: HTMLOptionElement, SVGElement, SVGGraphicsElement, SVGSVGElement, MathMLElement,
+    BroadcastChannel, MessageChannel, MessagePort, Worker, WebAssembly, Image, Audio, Option: HTMLOptionElement, SVGElement, SVGGraphicsElement, SVGSVGElement, MathMLElement,
     HTMLUnknownElement, HTMLDivElement, HTMLSpanElement, HTMLParagraphElement, HTMLHeadingElement, HTMLBRElement, HTMLHRElement, HTMLPreElement,
     HTMLQuoteElement, HTMLUListElement, HTMLOListElement, HTMLLIElement, HTMLDListElement, HTMLHtmlElement, HTMLHeadElement, HTMLBodyElement,
     HTMLTitleElement, HTMLMetaElement, HTMLBaseElement, HTMLLinkElement, HTMLStyleElement, HTMLScriptElement, HTMLNoScriptElement, HTMLTemplateElement,

@@ -31,7 +31,7 @@ struct tf_js {
     JSRuntime *rt;
     JSContext *ctx;
     JSClassID node_class;
-    JSValue fn_proto, fn_event, fn_winev, fn_tick, fn_fetch, fn_image, fn_script;
+    JSValue fn_proto, fn_event, fn_winev, fn_tick, fn_fetch, fn_image, fn_script, fn_message;
     uint32_t deadline;
     uint32_t t0;
     /* modules: their sources once fetched, and the ones a module asked for that are not here yet */
@@ -42,6 +42,8 @@ struct tf_js {
 };
 
 static JSClassID node_class_id;
+
+void tfwasm_install(JSContext *ctx, JSValue tf);
 
 /* ------------------------------------------------------------------ nodes as objects */
 
@@ -107,7 +109,7 @@ enum {
     N_COOKIE, N_SETCOOKIE, N_SCROLLY, N_SCROLLTO, N_VW, N_VH,
     N_ALERT, N_LOG, N_WRITE, N_FOCUS, N_FOCUSED, N_SUBMIT,
     N_FETCH, N_ABORT, N_STORE_GET, N_STORE_SET, N_STORE_KEYS, N_STORE_CLEAR,
-    N_NOW, N_PERF, N_RANDOM, N_CHANGED, N_SETUP, N_NS, N_RESOLVE, N_HIT, N_ANIMATE, N_ANIMCTL, N_ANIMINFO,
+    N_NOW, N_PERF, N_RANDOM, N_CHANGED, N_SETUP, N_NS, N_RESOLVE, N_HIT, N_ANIMATE, N_ANIMCTL, N_ANIMINFO, N_POST, N_ISFRAME,
 };
 
 static void changed(tf_js *j) { page_changed(j->page); }
@@ -518,6 +520,11 @@ static JSValue native(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
         if (s2) JS_FreeCString(ctx, s2);
         return JS_NewInt32(ctx, id);
     }
+    case N_POST:
+        /* postMessage: (iframe or null for the parent, the message as JSON) */
+        if ((s1 = str_arg(ctx, a1, 0))) { page_post_message(j->page, n, s1); JS_FreeCString(ctx, s1); }
+        return JS_UNDEFINED;
+    case N_ISFRAME: return JS_NewBool(ctx, page_is_frame(j->page));
     case N_ANIMCTL: page_anim_ctl(j->page, int_arg(ctx, a0), int_arg(ctx, a1), int_arg(ctx, a2)); return JS_UNDEFINED;
     case N_ANIMINFO: {
         int cur = 0, st = page_anim_info(j->page, int_arg(ctx, a0), &cur);
@@ -538,6 +545,7 @@ static JSValue native(JSContext *ctx, JSValueConst this_val, int argc, JSValueCo
         JS_FreeValue(ctx, j->fn_fetch); j->fn_fetch = JS_DupValue(ctx, a4);
         JS_FreeValue(ctx, j->fn_image); j->fn_image = JS_DupValue(ctx, argc > 5 ? argv[5] : JS_UNDEFINED);
         JS_FreeValue(ctx, j->fn_script); j->fn_script = JS_DupValue(ctx, argc > 6 ? argv[6] : JS_UNDEFINED);
+        JS_FreeValue(ctx, j->fn_message); j->fn_message = JS_DupValue(ctx, argc > 7 ? argv[7] : JS_UNDEFINED);
         return JS_UNDEFINED;
     }
     return JS_UNDEFINED;
@@ -564,7 +572,8 @@ static const JSCFunctionListEntry natives[] = {
     NATIVE("fetch", 5, N_FETCH), NATIVE("abort", 1, N_ABORT),
     NATIVE("storeGet", 2, N_STORE_GET), NATIVE("storeSet", 3, N_STORE_SET), NATIVE("storeKeys", 1, N_STORE_KEYS), NATIVE("storeClear", 1, N_STORE_CLEAR),
     NATIVE("now", 0, N_NOW), NATIVE("perf", 0, N_PERF), NATIVE("random", 1, N_RANDOM), NATIVE("changed", 0, N_CHANGED),
-    NATIVE("setup", 7, N_SETUP), NATIVE("resolve", 2, N_RESOLVE), NATIVE("hit", 2, N_HIT),
+    NATIVE("setup", 8, N_SETUP), NATIVE("resolve", 2, N_RESOLVE), NATIVE("hit", 2, N_HIT),
+    NATIVE("post", 2, N_POST), NATIVE("isFrame", 0, N_ISFRAME),
     NATIVE("animate", 8, N_ANIMATE), NATIVE("animCtl", 3, N_ANIMCTL), NATIVE("animInfo", 1, N_ANIMINFO),
 };
 
@@ -618,6 +627,8 @@ static JSValue call(tf_js *j, JSValueConst fn, int argc, JSValueConst *argv, con
     j->deadline = 0;
     if (JS_IsException(r)) { report(j, where); r = JS_UNDEFINED; }
     jobs(j);
+    /* what ran may have set a timer sooner than the one the engine waits for */
+    if (JS_VALUE_GET_PTR(fn) != JS_VALUE_GET_PTR(j->fn_tick)) page_timers_changed(j->page);
     return r;
 }
 
@@ -696,7 +707,7 @@ tf_js *tfjs_new(tf_page *p)
     j->ctx = JS_NewContext(j->rt);
     if (!j->ctx) { JS_FreeRuntime(j->rt); free(j); return 0; }
     JS_SetContextOpaque(j->ctx, j);
-    j->fn_proto = j->fn_event = j->fn_winev = j->fn_tick = j->fn_fetch = j->fn_image = j->fn_script = JS_UNDEFINED;
+    j->fn_proto = j->fn_event = j->fn_winev = j->fn_tick = j->fn_fetch = j->fn_image = j->fn_script = j->fn_message = JS_UNDEFINED;
 
     if (!node_class_id) JS_NewClassID(&node_class_id);
     j->node_class = node_class_id;
@@ -706,6 +717,7 @@ tf_js *tfjs_new(tf_page *p)
     JSValue g = JS_GetGlobalObject(j->ctx);
     JSValue tf = JS_NewObject(j->ctx);
     JS_SetPropertyFunctionList(j->ctx, tf, natives, sizeof(natives) / sizeof(natives[0]));
+    tfwasm_install(j->ctx, tf);                     /* WebAssembly (wasm.c) */
     JS_SetPropertyStr(j->ctx, g, "__tf", tf);
     JS_FreeValue(j->ctx, g);
 
@@ -725,7 +737,7 @@ void tfjs_free(tf_js *j)
     if (d)
         for (tf_node *n = d->all; n; n = n->all_next)
             if (n->js_obj) { JS_FreeValue(j->ctx, JS_MKPTR(JS_TAG_OBJECT, n->js_obj)); n->js_obj = 0; }
-    JSValue *fns[] = { &j->fn_proto, &j->fn_event, &j->fn_winev, &j->fn_tick, &j->fn_fetch, &j->fn_image, &j->fn_script };
+    JSValue *fns[] = { &j->fn_proto, &j->fn_event, &j->fn_winev, &j->fn_tick, &j->fn_fetch, &j->fn_image, &j->fn_script, &j->fn_message };
     for (unsigned i = 0; i < sizeof(fns) / sizeof(fns[0]); i++) JS_FreeValue(j->ctx, *fns[i]);
     JS_FreeContext(j->ctx);
     JS_FreeRuntime(j->rt);
@@ -763,6 +775,7 @@ int tfjs_run(tf_js *j, const char *src, int len, const char *name, tf_node *scri
     JSValue nul = JS_NULL;
     if (JS_IsFunction(j->ctx, j->fn_script)) { JSValue r2 = JS_Call(j->ctx, j->fn_script, JS_UNDEFINED, 1, &nul); JS_FreeValue(j->ctx, r2); }
     jobs(j);
+    page_timers_changed(j->page);
     return again;
 }
 
@@ -775,6 +788,14 @@ int tfjs_event(tf_js *j, tf_node *target, const char *type, int x, int y, int ke
     JS_FreeValue(j->ctx, r);
     for (int i = 0; i < 6; i++) JS_FreeValue(j->ctx, a[i]);
     return prevented;
+}
+
+void tfjs_message(tf_js *j, tf_node *from, const char *data, const char *origin)
+{
+    JSValue a[3] = { from ? wrap(j, from) : JS_NULL, JS_NewString(j->ctx, data), JS_NewString(j->ctx, origin) };
+    JSValue r = call(j, j->fn_message, 3, a, "message");
+    JS_FreeValue(j->ctx, r);
+    for (int i = 0; i < 3; i++) JS_FreeValue(j->ctx, a[i]);
 }
 
 void tfjs_window_event(tf_js *j, const char *type, int on_document)
@@ -797,14 +818,16 @@ int tfjs_tick(tf_js *j)
 void tfjs_fetch_done(tf_js *j, int id, int status, const char *url, const char *headers, int hlen,
                    const char *body, int blen, const char *error)
 {
-    JSValue a[6] = { JS_NewInt32(j->ctx, id), JS_NewInt32(j->ctx, status), JS_NewString(j->ctx, url ? url : ""),
+    /* the body as text, and as its bytes too (an ArrayBuffer) for arrayBuffer(), bytes() and blob(): a picture or a
+     * WebAssembly module is not UTF-8 */
+    JSValue a[7] = { JS_NewInt32(j->ctx, id), JS_NewInt32(j->ctx, status), JS_NewString(j->ctx, url ? url : ""),
                      JS_NewStringLen(j->ctx, headers ? headers : "", headers ? (size_t)hlen : 0),
                      body ? JS_NewStringLen(j->ctx, body, (size_t)blen) : JS_NULL,
-                     error ? JS_NewString(j->ctx, error) : JS_NULL };
-    /* a body that is not UTF-8 text (a picture, say) also goes as an ArrayBuffer, for arrayBuffer() and blob() */
-    JSValue r = call(j, j->fn_fetch, 6, a, "fetch");
+                     error ? JS_NewString(j->ctx, error) : JS_NULL,
+                     body ? JS_NewArrayBufferCopy(j->ctx, (const uint8_t *)body, (size_t)blen) : JS_NULL };
+    JSValue r = call(j, j->fn_fetch, 7, a, "fetch");
     JS_FreeValue(j->ctx, r);
-    for (int i = 0; i < 6; i++) JS_FreeValue(j->ctx, a[i]);
+    for (int i = 0; i < 7; i++) JS_FreeValue(j->ctx, a[i]);
 }
 
 void tfjs_image_loaded(tf_js *j, tf_node *img, int ok)

@@ -222,12 +222,19 @@ static void tfp_gradient(gfx_surface_t *d, tf_layout *L, const tf_item *it, int 
     }
 }
 
+static void tfp_page(gfx_surface_t *s, tf_page *pg, int x, int y, int w, int h, const ui_font_t *const *fonts, int depth);
+
 /* a rectangle, a word or a picture of the page at (x, y) of s (fields are the window's own business) */
 static void tfp_item(gfx_surface_t *s, tf_page *pg, tf_layout *L, const tf_item *it, int x, int y, const ui_font_t *const *fonts)
 {
     if (!it->alpha) return;
     if (it->kind == IT_SHADOW) { tfp_shadow(s, it, x, y); return; }
     if (it->kind == IT_GRAD) { tfp_gradient(s, L, it, x, y); return; }
+    if (it->kind == IT_FRAME) {
+        tf_page *f = page_frame(pg, it->node);
+        if (f) tfp_page(s, f, x, y, it->w, it->h, fonts, 1);
+        return;
+    }
     const ui_font_t *f = fonts[it->font < tfire_font_count ? it->font : 0];
     char tmp[512];
     int turned = it->rot && !(it->kind == IT_RECT && it->radius * 2 >= it->w && it->w == it->h);   /* (a circle looks the same) */
@@ -274,6 +281,42 @@ static void tfp_item(gfx_surface_t *s, tf_page *pg, tf_layout *L, const tf_item 
         gfx_image_t im = { pic->w, pic->h, pic->rgba };
         if (pic->w == it->w && pic->h == it->h) gfx_blit(s, &im, x, y, it->alpha);
         else gfx_blit_scaled(s, &im, x, y, it->w, it->h, it->alpha);
+    }
+}
+
+/* a page in an iframe: its display list in the box w x h at (x, y), scrolled as it is */
+static void tfp_page(gfx_surface_t *s, tf_page *pg, int x, int y, int w, int h, const ui_font_t *const *fonts, int depth)
+{
+    tf_layout *L = page_layout(pg);
+    gfx_surface_t c = *s;
+    gfx_clip(&c, x, y, w, h);
+    if (L->n) gfx_fill(&c, x, y, w, h, L->page_bg);
+    int sy = page_scroll_y(pg);
+    char tmp[256];
+    for (int i = 0; i < L->n; i++) {
+        const tf_item *it = &L->items[i];
+        int ix = x + it->x, iy = y + it->y - sy;
+        int reach = it->rot ? (it->w > it->h ? it->w : it->h) : it->kind == IT_SHADOW ? it->deco : 0;
+        if (iy - reach > y + h || iy + it->h + reach < y) continue;
+        if (it->kind == IT_FRAME) {
+            tf_page *f = depth < 3 ? page_frame(pg, it->node) : 0;
+            if (f) tfp_page(&c, f, ix, iy, it->w, it->h, fonts, depth + 1);
+        } else if (it->kind == IT_FIELD) {
+            int n = it->len < 255 ? it->len : 255;
+            memcpy(tmp, L->pool + it->text, (size_t)n);
+            tmp[n] = 0;
+            if (it->color == 2) {                                 /* a check box or radio button */
+                gfx_rrect(&c, ix, iy, it->w, it->h, 3, tmp[0] ? 0x3B82F6 : 0xFFFFFF, 255);
+                gfx_rrect_outline(&c, ix, iy, it->w, it->h, 3, tmp[0] ? 0x3B82F6 : 0x8E8E93, 255);
+                continue;
+            }
+            gfx_rrect(&c, ix, iy, it->w, it->h, 4, it->color == 1 ? 0xE5E5EA : 0xFFFFFF, 255);
+            gfx_rrect_outline(&c, ix, iy, it->w, it->h, 4, 0x8E8E93, 255);
+            const ui_font_t *f = fonts[it->font < tfire_font_count ? it->font : 0];
+            gfx_surface_t in = c;
+            gfx_clip(&in, ix + 3, iy, it->w - 6, it->h);
+            gfx_text(&in, f, ix + 5, iy + (it->h - (f->ascent + f->descent)) / 2, tmp, 0x111827, 255);
+        } else tfp_item(&c, pg, L, it, ix, iy, fonts);
     }
 }
 

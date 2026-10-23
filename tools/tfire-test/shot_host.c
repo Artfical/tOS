@@ -64,7 +64,7 @@ static void draw(tf_page *p, gfx_surface_t *s, int W, int H, int scroll)
         int x = it->x, y = it->y - scroll;
         int reach = it->rot ? (it->w > it->h ? it->w : it->h) : it->kind == IT_SHADOW ? it->deco : 0;
         if (y - reach > H || y + it->h + reach < 0) continue;
-        if (it->kind == IT_RECT || it->kind == IT_TEXT || it->kind == IT_IMAGE || it->kind == IT_SHADOW || it->kind == IT_GRAD) tfp_item(s, p, L, it, x, y, fonts);
+        if (it->kind == IT_RECT || it->kind == IT_TEXT || it->kind == IT_IMAGE || it->kind == IT_SHADOW || it->kind == IT_GRAD || it->kind == IT_FRAME) tfp_item(s, p, L, it, x, y, fonts);
         else if (it->kind == IT_FIELD) {
             int n = it->len < 511 ? it->len : 511;
             memcpy(tmp, L->pool + it->text, (size_t)n); tmp[n] = 0;

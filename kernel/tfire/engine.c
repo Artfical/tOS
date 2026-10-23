@@ -19,6 +19,7 @@ extern void memory_get_usage(uint32_t *total_kb, uint32_t *used_kb);
 #define MAX_IMAGES 600
 #define IMG_BYTES_MAX (96u << 20)        /* decoded pictures of one page, at most */
 #define IMG_SIDE_MAX 1600
+#define MAX_FRAMES 8                     /* iframes a page can have open */
 #define RESTYLE_MS 200                   /* while scripts keep changing the page: style and layout this often */
 #define CONSOLE_LINES 200
 
@@ -79,6 +80,14 @@ struct tf_page {
     int styled_once;
     int layout_soon;                       /* styles changed: lay out on the next tick (not after pictures' half second) */
     int style_soon;                        /* the pointer moved onto something :hover cares about: style now */
+    /* iframes: the pages inside this one, and (for one of those) the page around it */
+    struct frame { tf_node *node; tf_page *page; char *src; int load_sent; } frames[MAX_FRAMES];
+    int nframes;
+    tf_page *parent;
+    tf_node *frame_node;                   /* (in the parent's document) */
+    tf_page *frame_focus;                  /* the frame the keyboard goes to (it was clicked last) */
+    struct msg { tf_node *from; char *data; char origin[160]; } msgs[16];   /* postMessage, waiting for this page's tick */
+    int nmsgs;
     /* what moves (anim.c) */
     tf_anims *anims;
     int anim_moving;
@@ -1212,6 +1221,7 @@ static void relayout(tf_page *p)
 }
 
 void page_changed(tf_page *p) { p->need_style = 1; }
+void page_timers_changed(tf_page *p) { p->next_timer = 0; }      /* (asks the scripts' timers again at once) */
 
 void page_layout_now(tf_page *p)
 {
@@ -1521,6 +1531,8 @@ tf_page *page_open_html(const char *url, const char *html, int len, const tf_hos
 static void close_on_stack(void *a)
 {
     tf_page *p = a;
+    for (int i = 0; i < p->nframes; i++) { page_close(p->frames[i].page); free(p->frames[i].src); }
+    for (int i = 0; i < p->nmsgs; i++) free(p->msgs[i].data);
     if (p->docfetch) webfetch_free(p->docfetch);
     if (p->fetch) webfetch_free(p->fetch);
     if (p->dl_raw) free(p->dl_raw);                    /* a download nobody took (tf_free gives kernel blocks back) */
@@ -1547,6 +1559,143 @@ void page_close(tf_page *p)
     if (!p) return;
     if (current == p) current = 0;
     run_big(close_on_stack, p);
+}
+
+/* ------------------------------------------------------------------ iframes */
+
+/* An <iframe> is a page of its own (its own document, styles and scripts), opened when layout first gives the
+ * element a box, ticked with this one at the size of that box, drawn in it by the window (page_frame), and given
+ * the clicks and keys that land on it. Scripts in the two talk with postMessage, as the web does across origins:
+ * neither sees into the other's document. */
+
+static int frame_index(tf_page *p, tf_node *n)
+{
+    for (int i = 0; i < p->nframes; i++) if (p->frames[i].node == n) return i;
+    return -1;
+}
+
+tf_page *page_frame(tf_page *p, tf_node *iframe)
+{
+    int i = p ? frame_index(p, iframe) : -1;
+    return i >= 0 ? p->frames[i].page : 0;
+}
+
+/* where an iframe's page is drawn, in this page's coordinates */
+static int frame_box(tf_page *p, tf_node *n, int *x, int *y)
+{
+    for (int i = 0; i < p->L.n; i++) if (p->L.items[i].kind == IT_FRAME && p->L.items[i].node == n) { *x = p->L.items[i].x; *y = p->L.items[i].y; return 1; }
+    return 0;
+}
+
+static void frame_open(tf_page *p, struct frame *f)
+{
+    const char *srcdoc = dom_attr(f->node, "srcdoc");
+    const char *src = dom_attr(f->node, "src");
+    char url[URL_CAP] = "about:blank";
+    if (!srcdoc && src && *src && !page_resolve(p->url, src, url, sizeof(url))) strcpy(url, "about:blank");
+    free(f->src);
+    f->src = strdup(srcdoc ? "srcdoc" : url);
+    f->load_sent = 0;
+    if (srcdoc) f->page = page_open_html(p->url, srcdoc, (int)strlen(srcdoc), &p->host);
+    else if (!strncmp(url, "http", 4)) {
+        tf_request r;
+        memset(&r, 0, sizeof(r));
+        strncpy(r.url, url, sizeof(r.url) - 1);
+        f->page = page_open(&r, &p->host);
+    } else f->page = page_open_html("about:blank", "<html><body></body></html>", 26, &p->host);
+    if (f->page) { f->page->parent = p; f->page->frame_node = f->node; }
+}
+
+/* the frames: opened, ticked, closed with their elements; 1 = something in them changed */
+static int frames_step(tf_page *p)
+{
+    int changed = 0;
+    if (!p->doc) return 0;
+    /* frames whose element left the document go */
+    for (int i = 0; i < p->nframes; i++) {
+        if (dom_connected(p->doc, p->frames[i].node) && p->frames[i].node->laid) continue;
+        if (p->frame_focus == p->frames[i].page) p->frame_focus = 0;
+        page_close(p->frames[i].page);
+        free(p->frames[i].src);
+        p->frames[i] = p->frames[--p->nframes];
+        i--;
+        changed = 1;
+    }
+    for (int i = 0; i < p->L.n; i++) {
+        tf_item *it = &p->L.items[i];
+        if (it->kind != IT_FRAME || !it->node) continue;
+        int k = frame_index(p, it->node);
+        if (k < 0) {
+            if (p->nframes >= MAX_FRAMES) continue;
+            k = p->nframes++;
+            memset(&p->frames[k], 0, sizeof(p->frames[k]));
+            p->frames[k].node = it->node;
+            frame_open(p, &p->frames[k]);
+        } else {
+            /* a script pointed it somewhere else */
+            const char *src = dom_attr(it->node, "src");
+            char url[URL_CAP] = "about:blank";
+            if (dom_attr(it->node, "srcdoc")) strcpy(url, "srcdoc");
+            else if (src && *src && !page_resolve(p->url, src, url, sizeof(url))) strcpy(url, "about:blank");
+            if (p->frames[k].src && strcmp(p->frames[k].src, url)) {
+                if (p->frame_focus == p->frames[k].page) p->frame_focus = 0;
+                page_close(p->frames[k].page);
+                p->frames[k].page = 0;
+                frame_open(p, &p->frames[k]);
+            }
+        }
+        struct frame *f = &p->frames[k];
+        if (!f->page) continue;
+        tf_page *saved = current;
+        if (page_tick(f->page, it->w, it->h)) changed = 1;
+        current = saved;
+        /* a link in the frame: the frame goes there */
+        tf_request nav;
+        if (page_take_navigation(f->page, &nav)) {
+            if (p->frame_focus == f->page) p->frame_focus = 0;
+            page_close(f->page);
+            free(nav.body);
+            free(f->src);
+            f->src = strdup(nav.url);
+            f->page = page_open(&nav, &p->host);
+            if (f->page) { f->page->parent = p; f->page->frame_node = f->node; }
+            f->load_sent = 0;
+            changed = 1;
+            continue;
+        }
+        if (!f->load_sent && f->page->load_fired && !page_loading(f->page)) {
+            f->load_sent = 1;
+            if (p->js) tfjs_event(p->js, f->node, "load", 0, 0, 0, 0);
+        }
+    }
+    return changed;
+}
+
+/* postMessage: to the page around this one (to_parent) or to the page in the iframe frame; delivered on the
+ * receiver's next tick, never while the sender's script runs */
+void page_post_message(tf_page *p, tf_node *frame, const char *data)
+{
+    tf_page *to = frame ? page_frame(p, frame) : p->parent;
+    if (!to || to->nmsgs >= 16 || !data) return;
+    struct msg *m = &to->msgs[to->nmsgs];
+    m->data = strdup(data);
+    if (!m->data) return;
+    m->from = frame ? 0 : p->frame_node;            /* (to the parent: which of its iframes it came from) */
+    origin_of(p->url, m->origin, sizeof(m->origin));
+    to->nmsgs++;
+}
+
+int page_is_frame(tf_page *p) { return p->parent != 0; }
+
+static void messages_deliver(tf_page *p)
+{
+    while (p->nmsgs > 0) {
+        struct msg m = p->msgs[0];
+        memmove(p->msgs, p->msgs + 1, (size_t)(p->nmsgs - 1) * sizeof(struct msg));
+        p->nmsgs--;
+        if (p->js && (!m.from || dom_connected(p->doc, m.from))) tfjs_message(p->js, m.from, m.data, m.origin);
+        free(m.data);
+    }
 }
 
 /* ------------------------------------------------------------------ ticking */
@@ -1659,6 +1808,7 @@ static void tick_on_stack(void *a)
                 if (next >= 0) p->next_timer = now + (uint32_t)(next < 1 ? 1 : next);
             }
         }
+        messages_deliver(p);
         if (p->doc->changed) p->need_style = 1;
         if ((p->need_style || p->need_sheets) && !css_pending(p) && (p->style_soon || uihost_ms() - p->last_style >= RESTYLE_MS)) {
             p->style_soon = 0;
@@ -1683,6 +1833,7 @@ static void tick_on_stack(void *a)
         if (p->laid_w != p->vw || (p->need_layout && p->layout_soon) || (p->need_layout && uihost_ms() - p->last_layout >= 500) ||
             (p->layout_soon && p->anims)) { relayout(p); t->changed = 1; }
         anim_events(p);
+        if (frames_step(p)) t->changed = 1;
     }
     int waiting = p->fetch != 0 || css_pending(p) || scripts_pending(p);
     for (int i = 0; i < p->nimgs && !waiting; i++) if (p->imgs[i].state == S_WAIT || p->imgs[i].state == S_FETCHING) waiting = 1;
@@ -1984,6 +2135,19 @@ static void click_on_stack(void *a)
     if (!t) t = dom_find(p->doc->root, "body");
     if (!t) { current = 0; return; }
     if (t->type != TF_ELEM && t->parent) t = t->parent;
+    /* in an iframe: the click is its page's */
+    p->frame_focus = 0;
+    if (dom_is(t, "iframe")) {
+        tf_page *f = page_frame(p, t);
+        int fx, fy;
+        if (f && frame_box(p, t, &fx, &fy)) {
+            p->frame_focus = f;
+            if (p->focus) page_focus_node(p, 0);
+            current = 0;
+            page_click(f, in->x - fx, in->y - fy + page_scroll_y(f));
+            return;
+        }
+    }
     /* a check box changes before its click event (and back if a listener prevents it) */
     tf_node *box = 0;
     int was = 0;
@@ -2114,6 +2278,16 @@ static void hover_on_stack(void *a)
     tf_node *t = in->x < 0 ? 0 : layout_hit(&p->L, p->doc, in->x, in->y);
     if (t && t->type != TF_ELEM) t = t->parent;
     if (t && t->type != TF_ELEM) t = 0;
+    /* over an iframe: its page sees the pointer; the one it left is told */
+    for (int i = 0; i < p->nframes; i++) {
+        int fx, fy;
+        if (p->frames[i].page && p->frames[i].node == t && frame_box(p, t, &fx, &fy)) {
+            if (page_hover(p->frames[i].page, in->x - fx, in->y - fy + page_scroll_y(p->frames[i].page))) in->r = 1;
+        } else if (p->frames[i].page && p->frames[i].page->hover) {
+            if (page_hover(p->frames[i].page, -1, -1)) in->r = 1;
+        }
+    }
+    current = p;
     tf_node *old = p->hover;
     if (old && !dom_connected(p->doc, old)) old = 0;
     if (t == old) { if (t && p->js) tfjs_event(p->js, t, "mousemove", in->x, in->y, 0, 0); current = 0; return; }
@@ -2157,6 +2331,9 @@ const char *page_link_at(tf_page *p, int x, int y)
 {
     if (!p->doc) return 0;
     tf_node *t = layout_hit(&p->L, p->doc, x, y);
+    int fx, fy;
+    if (t && dom_is(t, "iframe") && page_frame(p, t) && frame_box(p, t, &fx, &fy))
+        return page_link_at(page_frame(p, t), x - fx, y - fy + page_scroll_y(page_frame(p, t)));
     for (; t; t = t->parent) if (t->type == TF_ELEM && dom_is(t, "a") && dom_attr(t, "href")) return dom_attr(t, "href");
     return 0;
 }
@@ -2180,9 +2357,10 @@ static void key_on_stack(void *a)
     input_args *in = a;
     tf_page *p = in->p;
     int k = in->k;
+    in->r = 0;
+    if (p->frame_focus) { in->r = page_key(p->frame_focus, k); return; }
     current = p;
     if (p->styling) restyle_step(p, 0);                /* (scripts that hear the key may change the tree) */
-    in->r = 0;
     if (!p->doc) { current = 0; return; }
     char name[16] = "";
     int code = k;

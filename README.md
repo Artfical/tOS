@@ -1428,6 +1428,7 @@ tOS is developed by Talha Berk. The system is built from scratch with the except
 - QuickJS by Fabrice Bellard and Charlie Gordon (MIT) — tFire's JavaScript engine
 - musl's maths functions (MIT) and LLVM compiler-rt's floating point (Apache-2.0 with LLVM exception) — for tFire's engine
 - NanoSVG by Mikko Mononen (zlib) and Google's libwebp decoder (BSD-3-Clause) — SVG and WebP pictures in tFire
+- wasm3 by Steven Massey and Volodymyr Shymanskyy (MIT) — WebAssembly in tFire
 - doomgeneric (GPL-2.0) and Wolf4SDL (GPL-2.0) — the DOOM and Wolfenstein 3D ports
 - Inter and JetBrains Mono (SIL OFL 1.1) and Lucide (ISC) — the desktop's fonts and icons
 - The WhiteSur icon theme by Vince Liuice (GPL-3.0) — the macOS-like app icons in the Dock and the menus

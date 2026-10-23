@@ -44,8 +44,9 @@ webfetch_t *webfetch_request(const char *url, const char *method, const char *he
     strncpy(f->url, url, sizeof(f->url) - 1);
     char cmd[4096], bodyf[64] = "/tmp/tfire_req_body";
     if (body && blen) { FILE *b = fopen(bodyf, "wb"); fwrite(body, 1, blen, b); fclose(b); }
-    snprintf(cmd, sizeof(cmd), "curl -s -i -L --compressed --max-time 20 -A 'Lynx/2.9.0 libwww-FM/2.14 tFire/1 (tOS)' %s%s%s %s%s%s -w '\\n%%{url_effective}' '%s' > /tmp/tfire_resp 2>/dev/null",
-             method ? "-X " : "", method ? method : "", "", body && blen ? "--data-binary @" : "", body && blen ? bodyf : "", "", url);
+    const char *ua = getenv("TFUA") ? getenv("TFUA") : "Lynx/2.9.0 libwww-FM/2.14 tFire/1 (tOS)";
+    snprintf(cmd, sizeof(cmd), "curl -s -i -L --compressed --max-time 20 -b /tmp/tfire_jar -c /tmp/tfire_jar -A '%s' %s%s%s %s%s%s -w '\\n%%{url_effective}' '%s' > /tmp/tfire_resp 2>/dev/null",
+             ua, method ? "-X " : "", method ? method : "", "", body && blen ? "--data-binary @" : "", body && blen ? bodyf : "", "", url);
     if (headers) {
         /* each header line as -H */
         char h2[4096] = "";
