@@ -47,6 +47,10 @@ typedef struct {
     int  (*menu_items)(uiapp_t *a, int menu, const char **labels, int *enabled, int max);
     void (*menu_pick)(uiapp_t *a, int menu, int item);
     void (*hover)(uiapp_t *a, int x, int y);        /* the pointer moved over it, no button held (-1, -1: it left) */
+    /* files dragged over it (uihost_drag_files): paths one per line. op 0: they are over (x, y) -- 1 if it
+     * would take them there (it may show where); op 1: they were dropped there (copy: Alt/Option was held);
+     * op -1: they went away. 0 / NULL = it takes no files */
+    int  (*drop)(uiapp_t *a, int x, int y, const char *paths, int op, int copy);
 } uiapp_class_t;
 
 struct uiapp {
@@ -125,5 +129,19 @@ int  ui_filedlg_press(ui_filedlg_t *d, int px, int py, int w, int h);   /* 1 cho
 int  ui_filedlg_key(ui_filedlg_t *d, int key);                          /* same */
 void ui_path_join(char *out, const char *dir, const char *name);
 const char *ui_basename(const char *path);
+
+/* Files as the desktop handles them (uifiles.c): kinds ("folder", "image", "pdf", "audio", "app", "web",
+ * "text", "generic"), their icons (doc64_* / doc20_*), opening one in its app, moving or copying into a
+ * folder (a free name is found: "name 2"; made gets where it went; 0 = done), deleting a folder with what
+ * is in it, and the Trash (~/.Trash): deleting from the desktop moves things there. */
+const char *ui_file_kind(const char *name, int is_dir);
+const gfx_image_t *ui_file_icon(const char *name, int is_dir, int big);
+void ui_file_open(const char *path, int is_dir);
+int  ui_file_move(const char *src, const char *dir, int copy, char *made, int cap);
+int  ui_file_delete(const char *path);
+int  ui_file_trash(const char *path);
+void ui_trash_dir(char *out);
+int  ui_trash_items(void);
+int  ui_trash_empty(void);
 
 #endif

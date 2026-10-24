@@ -134,4 +134,5 @@ const uiapp_class_t app_network = {
     net_init, net_draw, net_press, 0, 0, 0, 0, net_tick, 0,
     0, 0, 0,
     0,
+    0,
 };

@@ -229,4 +229,5 @@ const uiapp_class_t app_updatenotes = {
     un_init, un_draw, un_press, un_drag, un_release, un_key, un_wheel, un_tick, un_close,
     0, 0, 0,
     0,
+    0,
 };

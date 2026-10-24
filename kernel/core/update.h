@@ -61,4 +61,8 @@ int  update_apply_at_boot(void);
 void update_boot_chain(void);
 void update_session_ok(void);           /* the desktop is up: the kernel that booted works */
 
+/* tOS Recovery at the next start (the bootrec command); and at boot, whether it was asked for (once) */
+int  update_recovery_request(void);
+int  update_recovery_pending(void);
+
 #endif

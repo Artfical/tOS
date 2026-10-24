@@ -162,4 +162,5 @@ const uiapp_class_t app_activity = {
     act_init, act_draw, act_press, 0, 0, act_key, act_wheel, act_tick, 0,
     0, 0, 0,
     0,
+    0,
 };

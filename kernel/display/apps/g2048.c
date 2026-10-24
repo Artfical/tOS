@@ -150,4 +150,5 @@ const uiapp_class_t app_2048 = {
     g_init, g_draw, g_press, 0, 0, g_key, 0, 0, 0,
     0, 0, 0,
     0,
+    0,
 };

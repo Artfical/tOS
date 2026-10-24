@@ -248,6 +248,17 @@ static const man_page_t man_pages[] = {
 "Example:\n"
 "  /> reboot\n"
 },
+{"bootrec",
+"bootrec - restart into tOS Recovery\n\n"
+"Marks the next start to open tOS Recovery instead of the login\n"
+"window, then restarts. There you can install tOS again, use Disk\n"
+"Utility or try the live system; the start after that is normal.\n"
+"Holding Shift while tOS starts does the same.\n\n"
+"Options:\n"
+"  -n   only mark the next start, without restarting now\n\n"
+"Example:\n"
+"  /> bootrec\n"
+},
 {"shutdown",
 "shutdown - power off the machine\n\n"
 "Halts the system. On real hardware/most VMs this powers the\n"

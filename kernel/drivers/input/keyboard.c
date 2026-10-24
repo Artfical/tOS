@@ -57,7 +57,9 @@ int keyboard_get_raw_event(uint8_t *key, int *pressed)
 
 static int caps_lock = 0;
 static int shift_pressed = 0;
+static int shift_seen = 0;             /* Shift went down at some point since the start (held while booting: Recovery) */
 static int ctrl_pressed = 0;
+static int alt_pressed = 0;
 static int extended = 0;
 volatile int interrupt_char = -1;
 void (*interrupt_callback)(void) = NULL;
@@ -154,6 +156,8 @@ static void process_scancode(uint8_t scancode)
 
     if (extended) {
         extended = 0;
+        if (scancode == 0x38) { alt_pressed = 1; return; }       /* right Alt / Option */
+        if (scancode == 0xB8) { alt_pressed = 0; return; }
         if (scancode == 0x53) { keyboard_push_char(127); return; }
         uint8_t base = scancode & 0x7F;
         int is_release = (scancode & 0x80) != 0;
@@ -169,10 +173,12 @@ static void process_scancode(uint8_t scancode)
         return;
     }
 
-    if (scancode == 0x2A || scancode == 0x36) { shift_pressed = 1; return; }
+    if (scancode == 0x2A || scancode == 0x36) { shift_pressed = 1; shift_seen = 1; return; }
     if (scancode == 0xAA || scancode == 0xB6) { shift_pressed = 0; return; }
     if (scancode == 0x1D) { ctrl_pressed = 1; return; }
     if (scancode == 0x9D) { ctrl_pressed = 0; return; }
+    if (scancode == 0x38) { alt_pressed = 1; return; }
+    if (scancode == 0xB8) { alt_pressed = 0; return; }
     if (scancode == 0x3A) { caps_lock = !caps_lock; return; }
 
     /* Raw press/release for every plain key, independent of the
@@ -445,7 +451,9 @@ int keyboard_get_special(void)
 }
 
 int keyboard_shift_held(void) { return shift_pressed; }
+int keyboard_shift_seen(void) { return shift_seen; }
 int keyboard_ctrl_held(void) { return ctrl_pressed; }
+int keyboard_alt_held(void) { return alt_pressed; }
 
 int keyboard_yesno(void)
 {

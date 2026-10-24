@@ -637,4 +637,5 @@ const uiapp_class_t app_diskutil = {
     du_init, du_draw, du_press, 0, 0, du_key, 0, du_tick, 0,
     du_menus, du_menu_items, du_menu_pick,
     0,
+    0,
 };

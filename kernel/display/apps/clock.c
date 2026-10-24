@@ -153,4 +153,5 @@ const uiapp_class_t app_clock = {
     clock_init, clock_draw, clock_press, 0, 0, clock_key, 0, clock_tick, 0,
     0, 0, 0,
     0,
+    0,
 };

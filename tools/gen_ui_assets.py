@@ -241,6 +241,7 @@ APPS = [  # name, glyph, top colour, bottom colour
     ('launcher',   'layout-grid',     (255, 150, 90), (180, 80, 230)),
     ('gpio',       'cpu',             (120, 224, 130),(20, 140, 70)),
     ('trash',      'trash-2',         (200, 205, 215),(130, 136, 150)),
+    ('trash_full', 'trash-2',         (200, 205, 215),(130, 136, 150)),
 ]
 # The app icons come from the WhiteSur icon theme (third_party/whitesur-icons, GPL-3.0; macOS-like, its own
 # drawings): third_party/whitesur-icons/svg/<name>.svg, drawn by rsvg-convert at four times the size and scaled

@@ -19,6 +19,7 @@ void cmd_mv(int argc, char **args);
 void cmd_cp(int argc, char **args);
 void cmd_edit(int argc, char **args);
 void cmd_reboot(int argc, char **args);
+void cmd_bootrec(int argc, char **args);
 void cmd_shutdown(int argc, char **args);
 void cmd_version(int argc, char **args);
 void cmd_beep(int argc, char **args);

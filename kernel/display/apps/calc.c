@@ -220,4 +220,5 @@ const uiapp_class_t app_calculator = {
     calc_init, calc_draw, calc_press, 0, calc_release, calc_key, 0, 0, 0,
     0, 0, 0,
     0,
+    0,
 };

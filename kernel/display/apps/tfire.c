@@ -307,6 +307,26 @@ static void tf_init(uiapp_t *a, const char *arg)
     t->hpos = -1;
     t->view_w = 900;
     t->view_h = 560;
+    /* A local HTML/SVG document dropped on tFire is parsed as a page too. */
+    if (arg && arg[0] == '/' && !strcmp(ui_file_kind(ui_basename(arg), 0), "web")) {
+        uint8_t *html = 0;
+        uint32_t len = 0;
+        if (uihost_read(arg, &html, &len) == 0 && len <= 0x7FFFFFFFu) {
+            t->page = page_open_html(arg, (const char *)html, (int)len, &host);
+            free(html);
+            if (t->page) {
+                strncpy(t->url, arg, sizeof(t->url) - 1);
+                t->url[sizeof(t->url) - 1] = 0;
+                strcpy(t->field, t->url);
+                strcpy(t->hist[0], t->url);
+                t->nhist = 1;
+                t->hpos = 0;
+                t->load_start = uihost_ms();
+                set_title(a, t);
+                return;
+            }
+        } else if (html) free(html);
+    }
     go(a, t, arg && arg[0] ? arg : HOME, 1);
 }
 
@@ -651,4 +671,5 @@ const uiapp_class_t app_tfire = {
     tf_init, tf_draw, tf_press, 0, 0, tf_key, tf_wheel, tf_tick, tf_close,
     0, 0, 0,
     tf_hover,
+    0,
 };

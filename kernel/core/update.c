@@ -401,6 +401,35 @@ void update_download_async(void)
 
 int update_ready(void) { return vfs_exists(STAGE "/ready"); }
 
+/* ------------------------------------------------------------------ starting in tOS Recovery */
+
+/* the next start goes to tOS Recovery instead of the login window (bootrec), once */
+#define RECOVERY_NEXT "/system/recovery-next"
+
+int update_recovery_request(void)
+{
+    auth_saved_t saved;
+    auth_become(0, 0, &saved);
+    if (!vfs_exists("/system")) vfs_mkdir("/system", 0700);
+    int ok = write_file(RECOVERY_NEXT, "1\n", 2) == 0;
+    auth_restore(&saved);
+    return ok ? 0 : -1;
+}
+
+int update_recovery_pending(void)
+{
+    auth_saved_t saved;
+    auth_become(0, 0, &saved);
+    /* (cleared by writing 0, not removed: removing anything under /system asks for the password) */
+    uint32_t l;
+    uint8_t *v = read_file(RECOVERY_NEXT, &l);
+    int r = v && l && v[0] == '1';
+    if (v) free(v);
+    if (r) write_file(RECOVERY_NEXT, "0\n", 2);
+    auth_restore(&saved);
+    return r;
+}
+
 /* ------------------------------------------------------------------ at boot */
 
 static void build_dir(unsigned b, char *out)

@@ -114,7 +114,7 @@ static const app_t apps[] = {
     { "netmon",      "Network",       "netmon",     WIN_KIND_NETMON,      1, 0 },
     { "taskmgr",     "Activity",      "taskmgr",    WIN_KIND_TASKMGR,     1, 0 },
     { "settings",    "System Settings", "settings", WIN_KIND_NATIVE,      1, 0 },
-    { "viewer",      "Image Viewer",  "viewer",     WIN_KIND_VIEWER,      0, 0 },
+    { "viewer",      "Image Viewer",  "viewer",     WIN_KIND_VIEWER,      1, 0 },
     { "pdf",         "PDF Viewer",    "pdf",        WIN_KIND_PDFVIEWER,   0, 0 },
     { "notes",       "Sticky Notes",  "sticky",     WIN_KIND_STICKYNOTES, 0, 0 },
     { "clock",       "Clock",         "clock",      WIN_KIND_CLOCK,       0, 0 },
@@ -831,6 +831,9 @@ static void draw_topbar(void)
     eth_icon_x = rx;   /* wired: tOS has no Wi-Fi */
 }
 
+static int trash_full = -1;             /* the Trash has something in it (its Dock icon shows it), looked at every 2 s */
+static uint32_t trash_ms;
+
 /* dock layout: index 0 is the launcher, then the dock apps, then the trash */
 typedef struct { int x, y, size; const app_t *app; int special; } dock_slot_t;
 static dock_slot_t dock[24];
@@ -881,7 +884,8 @@ static void draw_dock(void)
     glass(dock_x, dock_y, dock_w, DOCK_H, 18, 0xFFFFFF, 46);
     gfx_rrect_outline(&bs, dock_x, dock_y, dock_w, DOCK_H, 18, 0xFFFFFF, 70);
     for (int i = 0; i < dock_n; i++) {
-        const char *key = dock[i].special == 1 ? "launcher" : dock[i].special == 2 ? "trash" : dock[i].app->icon;
+        if (dock[i].special == 2 && (trash_full < 0 || debugmon_uptime_ms() - trash_ms > 2000)) { trash_full = ui_trash_items() > 0; trash_ms = debugmon_uptime_ms(); }
+        const char *key = dock[i].special == 1 ? "launcher" : dock[i].special == 2 ? (trash_full > 0 ? "trash_full" : "trash") : dock[i].app->icon;
         gfx_blit_scaled(&bs, icon(key, 1), dock[i].x, dock[i].y, dock[i].size, dock[i].size, 255);
         if (dock[i].special == 2) gfx_fill_alpha(&bs, dock[i].x - 12, dock_y + 12, 1, DOCK_H - 24, 0xFFFFFF, 70);
         if (dock[i].app && app_running(dock[i].app))
@@ -1561,50 +1565,296 @@ static void login_key(char ch)
     dirty = 1;
 }
 
-/* ------------------------------------------------------------------ disks on the desktop */
+/* ------------------------------------------------------------------ disks and files on the desktop */
 
-/* mounted removable disks sit at the top right of the desktop, like on a Mac */
+/* Mounted removable disks sit at the top right of the desktop, like on a Mac, and what is in ~/Desktop
+ * after them, in columns from the right. A double click opens one; one can be dragged (to the Trash, to a
+ * folder, to an app). */
 static uihost_volume_t desk_vols[VOLUMES_MAX];
 static int desk_nvol, desk_sel = -1, desk_last_click = -1;
 static uint32_t desk_click_ms;
+#define DESK_FILES 48
+static uihost_entry_t desk_files[DESK_FILES];
+static int desk_nfiles;
+static uint32_t desk_files_ms, desk_files_gen;
+static int desk_arm = -1, desk_arm_x, desk_arm_y;      /* pressed on a file: a drag starts when the pointer moves */
+static unsigned files_gen = 1;                           /* bumped when files moved: Files and the desktop look again */
+unsigned uihost_files_gen(void) { return files_gen; }
+void uihost_files_touch(void) { files_gen++; desk_files_ms = 0; trash_ms = 0; dirty = 1; }
 
-static void desk_disk_rect(int i, int *x, int *y) { *x = SW - 112; *y = TOPBAR_H + 18 + i * 104; }
+static void desk_dir(char *out)
+{
+    ui_path_join(out, uihost_home(), "Desktop");
+    if (uihost_exists(out) != 2) uihost_mkdir(out);
+}
+
+static void desk_files_load(void)
+{
+    if (desk_files_ms && debugmon_uptime_ms() - desk_files_ms < 1000 && desk_files_gen == files_gen) return;
+    desk_files_ms = debugmon_uptime_ms();
+    desk_files_gen = files_gen;
+    char d[160];
+    desk_dir(d);
+    uihost_entry_t all[DESK_FILES];
+    int n = uihost_list(d, all, DESK_FILES);
+    desk_nfiles = 0;
+    for (int i = 0; i < n; i++) if (all[i].name[0] != '.') desk_files[desk_nfiles++] = all[i];
+    /* folders first, then by name, as the Finder lays them out */
+    for (int i = 1; i < desk_nfiles; i++) {
+        uihost_entry_t t = desk_files[i];
+        int j = i - 1;
+        while (j >= 0 && (desk_files[j].is_dir < t.is_dir || (desk_files[j].is_dir == t.is_dir && strcmp(desk_files[j].name, t.name) > 0))) { desk_files[j + 1] = desk_files[j]; j--; }
+        desk_files[j + 1] = t;
+    }
+}
+
+/* slot i of the desktop's grid: disks first, then files; columns of icons from the right */
+static void desk_slot(int i, int *x, int *y)
+{
+    int per = (SH - TOPBAR_H - DOCK_H - DOCK_MARGIN - 30) / 104;
+    if (per < 1) per = 1;
+    *x = SW - 112 - (i / per) * 108;
+    *y = TOPBAR_H + 18 + (i % per) * 104;
+}
+
+static void desk_icon(int i, const gfx_image_t *im, const char *name, int sel)
+{
+    int x, y;
+    desk_slot(i, &x, &y);
+    if (sel) gfx_rrect(&bs, x + 18, y - 4, 72, 72, 8, 0x000000, 70);
+    gfx_blit(&bs, im, x + 22, y, 255);
+    char nm[40];
+    strncpy(nm, name, 39); nm[39] = 0;
+    while (gfx_text_width(&ui_font_medium, nm) > 104 && strlen(nm) > 5) { int L = (int)strlen(nm); nm[L - 4] = '.'; nm[L - 3] = '.'; nm[L - 2] = 0; }
+    int tw = gfx_text_width(&ui_font_medium, nm);
+    int tx = x + 54 - tw / 2;
+    if (sel) gfx_rrect(&bs, tx - 6, y + 68, tw + 12, 20, 5, UI_ACCENT, 255);
+    else gfx_text(&bs, &ui_font_medium, tx + 1, y + 71, nm, 0x000000, 140);
+    gfx_text(&bs, &ui_font_medium, tx, y + 70, nm, 0xFFFFFF, 255);
+}
 
 static void draw_desktop_disks(void)
 {
     desk_nvol = uihost_volumes(desk_vols, VOLUMES_MAX);
-    if (desk_sel >= desk_nvol) desk_sel = -1;
-    for (int i = 0; i < desk_nvol; i++) {
-        int x, y;
-        desk_disk_rect(i, &x, &y);
-        if (i == desk_sel) gfx_rrect(&bs, x + 18, y - 4, 72, 72, 8, 0x000000, 70);
-        gfx_blit(&bs, gfx_image("doc64_disk"), x + 22, y, 255);
-        int tw = gfx_text_width(&ui_font_medium, desk_vols[i].name);
-        if (tw > 104) tw = 104;
-        int tx = x + 54 - tw / 2;
-        if (i == desk_sel) gfx_rrect(&bs, tx - 6, y + 68, tw + 12, 20, 5, UI_ACCENT, 255);
-        else gfx_text(&bs, &ui_font_medium, tx + 1, y + 71, desk_vols[i].name, 0x000000, 140);
-        gfx_text(&bs, &ui_font_medium, tx, y + 70, desk_vols[i].name, 0xFFFFFF, 255);
-    }
+    desk_files_load();
+    if (desk_sel >= desk_nvol + desk_nfiles) desk_sel = -1;
+    for (int i = 0; i < desk_nvol; i++) desk_icon(i, gfx_image("doc64_disk"), desk_vols[i].name, i == desk_sel);
+    for (int i = 0; i < desk_nfiles; i++)
+        desk_icon(desk_nvol + i, ui_file_icon(desk_files[i].name, desk_files[i].is_dir, 1), desk_files[i].name, desk_nvol + i == desk_sel);
+}
+
+static void desk_file_path(int f, char *out)
+{
+    char d[160];
+    desk_dir(d);
+    ui_path_join(out, d, desk_files[f].name);
 }
 
 static int desktop_disk_press(int x, int y)
 {
-    for (int i = 0; i < desk_nvol; i++) {
+    desk_arm = -1;
+    for (int i = 0; i < desk_nvol + desk_nfiles; i++) {
         int dx, dy;
-        desk_disk_rect(i, &dx, &dy);
+        desk_slot(i, &dx, &dy);
         if (x < dx + 10 || x >= dx + 100 || y < dy - 4 || y >= dy + 90) continue;
         uint32_t now = debugmon_uptime_ms();
         if (desk_last_click == i && now - desk_click_ms < 450) {   /* a double click opens it */
-            wm_gfx_open_native("files", desk_vols[i].path);
+            if (i < desk_nvol) wm_gfx_open_native("files", desk_vols[i].path);
+            else { char p[224]; desk_file_path(i - desk_nvol, p); ui_file_open(p, desk_files[i - desk_nvol].is_dir); }
             desk_last_click = -1;
-        } else { desk_last_click = i; desk_click_ms = now; }
+        } else {
+            desk_last_click = i; desk_click_ms = now;
+            if (i >= desk_nvol) { desk_arm = i - desk_nvol; desk_arm_x = x; desk_arm_y = y; }
+        }
         desk_sel = i;
         dirty = 1;
         return 1;
     }
     if (desk_sel >= 0) { desk_sel = -1; dirty = 1; }
     return 0;
+}
+
+/* ------------------------------------------------------------------ dragging files */
+
+/* Files dragged out of an app (uihost_drag_files) or off the desktop: drawn under the pointer, and
+ * dropped where the button comes up -- the Trash, an app in the Dock, a window that takes files, or the
+ * desktop (into ~/Desktop). Alt/Option held copies instead of moving. */
+static window_t *window_at(int x, int y);
+enum { FD_NONE, FD_DESK, FD_TRASH, FD_DOCK, FD_WIN };
+static struct {
+    int active, n, from_desktop, first_dir;
+    char *paths;
+    char first[64];
+    int target, dock_i;
+    window_t *win;
+} fdrag;
+
+void uihost_drag_files(const char *paths)
+{
+    if (!paths || !*paths) return;
+    char *copy = malloc(strlen(paths) + 1);
+    if (!copy) return;
+    strcpy(copy, paths);
+    free(fdrag.paths);
+    memset(&fdrag, 0, sizeof(fdrag));
+    fdrag.paths = copy;
+    for (const char *p = fdrag.paths; *p; p++) if (*p == '\n' && p[1]) fdrag.n++;
+    fdrag.n++;
+    char one[224];
+    int l = 0;
+    while (paths[l] && paths[l] != '\n' && l < 223) { one[l] = paths[l]; l++; }
+    one[l] = 0;
+    strncpy(fdrag.first, ui_basename(one), sizeof(fdrag.first) - 1);
+    fdrag.first_dir = uihost_exists(one) == 2;
+    fdrag.active = 1;
+    dirty = 1;
+}
+
+/* the apps in the Dock that open a dropped file */
+static int dock_takes(const app_t *a, const char *paths)
+{
+    if (!a || !paths || !*paths) return 0;
+    for (const char *p = paths; *p; ) {
+        const char *e = p;
+        while (*e && *e != '\n') e++;
+        int len = (int)(e - p);
+        if (len <= 0 || len >= 224) return 0;
+        char one[224];
+        memcpy(one, p, (size_t)len); one[len] = 0;
+        int is_dir = uihost_exists(one) == 2;
+        const char *kind = ui_file_kind(ui_basename(one), is_dir);
+        int ok = !strcmp(a->id, "files") ||
+                 (!strcmp(a->id, "notepad") && !is_dir &&
+                    (!strcmp(kind, "text") || !strcmp(kind, "web"))) ||
+                 ((!strcmp(a->id, "viewer") || !strcmp(a->id, "paint")) &&
+                    !is_dir && !strcmp(kind, "image")) ||
+                 (!strcmp(a->id, "tfire") && !is_dir && !strcmp(kind, "web"));
+        if (!ok) return 0;
+        p = *e ? e + 1 : e;
+    }
+    return 1;
+}
+
+static void fdrag_leave_window(void)
+{
+    if (fdrag.win && fdrag.win->open && fdrag.win->native) {
+        uiapp_t *ap = fdrag.win->native;
+        if (ap->cls->drop) ap->cls->drop(ap, -1, -1, fdrag.paths, -1, 0);
+    }
+    fdrag.win = 0;
+}
+
+static void fdrag_target(int x, int y)
+{
+    int copy = (uihost_keys_held() & 4) != 0;
+    window_t *was = fdrag.win;
+    fdrag.target = FD_NONE;
+    int d = dock_hit(x, y);
+    window_t *w = d < 0 && y >= TOPBAR_H ? window_at(x, y) : 0;
+    if (d >= 0) {
+        if (dock[d].special == 2) fdrag.target = FD_TRASH;
+        else if (dock[d].special == 0 && dock_takes(dock[d].app, fdrag.paths)) { fdrag.target = FD_DOCK; fdrag.dock_i = d; }
+    } else if (w && w->kind == WIN_KIND_NATIVE && w->native && y >= w->gy + TITLE_H) {
+        uiapp_t *ap = w->native;
+        if (was && was != w) fdrag_leave_window();
+        if (ap->cls->drop && ap->cls->drop(ap, x - w->gx, y - w->gy - TITLE_H, fdrag.paths, 0, copy)) { fdrag.target = FD_WIN; fdrag.win = w; ap->dirty = 1; return; }
+    } else if (!w && y >= TOPBAR_H && !fdrag.from_desktop) fdrag.target = FD_DESK;
+    if (was) fdrag_leave_window();
+}
+
+static void fdrag_drop(void)
+{
+    int copy = (uihost_keys_held() & 4) != 0;
+    char one[224];
+    const char *p = fdrag.paths;
+    int ok = 0, bad = 0;
+    char into[160] = "";
+    if (fdrag.target == FD_DESK) desk_dir(into);
+    if (fdrag.target == FD_WIN && fdrag.win && fdrag.win->open && fdrag.win->native) {
+        uiapp_t *ap = fdrag.win->native;
+        if (ap->cls->drop) ap->cls->drop(ap, mx - fdrag.win->gx, my - fdrag.win->gy - TITLE_H, fdrag.paths, 1, copy);
+        ap->dirty = 1;
+        fdrag.win = 0;
+        uihost_files_touch();
+        return;
+    }
+    while (*p) {
+        int l = 0;
+        while (p[l] && p[l] != '\n' && l < 223) { one[l] = p[l]; l++; }
+        one[l] = 0;
+        p += l;
+        if (*p == '\n') p++;
+        if (!one[0]) continue;
+        int r = -1;
+        if (fdrag.target == FD_TRASH) r = ui_file_trash(one);
+        else if (fdrag.target == FD_DESK) r = ui_file_move(one, into, copy, 0, 0);
+        else if (fdrag.target == FD_DOCK) {
+            const app_t *a = dock[fdrag.dock_i].app;
+            int dir = uihost_exists(one) == 2;
+            if (!strcmp(a->id, "files")) {
+                if (ok) break;                              /* one Files window opens the first item's folder */
+                char par[224];
+                strcpy(par, one);
+                if (!dir) {
+                    char *sl = 0;
+                    for (char *q = par; *q; q++) if (*q == '/') sl = q;
+                    if (sl == par) sl[1] = 0;
+                    else if (sl) *sl = 0;
+                }
+                wm_gfx_open_native("files", par);
+            } else if (!dir) uihost_open(a->id, one);
+            r = 0;
+        }
+        if (r == 0) ok++; else bad++;
+    }
+    if (fdrag.target == FD_TRASH && ok) sound_click();
+    if (bad) {
+        char body[160] = "";
+        ui_num(body, bad);
+        strcat(body, bad == 1 ? " item could not be " : " items could not be ");
+        strcat(body, fdrag.target == FD_TRASH ? "moved to the Trash." : copy ? "copied." : "moved.");
+        uihost_notify("files", "doc48_disk", "Files", body, 0, 0);
+    }
+    uihost_files_touch();
+}
+
+/* what is being dragged, under the pointer, and where it would go */
+static void draw_fdrag(void)
+{
+    if (!fdrag.active) return;
+    if (fdrag.target == FD_TRASH || fdrag.target == FD_DOCK) {
+        int i = fdrag.target == FD_TRASH ? dock_n - 1 : fdrag.dock_i;
+        gfx_rrect(&bs, dock[i].x - 5, dock[i].y - 5, dock[i].size + 10, dock[i].size + 10, 12, 0xFFFFFF, 90);
+    } else if (fdrag.target == FD_DESK) {
+        int bottom = dock_y - 8;
+        if (bottom > TOPBAR_H + 12)
+            gfx_rrect_outline(&bs, 5, TOPBAR_H + 5, SW - 10, bottom - TOPBAR_H - 5, 10, UI_ACCENT, 180);
+    } else if (fdrag.target == FD_WIN && fdrag.win) {
+        gfx_rrect_outline(&bs, fdrag.win->gx - 2, fdrag.win->gy - 2,
+                          fdrag.win->gw + 4, fdrag.win->gh + 4, RADIUS + 2, UI_ACCENT, 230);
+    }
+    const gfx_image_t *im = ui_file_icon(fdrag.first, fdrag.first_dir, 1);
+    int x = mx - 32, y = my - 40;
+    gfx_blit(&bs, im, x, y, 190);
+    char nm[40];
+    strncpy(nm, fdrag.first, 39); nm[39] = 0;
+    while (gfx_text_width(&ui_font_small, nm) > 140 && strlen(nm) > 5) { int L = (int)strlen(nm); nm[L - 4] = '.'; nm[L - 3] = '.'; nm[L - 2] = 0; }
+    int tw = gfx_text_width(&ui_font_small, nm);
+    gfx_rrect(&bs, mx - tw / 2 - 6, y + 64, tw + 12, 18, 5, UI_ACCENT, 200);
+    gfx_text(&bs, &ui_font_small, mx - tw / 2, y + 66, nm, 0xFFFFFF, 255);
+    if (fdrag.n > 1) {                                       /* how many, in a red badge */
+        char c[8] = "";
+        ui_num(c, fdrag.n);
+        int cw = gfx_text_width(&ui_font_small, c);
+        int bw = cw + 12 < 20 ? 20 : cw + 12;
+        gfx_rrect(&bs, x + 56 - bw / 2, y - 4, bw, 20, 10, UI_RED, 255);
+        gfx_text(&bs, &ui_font_small, x + 56 - cw / 2, y - 1, c, 0xFFFFFF, 255);
+    }
+    if ((uihost_keys_held() & 4) && fdrag.target != FD_TRASH && fdrag.target != FD_NONE) {   /* Option-copy: a green plus */
+        gfx_circle(&bs, x + 8, y + 52, 9, UI_GREEN, 255);
+        gfx_fill(&bs, x + 4, y + 51, 9, 2, 0xFFFFFF);
+        gfx_fill(&bs, x + 7, y + 48, 2, 9, 0xFFFFFF);
+    }
 }
 
 /* Software Update looks once, a little after the desktop is up, and says so when there is
@@ -1681,6 +1931,7 @@ static void compose(void)
     draw_menu();
     if (session == 0) notify_draw(&bs, SW, SH, TOPBAR_H);
     draw_sheet();
+    draw_fdrag();
 }
 
 static void cursor_erase(void)
@@ -2187,7 +2438,7 @@ static void press(int x, int y)
     int d = dock_hit(x, y);
     if (d >= 0) {
         if (dock[d].special == 1) { launcher_open = 1; sound_click(); }
-        else if (dock[d].special == 2) wm_open_app("files");
+        else if (dock[d].special == 2) { char t[224]; ui_trash_dir(t); wm_gfx_open_native("files", t); sound_click(); }
         else dock_activate(dock[d].app);
         dirty = 1;
         return;
@@ -2337,12 +2588,37 @@ void wm_gfx_tick(void)
         } else if (u) { wheel_target = u; pending_wheel_delta = wheel; }
     }
 
-    /* a press inside a native app: it sees the drag and the release */
+    /* a file pressed on the desktop: dragged once the pointer moves a little */
+    if (desk_arm >= 0) {
+        if (!(btn & 1)) desk_arm = -1;
+        else if (desk_arm < desk_nfiles && (mx - desk_arm_x) * (mx - desk_arm_x) + (my - desk_arm_y) * (my - desk_arm_y) > 25) {
+            char p[224];
+            desk_file_path(desk_arm, p);
+            desk_arm = -1;
+            uihost_drag_files(p);
+            fdrag.from_desktop = 1;
+        }
+    }
+    /* files being dragged: where they would go, and dropped there when the button comes up */
+    if (fdrag.active) {
+        if (btn & 1) { if (moved) { fdrag_target(mx, my); dirty = 1; } }
+        else {
+            fdrag_target(mx, my);
+            fdrag_drop();
+            fdrag_leave_window();
+            free(fdrag.paths);
+            fdrag.paths = 0;
+            fdrag.active = 0;
+            dirty = 1;
+        }
+    }
+
+    /* a press inside a native app: it sees the drag and the release (not while it drags files out) */
     if (native_grab) {
         uiapp_t *ap = native_grab->native;
         int lx = mx - native_grab->gx, ly = my - native_grab->gy - TITLE_H;
         if (!ap || !native_grab->open) native_grab = 0;
-        else if (btn & 1) { if (moved && ap->cls->drag) ap->cls->drag(ap, lx, ly); }
+        else if (btn & 1) { if (moved && ap->cls->drag && !fdrag.active) ap->cls->drag(ap, lx, ly); }
         else { if (ap->cls->release) ap->cls->release(ap, lx, ly); native_grab = 0; }
     }
 

@@ -1,4 +1,5 @@
 #include "commands.h"
+#include "update.h"
 #include "auth.h"
 #include "terminal.h"
 #include "string.h"
@@ -611,6 +612,20 @@ void cmd_reboot(int argc, char **args)
         good = inb(0x64);
     outb(0x64, 0xFE);
     asm volatile("hlt");
+}
+
+/* bootrec: the next start goes to tOS Recovery (install again, Disk Utility, the live system), then restarts */
+void cmd_bootrec(int argc, char **args)
+{
+    int now = !(argc > 1 && !strcmp(args[1], "-n"));
+    if (argc > 1 && (!strcmp(args[1], "-h") || !strcmp(args[1], "--help"))) {
+        terminal_writestring("usage: bootrec [-n]\n  restarts into tOS Recovery (-n: only at the next start)\n");
+        return;
+    }
+    if (update_recovery_request() != 0) { terminal_writestring("bootrec: could not mark the next start\n"); return; }
+    if (!now) { terminal_writestring("tOS Recovery will open at the next start.\n"); return; }
+    terminal_writestring("Restarting into tOS Recovery...\n");
+    cmd_reboot(0, 0);
 }
 
 void cmd_shutdown(int argc, char **args)

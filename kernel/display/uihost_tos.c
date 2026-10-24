@@ -8,6 +8,7 @@
 #include "string.h"
 #include "cmos.h"
 #include "debugmon.h"
+#include "keyboard.h"
 #include "auth.h"
 #include "net.h"
 #include "nic.h"
@@ -80,6 +81,13 @@ int uihost_write(const char *path, const void *data, uint32_t len)
 int uihost_mkdir(const char *path) { return fsbridge_mkdir(path); }
 int uihost_delete(const char *path) { return fsbridge_delete(path); }
 int uihost_rename(const char *from, const char *to) { return fsbridge_rename(from, to); }
+int uihost_exists(const char *path) { return !fsbridge_exists(path) ? 0 : fsbridge_is_dir(path) ? 2 : 1; }
+int uihost_keys_held(void)
+{
+    return (keyboard_shift_held() ? 1 : 0) |
+           (keyboard_ctrl_held() ? 2 : 0) |
+           (keyboard_alt_held() ? 4 : 0);
+}
 
 void uihost_open(const char *app_id, const char *path)
 {

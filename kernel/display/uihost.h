@@ -30,6 +30,16 @@ int  uihost_write(const char *path, const void *data, uint32_t len);
 int  uihost_mkdir(const char *path);
 int  uihost_delete(const char *path);
 int  uihost_rename(const char *from, const char *to);
+int  uihost_exists(const char *path);                               /* 0 no, 1 a file, 2 a folder */
+
+/* Dragging files out of an app (from its drag callback, the button held): the desktop takes over, draws
+ * them under the pointer and drops them where the button comes up -- the desktop, the Trash, an app in
+ * the Dock, or a window whose app takes files (uiapp_class_t.drop). paths: one per line. */
+void uihost_drag_files(const char *paths);
+int  uihost_keys_held(void);                                        /* 1 Shift, 2 Ctrl, 4 Alt/Option */
+/* files moved (a drop, a delete): a number that changes then, for apps that show folders to look again */
+unsigned uihost_files_gen(void);
+void uihost_files_touch(void);
 
 /* other apps and the desktop itself */
 void uihost_open(const char *app_id, const char *path);

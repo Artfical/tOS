@@ -33,61 +33,29 @@ typedef struct {
     uint32_t last_ms;
     char msg[80];
     int confirm_delete;
+    uint8_t picked[MAXE];       /* selected (by shown index): Ctrl-click adds, Shift-click a range; f->sel is the last */
+    int anchor;
+    int press_item, press_x, press_y, press_mods, dragged;
+    int drop_hi;                /* where files dragged over would go: a folder's shown index, -2 this folder, -3 - i place i */
+    unsigned gen;
 } files_t;
 
 static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 
-static int has_ext(const char *name, const char *exts)
-{
-    const char *dot = 0;
-    for (const char *p = name; *p; p++) if (*p == '.') dot = p;
-    if (!dot) return 0;
-    const char *e = exts;
-    while (*e) {
-        const char *w = e;
-        while (*e && *e != ' ') e++;
-        int len = (int)(e - w), ok = (int)strlen(dot + 1) == len;
-        for (int i = 0; ok && i < len; i++) if (lower(dot[1 + i]) != w[i]) ok = 0;
-        if (ok) return 1;
-        while (*e == ' ') e++;
-    }
-    return 0;
-}
-
-#define IMG_EXT  "png jpg jpeg jfif"
-#define TEXT_EXT "txt md c h py sh cfg conf log json ini csv ts rc"
-#define AUD_EXT  "mp3 wav aac m4a"
-
-static const char *kind_key(const uihost_entry_t *e)
-{
-    if (e->is_dir) return "folder";
-    if (has_ext(e->name, IMG_EXT)) return "image";
-    if (has_ext(e->name, "pdf")) return "pdf";
-    if (has_ext(e->name, AUD_EXT)) return "audio";
-    if (has_ext(e->name, "t")) return "app";
-    if (has_ext(e->name, TEXT_EXT) || !strchr(e->name, '.')) return "text";
-    return "generic";
-}
-
 static const char *kind_name(const uihost_entry_t *e)
 {
-    const char *k = kind_key(e);
+    const char *k = ui_file_kind(e->name, e->is_dir);
     if (!strcmp(k, "folder")) return "Folder";
     if (!strcmp(k, "image")) return "Image";
     if (!strcmp(k, "pdf")) return "PDF document";
     if (!strcmp(k, "audio")) return "Audio";
     if (!strcmp(k, "app")) return "tOS program";
+    if (!strcmp(k, "web")) return "Web page";
     if (!strcmp(k, "text")) return "Plain text";
     return "Document";
 }
 
-static const gfx_image_t *doc_icon(const uihost_entry_t *e, int big)
-{
-    char n[32];
-    strcpy(n, big ? "doc64_" : "doc20_");
-    strcat(n, kind_key(e));
-    return gfx_image(n);
-}
+static const gfx_image_t *doc_icon(const uihost_entry_t *e, int big) { return ui_file_icon(e->name, e->is_dir, big); }
 
 static int matches(const char *name, const char *q)
 {
@@ -108,6 +76,8 @@ static void filter(files_t *f)
     for (int i = 0; i < f->nall; i++)
         if (f->all[i].name[0] != '.' && matches(f->all[i].name, f->search)) f->shown[f->n++] = i;
     if (f->sel >= f->n) f->sel = -1;
+    memset(f->picked, 0, sizeof(f->picked));
+    if (f->sel >= 0) f->picked[f->sel] = 1;
 }
 
 static void load(files_t *f)
@@ -123,7 +93,36 @@ static void load(files_t *f)
         f->all[j + 1] = t;
     }
     f->sel = -1; f->scroll = 0; f->confirm_delete = 0; f->renaming = 0;
+    f->gen = uihost_files_gen();
     filter(f);
+}
+
+/* the Trash: ~/.Trash */
+static int in_trash(files_t *f) { char t[224]; ui_path_join(t, uihost_home(), ".Trash"); return !strcmp(f->dir, t); }
+
+static int npicked(files_t *f) { int n = 0; for (int i = 0; i < f->n; i++) n += f->picked[i]; return n; }
+
+/* the selected items' paths, one per line */
+static char *picked_paths(files_t *f)
+{
+    size_t cap = 1;
+    for (int i = 0; i < f->n; i++)
+        if (f->picked[i]) cap += strlen(f->dir) + strlen(f->all[f->shown[i]].name) + 2;
+    char *out = malloc(cap);
+    if (!out) return 0;
+    int o = 0;
+    for (int i = 0; i < f->n; i++) {
+        if (!f->picked[i]) continue;
+        char p[224];
+        ui_path_join(p, f->dir, f->all[f->shown[i]].name);
+        int l = (int)strlen(p);
+        if (o) out[o++] = '\n';
+        memcpy(out + o, p, (size_t)l);
+        o += l;
+        out[o] = 0;
+    }
+    out[o] = 0;
+    return out;
 }
 
 static void go(files_t *f, const char *dir)
@@ -164,22 +163,19 @@ static void open_entry(files_t *f, uihost_entry_t *e)
     char p[224];
     ui_path_join(p, f->dir, e->name);
     if (e->is_dir) { go(f, p); return; }
-    const char *k = kind_key(e);
-    if (!strcmp(k, "image")) uihost_open("viewer", p);
-    else if (!strcmp(k, "pdf")) uihost_open("pdf", p);
-    else if (!strcmp(k, "audio")) uihost_open("music", p);
-    else if (!strcmp(k, "app")) uihost_open("run", p);
-    else uihost_open("notepad", p);
+    ui_file_open(p, 0);
 }
 
 typedef struct { const char *label, *glyph, *sub; int abs; } place_t;
 static const place_t places[] = {
-    { "Home", "glyph_house", "", 0 }, { "Documents", "glyph_file-text", "Documents", 0 },
+    { "Home", "glyph_house", "", 0 }, { "Desktop", "glyph_monitor", "Desktop", 0 },
+    { "Documents", "glyph_file-text", "Documents", 0 },
     { "Downloads", "glyph_download", "Downloads", 0 }, { "Pictures", "glyph_image", "Pictures", 0 },
     { "tOS", "glyph_hard-drive", "/", 1 }, { "Programs", "glyph_folder", "/mnt/programs", 1 }, { "Temporary", "glyph_folder", "/tmp", 1 },
+    { "Trash", "glyph_trash-2", ".Trash", 0 },
 };
-#define NPLACES 7
-#define FIRST_LOCATION 4
+#define NPLACES 9
+#define FIRST_LOCATION 5
 
 static void place_path(int i, char *out)
 {
@@ -221,6 +217,7 @@ static void eject(files_t *f, int i)
 static void f_init(uiapp_t *a, const char *arg)
 {
     files_t *f = a->st;
+    f->drop_hi = -1; f->press_item = -1; f->anchor = -1;
     go(f, arg ? arg : uihost_home());
 }
 
@@ -236,7 +233,7 @@ static void tile_pos(uiapp_t *a, int i, int *tx, int *ty)
 static void f_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
 {
     files_t *f = a->st;
-    strcpy(a->title, strcmp(f->dir, "/") ? ui_basename(f->dir) : "tOS");
+    strcpy(a->title, in_trash(f) ? "Trash" : strcmp(f->dir, "/") ? ui_basename(f->dir) : "tOS");
 
     gfx_fill(s, x, y, SIDE_W, h, UI_SIDEBAR);
     gfx_text(s, &ui_font_small, x + 16, y + 14, "Favourites", UI_DIM, 255);
@@ -246,6 +243,7 @@ static void f_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
         place_path(i, p);
         int on = !strcmp(p, f->dir), py = y + place_y(i);
         if (on) gfx_rrect(s, x + 8, py, SIDE_W - 16, 26, 6, ui_theme.dark ? 0x3A3C46 : 0xD8D8DE, 255);
+        if (f->drop_hi == -3 - i) gfx_rrect_outline(s, x + 8, py, SIDE_W - 16, 26, 6, UI_ACCENT, 255);
         const gfx_image_t *g = gfx_image(places[i].glyph);
         if (g) gfx_blit_tinted(s, g, x + 18, py + 5, UI_ACCENT, 255);
         gfx_text(s, &ui_font_regular, x + 44, py + 4, places[i].label, UI_TEXT, 255);
@@ -273,9 +271,12 @@ static void f_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
     gfx_text(s, &ui_font_regular, rx + 30, y + 17, f->search[0] ? f->search : "Search", f->search[0] ? UI_TEXT : UI_DIM, 255);
     ui_button(s, rx - 40, y + 12, 32, 28, "", f->confirm_delete ? 0x7F1D1D : UI_CARD2, UI_TEXT, 0);
     gfx_blit_tinted(s, gfx_image("glyph_x"), rx - 32, y + 18, f->confirm_delete ? 0xFCA5A5 : (sel_entry(f) ? UI_TEXT : UI_DIM), 255);
-    ui_button(s, rx - 80, y + 12, 32, 28, "", UI_CARD2, UI_TEXT, 0);
-    gfx_blit_tinted(s, gfx_image("glyph_folder"), rx - 72, y + 18, UI_TEXT, 255);
-    int vx = rx - 156;
+    if (in_trash(f)) ui_button(s, rx - 150, y + 12, 102, 28, "Empty Trash", UI_CARD2, f->n ? UI_TEXT : UI_DIM, 0);
+    else {
+        ui_button(s, rx - 80, y + 12, 32, 28, "", UI_CARD2, UI_TEXT, 0);
+        gfx_blit_tinted(s, gfx_image("glyph_folder"), rx - 72, y + 18, UI_TEXT, 255);
+    }
+    int vx = rx - (in_trash(f) ? 226 : 156);
     gfx_rrect(s, vx, y + 12, 68, 28, 7, UI_CARD2, 255);
     gfx_rrect(s, vx + 2 + f->list_view * 32, y + 14, 32, 24, 6, ui_theme.dark ? 0x5A5C66 : 0xFFFFFF, 255);
     gfx_blit_tinted(s, gfx_image("glyph_layout-grid"), vx + 10, y + 18, UI_TEXT, 255);
@@ -294,8 +295,9 @@ static void f_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
             ty -= f->scroll;
             tx += x; ty += y;
             if (ty > y + h || ty + TILE_H < cy) continue;
-            int on = i == f->sel;
+            int on = f->picked[i];
             if (on) gfx_rrect(&c, tx + (TILE_W - 74) / 2, ty - 2, 74, 70, 8, ui_theme.dark ? 0x3A3C46 : 0xDCDCE2, 255);
+            if (f->drop_hi == i) gfx_rrect_outline(&c, tx + (TILE_W - 74) / 2, ty - 2, 74, 70, 8, UI_ACCENT, 255);
             gfx_blit(&c, doc_icon(e, 1), tx + (TILE_W - 64) / 2, ty + 1, 255);
             if (on && f->renaming) {
                 gfx_rrect(&c, tx + 2, ty + 70, TILE_W - 4, 22, 4, UI_FIELD, 255);
@@ -321,8 +323,9 @@ static void f_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
             uihost_entry_t *e = &f->all[f->shown[i]];
             int ry = hy + 28 + i * ROW_H - f->scroll;
             if (ry + ROW_H < hy + 26 || ry > cy + ch) continue;
-            int on = i == f->sel;
+            int on = f->picked[i];
             if (on) gfx_rrect(&c, bx + 8, ry, bw - 16, ROW_H, 5, UI_ACCENT, 255);
+            if (f->drop_hi == i) gfx_rrect_outline(&c, bx + 8, ry, bw - 16, ROW_H, 5, UI_ACCENT, 255);
             else if (i % 2) gfx_fill(&c, bx + 8, ry, bw - 16, ROW_H, ui_theme.dark ? 0x232429 : 0xF4F5F7);
             uint32_t tc = on ? 0xFFFFFF : UI_TEXT, dc = on ? 0xDCE8FF : UI_DIM;
             gfx_blit(&c, doc_icon(e, 0), bx + 14, ry + 2, 255);
@@ -336,7 +339,8 @@ static void f_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
             gfx_text(&c, &ui_font_regular, bx + bw - 150, ry + 4, kind_name(e), dc, 255);
         }
     }
-    if (!f->n) gfx_text_center(s, &ui_font_regular, bx, cy + ch / 2 - 10, bw, f->search[0] ? "No results" : "This folder is empty", UI_DIM, 255);
+    if (!f->n) gfx_text_center(s, &ui_font_regular, bx, cy + ch / 2 - 10, bw, f->search[0] ? "No results" : in_trash(f) ? "The Trash is empty" : "This folder is empty", UI_DIM, 255);
+    if (f->drop_hi == -2) { gfx_rrect_outline(s, bx + 3, cy + 3, bw - 6, ch - 6, 8, UI_ACCENT, 255); gfx_rrect_outline(s, bx + 4, cy + 4, bw - 8, ch - 8, 7, UI_ACCENT, 160); }
 
     {
         int total = f->list_view ? f->n * ROW_H + 28 : ((f->n + cols_of(a) - 1) / cols_of(a)) * TILE_H + 12;
@@ -384,16 +388,36 @@ static void do_new_folder(files_t *f)
     for (int i = 0; i < f->n; i++) if (!strcmp(f->all[f->shown[i]].name, name)) { f->sel = i; f->renaming = 1; strcpy(f->rename, name); }
 }
 
+/* Delete: to the Trash (from the Trash itself: gone, after a second click) */
 static void do_delete(files_t *f)
 {
-    uihost_entry_t *e = sel_entry(f);
-    if (!e) return;
-    if (!f->confirm_delete) { f->confirm_delete = 1; strcpy(f->msg, "Click again to delete"); return; }
-    char p[224];
-    ui_path_join(p, f->dir, e->name);
-    int r = uihost_delete(p);
+    int n = npicked(f);
+    if (!n) return;
+    int forever = in_trash(f);
+    if (forever && !f->confirm_delete) { f->confirm_delete = 1; strcpy(f->msg, "Click again to delete for good"); return; }
+    int bad = 0;
+    for (int i = 0; i < f->n; i++) {
+        if (!f->picked[i]) continue;
+        char p[224];
+        ui_path_join(p, f->dir, f->all[f->shown[i]].name);
+        if ((forever ? ui_file_delete(p) : ui_file_trash(p)) != 0) bad++;
+    }
     load(f);
-    strcpy(f->msg, r == 0 ? "Deleted" : "Could not delete it (a folder must be empty)");
+    uihost_files_touch();
+    f->gen = uihost_files_gen();
+    if (bad) strcpy(f->msg, forever ? "Some could not be deleted" : "Some could not be moved to the Trash");
+    else strcpy(f->msg, forever ? "Deleted" : n == 1 ? "Moved to the Trash" : "Moved to the Trash");
+}
+
+static void empty_trash(files_t *f)
+{
+    if (!f->n) return;
+    if (!f->confirm_delete) { f->confirm_delete = 1; strcpy(f->msg, "Click Empty Trash again to delete these for good"); return; }
+    int r = ui_trash_empty();
+    load(f);
+    uihost_files_touch();
+    f->gen = uihost_files_gen();
+    strcpy(f->msg, r == 0 ? "The Trash is empty" : "Some could not be deleted");
 }
 
 static void finish_rename(files_t *f)
@@ -411,6 +435,22 @@ static void finish_rename(files_t *f)
     for (int i = 0; i < f->n; i++) if (!strcmp(f->all[f->shown[i]].name, keep)) f->sel = i;
 }
 
+/* the item at (px, py) of the view, or -1 */
+static int item_at(uiapp_t *a, files_t *f, int px, int py)
+{
+    if (!f->list_view) {
+        for (int i = 0; i < f->n; i++) {
+            int tx, ty;
+            tile_pos(a, i, &tx, &ty);
+            ty -= f->scroll;
+            if (ui_hit(px, py, tx + 6, ty - 2, TILE_W - 12, TILE_H - 6)) return i;
+        }
+        return -1;
+    }
+    int i = (py - BAR_H - 28 + f->scroll) / ROW_H;
+    return py >= BAR_H + 28 && i >= 0 && i < f->n ? i : -1;
+}
+
 static void f_press(uiapp_t *a, int px, int py, int b)
 {
     (void)b;
@@ -419,7 +459,11 @@ static void f_press(uiapp_t *a, int px, int py, int b)
     if (f->renaming) finish_rename(f);
     if (px < SIDE_W) {
         for (int i = 0; i < NPLACES; i++)
-            if (py >= place_y(i) && py < place_y(i) + 26) { char p[160]; place_path(i, p); go(f, p); }
+            if (py >= place_y(i) && py < place_y(i) + 26) {
+                char p[224];
+                if (!strcmp(places[i].sub, ".Trash")) ui_trash_dir(p); else place_path(i, p);
+                go(f, p);
+            }
         for (int i = 0; i < nvols; i++)
             if (py >= place_y(NPLACES + i) && py < place_y(NPLACES + i) + 26) {
                 if (px >= SIDE_W - 40) eject(f, i);
@@ -434,8 +478,9 @@ static void f_press(uiapp_t *a, int px, int py, int b)
         if (ui_hit(px, py, bx + 8, 10, 28, 32)) step_history(f, -1);
         else if (ui_hit(px, py, bx + 36, 10, 28, 32)) step_history(f, 1);
         else if (ui_hit(px, py, rx - 40, 12, 32, 28)) do_delete(f);
-        else if (ui_hit(px, py, rx - 80, 12, 32, 28)) do_new_folder(f);
-        else if (ui_hit(px, py, rx - 156, 12, 68, 28)) { f->list_view = px >= rx - 156 + 34; f->scroll = 0; }
+        else if (in_trash(f) && ui_hit(px, py, rx - 150, 12, 102, 28)) empty_trash(f);
+        else if (!in_trash(f) && ui_hit(px, py, rx - 80, 12, 32, 28)) do_new_folder(f);
+        else { int vx = rx - (in_trash(f) ? 226 : 156); if (ui_hit(px, py, vx, 12, 68, 28)) { f->list_view = px >= vx + 34; f->scroll = 0; } }
         return;
     }
     f->search_focus = 0;
@@ -445,26 +490,137 @@ static void f_press(uiapp_t *a, int px, int py, int b)
         int view = a->h - BAR_H - PATH_H;
         if (total + 10 > view) { f->scroll = ui_scroll_drag(py, BAR_H, view, total + 10); return; }
     }
-    int hit = -1;
-    if (!f->list_view) {
-        for (int i = 0; i < f->n; i++) {
-            int tx, ty;
-            tile_pos(a, i, &tx, &ty);
-            ty -= f->scroll;
-            if (ui_hit(px, py, tx + 6, ty - 2, TILE_W - 12, TILE_H - 6)) { hit = i; break; }
-        }
-    } else {
-        int i = (py - BAR_H - 28 + f->scroll) / ROW_H;
-        if (py >= BAR_H + 28 && i >= 0 && i < f->n) hit = i;
-    }
+    int hit = item_at(a, f, px, py);
     uint32_t now = uihost_ms();
-    if (hit >= 0 && hit == f->sel && now - f->last_ms < 450) { f->last_ms = 0; open_entry(f, sel_entry(f)); return; }
+    int keys = uihost_keys_held();
+    f->press_mods = keys;
+    f->press_item = -1;
+    f->dragged = 0;
+    if (hit >= 0 && hit == f->sel && !keys && now - f->last_ms < 450) { f->last_ms = 0; open_entry(f, sel_entry(f)); return; }
     if (hit != f->sel) f->confirm_delete = 0;
-    f->sel = hit;
+    if (hit >= 0 && (keys & 2)) {                          /* Ctrl: add or take away */
+        f->picked[hit] = !f->picked[hit];
+        f->sel = f->picked[hit] ? hit : -1;
+        f->anchor = hit;
+    } else if (hit >= 0 && (keys & 1) && f->anchor >= 0 && f->anchor < f->n) {   /* Shift: a range */
+        int lo = f->anchor < hit ? f->anchor : hit, hi = f->anchor < hit ? hit : f->anchor;
+        memset(f->picked, 0, sizeof(f->picked));
+        for (int i = lo; i <= hi; i++) f->picked[i] = 1;
+        f->sel = hit;
+    } else if (hit >= 0 && f->picked[hit]) {
+        f->sel = hit;                                       /* (on the selection: it may be about to be dragged) */
+    } else {
+        memset(f->picked, 0, sizeof(f->picked));
+        if (hit >= 0) f->picked[hit] = 1;
+        f->sel = hit;
+        f->anchor = hit;
+    }
+    if (hit >= 0 && f->picked[hit]) { f->press_item = hit; f->press_x = px; f->press_y = py; }
     f->last_ms = now;
     if (!f->confirm_delete) f->msg[0] = 0;
+    int np = npicked(f);
     uihost_entry_t *e = sel_entry(f);
-    if (e && !e->is_dir) { strcpy(f->msg, e->name); strcat(f->msg, "  \xC2\xB7  "); ui_size(f->msg, e->size); }
+    if (np > 1) { ui_num(f->msg, np); strcat(f->msg, " items selected"); }
+    else if (e && !e->is_dir) { strcpy(f->msg, e->name); strcat(f->msg, "  \xC2\xB7  "); ui_size(f->msg, e->size); }
+}
+
+/* moved with the button held on the selection: the selected items are dragged out (the desktop takes over) */
+static void f_drag(uiapp_t *a, int px, int py)
+{
+    files_t *f = a->st;
+    if (f->press_item < 0 || f->dragged) return;
+    int dx = px - f->press_x, dy = py - f->press_y;
+    if (dx * dx + dy * dy < 36) return;
+    f->dragged = 1;
+    char *paths = picked_paths(f);
+    if (paths) {
+        if (*paths) uihost_drag_files(paths);
+        free(paths);
+    }
+}
+
+static void f_release(uiapp_t *a, int px, int py)
+{
+    (void)px; (void)py;
+    files_t *f = a->st;
+    /* a click on one of several selected items, not a drag: that one alone */
+    if (f->press_item >= 0 && !f->dragged && !(f->press_mods & 3) && npicked(f) > 1) {
+        memset(f->picked, 0, sizeof(f->picked));
+        f->picked[f->press_item] = 1;
+        f->sel = f->anchor = f->press_item;
+        a->dirty = 1;
+    }
+    f->press_item = -1;
+}
+
+/* where files dropped at (px, py) go: a folder under the pointer, a place in the sidebar, or this folder */
+static int drop_dir(uiapp_t *a, files_t *f, int px, int py, char *dir)
+{
+    if (px < SIDE_W) {
+        for (int i = 0; i < NPLACES; i++)
+            if (py >= place_y(i) && py < place_y(i) + 26) {
+                if (!strcmp(places[i].sub, ".Trash")) ui_trash_dir(dir); else place_path(i, dir);
+                return -3 - i;
+            }
+        for (int i = 0; i < nvols; i++)
+            if (py >= place_y(NPLACES + i) && py < place_y(NPLACES + i) + 26) { strcpy(dir, vols[i].path); return -3 - NPLACES - i; }
+        return -1;
+    }
+    if (py < BAR_H || py >= a->h - PATH_H) return -1;
+    int hit = item_at(a, f, px, py);
+    if (hit >= 0 && f->all[f->shown[hit]].is_dir) { ui_path_join(dir, f->dir, f->all[f->shown[hit]].name); return hit; }
+    strcpy(dir, f->dir);
+    return -2;
+}
+
+static int f_drop(uiapp_t *a, int px, int py, const char *paths, int op, int copy)
+{
+    files_t *f = a->st;
+    if (op < 0) { f->drop_hi = -1; a->dirty = 1; return 0; }
+    char dir[224];
+    int where = drop_dir(a, f, px, py, dir);
+    /* nothing to do: dropped back where they are, or a folder onto itself */
+    int useful = where != -1;
+    if (useful && !copy) {
+        useful = 0;
+        for (const char *p = paths; *p && !useful; ) {
+            const char *e = p;
+            while (*e && *e != '\n') e++;
+            char one[224];
+            int l = (int)(e - p) < 223 ? (int)(e - p) : 223;
+            memcpy(one, p, (size_t)l); one[l] = 0;
+            char par[224];
+            strcpy(par, one);
+            char *sl = 0;
+            for (char *q = par; *q; q++) if (*q == '/') sl = q;
+            if (sl) { if (sl == par) sl[1] = 0; else *sl = 0; }
+            if (strcmp(par, dir) && strcmp(one, dir)) useful = 1;
+            p = *e ? e + 1 : e;
+        }
+    }
+    if (op == 0) { int hi = useful ? where : -1; if (hi != f->drop_hi) { f->drop_hi = hi; a->dirty = 1; } return useful; }
+    f->drop_hi = -1;
+    if (!useful) return 0;
+    char t[224];
+    ui_trash_dir(t);
+    int to_trash = !strcmp(dir, t), ok = 0, bad = 0;
+    for (const char *p = paths; *p; ) {
+        const char *e = p;
+        while (*e && *e != '\n') e++;
+        char one[224];
+        int l = (int)(e - p) < 223 ? (int)(e - p) : 223;
+        memcpy(one, p, (size_t)l); one[l] = 0;
+        if (one[0]) { if ((to_trash ? ui_file_trash(one) : ui_file_move(one, dir, copy, 0, 0)) == 0) ok++; else bad++; }
+        p = *e ? e + 1 : e;
+    }
+    load(f);
+    f->msg[0] = 0;
+    ui_num(f->msg, ok);
+    strcat(f->msg, ok == 1 ? " item " : " items ");
+    strcat(f->msg, to_trash ? "moved to the Trash" : copy ? "copied" : "moved");
+    if (bad) { strcat(f->msg, ", "); ui_num(f->msg, bad); strcat(f->msg, " could not be"); }
+    a->dirty = 1;
+    return 1;
 }
 
 static void f_key(uiapp_t *a, int k)
@@ -489,6 +645,15 @@ static void f_key(uiapp_t *a, int k)
         return;
     }
     int cols = f->list_view ? 1 : cols_of(a);
+    if (k == UI_KEY_RIGHT || k == UI_KEY_LEFT || k == UI_KEY_UP || k == UI_KEY_DOWN) {
+        int was = f->sel;
+        if (k == UI_KEY_RIGHT && !f->list_view && f->sel + 1 < f->n) f->sel++;
+        else if (k == UI_KEY_LEFT && !f->list_view && f->sel > 0) f->sel--;
+        else if (k == UI_KEY_DOWN) f->sel = f->sel < 0 ? 0 : (f->sel + cols < f->n ? f->sel + cols : f->sel);
+        else if (k == UI_KEY_UP && f->sel - cols >= 0) f->sel -= cols;
+        if (f->sel != was || npicked(f) > 1) { memset(f->picked, 0, sizeof(f->picked)); if (f->sel >= 0 && f->sel < f->n) f->picked[f->sel] = 1; f->anchor = f->sel; }
+        return;
+    }
     if (k == UI_KEY_RIGHT && !f->list_view && f->sel + 1 < f->n) f->sel++;
     else if (k == UI_KEY_LEFT && !f->list_view && f->sel > 0) f->sel--;
     else if (k == UI_KEY_DOWN) f->sel = f->sel < 0 ? 0 : (f->sel + cols < f->n ? f->sel + cols : f->sel);
@@ -514,6 +679,16 @@ static void f_wheel(uiapp_t *a, int d)
 static int f_tick(uiapp_t *a)
 {
     files_t *f = a->st;
+    if (f->gen != uihost_files_gen() && !f->renaming && f->press_item < 0) {
+        /* files moved somewhere (a drop, the desktop): look again, keeping what was selected */
+        char keep[64] = "";
+        if (sel_entry(f)) strcpy(keep, sel_entry(f)->name);
+        int scroll = f->scroll;
+        load(f);
+        f->scroll = scroll;
+        for (int i = 0; i < f->n; i++) if (keep[0] && !strcmp(f->all[f->shown[i]].name, keep)) { f->sel = i; f->picked[i] = 1; }
+        return 1;
+    }
     if (uihost_ms() - vols_ms < 500) return 0;
     int before = nvols;
     char old[4][64];
@@ -533,7 +708,8 @@ static int f_tick(uiapp_t *a)
 
 const uiapp_class_t app_files = {
     "files", "Files", "files", 820, 480, 1, sizeof(files_t),
-    f_init, f_draw, f_press, 0, 0, f_key, f_wheel, f_tick, 0,
+    f_init, f_draw, f_press, f_drag, f_release, f_key, f_wheel, f_tick, 0,
     0, 0, 0,
     0,
+    f_drop,
 };

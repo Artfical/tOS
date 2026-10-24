@@ -25,6 +25,7 @@ doom         apps/applications-games.svg
 about        apps/help.svg
 launcher     apps/view-app-grid.svg
 trash        places/user-trash.svg
+trash_full   places/user-trash-full.svg
 doc_folder   places/folder.svg
 doc_text     mimes/text-x-generic.svg
 doc_image    mimes/image-x-generic.svg

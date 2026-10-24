@@ -530,7 +530,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         extern int wm_gfx_mode;
         if (graphical && wm_gfx_mode) {
             int installed = tfs_instance.mounted && auth_have_accounts();
-            wm_gfx_set_session(installed ? 2 : 1);
+            /* tOS Recovery on an installed system: asked for with bootrec, or Shift held while it started */
+            int recovery = installed && (update_recovery_pending() | keyboard_shift_seen() | keyboard_shift_held());
+            if (recovery) klog_write("boot: tOS Recovery (bootrec or Shift)\n");
+            wm_gfx_set_session(installed && !recovery ? 2 : 1);
         } else if (graphical) { bootsplash_end(); shell_login(); }
         wm_run();
     } else {

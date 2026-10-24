@@ -199,6 +199,7 @@ KERNEL_OBJS = \
     kernel/display/gfx.o \
     kernel/display/ui_assets.o \
     kernel/display/uiapp.o \
+    kernel/display/uifiles.o \
     kernel/display/uihost_tos.o \
     kernel/display/apps/calc.o \
     kernel/display/apps/diskutil.o \

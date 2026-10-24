@@ -511,4 +511,5 @@ const uiapp_class_t app_settings = {
     s_init, s_draw, s_press, 0, 0, s_key, s_wheel, s_tick, 0,
     0, 0, 0,
     0,
+    0,
 };

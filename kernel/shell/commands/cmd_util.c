@@ -145,7 +145,7 @@ void cmd_which(int argc, char **args)
     }
     static const char *builtins[] = {
         "help", "echo", "clear", "pwd", "ls", "cd", "mkdir", "rmdir", "rm",
-        "touch", "cat", "mv", "cp", "edit", "exec", "reboot", "shutdown",
+        "touch", "cat", "mv", "cp", "edit", "exec", "reboot", "bootrec", "shutdown",
         "version", "beep", "soundinfo", "crash", "about", "uname", "ping", "wget", "python", "tsharp",
         "head", "tail", "wc", "sort", "grep", "find", "date", "whoami",
         "hostname", "cal", "yes", "seq", "sleep", "df", "free", "dmesg",

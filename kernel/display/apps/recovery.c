@@ -459,4 +459,5 @@ const uiapp_class_t app_recovery = {
     rc_init, rc_draw, rc_press, 0, 0, rc_key, 0, rc_tick, 0,
     0, 0, 0,
     0,
+    0,
 };
