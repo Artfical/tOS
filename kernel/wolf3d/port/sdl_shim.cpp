@@ -143,6 +143,7 @@ int SDL_UpdateTexture(SDL_Texture *texture, const void *rect, const void *pixels
         const uint32_t *row = (const uint32_t *)(src + (size_t)y * pitch);
         for (int x = 0; x < w; x++) fb[y * WOLF_W + x] = row[x];
     }
+    bochs_update_rect(&g_bochs, 0, 0, w, h);
     return 0;
 }
 

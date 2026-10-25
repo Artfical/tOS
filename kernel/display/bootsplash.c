@@ -85,6 +85,7 @@ int bootsplash_begin(void)
     bar_y = ly + boot_logo_h + 90;
     shown = 0;
     draw_bar(0);
+    bochs_update_rect(&dev, 0, 0, SW, SH);
     terminal_set_quiet(1);
     active = 1;
     return 0;
@@ -110,14 +111,19 @@ void bootsplash_status(const char *text)
         }
         const uint8_t *g = vga_font_get_glyph((unsigned char)ch);
         for (int r = 0; r < 16; r++)
-            for (int b = 0; b < 8; b++) if (g[r] & (0x80 >> b)) fb[(y + r) * SW + x + b] = 0x6E6E73;
+        for (int b = 0; b < 8; b++) if (g[r] & (0x80 >> b)) fb[(y + r) * SW + x + b] = 0x6E6E73;
         x += 8;
     }
+    bochs_update_rect(&dev, 0, bar_y + 24, SW, 20);
 }
 
 void bootsplash_paging_ready(void)
 {
-    if (active) paging_map_range(dev.lfb, dev.lfb, 0x1000000, PTE_PRESENT | PTE_WRITABLE);
+    if (active) {
+        paging_map_range(dev.lfb, dev.lfb, 0x1000000, PTE_PRESENT | PTE_WRITABLE);
+        if (dev.is_vmware && dev.fifo)
+            paging_map_range(dev.fifo, dev.fifo, dev.fifo_size, PTE_PRESENT | PTE_WRITABLE);
+    }
 }
 
 void bootsplash_progress(int percent)
@@ -128,6 +134,7 @@ void bootsplash_progress(int percent)
     while (shown < percent) {
         shown++;
         draw_bar(shown);
+        bochs_update_rect(&dev, bar_x, bar_y, BAR_W, BAR_H);
         uint32_t t = debugmon_uptime_ms();
         for (int n = 0; n < 200000 && debugmon_uptime_ms() - t < 4; n++) __asm__ volatile("pause");
     }

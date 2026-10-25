@@ -26,12 +26,21 @@ typedef struct {
     int width;
     int height;
     int bpp;
+    int pitch;
+    int is_vmware;
     uint32_t lfb;
+    uint32_t fb_start;
+    uint32_t fb_offset;
+    uint32_t fifo;
+    uint32_t fifo_size;
+    uint16_t vmware_index_port;
+    uint16_t vmware_value_port;
 } bochs_device_t;
 int bochs_init(bochs_device_t *dev);
 int bochs_set_mode(bochs_device_t *dev, int width, int height, int bpp);
 uint16_t bochs_get_virt_width(void);
 void bochs_put_pixel(bochs_device_t *dev, int x, int y, uint32_t color);
+void bochs_update_rect(bochs_device_t *dev, int x, int y, int width, int height);
 
 /* Turns VBE back off. Unlike hand-rolled legacy VGA mode switching
  * (CRTC/Sequencer/Graphics Controller/Attribute Controller register

@@ -45,6 +45,7 @@ void fbconsole_fill_rect(int x, int y, int w, int h, uint32_t color)
     for (int py = y0; py < y1; py++)
         for (int px = x0; px < x1; px++)
             fb[py * fb_dev->width + px] = color;
+    bochs_update_rect(fb_dev, x0, y0, x1 - x0, y1 - y0);
 }
 
 void fbconsole_clear(uint32_t bg)
@@ -70,6 +71,7 @@ void fbconsole_putc(int col, int row, char c, uint32_t fg, uint32_t bg)
         for (int rx = 0; rx < GLYPH_W; rx++)
             fb[base + rx] = (bits & (0x80 >> rx)) ? fg : bg;
     }
+    bochs_update_rect(fb_dev, px, py, GLYPH_W, GLYPH_H);
 }
 
 void fbconsole_puts(int col, int row, const char *s, uint32_t fg, uint32_t bg)

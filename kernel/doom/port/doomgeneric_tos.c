@@ -120,6 +120,7 @@ void DG_DrawFrame(void)
     volatile uint32_t *fb = (volatile uint32_t *)g_bochs.lfb;
     uint32_t *src = (uint32_t *)DG_ScreenBuffer;
     for (int i = 0; i < DOOMGENERIC_RESX * DOOMGENERIC_RESY; i++) fb[i] = src[i];
+    bochs_update_rect(&g_bochs, 0, 0, DOOMGENERIC_RESX, DOOMGENERIC_RESY);
 
     pump_keys();
 }

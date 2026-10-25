@@ -1968,6 +1968,7 @@ static void present(void)
     memcpy(lfb, back, (size_t)SW * SH * 4);
     cur_x = -100;
     cursor_draw();
+    bochs_update_rect(&vdev, 0, 0, SW, SH);
 }
 
 /* ------------------------------------------------------------------ animations */
@@ -2096,6 +2097,7 @@ static void shutdown_screen(void)
     gfx_text_center(&bs, &ui_font_title, 0, SH / 2 - 20, SW, "tOS", C_TEXT, 255);
     gfx_text_center(&bs, &ui_font_regular, 0, SH / 2 + 20, SW, "It is now safe to turn off your computer.", C_TEXT_DIM, 255);
     memcpy(lfb, back, (size_t)SW * SH * 4);
+    bochs_update_rect(&vdev, 0, 0, SW, SH);
     for (;;) __asm__ volatile("cli; hlt");
 }
 
@@ -2689,6 +2691,7 @@ void wm_gfx_tick(void)
     } else if (moved) {
         cursor_erase();
         cursor_draw();
+        bochs_update_rect(&vdev, 0, 0, SW, SH);
     }
 }
 

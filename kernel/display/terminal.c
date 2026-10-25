@@ -77,14 +77,15 @@ static term_surface_t *current_surface(void)
 static void vga_disable_blink(void)
 {
     /* Index byte bit 5 (0x20) is the Palette Address Source bit; it must
-     * stay set while poking other AC registers or the screen blanks. */
+     * stay set while poking other AC registers or the screen blanks.
+     * Do not read AC register 0x10 from 0x3C1 here: that readback hangs
+     * VMware SVGA II's legacy VGA path during early boot (the same
+     * hardware quirk that vga.c avoids in capture_current_regs()). GRUB
+     * leaves the adapter in standard mode 3, whose mode-control value is
+     * 0x0C; write the known blink-disabled value 0x04 directly. */
     inb(0x3DA);
     outb(0x3C0, 0x10 | 0x20);
-    uint8_t mode = inb(0x3C1);
-    mode &= ~0x08;
-    inb(0x3DA);
-    outb(0x3C0, 0x10 | 0x20);
-    outb(0x3C0, mode);
+    outb(0x3C0, 0x04);
 }
 
 void terminal_surface_init(term_surface_t *s)
