@@ -130,7 +130,8 @@ static int vmware_init(bochs_device_t *dev, const pci_device_t *pdev)
     }
 
     uint32_t fb_start = svga_read_reg(dev, SVGA_REG_FB_START);
-    uint32_t fb_size = svga_read_reg(dev, SVGA_REG_FB_SIZE);
+    uint32_t fb_size = svga_read_reg(dev, SVGA_REG_VRAM_SIZE);
+    if (fb_size > 0x1000000u) fb_size = 0x1000000u;
     uint32_t fifo_start = svga_read_reg(dev, SVGA_REG_MEM_START);
     uint32_t fifo_size = svga_read_reg(dev, SVGA_REG_MEM_SIZE);
     if (!fb_start || !fb_size || !fifo_start || fifo_size < 64u) {
@@ -325,7 +326,7 @@ int bochs_set_mode(bochs_device_t *dev, int width, int height, int bpp)
         if (bpp != 32 || width <= 0 || height <= 0 ||
             (uint64_t)(uint32_t)width * (uint32_t)height * 4u > dev->fifo_size * 256u)
             return -1;
-        svga_write_reg(dev, SVGA_REG_ENABLE, 0);
+        svga_write_reg(dev, SVGA_REG_ENABLE, 1);
         svga_write_reg(dev, SVGA_REG_WIDTH, (uint32_t)width);
         svga_write_reg(dev, SVGA_REG_HEIGHT, (uint32_t)height);
         svga_write_reg(dev, SVGA_REG_BPP, (uint32_t)bpp);
@@ -342,11 +343,12 @@ int bochs_set_mode(bochs_device_t *dev, int width, int height, int bpp)
             fb_start != dev->fb_start || fb_offset > fb_size ||
             fb_start + fb_offset < fb_start) {
             {
-                char line[160]; int n = 0;
-                const char *s = "svga: mode readback mismatch w/h/bpp/pitch/fbstart/fboff/fbsize=";
+                char line[200]; int n = 0;
+                const char *s = "svga: mode readback mismatch w/h/bpp/pitch/fbstart/fboff/fbsize/vram/maxw/maxh=";
                 while (*s) line[n++] = *s++;
-                uint32_t vals[] = { got_width, got_height, got_bpp, pitch, fb_start, fb_offset, fb_size };
-                for (int v = 0; v < 7; v++) {
+                uint32_t vals[] = { got_width, got_height, got_bpp, pitch, fb_start, fb_offset, fb_size,
+                                    svga_read_reg(dev, SVGA_REG_VRAM_SIZE), svga_read_reg(dev, SVGA_REG_MAX_WIDTH), svga_read_reg(dev, SVGA_REG_MAX_HEIGHT) };
+                for (int v = 0; v < 10; v++) {
                     if (v) line[n++] = '/';
                     for (int sh = 28; sh >= 0; sh -= 4) line[n++] = "0123456789ABCDEF"[(vals[v] >> sh) & 0xF];
                 }
