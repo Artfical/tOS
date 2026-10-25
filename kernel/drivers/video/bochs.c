@@ -341,7 +341,18 @@ int bochs_set_mode(bochs_device_t *dev, int width, int height, int bpp)
             got_bpp != (uint32_t)bpp || pitch != (uint32_t)width * 4u ||
             fb_start != dev->fb_start || fb_offset > fb_size ||
             fb_start + fb_offset < fb_start) {
-            klog_write("svga: VMware mode readback mismatch; disabling graphics mode\n");
+            {
+                char line[160]; int n = 0;
+                const char *s = "svga: mode readback mismatch w/h/bpp/pitch/fbstart/fboff/fbsize=";
+                while (*s) line[n++] = *s++;
+                uint32_t vals[] = { got_width, got_height, got_bpp, pitch, fb_start, fb_offset, fb_size };
+                for (int v = 0; v < 7; v++) {
+                    if (v) line[n++] = '/';
+                    for (int sh = 28; sh >= 0; sh -= 4) line[n++] = "0123456789ABCDEF"[(vals[v] >> sh) & 0xF];
+                }
+                line[n++] = '\n'; line[n] = 0;
+                klog_write(line);
+            }
             svga_write_reg(dev, SVGA_REG_ENABLE, 0);
             dev->present = 0;
             dev->lfb = 0;
