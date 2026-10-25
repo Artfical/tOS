@@ -866,6 +866,7 @@ static void layout_dock(void)
 
 static int dock_hit(int x, int y)
 {
+    if (session != 0) return -1;            /* Recovery and the login window have no Dock */
     if (y < dock_y - 14 || y >= dock_y + DOCK_H) return -1;
     for (int i = 0; i < dock_n; i++)
         if (x >= dock[i].x - DOCK_GAP / 2 && x < dock[i].x + dock[i].size + DOCK_GAP / 2) return i;
