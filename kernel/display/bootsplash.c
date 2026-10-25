@@ -46,7 +46,15 @@ static void draw_logo(int x0, int y0)
     }
 }
 
-/* one frame of the animation (640x360) doubled onto the screen */
+/* a pixel mix, a:b = 3:1, on all three colour lanes at once */
+static inline uint32_t mix31(uint32_t a, uint32_t b)
+{
+    return ((((a & 0xFF00FF) * 3 + (b & 0xFF00FF)) >> 2) & 0xFF00FF) | ((((a & 0x00FF00) * 3 + (b & 0x00FF00)) >> 2) & 0x00FF00);
+}
+
+static uint32_t *hrows;                    /* the frame's rows, already widened to 1280 */
+
+/* one frame of the animation (640x360) smoothly doubled onto the screen */
 static void draw_frame(int n)
 {
     const uint32_t *hdr = (const uint32_t *)boot_video;
@@ -54,19 +62,55 @@ static void draw_frame(int n)
     uint8_t *rgb;
     uint32_t w, h;
     const char *err;
-    jpeg_decode(boot_video + hdr[1 + n], hdr[2 + n] - hdr[1 + n], &rgb, &w, &h, &err);
+    jpeg_decode(boot_video + hdr[2 + n], hdr[3 + n] - hdr[2 + n], &rgb, &w, &h, &err);
     if (!rgb) return;
     if (w == 640 && h == 360) {
-        for (uint32_t y = 0; y < h; y++) {
-            const uint8_t *row = rgb + y * w * 3;
-            volatile uint32_t *d0 = fb + (2 * y) * SW, *d1 = d0 + SW;
-            for (uint32_t x = 0; x < w; x++) {
-                uint32_t c = ((uint32_t)row[3 * x] << 16) | ((uint32_t)row[3 * x + 1] << 8) | row[3 * x + 2];
-                d0[2 * x] = d0[2 * x + 1] = d1[2 * x] = d1[2 * x + 1] = c;
+        if (!hrows) hrows = malloc((size_t)360 * SW * 4);
+        if (hrows) {
+            for (int y = 0; y < 360; y++) {
+                const uint8_t *row = rgb + y * 640 * 3;
+                uint32_t *o = hrows + y * SW;
+                uint32_t prev = ((uint32_t)row[0] << 16) | ((uint32_t)row[1] << 8) | row[2];
+                for (int x = 0; x < 640; x++) {
+                    uint32_t c = ((uint32_t)row[3 * x] << 16) | ((uint32_t)row[3 * x + 1] << 8) | row[3 * x + 2];
+                    uint32_t nx = x + 1 < 640 ? ((uint32_t)row[3 * x + 3] << 16) | ((uint32_t)row[3 * x + 4] << 8) | row[3 * x + 5] : c;
+                    o[2 * x] = mix31(c, prev);
+                    o[2 * x + 1] = mix31(c, nx);
+                    prev = c;
+                }
+            }
+            for (int Y = 0; Y < SH; Y++) {
+                int k = Y >> 1;
+                int other = (Y & 1) ? (k + 1 < 360 ? k + 1 : k) : (k > 0 ? k - 1 : 0);
+                const uint32_t *a = hrows + k * SW, *b = hrows + other * SW;
+                volatile uint32_t *d = fb + Y * SW;
+                for (int X = 0; X < SW; X++) d[X] = mix31(a[X], b[X]);
             }
         }
     }
     free(rgb);
+}
+
+/* plays the whole animation at its own speed, by the clock: a frame that cannot be ready in time
+ * is skipped, so it always takes as long as the video itself */
+static void play_video(void)
+{
+    const uint32_t *hdr = (const uint32_t *)boot_video;
+    uint32_t count = hdr[0], fps = hdr[1] ? hdr[1] : 20;
+    uint32_t start = debugmon_uptime_ms();
+    int last = -1;
+    for (uint32_t spins = 0; spins < 400000000u; spins++) {
+        uint32_t idx = (debugmon_uptime_ms() - start) * fps / 1000;
+        if (idx >= count) idx = count - 1;
+        if ((int)idx != last) {
+            draw_frame((int)idx);
+            bochs_update_rect(&dev, 0, 0, SW, SH);
+            last = (int)idx;
+        }
+        if (idx >= count - 1) break;
+        __asm__ volatile("pause");
+    }
+    cur_frame = last;
 }
 
 static void draw_status(void)
@@ -129,34 +173,15 @@ void bootsplash_paging_ready(void)
         if (dev.is_vmware && dev.fifo)
             paging_map_range(dev.fifo, dev.fifo, dev.fifo_size, PTE_PRESENT | PTE_WRITABLE);
         video_ok = 1;                   /* the heap exists now, so frames can be decoded */
+        play_video();
     }
 }
 
-/* the animation follows the boot: how far the start-up is decides which frame is showing */
 void bootsplash_progress(int percent)
 {
     if (!active) return;
     if (percent > 100) percent = 100;
-    if (percent <= shown) return;
-    shown = percent;
-    if (!video_ok) return;
-    int count = (int)((const uint32_t *)boot_video)[0];
-    int target = shown * (count - 1) / 100;
-    int drawn = 0;
-    /* at most a handful of frames per step, spread over the way to the target: decoding
-     * every frame would make the start-up itself slower on a slow machine */
-    int step = (target - cur_frame + 4) / 5;
-    if (step < 1) step = 1;
-    while (cur_frame < target) {
-        cur_frame += step;
-        if (cur_frame > target) cur_frame = target;
-        draw_frame(cur_frame);
-        drawn = 1;
-    }
-    if (drawn) {
-        draw_status();
-        bochs_update_rect(&dev, 0, 0, SW, SH);
-    }
+    if (percent > shown) shown = percent;
 }
 
 void bootsplash_end(void)
