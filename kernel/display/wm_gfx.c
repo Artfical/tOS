@@ -271,12 +271,20 @@ static void panel_size(int panel, int *pw, int *ph)
     else { *pw = 440; *ph = 380; }
 }
 
+static int dock_limit(void) { return SH - DOCK_MARGIN - DOCK_H; }
+
 static void clamp_window(window_t *w)
 {
     if (w->gx < -w->gw + 80) w->gx = -w->gw + 80;
     if (w->gx > SW - 80) w->gx = SW - 80;
     if (w->gy < TOPBAR_H) w->gy = TOPBAR_H;
     if (w->gy > SH - TITLE_H - DOCK_MARGIN) w->gy = SH - TITLE_H - DOCK_MARGIN;
+    /* a window stays above the Dock: it can be dragged up to it, never under it */
+    if (session == 0) {
+        int floor = SH - DOCK_MARGIN - DOCK_H - w->gh;
+        if (w->gy > floor) w->gy = floor;
+        if (w->gy < TOPBAR_H) w->gy = TOPBAR_H;
+    }
 }
 
 void wm_gfx_window_opened(window_t *w)
@@ -882,8 +890,6 @@ static int app_running(const app_t *a)
 static void draw_dock(void)
 {
     layout_dock();
-    glass(dock_x, dock_y, dock_w, DOCK_H, 18, 0xFFFFFF, 46);
-    gfx_rrect_outline(&bs, dock_x, dock_y, dock_w, DOCK_H, 18, 0xFFFFFF, 70);
     for (int i = 0; i < dock_n; i++) {
         if (dock[i].special == 2 && (trash_full < 0 || debugmon_uptime_ms() - trash_ms > 2000)) { trash_full = ui_trash_items() > 0; trash_ms = debugmon_uptime_ms(); }
         const char *key = dock[i].special == 1 ? "launcher" : dock[i].special == 2 ? (trash_full > 0 ? "trash_full" : "trash") : dock[i].app->icon;
@@ -2551,14 +2557,14 @@ void wm_gfx_tick(void)
     } else if (resize_win) {
         if ((btn & 1) && resize_win->kind == WIN_KIND_NATIVE) {
             uiapp_t *ap = resize_win->native;
-            int nw = mx - resize_win->gx, nh = my - resize_win->gy;
+            int nw = mx - resize_win->gx, nh = (session == 0 && my > dock_limit() ? dock_limit() : my) - resize_win->gy;
             int minw = ap->cls->w * 2 / 3, minh = TITLE_H + ap->cls->h * 2 / 3;
             if (nw < minw) nw = minw;
             if (nh < minh) nh = minh;
             if (nw != resize_win->gw || nh != resize_win->gh) { resize_win->gw = nw; resize_win->gh = nh; dirty = 1; }
         } else if (btn & 1) {
             int cols = (mx - resize_win->gx - 2 * CPAD_X + CW / 2) / CW;
-            int rows = (my - resize_win->gy - TITLE_H - 2 * CPAD_Y + CH / 2) / CH;
+            int rows = ((session == 0 && my > dock_limit() ? dock_limit() : my) - resize_win->gy - TITLE_H - 2 * CPAD_Y + CH / 2) / CH;
             int oc = resize_win->w0, orow = resize_win->h0;
             set_cells(resize_win, cols, rows);
             if (oc != resize_win->w0 || orow != resize_win->h0) dirty = 1;

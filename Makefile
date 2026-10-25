@@ -5,6 +5,8 @@ LD = ld
 AR = ar
 
 GCC_INC := $(shell $(CC) -m32 -print-file-name=include)
+HOST_MULTIARCH := $(shell $(CC) -print-multiarch)
+HOST_MULTIARCH_INCLUDE := $(wildcard /usr/include/$(HOST_MULTIARCH))
 
 # Regular kernel flags (no nostdinc to avoid breaking existing code)
 CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
@@ -21,7 +23,11 @@ CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -Ikernel/micropython/ports/tos \
          -Ikernel/audio
 
-# Relaxed flags for MicroPython core (uses -isystem for 32-bit glibc compat)
+# Relaxed flags for MicroPython core. It includes a few host libc headers;
+# use the installed host multiarch headers rather than a machine-specific
+# /tmp symlink. With GCC -m32, -print-multiarch names the target tuple, which
+# may not be the directory containing the host's shared libc headers.
+MPY_HOST_INCLUDE = $(if $(HOST_MULTIARCH_INCLUDE),-isystem $(HOST_MULTIARCH_INCLUDE))
 MPY_CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
              -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 \
@@ -29,7 +35,7 @@ MPY_CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs
              -O2 -Wall -Wno-unused-variable -Wno-unused-function \
              -Wno-unused-parameter -Wno-sign-compare \
              -Wno-missing-field-initializers -Wno-implicit-fallthrough \
-             -isystem /tmp/i386-linux-gnu \
+             $(MPY_HOST_INCLUDE) \
              -I. \
              -Ikernel/micropython \
              -Ikernel/micropython/ports/tos \
@@ -196,6 +202,7 @@ KERNEL_OBJS = \
     kernel/display/wm_notify.o \
     kernel/display/bootsplash.o \
     kernel/display/bootlogo.o \
+    kernel/display/bootvideo.o \
     kernel/display/gfx.o \
     kernel/display/ui_assets.o \
     kernel/display/uiapp.o \
@@ -475,6 +482,9 @@ kernel/display/apps/tfire.o: kernel/display/apps/tfire.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 %.o: %.s
+	$(AS) $(ASFLAGS) $< -o $@
+
+kernel/display/bootvideo.o: kernel/display/bootvideo.s assets/boot/bootvideo.bin
 	$(AS) $(ASFLAGS) $< -o $@
 
 kernel/audio/demo_song_embed.o: kernel/audio/demo_song_embed.s kernel/audio/demo_song.wav

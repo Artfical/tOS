@@ -11,7 +11,7 @@
  * present, since that's still better than silence on real hardware
  * without SB16/AC97. */
 
-static int enabled = 1;
+static int enabled = 0;       /* the UI beeps are off unless `beep on` */
 static int audio_ready = 0;
 
 static uint8_t snd_buf[AUDIO_DMA_SIZE];
