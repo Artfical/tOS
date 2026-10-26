@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The boot screen's animation: an mp4 reduced to 640x360 baseline JPEG frames at 20 fps and
 packed into assets/boot/bootvideo.bin (u32 count, u32 fps, u32 offsets[count + 1], then the frames),
-which kernel/display/bootvideo.s links into the kernel. Run again after changing the video:
+which goes into the initrd (the kernel finds it there while it starts). Run again after changing the video:
     tools/gen_bootvideo.py artfcal-logo-small.mp4"""
 import os, struct, subprocess, sys, tempfile, glob
 HERE = os.path.dirname(os.path.abspath(__file__))

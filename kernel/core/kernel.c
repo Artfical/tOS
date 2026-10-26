@@ -255,6 +255,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     kexec_set_memory(640, mem_upper);
 
     paging_init();
+    if (have_initrd) bootsplash_set_initrd(initrd_start, initrd_end);
     bootsplash_paging_ready();
     bootsplash_progress(8);
     tss_init();

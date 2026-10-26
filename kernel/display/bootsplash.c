@@ -17,7 +17,10 @@ extern const uint8_t boot_logo_rle[];
 #define SH 720
 #define INK 0xE6E1D2        /* the cream of the animation's lettering */
 
-extern const uint8_t boot_video[];       /* tools/gen_bootvideo.py: count, offsets[count + 1], JPEG frames */
+/* tools/gen_bootvideo.py: count, fps, offsets[count + 1], JPEG frames. It travels in the initrd,
+ * not in the kernel: Software Update reads the new kernel into the old one's heap, which starts
+ * where the old kernel ends, so a kernel that grows by megabytes cannot be started that way. */
+static const uint8_t *boot_video;
 
 static bochs_device_t dev;
 static volatile uint32_t *fb;
@@ -166,14 +169,35 @@ void bootsplash_status(const char *text)
     bochs_update_rect(&dev, 0, SH - 64, SW, 48);
 }
 
+/* finds assets/boot/bootvideo.bin in the initrd (a ustar archive), still where it was loaded */
+void bootsplash_set_initrd(uint32_t start, uint32_t end)
+{
+    static const char want[] = "bootvideo.bin";
+    uint32_t at = start;
+    while (at + 512 <= end) {
+        const char *h = (const char *)at;
+        if (!h[0]) break;
+        uint32_t size = 0;
+        for (int i = 124; i < 136 && h[i] >= '0' && h[i] <= '7'; i++) size = size * 8 + (uint32_t)(h[i] - '0');
+        int n = 0;
+        while (n < 100 && h[n]) n++;
+        int w = (int)sizeof(want) - 1;
+        if (n >= w && !memcmp(h + n - w, want, (size_t)w) && at + 512 + size <= end && size > 8) {
+            boot_video = (const uint8_t *)(at + 512);
+            return;
+        }
+        at += 512 + ((size + 511) & ~511u);
+    }
+}
+
 void bootsplash_paging_ready(void)
 {
     if (active) {
         paging_map_range(dev.lfb, dev.lfb, 0x1000000, PTE_PRESENT | PTE_WRITABLE);
         if (dev.is_vmware && dev.fifo)
             paging_map_range(dev.fifo, dev.fifo, dev.fifo_size, PTE_PRESENT | PTE_WRITABLE);
-        video_ok = 1;                   /* the heap exists now, so frames can be decoded */
-        play_video();
+        video_ok = boot_video != 0;     /* the heap exists now, so frames can be decoded */
+        if (video_ok) play_video();
     }
 }
 

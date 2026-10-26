@@ -55,8 +55,11 @@ jobs:
           grep -q "session: recovery"    boot.log
 
       - name: Check the kernel can be started by Software Update
-        # The old system reads the new kernel into its heap, which begins where the old kernel ends
-        # (0x20A15000 for build 574, the lowest); a kernel reaching past that cannot be started from it.
+        # The old system reads the new kernel into its heap, which begins where the old kernel ends.
+        # Builds 583 to 588 end near 0x20597000, and when a staged update is installed at start-up
+        # the copy sits right there: build 589, 3.5 MB bigger with the boot animation inside it, was
+        # written to the disk but could not be started ("the new image overlaps its own source").
+        # Large data goes into the initrd; the kernel may only grow a little past 0x20597000.
         run: |
           python3 - <<'PY'
           import subprocess, sys
@@ -66,7 +69,7 @@ jobs:
               if f and f[0] == 'LOAD':
                   end = max(end, int(f[3], 16) + int(f[5], 16))
           print('kernel ends at 0x%X' % end)
-          sys.exit(0 if end <= 0x20A00000 else 'the kernel ends past 0x20A00000: older builds could not restart into it')
+          sys.exit(0 if end <= 0x205A0000 else 'the kernel ends past 0x205A0000: older builds could not restart into it')
           PY
 
       - name: Describe the update

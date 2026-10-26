@@ -202,7 +202,6 @@ KERNEL_OBJS = \
     kernel/display/wm_notify.o \
     kernel/display/bootsplash.o \
     kernel/display/bootlogo.o \
-    kernel/display/bootvideo.o \
     kernel/display/gfx.o \
     kernel/display/ui_assets.o \
     kernel/display/uiapp.o \
@@ -338,7 +337,7 @@ WOLF_ASM_SRCS := $(wildcard kernel/wolf3d/port/*.s)
 WOLF_OBJS := $(WOLF_CXX_SRCS:.cpp=.o) $(WOLF_C_SRCS:.c=.o) $(WOLF_ASM_SRCS:.s=.o)
 KERNEL_OBJS += $(WOLF_OBJS)
 
-PROGRAMS = programs/tosgui_demo.py programs/hello.t programs/bsstest.t \
+PROGRAMS = assets/boot/bootvideo.bin programs/tosgui_demo.py programs/hello.t programs/bsstest.t \
 	programs/filetest.t programs/gfxtest.t programs/termtest.t programs/nettest.t programs/cryptotest.t assets/doom1.wad \
 	assets/wolf3d/audiohed.wl1 assets/wolf3d/audiot.wl1 assets/wolf3d/gamemaps.wl1 \
 	assets/wolf3d/maphead.wl1 assets/wolf3d/vgadict.wl1 assets/wolf3d/vgagraph.wl1 \
@@ -482,9 +481,6 @@ kernel/display/apps/tfire.o: kernel/display/apps/tfire.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 %.o: %.s
-	$(AS) $(ASFLAGS) $< -o $@
-
-kernel/display/bootvideo.o: kernel/display/bootvideo.s assets/boot/bootvideo.bin
 	$(AS) $(ASFLAGS) $< -o $@
 
 kernel/audio/demo_song_embed.o: kernel/audio/demo_song_embed.s kernel/audio/demo_song.wav
