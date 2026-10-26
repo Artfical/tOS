@@ -1,27 +1,24 @@
-# Files that move, and tOS Recovery when you need it
+# A new start-up, VMware graphics, and Settings that all work
 
-## files | Files, Desktop and Trash
-- Drag files and folders from Files to the Desktop, another folder, or another Files window.
-- Select several items with Ctrl-click or a Shift-click range and move them together.
-- Hold Alt/Option while dropping to copy instead of move; name conflicts get a new name.
-- Deleting from Files moves items to the Trash. The Dock Trash shows when it is full; emptying it requires confirmation.
-![Files moving to the Desktop, Trash and app icons](docs/videos/drag-drop.mp4)
-![A file on the Desktop after dragging it from Files](docs/screenshots/drag_desktop.png)
-![Two selected files moved together onto the Desktop](docs/screenshots/drag_multiselect.png)
-![The full Trash icon in the Dock](docs/screenshots/drag_trash.png)
-![The Trash opened in Files](docs/screenshots/drag_trash_contents.png)
+## about | Start-up and VMware
+- tOS now starts with the Artfical animation, played at its own speed with smooth scaling, and ends on the logo.
+- VMware (SVGA II) shows the boot screen, tOS Recovery and the desktop instead of a black screen or the old text console.
+- VMware needs at least 4 MB of graphics memory for 1280 x 720; with less, tOS starts in text mode and writes the reason to the serial log.
+![The start-up animation](docs/videos/boot-animation.mp4)
+![The desktop on VMware's SVGA II display](docs/screenshots/vmware_desktop.png)
 
-## launcher | Open files from the Dock
-- Drop text documents on Notepad, pictures on Image Viewer, and HTML pages on tFire.
-- A Dock target highlights while a compatible file is dragged over it.
-![A text file opened by dropping it on Notepad](docs/screenshots/drag_notepad.png)
-![An image opened by dropping it on Image Viewer](docs/screenshots/drag_viewer.png)
-![A local HTML file opened by dropping it on tFire](docs/screenshots/drag_tfire.png)
+## settings | System Settings
+- Accent colour now changes buttons, selections and highlights across tOS, and is remembered.
+- The Window shadows and the Show indicators for open apps switches now work.
+- Type in Search to find a section; the first match opens as you type.
+![Accent colour, shadows, Search and the Dock dots](docs/videos/settings.mp4)
+![A pink accent colour](docs/screenshots/settings_accent.png)
+![Search opening Displays](docs/screenshots/settings_search.png)
 
-## recovery | tOS Recovery
-- Run `bootrec` to restart straight into Recovery, or `bootrec -n` to choose Recovery at the next start.
-- Hold Shift while tOS starts to enter Recovery instead of the login screen.
-- The one-time `bootrec -n` request is consumed on the next start; Recovery still offers Install tOS, Disk Utility, and Try tOS in Live Environment.
-![Bootrec and Recovery at startup](docs/videos/recovery.mp4)
-![The bootrec command](docs/screenshots/recovery_bootrec_command.png)
-![tOS Recovery selected at startup](docs/screenshots/recovery_shift.png)
+## launcher | Desktop and Dock
+- The Dock is transparent, and windows stop at the Dock instead of sliding under it.
+- tOS Recovery no longer responds to clicks on its hidden Dock.
+- The pointer speeds up smoothly, and screen updates on VMware no longer wait for each frame.
+- Interface beeps are off by default; turn them on with `beep on` in Terminal.
+![The Dock without the dots under open apps](docs/screenshots/dock_indicators.png)
+![A window stopped above the Dock](docs/screenshots/window_above_dock.png)
