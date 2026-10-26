@@ -29,6 +29,8 @@ typedef struct {
     uint32_t last_sec;
     int scroll;                   /* Software Update's notes */
     int asked;                    /* checked for updates since the pane opened */
+    char search[24];              /* typed into the sidebar's search field */
+    int searching;
 } set_t;
 
 /* ---- controls ---- */
@@ -65,6 +67,27 @@ static void row_label(gfx_surface_t *s, int x, int y, int i, const char *label, 
 static void row_value(gfx_surface_t *s, int x, int w, int y, int i, const char *value)
 {
     gfx_text(s, &ui_font_regular, x + w - 14 - gfx_text_width(&ui_font_regular, value), y + i * 44 + 13, value, UI_DIM, 255);
+}
+
+static const uint32_t accents[7] = { 0x3B82F6, 0xA855F7, 0xEC4899, 0xEF4444, 0xF97316, 0xEAB308, 0x22C55E };
+
+/* does a section's name contain what was typed into the search field (any case) */
+static int matches(const char *name, const char *q)
+{
+    if (!q[0]) return 1;
+    for (const char *p = name; *p; p++) {
+        int k = 0;
+        while (q[k]) {
+            char a = p[k], b = q[k];
+            if (!a) return 0;
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) break;
+            k++;
+        }
+        if (!q[k]) return 1;
+    }
+    return 0;
 }
 
 static void put_ip(char *o, uint32_t ip) { for (int i = 0; i < 4; i++) { ui_num(o, (ip >> (8 * i)) & 255); if (i < 3) strcat(o, "."); } }
@@ -117,11 +140,11 @@ static void draw_section(uiapp_t *a, set_t *st, gfx_surface_t *s, int x, int y, 
         static const char *const ap[2] = { "Light", "Dark" };
         segmented(s, px + pw - 214, gy + 8, 200, ap, 2, dark);
         row_label(s, px, gy, 1, "Accent colour", 0);
-        static const uint32_t acc[7] = { 0x3B82F6, 0xA855F7, 0xEC4899, 0xEF4444, 0xF97316, 0xEAB308, 0x22C55E };
-        for (int k = 0; k < 7; k++) gfx_circle(s, px + pw - 190 + k * 26, gy + 44 + 22, 8, acc[k], 255);
-        gfx_rrect_outline(s, px + pw - 190 - 11, gy + 44 + 11, 22, 22, 11, UI_TEXT, 200);
+        int ac = uihost_get("accent");
+        for (int k = 0; k < 7; k++) gfx_circle(s, px + pw - 190 + k * 26, gy + 44 + 22, 8, accents[k], 255);
+        if (ac >= 0 && ac < 7) gfx_rrect_outline(s, px + pw - 190 + ac * 26 - 11, gy + 44 + 11, 22, 22, 11, UI_TEXT, 200);
         row_label(s, px, gy, 2, "Window shadows", 0);
-        sw(s, px + pw - 54, gy + 88 + 10, 1);
+        sw(s, px + pw - 54, gy + 88 + 10, uihost_get("shadows"));
         /* the previews */
         int ty = gy + 150;
         for (int k = 0; k < 2; k++) {
@@ -154,7 +177,7 @@ static void draw_section(uiapp_t *a, set_t *st, gfx_surface_t *s, int x, int y, 
         row_label(s, px, gy, 0, "Magnification", 0);
         sw(s, px + pw - 54, gy + 10, uihost_get("dock_magnify"));
         row_label(s, px, gy, 1, "Show indicators for open apps", 0);
-        sw(s, px + pw - 54, gy + 44 + 10, 1);
+        sw(s, px + pw - 54, gy + 44 + 10, uihost_get("indicators"));
         break;
     }
     case S_DISPLAYS: {
@@ -350,8 +373,12 @@ static void s_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
     /* the sidebar */
     gfx_fill(s, x, y, SIDE, h, UI_SIDEBAR);
     gfx_rrect(s, x + 12, y + 12, SIDE - 24, 28, 7, ui_theme.dark ? 0x2E2F37 : 0xDEDEE3, 255);
+    if (st->searching) gfx_rrect_outline(s, x + 11, y + 11, SIDE - 22, 30, 8, UI_ACCENT, 255);
     gfx_blit_tinted(s, gfx_image("glyph_search"), x + 20, y + 18, UI_DIM, 255);
-    gfx_text(s, &ui_font_regular, x + 42, y + 17, "Search", UI_DIM, 255);
+    if (st->search[0] || st->searching) {
+        int tw = gfx_text(s, &ui_font_regular, x + 42, y + 17, st->search, UI_TEXT, 255);
+        if (st->searching && (uihost_ms() / 500) % 2 == 0) gfx_fill(s, x + 43 + tw, y + 17, 2, 18, UI_TEXT);
+    } else gfx_text(s, &ui_font_regular, x + 42, y + 17, "Search", UI_DIM, 255);
     uihost_user_t me = { "user", "User", 0, 0, 1 };
     uihost_user_t us[12];
     int nu = uihost_users(us, 12);
@@ -365,7 +392,8 @@ static void s_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
         gfx_rrect(s, x + 16, ry + 4, 22, 22, 6, sec_color[i], 255);
         const gfx_image_t *g = gfx_image(sec_glyph[i]);
         if (g) gfx_blit_scaled(s, g, x + 19, ry + 7, 16, 16, 255);
-        gfx_text(s, &ui_font_regular, x + 48, ry + 6, sec_name[i], i == st->sec ? 0xFFFFFF : UI_TEXT, 255);
+        int hit = matches(sec_name[i], st->search);
+        gfx_text(s, &ui_font_regular, x + 48, ry + 6, sec_name[i], i == st->sec ? 0xFFFFFF : UI_TEXT, hit ? 255 : 90);
     }
     gfx_fill(s, x + SIDE, y, 1, h, UI_LINE);
     gfx_fill(s, x + SIDE + 1, y, w - SIDE - 1, h, UI_BG);
@@ -387,12 +415,14 @@ static void s_press(uiapp_t *a, int lx, int ly, int b)
     set_t *st = a->st;
     a->dirty = 1;
     if (lx < SIDE) {
+        if (ui_hit(lx, ly, 12, 12, SIDE - 24, 28)) { st->searching = 1; return; }
+        st->searching = 0;
         int i = (ly - 116) / 34;
-        if (ly >= 116 && i >= 0 && i < S_COUNT) { st->sec = i; st->adding = 0; st->msg[0] = 0; st->asked = 0; st->scroll = 0; }
+        if (ly >= 116 && i >= 0 && i < S_COUNT) { st->sec = i; st->search[0] = 0; st->adding = 0; st->msg[0] = 0; st->asked = 0; st->scroll = 0; }
         return;
     }
+    st->searching = 0;
     int px = SIDE + 1 + 28, pw = a->w - SIDE - 1 - 56, gy = 64;
-    lx -= 0;
     switch (st->sec) {
     case S_UPDATE: {
         const update_info_t *u = uihost_update_status();
@@ -411,6 +441,8 @@ static void s_press(uiapp_t *a, int lx, int ly, int b)
     case S_APPEARANCE:
         if (ui_hit(lx, ly, px + pw - 214, gy + 8, 200, 28)) uihost_set("dark", lx >= px + pw - 114);
         for (int k = 0; k < 2; k++) if (ui_hit(lx, ly, px + k * 170, gy + 150, 150, 96)) uihost_set("dark", k);
+        for (int k = 0; k < 7; k++) if (ui_hit(lx, ly, px + pw - 190 + k * 26 - 11, gy + 44 + 11, 22, 22)) uihost_set("accent", k);
+        if (ui_hit(lx, ly, px + pw - 54, gy + 88 + 10, 40, 24)) uihost_set("shadows", !uihost_get("shadows"));
         break;
     case S_DESKTOP:
         for (int i = 0; i < 4; i++)
@@ -419,6 +451,7 @@ static void s_press(uiapp_t *a, int lx, int ly, int b)
                 else uihost_open("files", 0);              /* pick a picture there: "Wallpaper" */
             }
         if (ui_hit(lx, ly, px + pw - 54, gy + 120 + 10, 40, 24)) uihost_set("dock_magnify", !uihost_get("dock_magnify"));
+        if (ui_hit(lx, ly, px + pw - 54, gy + 120 + 44 + 10, 40, 24)) uihost_set("indicators", !uihost_get("indicators"));
         break;
     case S_DISPLAYS: {
         int row = (ly - (gy + 176)) / 44;
@@ -453,6 +486,18 @@ static void s_press(uiapp_t *a, int lx, int ly, int b)
 static void s_key(uiapp_t *a, int k)
 {
     set_t *st = a->st;
+    if (st->searching) {
+        int n = (int)strlen(st->search);
+        if (k == 27) { st->searching = 0; st->search[0] = 0; }
+        else if (k == '\n') st->searching = 0;
+        else if (k == '\b') { if (n) st->search[n - 1] = 0; }
+        else if (k >= 32 && k < 127 && n < (int)sizeof(st->search) - 1) { st->search[n] = (char)k; st->search[n + 1] = 0; }
+        /* the first section that matches opens as you type */
+        for (int i = 0; i < S_COUNT; i++)
+            if (st->search[0] && matches(sec_name[i], st->search)) { if (st->sec != i) { st->sec = i; st->adding = 0; st->msg[0] = 0; st->asked = 0; } break; }
+        a->dirty = 1;
+        return;
+    }
     if (st->sec == S_USERS && st->adding) {
         char *f = st->field == 0 ? st->new_full : st->field == 1 ? st->new_name : st->new_pw;
         int cap = st->field == 0 ? 39 : st->field == 1 ? 23 : 31;
@@ -480,6 +525,10 @@ static int s_tick(uiapp_t *a)
         memset(st->new_pw, 0, sizeof(st->new_pw));
         st->pending = 0;
         return 1;
+    }
+    if (st->searching) {
+        uint32_t half = uihost_ms() / 500;
+        if (half != st->last_sec) { st->last_sec = half; return 1; }
     }
     if (st->sec == S_UPDATE) {
         const update_info_t *u = uihost_update_status();

@@ -55,7 +55,7 @@
 /* colours */
 #define C_TEXT       (ui_theme.text)
 #define C_TEXT_DIM   (ui_theme.dim)
-#define C_ACCENT     0x3B82F6
+#define C_ACCENT     (ui_accent)
 #define C_TITLE_ON   (ui_theme.title_on)
 #define C_TITLE_OFF  (ui_theme.title_off)
 #define C_MENU_BG    (ui_theme.menu)
@@ -90,6 +90,9 @@ static window_t *last_title_click_win;
 static int launcher_open;
 static int hover_dock = -1, hover_launch = -1, hover_menu = -1, hover_lights;
 static int dock_magnify = 1;
+static int dock_indicators = 1;       /* a dot under the apps that are open */
+static int window_shadows = 1;
+static int accent_choice;
 static int wallpaper_choice;          /* 0 dusk (picture), 1 ocean, 2 graphite */
 static int mouse_speed = 1;
 static int eth_icon_x = -100;          /* where the Ethernet icon is in the top bar: a click opens Network */
@@ -656,7 +659,7 @@ static void draw_window_g(window_t *w)
     gfx_surface_init(&sc, scratch, SW, SH);
     if (w->anim > 0) gfx_copy_rect(&sc, &bs, x - 40, y - 40, ww + 80, hh + 80);
 
-    gfx_shadow(&bs, x, y, ww, hh, active ? 230 : 130);
+    if (window_shadows) gfx_shadow(&bs, x, y, ww, hh, active ? 230 : 130);
     save_corners(w);
 
     /* tOS Recovery's panel has no title bar: the content colour runs to the top, like the Mac's */
@@ -895,7 +898,7 @@ static void draw_dock(void)
         const char *key = dock[i].special == 1 ? "launcher" : dock[i].special == 2 ? (trash_full > 0 ? "trash_full" : "trash") : dock[i].app->icon;
         gfx_blit_scaled(&bs, icon(key, 1), dock[i].x, dock[i].y, dock[i].size, dock[i].size, 255);
         if (dock[i].special == 2) gfx_fill_alpha(&bs, dock[i].x - 12, dock_y + 12, 1, DOCK_H - 24, 0xFFFFFF, 70);
-        if (dock[i].app && app_running(dock[i].app))
+        if (dock_indicators && dock[i].app && app_running(dock[i].app))
             gfx_circle(&bs, dock[i].x + dock[i].size / 2, dock_y + DOCK_H - 4, 2, 0xFFFFFF, 220);
     }
     if (hover_dock >= 0 && hover_dock < dock_n && !menu_which) {
@@ -2117,6 +2120,7 @@ static void fmt_num(char *out, uint32_t v);
 static int set_resolution(int w, int h);
 static void set_wallpaper(int choice);
 static void prefs_save(void);
+static void set_accent(int v);
 
 int uihost_get(const char *key)
 {
@@ -2127,6 +2131,9 @@ int uihost_get(const char *key)
     if (!strcmp(key, "width")) return SW;
     if (!strcmp(key, "height")) return SH;
     if (!strcmp(key, "dnd")) return notify_dnd();
+    if (!strcmp(key, "accent")) return accent_choice;
+    if (!strcmp(key, "shadows")) return window_shadows;
+    if (!strcmp(key, "indicators")) return dock_indicators;
     return -1;
 }
 
@@ -2137,6 +2144,9 @@ void uihost_set(const char *key, int v)
     else if (!strcmp(key, "mouse_speed")) mouse_speed = v;
     else if (!strcmp(key, "wallpaper")) set_wallpaper(v);
     else if (!strcmp(key, "dnd")) notify_set_dnd(v);
+    else if (!strcmp(key, "accent")) set_accent(v);
+    else if (!strcmp(key, "shadows")) window_shadows = v ? 1 : 0;
+    else if (!strcmp(key, "indicators")) dock_indicators = v ? 1 : 0;
     else if (!strcmp(key, "resolution")) {
         static const int rw[5] = { 1024, 1280, 1366, 1600, 1920 }, rh[5] = { 768, 720, 768, 900, 1080 };
         if (v >= 0 && v < 5) set_resolution(rw[v], rh[v]);
@@ -2152,9 +2162,18 @@ static void prefs_path(char *out)
     strcat(out, ".desktop");
 }
 
+static const uint32_t accent_colours[7] = { 0x3B82F6, 0xA855F7, 0xEC4899, 0xEF4444, 0xF97316, 0xEAB308, 0x22C55E };
+
+static void set_accent(int v)
+{
+    if (v < 0 || v >= 7) v = 0;
+    accent_choice = v;
+    ui_accent = accent_colours[v];
+}
+
 static void prefs_save(void)
 {
-    char b[160] = "dark=";
+    char b[256] = "dark=";
     char n[12];
     n[0] = 0; fmt_num(n, (uint32_t)ui_theme.dark); strcat(b, n);
     strcat(b, "\nmagnify="); n[0] = 0; fmt_num(n, (uint32_t)dock_magnify); strcat(b, n);
@@ -2162,6 +2181,9 @@ static void prefs_save(void)
     strcat(b, "\nwidth="); n[0] = 0; fmt_num(n, (uint32_t)SW); strcat(b, n);
     strcat(b, "\nheight="); n[0] = 0; fmt_num(n, (uint32_t)SH); strcat(b, n);
     strcat(b, "\ndnd="); n[0] = 0; fmt_num(n, (uint32_t)notify_dnd()); strcat(b, n);
+    strcat(b, "\naccent="); n[0] = 0; fmt_num(n, (uint32_t)accent_choice); strcat(b, n);
+    strcat(b, "\nshadows="); n[0] = 0; fmt_num(n, (uint32_t)window_shadows); strcat(b, n);
+    strcat(b, "\nindicators="); n[0] = 0; fmt_num(n, (uint32_t)dock_indicators); strcat(b, n);
     strcat(b, "\n");
     char p[96];
     prefs_path(p);
@@ -2192,6 +2214,9 @@ static void prefs_load(void)
     dock_magnify = pref_int(t, "magnify", 1);
     mouse_speed = pref_int(t, "speed", 1);
     notify_set_dnd(pref_int(t, "dnd", 0));
+    set_accent(pref_int(t, "accent", 0));
+    window_shadows = pref_int(t, "shadows", 1) ? 1 : 0;
+    dock_indicators = pref_int(t, "indicators", 1) ? 1 : 0;
     int w = pref_int(t, "width", 1280), h = pref_int(t, "height", 720);
     free(d);
     if (w != SW || h != SH) set_resolution(w, h);
@@ -2696,9 +2721,12 @@ void wm_gfx_tick(void)
         compose();
         present();
     } else if (moved) {
+        int ox = cur_x, oy = cur_y;
         cursor_erase();
         cursor_draw();
-        bochs_update_rect(&vdev, 0, 0, SW, SH);
+        /* only where the pointer was and where it is now */
+        if (ox > -50) bochs_update_rect(&vdev, ox, oy, 26, 28);
+        bochs_update_rect(&vdev, cur_x, cur_y, 26, 28);
     }
 }
 

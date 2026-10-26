@@ -30,6 +30,8 @@ ui_theme_t ui_theme = {
 
 void ui_set_dark(int dark) { ui_theme = dark ? dark_theme : light_theme; }
 
+uint32_t ui_accent = 0x3B82F6;
+
 const uiapp_class_t *uiapp_find(const char *id)
 {
     /* an id that is no app's ("Software Update", "System" from a notification) finds nothing: builds 577 and 578

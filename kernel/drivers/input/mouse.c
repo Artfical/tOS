@@ -77,8 +77,10 @@ static void mouse_apply_delta(int dx, int dy)
     int cell_dx, cell_dy;
     if (pixel_mode) {
         int ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
-        cell_dx = ax > 6 ? dx * 2 : dx;
-        cell_dy = ay > 6 ? dy * 2 : dy;
+        /* small moves stay exact; faster ones speed up along a line that starts where they
+         * leave off, instead of jumping to double at 7 counts */
+        cell_dx = ax > 6 ? (dx < 0 ? -(2 * ax - 6) : 2 * ax - 6) : dx;
+        cell_dy = ay > 6 ? (dy < 0 ? -(2 * ay - 6) : 2 * ay - 6) : dy;
     } else {
         accum_dx += dx;
         accum_dy += dy;

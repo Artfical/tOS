@@ -89,10 +89,10 @@ static void svga_update(bochs_device_t *dev, int x, int y, int width, int height
     fifo[start / 4u + 4u] = (uint32_t)height;
     __asm__ volatile("sfence" ::: "memory");
     fifo[2] = after;
-    /* Older SVGA hardware needs the explicit sync register doorbell. */
+    /* Ring the doorbell and carry on: the device works through the FIFO by itself. Waiting on
+     * BUSY after every update stalled each frame until the host had drawn it. Only a full FIFO
+     * (above) waits. */
     svga_write_reg(dev, SVGA_REG_SYNC, 1);
-    for (uint32_t spin = 0; spin < 100000u && svga_read_reg(dev, SVGA_REG_BUSY); spin++)
-        __asm__ volatile("pause");
 }
 
 static uint32_t svga_read_reg(bochs_device_t *dev, uint32_t index)
@@ -415,35 +415,7 @@ int bochs_set_mode(bochs_device_t *dev, int width, int height, int bpp)
 
 void bochs_update_rect(bochs_device_t *dev, int x, int y, int width, int height)
 {
-    if (!dev || !dev->is_vmware || !dev->fifo || width <= 0 || height <= 0) return;
-    if (x < 0) { width += x; x = 0; }
-    if (y < 0) { height += y; y = 0; }
-    if (x >= dev->width || y >= dev->height) return;
-    if (x + width > dev->width) width = dev->width - x;
-    if (y + height > dev->height) height = dev->height - y;
-    if (width <= 0 || height <= 0) return;
-
-    volatile uint32_t *fifo = (volatile uint32_t *)dev->fifo;
-    uint32_t min = fifo[SVGA_FIFO_MIN];
-    uint32_t max = fifo[SVGA_FIFO_MAX];
-    uint32_t next = fifo[SVGA_FIFO_NEXT_CMD];
-    uint32_t stop = fifo[SVGA_FIFO_STOP];
-    if (min < 16 || max > dev->fifo_size || max <= min + 20u) return;
-    uint32_t start = next;
-    if (start + 20u > max) start = min;
-    uint32_t after = start + 20u;
-    if (after >= max) after = min;
-    if ((start < stop && after >= stop) || (after < start && (stop > start || stop <= after))) return;
-
-    fifo[start / 4u] = SVGA_CMD_UPDATE;
-    fifo[start / 4u + 1u] = (uint32_t)x;
-    fifo[start / 4u + 2u] = (uint32_t)y;
-    fifo[start / 4u + 3u] = (uint32_t)width;
-    fifo[start / 4u + 4u] = (uint32_t)height;
-    fifo[SVGA_FIFO_NEXT_CMD] = after;
-    svga_write_reg(dev, SVGA_REG_SYNC, 1);
-    for (uint32_t spin = 0; spin < 100000u && svga_read_reg(dev, SVGA_REG_BUSY); spin++)
-        __asm__ volatile("pause");
+    svga_update(dev, x, y, width, height);
 }
 
 uint16_t bochs_get_virt_width(void)

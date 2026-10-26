@@ -95,7 +95,8 @@ void ui_set_dark(int dark);
 #define UI_STATUS   (ui_theme.status)
 #define UI_FIELD    (ui_theme.field)
 #define UI_SELECT   (ui_theme.select)
-#define UI_ACCENT   0x3B82F6
+extern uint32_t ui_accent;          /* chosen in Settings > Appearance */
+#define UI_ACCENT   (ui_accent)
 #define UI_GREEN    0x22C55E
 #define UI_RED      0xEF4444
 #define UI_ORANGE   0xFF9F0A
