@@ -35,6 +35,7 @@ void wm_gfx_set_session(int s);
 #include "ramfs.h"
 #include "tfsk.h"
 #include "installer.h"
+#include "udp.h"
 #include "sysdirs.h"
 #include "auth.h"
 #include "fpu.h"
@@ -563,18 +564,54 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         {
             /* tpkg end to end: Node comes from update.artfical.com, not from the initrd */
             static const char *const steps[] = {
-                "tpkg look", "tpkg install node", "tpkg list", "node -v",
-                "node -e console.log(require('os').platform(),6*7)", "npm -v",
-                "npm install is-number@7.0.0 --prefix /tmp/p2 --no-audit --no-progress", 0 };
+                "!tpkg install node",
+                "!npm install is-number@7.0.0 --prefix /tmp/p2 --no-audit --no-progress",
+                "!node -e console.log(require('/tmp/p2/node_modules/is-number')(42))",
+                "!node -e d='/root/.npm/_logs/',f=require('fs');f.readdirSync(d).forEach(function(n){console.log(f.readFileSync(d+n,'utf8').split('\\n').slice(-30).join('\\n'))})",
+                "tpkg install busybox", "mkdir /system/rt", "mkdir /system/rt/a", "mkdir /system/rt/b",
+                "touch /system/rt/a/f1", "mv /system/rt/a/f1 /system/rt/b/f2",
+                "touch /system/rt/a/f3", "mv /system/rt/a/f3 /system/rt/b/f2",
+                "mkdir /system/rt/a/d", "touch /system/rt/a/d/x", "mv /system/rt/a/d /system/rt/b/d",
+                "mv /system/rt/b /system/rt/b/d/z", "tree /system/rt", "ls -la /system/rt/b/d/..",
+                0 };
             static char out[16384];
             for (int i = 0; steps[i]; i++) {
+                const char *step = steps[i];
+                if (step[0] == '!') {                   /* not on an installed system's disk */
+                    if (installer_check_installed()) continue;
+                    step++;
+                }
                 serial_write("[TPKG-STEP] $ ");
-                serial_write(steps[i]);
+                serial_write(step);
                 serial_write("\n");
                 out[0] = 0;
-                shell_exec_capture(steps[i], out, sizeof(out));
+                {
+                    /* as after sudo: the password counts as given (an installed disk's root has one) */
+                    static char line[512];
+                    char *argv_[32];
+                    int argc_ = 0;
+                    strncpy(line, step, sizeof(line) - 1);
+                    for (char *c = line; *c && argc_ < 31;) {
+                        while (*c == ' ') *c++ = 0;
+                        if (!*c) break;
+                        argv_[argc_++] = c;
+                        while (*c && *c != ' ') c++;
+                    }
+                    terminal_capture_start(out, sizeof(out));
+                    auth_command_begin();
+                    auth_mark_confirmed();
+                    shell_dispatch(argc_, argv_);
+                    terminal_capture_stop();
+                }
                 serial_write(out);
-                serial_write("[TPKG-STEP] done\n");
+                {
+                    udp_sock_info_t us[32];
+                    char nb[12];
+                    sprintf_u32(nb, (uint32_t)udp_get_sockets(us, 32));
+                    serial_write("[TPKG-STEP] done (udp sockets in use: ");
+                    serial_write(nb);
+                    serial_write(")\n");
+                }
             }
         }
         {

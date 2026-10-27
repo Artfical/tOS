@@ -1,5 +1,6 @@
 #include "elf32.h"
 #include "fsbridge.h"
+#include "vfs.h"
 #include "memory.h"
 #include "paging.h"
 #include "proc.h"
@@ -43,11 +44,21 @@ typedef struct __attribute__((packed)) {
     uint32_t align;
 } elf32_phdr_t;
 
-static int elf32_read_exact(const char *path, uint32_t file_size,
+/* fd: the program, opened once when it is on a mounted disk (-1: read through fsbridge). Opening it
+ * for every page walked its path on the disk each time: minutes for a 2 MB program. */
+static int elf32_read_exact(const char *path, int fd, uint32_t file_size,
                             uint32_t offset, void *dst, uint32_t size)
 {
     if (offset > file_size || size > file_size - offset) return -1;
-    return fsbridge_read(path, dst, size, offset) == (int)size ? 0 : -1;
+    if (fd < 0) return fsbridge_read(path, dst, size, offset) == (int)size ? 0 : -1;
+    if (vfs_lseek(fd, offset, VFS_SEEK_SET) < 0) return -1;
+    uint32_t got = 0;
+    while (got < size) {
+        int n = vfs_read(fd, (uint8_t *)dst + got, size - got);
+        if (n <= 0) return -1;
+        got += (uint32_t)n;
+    }
+    return 0;
 }
 
 static int elf32_map_page(uint32_t *pgdir, uint32_t page)
@@ -64,7 +75,21 @@ static int elf32_map_page(uint32_t *pgdir, uint32_t page)
     return 0;
 }
 
+static int elf32_load(const char *path, int fd, uint32_t file_size, uint32_t *pgdir,
+                      uint32_t *entry_out, uint32_t *brk_base_out,
+                      uint32_t *phdr_out, uint32_t *phnum_out);
+
 int elf32_load_static(const char *path, uint32_t file_size, uint32_t *pgdir,
+                      uint32_t *entry_out, uint32_t *brk_base_out,
+                      uint32_t *phdr_out, uint32_t *phnum_out)
+{
+    int fd = path && vfs_path_has_mount(path) ? vfs_open(path, VFS_RDONLY) : -1;
+    int r = elf32_load(path, fd, file_size, pgdir, entry_out, brk_base_out, phdr_out, phnum_out);
+    if (fd >= 0) vfs_close(fd);
+    return r;
+}
+
+static int elf32_load(const char *path, int fd, uint32_t file_size, uint32_t *pgdir,
                       uint32_t *entry_out, uint32_t *brk_base_out,
                       uint32_t *phdr_out, uint32_t *phnum_out)
 {
@@ -77,7 +102,7 @@ int elf32_load_static(const char *path, uint32_t file_size, uint32_t *pgdir,
 
     if (!path || !pgdir || !entry_out || !brk_base_out || !phdr_out || !phnum_out ||
         file_size < sizeof(eh)) return -1;
-    if (elf32_read_exact(path, file_size, 0, &eh, sizeof(eh)) != 0) return -1;
+    if (elf32_read_exact(path, fd, file_size, 0, &eh, sizeof(eh)) != 0) return -1;
     if (eh.ident[0] != 0x7F || eh.ident[1] != 'E' || eh.ident[2] != 'L' || eh.ident[3] != 'F' ||
         eh.ident[4] != 1 || eh.ident[5] != 1 || eh.ident[6] != ELF32_EV_CURRENT ||
         eh.type != ELF32_ET_EXEC || eh.machine != ELF32_EM_386 || eh.version != ELF32_EV_CURRENT ||
@@ -86,7 +111,7 @@ int elf32_load_static(const char *path, uint32_t file_size, uint32_t *pgdir,
 
     uint64_t phdr_end = (uint64_t)eh.phoff + (uint64_t)eh.phnum * sizeof(elf32_phdr_t);
     if (phdr_end > file_size ||
-        elf32_read_exact(path, file_size, eh.phoff, phdrs,
+        elf32_read_exact(path, fd, file_size, eh.phoff, phdrs,
                          (uint32_t)eh.phnum * sizeof(elf32_phdr_t)) != 0) return -1;
 
     /* Validate the whole image before allocating pages. This first loader
@@ -136,7 +161,7 @@ int elf32_load_static(const char *path, uint32_t file_size, uint32_t *pgdir,
         while (remaining) {
             uint32_t page_left = PAGE_SIZE - (va & (PAGE_SIZE - 1u));
             uint32_t n = remaining < page_left ? remaining : page_left;
-            if (elf32_read_exact(path, file_size, offset, chunk_buf, n) != 0) return -1;
+            if (elf32_read_exact(path, fd, file_size, offset, chunk_buf, n) != 0) return -1;
             uint32_t phys = paging_virt_to_phys(pgdir, va);
             if (!phys) return -1;
             memcpy((void *)phys, chunk_buf, n);

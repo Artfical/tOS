@@ -55,6 +55,13 @@ int udp_has_data(uint16_t port)
     return -1;
 }
 
+int udp_port_open(uint16_t port)
+{
+    for (int i = 0; i < UDP_SOCKETS; i++)
+        if (udp_sockets[i].used && udp_sockets[i].port == port) return 1;
+    return 0;
+}
+
 void udp_close(uint16_t port)
 {
     for (int i = 0; i < UDP_SOCKETS; i++) {

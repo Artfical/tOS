@@ -20,7 +20,7 @@
 #define PROC_EXEC_ARG_MAX  1024
 #define PROC_BRK_BASE  0x88000000u      /* heap grows up from here */
 #define PROC_BRK_LIMIT 0x90000000u
-#define PROC_MAX_VM_REGIONS 128
+#define PROC_MAX_VM_REGIONS 256
 #define PROC_FD_DIRECTORY (-2)
 #define PROC_FD_EPOLL     (-4)
 #define PROC_FD_URANDOM   (-5)          /* /dev/urandom and /dev/random */

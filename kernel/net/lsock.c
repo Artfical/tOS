@@ -91,7 +91,7 @@ static int udp_port(lsock_t *k)
     if (k->lport) return 0;
     for (int tries = 0; tries < 32; tries++) {
         uint16_t p = (uint16_t)(32768 + csprng_u32() % 16384);
-        if (udp_has_data(p) >= 0) continue;
+        if (udp_port_open(p)) continue;
         if (udp_open(p) < 0) return -E_NOBUFS;
         k->lport = p;
         return 0;

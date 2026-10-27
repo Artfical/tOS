@@ -14,6 +14,7 @@ typedef struct {
 int  udp_open(uint16_t port);
 void udp_close(uint16_t port);
 int  udp_has_data(uint16_t port);
+int  udp_port_open(uint16_t port);              /* someone has it open already */
 int  udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port, void *data, int len);
 void udp_handle(ip_hdr_t *ip, void *pkt, int len);
 int  udp_listen(uint16_t port, uint8_t *resp, int max_len, uint32_t *src_ip, uint16_t *src_port);

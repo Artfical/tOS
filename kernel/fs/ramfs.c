@@ -622,13 +622,32 @@ int ramfs_rename(const char *old_path, const char *new_path)
     uint32_t np_ino = resolve_path(new_parent, 1);
     if (!op_ino || !np_ino) return -1;
 
-    if (op_ino != np_ino) return -1;
     uint32_t existing = find_child(np_ino, new_name);
-    if (existing) return existing == old_ino ? 0 : -1;
+    if (existing == old_ino) return 0;
+    if (existing) {
+        /* the way rename(2) does it: a file in the way is replaced (npm writes every file
+         * beside its final name and renames it over), a folder is not */
+        ramfs_inode_t *ex = iget(existing);
+        if (!ex || (ex->mode & S_IFDIR) || (n->mode & S_IFDIR)) return -1;
+        if (ramfs_vfs_unlink(new_path) != 0) return -1;
+    }
+    if (n->mode & S_IFDIR) {
+        /* a folder can't go inside itself */
+        for (uint32_t up = np_ino, guard = 0; up && guard < 256; guard++) {
+            if (up == old_ino) return -1;
+            uint32_t pp = find_child(up, "..");
+            if (!pp || pp == up) break;
+            up = pp;
+        }
+    }
     del_child(op_ino, old_name);
-    if (add_child(op_ino, old_ino, new_name) < 0) {
+    if (add_child(np_ino, old_ino, new_name) < 0) {
         add_child(op_ino, old_ino, old_name);
         return -1;
+    }
+    if ((n->mode & S_IFDIR) && op_ino != np_ino) {     /* its ".." follows it */
+        del_child(old_ino, "..");
+        add_child(old_ino, np_ino, "..");
     }
     k = 0; while (new_name[k] && k < RAMFS_NAME_LEN - 1) { n->name[k] = new_name[k]; k++; }
     n->name[k] = 0;

@@ -1,4 +1,5 @@
 #include "commands.h"
+#include "shell.h"
 #include "auth.h"
 #include "terminal.h"
 #include "string.h"
@@ -230,8 +231,11 @@ static int find_entry(const char *list, const char *name, tpkg_entry_t *e)
 
 static int resolve(uint32_t *ip)
 {
-    if (dns_resolve(TPKG_HOST, ip) == 0) return 0;
-    terminal_writestring("tpkg: can't reach " TPKG_HOST " (check the network)\n");
+    int r = dns_resolve(TPKG_HOST, ip);
+    if (r == 0) return 0;
+    terminal_writestring("tpkg: can't reach " TPKG_HOST " (");
+    terminal_writestring(dns_strerror(r));
+    terminal_writestring("; check the network)\n");
     return -1;
 }
 
@@ -396,14 +400,38 @@ static int untar(const uint8_t *t, uint32_t n, const char *dest)
     return files;
 }
 
-/* tpkg.commands in the package: "cmd=path inside it" -> path.tmbl */
-static int register_commands(const char *destdir)
+/* path.tmbl's entry for `cmd`, if there is one */
+static int path_entry(const char *cmd, char *out)
+{
+    char *f = read_whole(TPKG_PATH_FILE, 0);
+    int found = 0;
+    uint32_t cl = (uint32_t)strlen(cmd);
+    for (char *p = f; p && *p && !found;) {
+        char *line = p;
+        while (*p && *p != '\n') p++;
+        if (*p) *p++ = 0;
+        if (!strncmp(line, cmd, cl) && line[cl] == '=') {
+            strncpy(out, line + cl + 1, VFS_NAME_LEN - 1);
+            out[VFS_NAME_LEN - 1] = 0;
+            found = 1;
+        }
+    }
+    if (f) free(f);
+    return found;
+}
+
+/* tpkg.commands in the package: "cmd=path inside it" -> path.tmbl. A command tOS already has
+ * (its own, or another package's) is replaced, and the user is told which and how to undo it;
+ * the ones that run the shell itself (cd, sudo, tpkg...) stay tOS's. */
+static int register_commands(const char *name, const char *destdir)
 {
     char f[VFS_NAME_LEN];
     strcpy(f, destdir);
     strcat(f, "/tpkg.commands");
     char *c = read_whole(f, 0);
-    int n = 0;
+    int n = 0, shown = 0;
+    static char replaced[1024], kept[256];
+    replaced[0] = kept[0] = 0;
     for (char *p = c; p && *p;) {
         char *line = p;
         while (*p && *p != '\n') p++;
@@ -411,6 +439,15 @@ static int register_commands(const char *destdir)
         char *eq = strchr(line, '=');
         if (!eq || eq == line) continue;
         *eq = 0;
+        if (shell_keeps_builtin(line)) {
+            if (strlen(kept) + strlen(line) + 3 < sizeof(kept)) { if (kept[0]) strcat(kept, ", "); strcat(kept, line); }
+            continue;
+        }
+        char old[VFS_NAME_LEN];
+        int had = path_entry(line, old) && strncmp(old, destdir, strlen(destdir));
+        if (had || shell_is_builtin(line)) {
+            if (strlen(replaced) + strlen(line) + 3 < sizeof(replaced)) { if (replaced[0]) strcat(replaced, ", "); strcat(replaced, line); }
+        }
         char add[VFS_NAME_LEN + 64];
         strcpy(add, line);
         strcat(add, "=");
@@ -418,12 +455,24 @@ static int register_commands(const char *destdir)
         strcat(add, "/");
         strcat(add, eq + 1);
         edit_lines(TPKG_PATH_FILE, '=', line, 0, add);
-        terminal_writestring("  ");
-        terminal_writestring(line);
+        if (shown < 12) { terminal_writestring("  "); terminal_writestring(line); shown++; }
         n++;
     }
     if (c) free(c);
+    if (n > shown) { terminal_writestring("  ... "); print_uint((uint32_t)n); terminal_writestring(" commands"); }
     if (n) terminal_writestring("  (on the PATH)\n");
+    if (replaced[0]) {
+        terminal_writestring("\nWarning: this package changes commands that already existed:\n  ");
+        terminal_writestring(replaced);
+        terminal_writestring("\nThey now run the package's versions. To undo this, uninstall the package:\n  sudo tpkg remove ");
+        terminal_writestring(name);
+        terminal_putchar('\n');
+    }
+    if (kept[0]) {
+        terminal_writestring("Kept tOS's own ");
+        terminal_writestring(kept);
+        terminal_writestring(" (the shell needs them).\n");
+    }
     return n;
 }
 
@@ -526,7 +575,7 @@ static void tpkg_install(uint32_t ip, const char *name, const char *list)
     terminal_writestring(" (");
     print_uint((uint32_t)files);
     terminal_writestring(" files)\n");
-    register_commands(dest);
+    register_commands(e.name, dest);
 }
 
 static void tpkg_remove(const char *name)

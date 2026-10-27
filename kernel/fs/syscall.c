@@ -174,12 +174,17 @@ static void gfx_leave_if_active(void)
     asm volatile("pushl %0; popfl" :: "r"(flags));
 }
 
+/* set when a path was readable but longer than tOS allows: the Linux answer is ENAMETOOLONG,
+ * not EFAULT (npm's cache tells "not there" from "something is wrong" by the code) */
+static int cstr_too_long;
+
 static int user_cstr_ok(uint32_t ptr)
 {
     for (uint32_t i = 0; i < FS_NAME_LEN; i++) {
         if (!user_range_ok(ptr + i, 1)) return 0;
         if (((const char *)ptr)[i] == 0) return 1;
     }
+    cstr_too_long = 1;
     return 0;
 }
 
@@ -824,6 +829,24 @@ static int proc_vm_region_overlaps(proc_t *p, uint32_t start, uint32_t end)
 static int proc_vm_region_add(proc_t *p, uint32_t start, uint32_t end)
 {
     if (proc_vm_region_overlaps(p, start, end)) return -1;
+    /* a region right next to an existing one joins it: V8 maps its heap a page group at a time
+     * and frees parts of it again, which used to fill the table with neighbours */
+    int joined = -1;
+    for (int i = 0; i < PROC_MAX_VM_REGIONS; i++) {
+        proc_vm_region_t *r = &p->vm_regions[i];
+        if (!r->used || (r->end != start && r->start != end)) continue;
+        if (joined < 0) {
+            if (r->end == start) r->end = end; else r->start = start;
+            joined = i;
+        } else {
+            proc_vm_region_t *j = &p->vm_regions[joined];
+            if (r->start < j->start) j->start = r->start;
+            if (r->end > j->end) j->end = r->end;
+            r->used = 0;
+            break;
+        }
+    }
+    if (joined >= 0) return 0;
     for (int i = 0; i < PROC_MAX_VM_REGIONS; i++) {
         if (p->vm_regions[i].used) continue;
         p->vm_regions[i].start = start;
@@ -1995,14 +2018,27 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
         case 16: case 95: case 182: case 198: case 207: case 212: case 298:
             return 0;
 
-        /* times: accepted; the files keep the times tOS gave them */
-        case 30: case 271: case 299: case 320: case 412:
+        /* times: accepted; the files keep the times tOS gave them. The file has to be there,
+         * though (touch creates it only when this says it isn't). */
+        case 30: case 271: case 299: case 320: case 412: {
+            uint32_t path = (number == 30 || number == 271) ? a : b;
+            vfs_entry_t entry;
+            if (!path) return 0;                         /* utimensat on an open fd */
+            if (!user_cstr_ok(path)) return (uint32_t)-EFAULT;
+            if (vfs_stat((const char *)path, &entry) != 0)
+                return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
             return 0;
+        }
 
-        case LINUX_SYS_MKDIR:
+        case LINUX_SYS_MKDIR: {
+            vfs_entry_t entry;
             if (!user_cstr_ok(a)) return (uint32_t)-EFAULT;
+            /* "already there" has to be EEXIST: mkdir -p (npm's mkdirp) climbs to the parent on
+             * ENOENT, and at / that never ends */
+            if (vfs_stat((const char *)a, &entry) == 0) return (uint32_t)-EEXIST;
             if (vfs_mkdir((const char *)a, b & 0777u) == 0) return 0;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
+        }
 
         case LINUX_SYS_RENAME: {
             char old_path[VFS_NAME_LEN], new_path[VFS_NAME_LEN];
@@ -2372,7 +2408,9 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
 {
     proc_t *current_proc = proc_current();
     if (current_proc && current_proc->linux_abi) {
+        cstr_too_long = 0;
         uint32_t r = linux_syscall_handler(syscall, a, b, c, d, e, f, regs);
+        if (r == (uint32_t)-EFAULT && cstr_too_long) r = (uint32_t)-ENAMETOOLONG;
         recent_nr[recent_n % RECENT] = syscall;
         recent_ret[recent_n % RECENT] = r;
         recent_n++;

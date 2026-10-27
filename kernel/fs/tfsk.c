@@ -958,6 +958,73 @@ int tfsk_vfs_stat(tfsk_t *fs, const char *path, vfs_entry_t *entry)
     return 0;
 }
 
+/* rename(2): the entry moves to its new folder and name; a file already there is replaced, a
+ * folder is not; a folder can't go inside itself, and its ".." follows it */
+static int tfsk_vfs_rename(tfsk_t *fs, const char *old_path, const char *new_path)
+{
+    if (!fs->mounted) return -1;
+    char op[TFSK_MAX_NAME], on[TFSK_MAX_NAME], np[TFSK_MAX_NAME], nn[TFSK_MAX_NAME];
+    tfsk_split_path(old_path, op, on);
+    tfsk_split_path(new_path, np, nn);
+    uint32_t op_ino, np_ino;
+    if (!on[0] || !nn[0] || tfsk_walk(fs, op, &op_ino) < 0 || tfsk_walk(fs, np, &np_ino) < 0) return -1;
+
+    tfsk_inode_t odir;
+    tfsk_dentry_t dent;
+    uint32_t off;
+    if (tfsk_inode_read(fs, op_ino, &odir) < 0 || dir_find(fs, &odir, on, &dent, &off) < 0) return -1;
+    uint32_t ino = dent.inode;
+    int is_dir = dent.file_type == TFSK_FT_DIR;
+
+    uint32_t existing;
+    if (tfsk_lookup(fs, np_ino, nn, &existing) == 0) {
+        if (existing == ino) return 0;
+        tfsk_inode_t ex;
+        if (tfsk_inode_read(fs, existing, &ex) < 0) return -1;
+        if (is_dir || (ex.mode & (TFSK_FT_DIR << 12))) return -1;
+        if (tfsk_unlink(fs, np_ino, nn) < 0) return -1;
+    }
+    if (is_dir) {
+        for (uint32_t up = np_ino, guard = 0; guard < 256; guard++) {
+            if (up == ino) return -1;
+            uint32_t pp;
+            if (up == TFSK_ROOT_INODE || tfsk_lookup(fs, up, "..", &pp) < 0 || pp == up) break;
+            up = pp;
+        }
+    }
+
+    if (tfsk_link(fs, np_ino, nn, ino, dent.file_type) < 0) return -1;
+    /* the old entry goes; the inode stays (tfsk_link counted the new name) */
+    if (tfsk_inode_read(fs, op_ino, &odir) < 0) return -1;
+    dent.inode = 0;
+    tfsk_write_data(fs, &odir, &dent, sizeof(tfsk_dentry_t), off);
+    odir.atime = odir.mtime = tfsk_time();
+    tfsk_inode_write(fs, op_ino, &odir);
+    tfsk_inode_t target;
+    tfsk_inode_read(fs, ino, &target);
+    target.link_count--;
+    tfsk_inode_write(fs, ino, &target);
+
+    if (is_dir && op_ino != np_ino) {
+        tfsk_dentry_t dd;
+        uint32_t dd_off;
+        if (dir_find(fs, &target, "..", &dd, &dd_off) == 0) {
+            dd.inode = np_ino;
+            tfsk_write_data(fs, &target, &dd, sizeof(tfsk_dentry_t), dd_off);
+            tfsk_inode_write(fs, ino, &target);
+        }
+        tfsk_inode_t d;
+        if (tfsk_inode_read(fs, op_ino, &d) == 0 && d.link_count) { d.link_count--; tfsk_inode_write(fs, op_ino, &d); }
+        if (tfsk_inode_read(fs, np_ino, &d) == 0) { d.link_count++; tfsk_inode_write(fs, np_ino, &d); }
+    }
+    return 0;
+}
+
+static int tfsk_rename_stub(void *ctx, const char *old_path, const char *new_path)
+{
+    return tfsk_vfs_rename((tfsk_t *)ctx, old_path, new_path);
+}
+
 static int tfsk_vfs_setattr(tfsk_t *fs, const char *path, uint32_t mode, uint32_t uid, uint32_t gid)
 {
     if (!fs->mounted) return -1;
@@ -1058,7 +1125,7 @@ void tfsk_mount_vfs(tfsk_t *fs, const char *mount_point)
     tfsk_vfs_ops.mkdir   = tfsk_mkdir_stub;
     tfsk_vfs_ops.unlink  = tfsk_unlink_stub;
     tfsk_vfs_ops.stat    = tfsk_stat_stub;
-    tfsk_vfs_ops.rename  = 0;
+    tfsk_vfs_ops.rename  = tfsk_rename_stub;
     tfsk_vfs_ops.symlink = 0;
     tfsk_vfs_ops.setattr = tfsk_setattr_stub;
     vfs_mount(mount_point, &tfsk_vfs_ops, fs);

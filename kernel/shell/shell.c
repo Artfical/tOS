@@ -22,7 +22,7 @@ static int path_lookup(const char *cmd, char *out, int cap);
 /* A Linux program (ELF), or a script whose first line names its interpreter ("#!/usr/bin/env
  * node" is npm's): it starts with the shell's arguments and the session's HOME, USER, PWD and
  * PATH, and the shell waits for it. */
-static int run_program(const char *fullpath, int argc, char **args)
+static int run_program(const char *fullpath, const char *lead, int argc, char **args)
 {
     uint8_t head[128];
     int hn = fsbridge_read(fullpath, head, sizeof(head) - 1, 0);
@@ -67,6 +67,7 @@ static int run_program(const char *fullpath, int argc, char **args)
     } else {
         return 0;
     }
+    if (lead && lead[0]) argv[n++] = lead;
     for (int i = 1; i < argc && n < 33; i++) argv[n++] = args[i];
     argv[n] = 0;
 
@@ -95,8 +96,14 @@ static int run_program(const char *fullpath, int argc, char **args)
 /* Runs whatever `fullpath` is, dispatching on its extension --
  * shared by the "cmdname=fullpath" lookup below and the legacy
  * fallback. Returns 1 if it recognized the extension and ran it. */
-static int path_run_file(const char *fullpath, int argc, char **args)
+static int path_run_file(const char *entry, int argc, char **args)
 {
+    /* "program first-argument" (busybox: "/system/pkg/busybox/bin/busybox ls") */
+    char fullpath[VFS_NAME_LEN];
+    strncpy(fullpath, entry, sizeof(fullpath) - 1);
+    fullpath[sizeof(fullpath) - 1] = 0;
+    char *lead = strchr(fullpath, ' ');
+    if (lead) *lead++ = 0;
     int len = strlen(fullpath);
     if (len >= 3 && strcmp(fullpath + len - 3, ".py") == 0) {
         micropython_run_file_argv(fullpath, argc, args);
@@ -109,7 +116,7 @@ static int path_run_file(const char *fullpath, int argc, char **args)
         cmd_run(2, run_args);
         return 1;
     }
-    return run_program(fullpath, argc, args);
+    return run_program(fullpath, lead, argc, args);
 }
 
 /* the path.tmbl entry for `cmd` (tpkg writes them, through the VFS: on an installed system
@@ -535,6 +542,31 @@ const char **shell_builtin_names(void)
     return builtin_names;
 }
 
+/* commands that work but are not offered for completion */
+static const char *const unlisted_builtins[] = {
+    "3d", "beep", "bond", "bridge", "crash", "dccp_connect", "dccp_send", "doom", "fbtest", "fw",
+    "gre", "ip6addr", "ipip", "ipsec_sa", "ipx", "ping6", "policy", "route", "sctp_close",
+    "sctp_connect", "sctp_send", "soundinfo", "udplite_send", "unalias", "vgatest", "vlan", "wg",
+    "wolf3d", 0
+};
+
+int shell_is_builtin(const char *name)
+{
+    for (int i = 0; builtin_names[i]; i++) if (!strcmp(builtin_names[i], name)) return 1;
+    for (int i = 0; unlisted_builtins[i]; i++) if (!strcmp(unlisted_builtins[i], name)) return 1;
+    return 0;
+}
+
+/* what a package can't take over: the commands that change the shell itself, and tpkg, so a
+ * package can always be removed again */
+int shell_keeps_builtin(const char *name)
+{
+    static const char *const kept[] = { "cd", "tpkg", "sudo", "su", "exit", "logout", "alias",
+                                        "unalias", "history", "umask", 0 };
+    for (int i = 0; kept[i]; i++) if (!strcmp(kept[i], name)) return 1;
+    return 0;
+}
+
 void shell_init(void)
 {
     terminal_writestring(TOS_WELCOME_STRING);
@@ -565,6 +597,15 @@ static void shell_exec_line(char *cmd_line)
 void shell_dispatch(int argc, char **args)
 {
     const char *c = args[0];
+
+    /* an installed package's command comes before tOS's own of the same name (tpkg said so
+     * when it was installed; removing the package brings tOS's back) */
+    if (!shell_keeps_builtin(c)) {
+        char full[VFS_NAME_LEN];
+        if (path_lookup(c, full, sizeof(full)) && !strncmp(full, "/system/pkg/", 12) &&
+            path_run_file(full, argc, args))
+            return;
+    }
 
         if (strcmp(c, "help") == 0) {
             cmd_help(argc, args);
