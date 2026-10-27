@@ -1,6 +1,6 @@
 # tOS — Linux Like Operating System
 
-tOS is a from-scratch x86 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
+tOS is a from-scratch x86-64 hobby operating system with a Linux-like command environment. It features a monolithic kernel with cooperative multitasking, a virtual filesystem layer, a multi-protocol TCP/IP network stack with IPv4 and IPv6, HTTPS (TLS 1.2) support, a graphical GUI with window manager, an audio subsystem with MP3/WAV/AAC-LC/M4A decoding (scriptable from both T# and MicroPython), and an embedded MicroPython interpreter.
 
 **Current version: v0.9.156**
 
@@ -146,7 +146,7 @@ WebP and progressive JPEG pictures are not decoded yet (their alt text is shown)
 
 ## System Requirements
 
-- **CPU:** i586 compatible (32-bit x86)
+- **CPU:** x86-64 (64-bit). 32-bit tOS and Linux programs still run, in compatibility mode
 - **Memory:** Minimum 32 MB recommended (3 MB absolute minimum)
 - **Boot:** GRUB (Multiboot1 or Multiboot2, auto-detected) — bootable via ISO or PXE
 - **Display:** VGA text mode (80x25); the GUI uses a Bochs/QEMU/VirtualBox VBE framebuffer at 1280x720 (1024x768 to 1920x1080 in Settings), falling back to the text-mode desktop without one. PS/2 mouse
@@ -159,7 +159,7 @@ WebP and progressive JPEG pictures are not decoded yet (their alt text is shown)
 
 ### Prerequisites
 
-- GCC cross-compiler targeting i686-elf (or a 32-bit capable host GCC)
+- A host GCC for x86-64 (with gcc-multilib for the 32-bit example programs)
 - GNU Make
 - xorriso (for ISO generation)
 - GRUB utilities (grub-mkrescue)
@@ -183,13 +183,13 @@ make run
 Or manually:
 
 ```bash
-qemu-system-i386 -cdrom tOS.iso -m 1024
+qemu-system-x86_64 -cdrom tOS.iso -m 1024
 ```
 
 For networking (PCnet):
 
 ```bash
-qemu-system-i386 -cdrom tOS.iso -m 1024 -netdev user,id=net0 -device pcnet,netdev=net0
+qemu-system-x86_64 -cdrom tOS.iso -m 1024 -netdev user,id=net0 -device pcnet,netdev=net0
 ```
 
 For audio — QEMU SB16:
@@ -960,7 +960,7 @@ porting the engine's call sites:
   `doomgeneric_Tick()`, Wolf4SDL's `main()`/`DemoLoop()` has no
   per-frame callback to return control through cooperatively; it's one
   C++ function call that loops forever internally. `kernel/wolf3d/
-  port/wolf_jmp.h`/`wolf_jmp.s` implement a minimal i386
+  port/wolf_jmp.h`/`wolf_jmp.s` implement a minimal x86-64
   `wolf_setjmp()`/`wolf_longjmp()` (callee-saved registers + return
   address only). `wl_main.cpp`'s `Quit()` (normally an unconditional
   `exit()`, which just spins forever here the same way DOOM's platform

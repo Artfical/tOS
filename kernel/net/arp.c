@@ -105,6 +105,7 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
     }
     arp_pending_ip = ip;
     arp_send_request(ip);
+    uint32_t resend = debugmon_uptime_ms() + 1000;
     /* Wall-clock timeout, not an iteration count — how long a single
      * nic_poll() call takes varies wildly by driver/hypervisor (a VM's
      * emulated NIC can be far slower per call than QEMU's), so a fixed
@@ -127,6 +128,11 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
                 return 0;
             }
         }
+        /* a request can be lost (or not leave at all while the send ring is busy): ask again */
+        if (debugmon_uptime_ms() >= resend) {
+            arp_send_request(ip);
+            resend = debugmon_uptime_ms() + 1000;
+        }
         /* No task_yield() here -- reachable from a ring3 .t program's
          * blocking syscall (tos_net_connect() -> tcp_connect() ->
          * arp_resolve()), and a nested software interrupt from inside
@@ -135,6 +141,14 @@ int arp_resolve(uint32_t ip, uint8_t *mac_out)
          * above already polls the NIC directly. */
     }
     arp_pending_ip = 0;
+    /* no answer: an expired mapping is still the best guess (a gateway keeps its address), as
+     * Linux keeps using a stale entry while it asks again */
+    for (int i = 0; i < ARP_CACHE_SIZE; i++) {
+        if (arp_cache[i].valid && arp_cache[i].ip == ip) {
+            memcpy(mac_out, arp_cache[i].mac, 6);
+            return 0;
+        }
+    }
     return ARP_ERR_TIMEOUT;
 }
 
