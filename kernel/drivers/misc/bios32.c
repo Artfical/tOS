@@ -1,9 +1,10 @@
+#include "paging.h"
 #include "bios32.h"
 #include "string.h"
 static bios32_t *bios32_find(void)
 {
     for (uint32_t addr = 0x000E0000; addr < 0x00100000; addr += 16) {
-        bios32_t *b = (bios32_t *)addr;
+        bios32_t *b = (bios32_t *)P2V(addr);
         if (b->signature[0] == '_' && b->signature[1] == '3' &&
             b->signature[2] == '2' && b->signature[3] == '_') {
             uint8_t sum = 0;

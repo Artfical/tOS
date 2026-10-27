@@ -4,14 +4,17 @@ AS = as
 LD = ld
 AR = ar
 
-GCC_INC := $(shell $(CC) -m32 -print-file-name=include)
+# tOS is a 64-bit kernel: the top 2 GB (-mcmodel=kernel), no red zone (interrupts use the stack).
+# SSE is on: every interrupt entry saves the interrupted FPU/SSE state (isr_stubs.s), and the
+# scheduler, which switches it, is built to use none itself.
+ARCH_CFLAGS = -m64 -mcmodel=kernel -mno-red-zone
+GCC_INC := $(shell $(CC) -m64 -print-file-name=include)
 HOST_MULTIARCH := $(shell $(CC) -print-multiarch)
 HOST_MULTIARCH_INCLUDE := $(wildcard /usr/include/$(HOST_MULTIARCH))
 
 # Regular kernel flags (no nostdinc to avoid breaking existing code)
-CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+CFLAGS = -MMD -MP $(ARCH_CFLAGS) -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -fno-builtin -fno-stack-protector -fno-pic -fno-pie -fno-strict-aliasing \
-         -mno-mmx -mno-sse -mno-sse2 \
          -O2 -Wall -Wextra -Werror \
          -I. \
          -Ikernel/core -Ikernel/display \
@@ -42,10 +45,9 @@ endif
 # /tmp symlink. With GCC -m32, -print-multiarch names the target tuple, which
 # may not be the directory containing the host's shared libc headers.
 MPY_HOST_INCLUDE = $(if $(HOST_MULTIARCH_INCLUDE),-isystem $(HOST_MULTIARCH_INCLUDE))
-MPY_CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+MPY_CFLAGS = -MMD -MP $(ARCH_CFLAGS) -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
              -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 \
-             -mno-mmx -mno-sse -mno-sse2 \
              -O2 -Wall -Wno-unused-variable -Wno-unused-function \
              -Wno-unused-parameter -Wno-sign-compare \
              -Wno-missing-field-initializers -Wno-implicit-fallthrough \
@@ -72,9 +74,8 @@ MPY_PORT_CFLAGS = $(MPY_CFLAGS) \
 # kernel/lib ones, adding only the handful of extra declarations DOOM
 # needs -- see kernel/doom/port/doom_compat.c) instead of kernel/lib's
 # directly.
-DOOM_CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+DOOM_CFLAGS = -MMD -MP $(ARCH_CFLAGS) -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
-             -mno-mmx -mno-sse -mno-sse2 \
              -O2 -Wall -Wno-unused-variable -Wno-unused-function \
              -Wno-unused-parameter -Wno-sign-compare -Wno-unused-but-set-variable \
              -Wno-missing-field-initializers -Wno-implicit-fallthrough \
@@ -89,8 +90,8 @@ DOOM_CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlib
              -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
              -Ikernel/drivers/misc -Ikernel/audio
 
-LDFLAGS = -m elf_i386 -T kernel/boot/linker.ld
-ASFLAGS = --32
+LDFLAGS = -m elf_x86_64 -z max-page-size=4096 -T kernel/boot/linker64.ld
+ASFLAGS = --64
 
 # Vendored C++ (Wolf4SDL, itself a port of id Software's original
 # Wolfenstein 3D) -- unlike doomgeneric, this engine calls SDL2
@@ -102,10 +103,9 @@ ASFLAGS = --32
 # exceptions/RTTI/threads -- tOS has no thread-safe statics or stack
 # unwinding support), same general idea as DOOM_CFLAGS below but with
 # g++-specific flags added.
-WOLF_CXXFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+WOLF_CXXFLAGS = -MMD -MP $(ARCH_CFLAGS) -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -fno-exceptions -fno-rtti -fno-use-cxa-atexit \
              -fno-threadsafe-statics -fno-stack-protector -fno-pic -fno-pie \
-             -mno-mmx -mno-sse -mno-sse2 \
              -O2 -Wall -Wno-unused-variable -Wno-unused-function \
              -Wno-unused-parameter -Wno-sign-compare -Wno-unused-but-set-variable \
              -Wno-missing-field-initializers -Wno-implicit-fallthrough \
@@ -119,9 +119,8 @@ WOLF_CXXFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultl
              -Ikernel/drivers/video -Ikernel/drivers/input -Ikernel/drivers/system \
              -Ikernel/drivers/misc -Ikernel/audio
 
-WOLF_CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
+WOLF_CFLAGS = -MMD -MP $(ARCH_CFLAGS) -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
              -fno-stack-protector -fno-pic -fno-pie -fno-builtin \
-             -mno-mmx -mno-sse -mno-sse2 \
              -O2 -Wall -Wno-unused-variable -Wno-unused-function \
              -Wno-unused-parameter -Wno-sign-compare -Wno-unused-but-set-variable \
              -Wno-missing-field-initializers -Wno-implicit-fallthrough \
@@ -143,7 +142,7 @@ DRIVER_SRCS := $(wildcard kernel/drivers/bus/*.c kernel/drivers/storage/*.c \
 DRIVER_OBJS := $(DRIVER_SRCS:.c=.o)
 
 KERNEL_OBJS = \
-    kernel/boot/boot.o \
+    kernel/boot/boot64.o \
     kernel/boot/isr_stubs.o \
     kernel/core/kernel.o \
     kernel/display/terminal.o \
@@ -158,6 +157,7 @@ KERNEL_OBJS = \
     kernel/lib/stdlib.o \
     kernel/lib/ctype.o \
     kernel/lib/udivdi3.o \
+    kernel/lib/udivti3.o \
     kernel/fs/fs.o \
     kernel/fs/vfs.o \
     kernel/fs/volumes.o \
@@ -435,8 +435,8 @@ kernel/wolf3d/%.o: kernel/wolf3d/%.cpp
 # floating point (-mno-80387: the kernel never saves the FPU), against tFire's own small C library
 # (kernel/tfire/libc), and linked into one object whose only global symbols are the engine's API (TFIRE_API):
 # the C library functions it brings along stay its own and cannot clash with DOOM's or Wolf3D's.
-TFIRE_BASE = -MMD -MP -m32 -ffreestanding -nostdlib -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
-             -mno-mmx -mno-sse -mno-sse2 -mno-80387 -O2 -std=gnu99 \
+TFIRE_BASE = -MMD -MP $(ARCH_CFLAGS) -ffreestanding -nostdlib -fno-builtin -fno-stack-protector -fno-pic -fno-pie \
+             -O2 -std=gnu99 \
              -U__linux__ -U__linux -Ulinux -U__unix__ -U__unix -Uunix -DTOS_TFIRE \
              -DWITHOUT_ICONV_FILTER -DNDEBUG -DCONFIG_VERSION=\"2025-09-13\" -Ikernel/tfire/libc -Ikernel/lib
 NS = third_party/netsurf
@@ -485,7 +485,7 @@ kernel/tfire/libc/%.o: kernel/tfire/libc/%.c
 kernel/tfire/js_prelude.o: kernel/tfire/js_prelude.s kernel/tfire/prelude.js
 	$(AS) $(ASFLAGS) $< -o $@
 kernel/tfire/tfire_all.o: $(TFIRE_PARTS)
-	$(LD) -m elf_i386 -r -o $@.tmp $(TFIRE_PARTS)
+	$(LD) -m elf_x86_64 -r -o $@.tmp $(TFIRE_PARTS)
 	objcopy $(addprefix --keep-global-symbol=,$(TFIRE_API)) $@.tmp $@
 	rm -f $@.tmp
 # the licences of everything tOS is built from (tFire shows them at tfire:licenses)
@@ -496,6 +496,8 @@ kernel/display/apps/tfire_notices.o: kernel/display/apps/tfire_notices.s THIRD_P
 # the window around it is desktop code, but sees the engine's types
 kernel/display/apps/tfire.o: kernel/display/apps/tfire.c
 	$(CC) $(CFLAGS) $(TFIRE_NS_INC) -Ikernel/tfire -c $< -o $@
+
+kernel/core/scheduler.o kernel/drivers/system/fpu.o: CFLAGS += -mgeneral-regs-only
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -518,8 +520,10 @@ programs/elf32_hello.o: programs/elf32_hello.s
 programs/elf32_hello.elf: programs/elf32_hello.o programs/elf32_hello.ld
 	$(LD) -m elf_i386 -T programs/elf32_hello.ld -o $@ programs/elf32_hello.o
 
-kernel/tOS.elf: $(KERNEL_OBJS)
-	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
+# the 64-bit kernel, inside the 32-bit ELF every Multiboot loader (and older tOS's Software Update) reads
+kernel/tOS.elf: $(KERNEL_OBJS) tools/elf32wrap.py
+	$(LD) $(LDFLAGS) -o kernel/tOS64.elf $(KERNEL_OBJS)
+	python3 tools/elf32wrap.py kernel/tOS64.elf $@
 
 initrd.tar: $(PROGRAMS)
 	tar cf $@ --format=ustar $(PROGRAMS)

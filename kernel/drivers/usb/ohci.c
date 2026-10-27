@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "ohci.h"
 #include "pci.h"
 #include "io.h"
@@ -15,7 +16,7 @@ int ohci_init(ohci_controller_t *ctrl)
         ctrl->io_base = bar & 0xFFFFFFF0;
     }
     pci_write_config(devs[0].bus, devs[0].device, devs[0].func, 4, 0x2);
-    volatile uint32_t *base = (volatile uint32_t *)ctrl->io_base;
+    volatile uint32_t *base = (volatile uint32_t *)P2V(ctrl->io_base);
     base[OHCI_HcControl / 4] = 0;
     base[OHCI_HcCommandStatus / 4] = 0;
     base[OHCI_HcInterruptStatus / 4] = 0x80000000;

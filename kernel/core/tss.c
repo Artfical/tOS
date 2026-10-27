@@ -4,17 +4,14 @@
 
 static tss_t tss;
 
-extern void gdt_set_tss(uint32_t tss_addr);
-
 void tss_init(void)
 {
     memset(&tss, 0, sizeof(tss));
-    tss.ss0 = 0x10;
     tss.iomap = sizeof(tss);
-    gdt_set_tss((uint32_t)&tss);
+    gdt_set_tss((uint64_t)&tss, sizeof(tss));
 }
 
-void tss_set_kernel_stack(uint32_t esp)
+void tss_set_kernel_stack(uint64_t rsp)
 {
-    tss.esp0 = esp;
+    tss.rsp0 = rsp;
 }

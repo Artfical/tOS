@@ -54,7 +54,7 @@ static void svga_update(bochs_device_t *dev, int x, int y, int width, int height
     if (y + height > dev->height) height = dev->height - y;
     if (width <= 0 || height <= 0) return;
 
-    volatile uint32_t *fifo = (volatile uint32_t *)dev->fifo;
+    volatile uint32_t *fifo = (volatile uint32_t *)P2V(dev->fifo);
     uint32_t min = fifo[0], max = fifo[1], next = fifo[2], stop = fifo[3];
     if (min < 16 || max > dev->fifo_size || max <= min + 24u ||
         next < min || next >= max || stop < min || stop >= max) return;
@@ -151,7 +151,7 @@ static int vmware_init(bochs_device_t *dev, const pci_device_t *pdev)
 
     /* VMware presents 2D framebuffer writes only after SVGA_CMD_UPDATE.
      * Set up the minimal FIFO header documented for legacy update commands. */
-    volatile uint32_t *fifo = (volatile uint32_t *)dev->fifo;
+    volatile uint32_t *fifo = (volatile uint32_t *)P2V(dev->fifo);
     fifo[0] = 16u;
     fifo[1] = fifo_size;
     fifo[2] = 16u;
@@ -367,7 +367,7 @@ int bochs_set_mode(bochs_device_t *dev, int width, int height, int bpp)
         dev->height = height;
         dev->bpp = bpp;
 
-        volatile uint32_t *fifo = (volatile uint32_t *)dev->fifo;
+        volatile uint32_t *fifo = (volatile uint32_t *)P2V(dev->fifo);
         fifo[SVGA_FIFO_MIN] = 16u;
         fifo[SVGA_FIFO_MAX] = dev->fifo_size;
         fifo[SVGA_FIFO_NEXT_CMD] = 16u;
@@ -446,7 +446,7 @@ int  bochs_graphics_active(void) { return g_graphics_active; }
 void bochs_put_pixel(bochs_device_t *dev, int x, int y, uint32_t color)
 {
     if (!dev->lfb || x >= dev->width || y >= dev->height) return;
-    volatile uint32_t *fb = (volatile uint32_t *)dev->lfb;
+    volatile uint32_t *fb = (volatile uint32_t *)P2V(dev->lfb);
     fb[((uint32_t)y * (uint32_t)dev->pitch) / 4u + (uint32_t)x] = color;
     svga_update(dev, x, y, 1, 1);
 }

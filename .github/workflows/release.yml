@@ -45,7 +45,7 @@ jobs:
         # screen and opened tOS Recovery (an empty disk: nothing is installed yet).
         run: |
           truncate -s 64M disk.img
-          timeout 90 qemu-system-i386 -cdrom tOS.iso -m 1024 -boot d -vga std \
+          timeout 90 qemu-system-x86_64 -cdrom tOS.iso -m 1024 -boot d -vga std \
               -drive file=disk.img,if=ide,format=raw \
               -display none -serial stdio -no-reboot > boot.log 2>&1 || true
           tr -d '\r' < boot.log | tail -60
@@ -110,9 +110,9 @@ jobs:
 
           Boot it in QEMU with:
           \`\`\`
-          qemu-system-i386 -cdrom tOS-$SHORT.iso -m 1024 -vga std
+          qemu-system-x86_64 -cdrom tOS-$SHORT.iso -m 1024 -vga std
           \`\`\`
-          or attach it to a VMware / VirtualBox machine as a CD (BIOS boot), or write it to a USB stick.
+          or attach it to a 64-bit VMware / VirtualBox machine as a CD (BIOS boot), or write it to a USB stick.
           Installed systems get it through Software Update (update.artfical.com)." \
              "tOS-$SHORT.iso" \
              "kernel/tOS.elf" \

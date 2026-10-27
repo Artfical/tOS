@@ -61,13 +61,13 @@ static int elf32_read_exact(const char *path, int fd, uint32_t file_size,
     return 0;
 }
 
-static int elf32_map_page(uint32_t *pgdir, uint32_t page)
+static int elf32_map_page(uint64_t *pgdir, uint32_t page)
 {
     if (paging_virt_to_phys(pgdir, page) != 0) return 0;
 
     uint32_t phys = alloc_physical_page();
     if (!phys) return -1;
-    memset((void *)phys, 0, PAGE_SIZE);
+    memset(P2V(phys), 0, PAGE_SIZE);
     if (paging_map_in(pgdir, page, phys, PTE_USER | PTE_WRITABLE) != 0) {
         free_physical_page(phys);
         return -1;
@@ -75,11 +75,11 @@ static int elf32_map_page(uint32_t *pgdir, uint32_t page)
     return 0;
 }
 
-static int elf32_load(const char *path, int fd, uint32_t file_size, uint32_t *pgdir,
+static int elf32_load(const char *path, int fd, uint32_t file_size, uint64_t *pgdir,
                       uint32_t *entry_out, uint32_t *brk_base_out,
                       uint32_t *phdr_out, uint32_t *phnum_out);
 
-int elf32_load_static(const char *path, uint32_t file_size, uint32_t *pgdir,
+int elf32_load_static(const char *path, uint32_t file_size, uint64_t *pgdir,
                       uint32_t *entry_out, uint32_t *brk_base_out,
                       uint32_t *phdr_out, uint32_t *phnum_out)
 {
@@ -89,7 +89,7 @@ int elf32_load_static(const char *path, uint32_t file_size, uint32_t *pgdir,
     return r;
 }
 
-static int elf32_load(const char *path, int fd, uint32_t file_size, uint32_t *pgdir,
+static int elf32_load(const char *path, int fd, uint32_t file_size, uint64_t *pgdir,
                       uint32_t *entry_out, uint32_t *brk_base_out,
                       uint32_t *phdr_out, uint32_t *phnum_out)
 {
@@ -164,7 +164,7 @@ static int elf32_load(const char *path, int fd, uint32_t file_size, uint32_t *pg
             if (elf32_read_exact(path, fd, file_size, offset, chunk_buf, n) != 0) return -1;
             uint32_t phys = paging_virt_to_phys(pgdir, va);
             if (!phys) return -1;
-            memcpy((void *)phys, chunk_buf, n);
+            memcpy(P2V(phys), chunk_buf, n);
             va += n;
             offset += n;
             remaining -= n;

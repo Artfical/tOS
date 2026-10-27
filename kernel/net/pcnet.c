@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "pcnet.h"
 #include "pci.h"
 #include "io.h"
@@ -180,25 +181,25 @@ int pcnet_init(void)
     memset((void *)tra, 0, TX_RING * sizeof(pcnet_desc_t));
 
     for (int i = 0; i < RX_RING; i++) {
-        rxd[i].base = (uint32_t)(uintptr_t)rxb[i];
+        rxd[i].base = (uint32_t)V2P(rxb[i]);
         rxd[i].length = (int16_t)(-BUF_SZ);
         rxd[i].status = 0x8000;
         rxd[i].misc = 0;
         rxd[i].reserved = 0;
     }
     for (int i = 0; i < TX_RING; i++) {
-        txd[i].base = (uint32_t)(uintptr_t)txb[i];
+        txd[i].base = (uint32_t)V2P(txb[i]);
         txd[i].length = 0;
         txd[i].status = 0;
         txd[i].misc = 0;
         txd[i].reserved = 0;
     }
 
-    ib->rx_ring = (uint32_t)rra;
-    ib->tx_ring = (uint32_t)tra;
+    ib->rx_ring = (uint32_t)V2P((void *)rra);
+    ib->tx_ring = (uint32_t)V2P((void *)tra);
 
-    csr_wr(1, (uint32_t)(uintptr_t)ib & 0xFFFF);
-    csr_wr(2, ((uint32_t)(uintptr_t)ib >> 16) & 0xFFFF);
+    csr_wr(1, (uint32_t)V2P(ib) & 0xFFFF);
+    csr_wr(2, ((uint32_t)V2P(ib) >> 16) & 0xFFFF);
     csr_wr(3, 0);
     csr_wr(4, 0);
 

@@ -43,8 +43,9 @@
 #define MICROPY_PY_COLLECTIONS      1
 #define MICROPY_PY_MICROPYTHON_MEM_INFO 1
 
-typedef int mp_int_t;
-typedef unsigned int mp_uint_t;
+/* pointer-sized, as MicroPython requires (64 bits on x86-64) */
+typedef long mp_int_t;
+typedef unsigned long mp_uint_t;
 typedef long mp_off_t;
 
 #define MP_STATE_PORT MP_STATE_VM

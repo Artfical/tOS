@@ -320,7 +320,7 @@ void cmd_fbtest(int argc, char **args)
      * that gap was the real cause of a flicker seen while diagnosing
      * this on real hardware. */
     uint32_t fbtest_flags;
-    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
+    fbtest_flags = irq_save();
 
     bochs_set_mode(&bochs, 640, 480, 32);
 
@@ -331,7 +331,7 @@ void cmd_fbtest(int argc, char **args)
 
     fbconsole_init(&bochs);
     bochs_set_graphics_active(1);
-    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
+    irq_restore(fbtest_flags);
 
     fbconsole_clear(0x00202030);
 
@@ -341,22 +341,22 @@ void cmd_fbtest(int argc, char **args)
      * this hardware, separately from whether font rendering onto it
      * is. Neither of these was actually confirmed working after the
      * BAR1 fix -- only that bochs_set_mode() itself survives. */
-    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
+    fbtest_flags = irq_save();
     bochs_set_graphics_active(0);
     bochs_disable();
     vga_set_mode(VGA_MODE_TEXT);
     terminal_set_force_direct(0);
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
-    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
+    irq_restore(fbtest_flags);
     terminal_writestring("fbtest: checkpoint A - fbconsole_clear() survived (LFB write ok)\n");
     terminal_writestring("fbtest: press any key to continue to text rendering...\n");
     while (keyboard_data_available()) keyboard_getchar();
     keyboard_getchar();
 
-    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
+    fbtest_flags = irq_save();
     bochs_set_mode(&bochs, 640, 480, 32);
     bochs_set_graphics_active(1);
-    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
+    irq_restore(fbtest_flags);
 
     fbconsole_clear(0x00202030);
     fbconsole_puts(2, 1, "tOS framebuffer console", 0x00FFFFFF, 0x00202030);
@@ -369,22 +369,22 @@ void cmd_fbtest(int argc, char **args)
      * (a particular string, or repeated fbconsole_putc calls); if it
      * doesn't, vga_font_get_glyph()/the blit loop in fbconsole_putc()
      * is the culprit. */
-    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
+    fbtest_flags = irq_save();
     bochs_set_graphics_active(0);
     bochs_disable();
     vga_set_mode(VGA_MODE_TEXT);
     terminal_set_force_direct(0);
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
-    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
+    irq_restore(fbtest_flags);
     terminal_writestring("fbtest: checkpoint B - first glyph line survived\n");
     terminal_writestring("fbtest: press any key to continue...\n");
     while (keyboard_data_available()) keyboard_getchar();
     keyboard_getchar();
 
-    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
+    fbtest_flags = irq_save();
     bochs_set_mode(&bochs, 640, 480, 32);
     bochs_set_graphics_active(1);
-    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
+    irq_restore(fbtest_flags);
 
     fbconsole_clear(0x00202030);
     fbconsole_puts(2, 1, "tOS framebuffer console", 0x00FFFFFF, 0x00202030);
@@ -400,14 +400,14 @@ void cmd_fbtest(int argc, char **args)
     while (keyboard_data_available()) keyboard_getchar();
     keyboard_getchar();
 
-    asm volatile("pushfl; popl %0; cli" : "=r"(fbtest_flags));
+    fbtest_flags = irq_save();
     bochs_disable();
     vga_set_mode(VGA_MODE_TEXT);
     terminal_set_force_direct(0);
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
     terminal_clear();
     bochs_set_graphics_active(0);
-    asm volatile("pushl %0; popfl" :: "r"(fbtest_flags));
+    irq_restore(fbtest_flags);
 }
 
 /* Shows the exact same full-screen red panic display a real kernel

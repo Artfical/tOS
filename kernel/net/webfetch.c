@@ -1,3 +1,4 @@
+#include "io.h"
 #include "webfetch.h"
 #include "http.h"
 #include "https.h"
@@ -88,8 +89,8 @@ typedef struct {
 static cookie_t jar[COOKIES];
 static int njar;
 
-static uint32_t jar_lock(void) { uint32_t fl; asm volatile("pushfl; popl %0; cli" : "=r"(fl)); return fl; }
-static void jar_unlock(uint32_t fl) { asm volatile("pushl %0; popfl" : : "r"(fl)); }
+static uint32_t jar_lock(void) { uint32_t fl; fl = irq_save(); return fl; }
+static void jar_unlock(uint32_t fl) { irq_restore(fl); }
 
 static int lcase(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 
@@ -363,16 +364,16 @@ static void worker(void)
 {
     webfetch_t *f = 0;
     uint32_t fl;
-    asm volatile("pushfl; popl %0; cli" : "=r"(fl));
+    fl = irq_save();
     for (int i = 0; i < QLEN && !f; i++) if (queue[i]) { f = queue[i]; queue[i] = 0; }
-    asm volatile("pushl %0; popfl" : : "r"(fl));
+    irq_restore(fl);
     if (f) {
         int ok = fetch(f);
         /* the result and "is anyone still waiting" together, so webfetch_free() cannot slip in between */
-        asm volatile("pushfl; popl %0; cli" : "=r"(fl));
+        fl = irq_save();
         int gone = f->abandoned;
         f->state = ok ? WEBFETCH_DONE : WEBFETCH_FAILED;
-        asm volatile("pushl %0; popfl" : : "r"(fl));
+        irq_restore(fl);
         if (gone) { free(f->raw); free(f->headers); free(f->req_body); free(f); }
     }
     task_exit();
@@ -404,9 +405,9 @@ webfetch_t *webfetch_request(const char *url, const char *method, const char *he
     }
     int slot = -1;
     uint32_t fl;
-    asm volatile("pushfl; popl %0; cli" : "=r"(fl));
+    fl = irq_save();
     for (int i = 0; i < QLEN; i++) if (!queue[i]) { queue[i] = f; slot = i; break; }
-    asm volatile("pushl %0; popfl" : : "r"(fl));
+    irq_restore(fl);
     if (slot < 0 || task_spawn(worker, "webfetch") < 0) {
         if (slot >= 0) queue[slot] = 0;
         free(f->headers); free(f->req_body); free(f);
@@ -419,9 +420,9 @@ void webfetch_free(webfetch_t *f)
 {
     if (!f) return;
     uint32_t fl;
-    asm volatile("pushfl; popl %0; cli" : "=r"(fl));
+    fl = irq_save();
     int running = f->state == WEBFETCH_RUNNING;
     if (running) f->abandoned = 1;
-    asm volatile("pushl %0; popfl" : : "r"(fl));
+    irq_restore(fl);
     if (!running) { free(f->raw); free(f->headers); free(f->req_body); free(f); }
 }

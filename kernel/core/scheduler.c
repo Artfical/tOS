@@ -21,16 +21,26 @@ static volatile uint32_t system_ticks = 0;
 extern void timer_irq_stub(void);
 static void unlink_task(task_t *t);
 
+/* the frame timer_irq_stub returns through, at the top of the task's kernel stack */
+static registers_t *initial_frame(task_t *t)
+{
+    uint64_t top = ((uint64_t)(uintptr_t)t->kernel_stack + KERNEL_STACK_SZ) & ~15ull;
+    registers_t *f = (registers_t *)(uintptr_t)(top - sizeof(registers_t));
+    memset(f, 0, sizeof(*f));
+    t->esp = (uint64_t)(uintptr_t)f;
+    return f;
+}
+
 static void setup_task_stack(task_t *t, void (*entry)(void))
 {
-    uint32_t *sp = (uint32_t *)((uint32_t)t->kernel_stack + KERNEL_STACK_SZ);
-    *(--sp) = 0x202;
-    *(--sp) = 0x08;
-    *(--sp) = (uint32_t)entry;
-    *(--sp) = 0; *(--sp) = 0; *(--sp) = 0; *(--sp) = 0;
-    *(--sp) = 0; *(--sp) = 0; *(--sp) = 0; *(--sp) = 0;
-    *(--sp) = 0x10; *(--sp) = 0x10; *(--sp) = 0x10; *(--sp) = 0x10;
-    t->esp = (uint32_t)sp;
+    registers_t *f = initial_frame(t);
+    uint64_t top = (uint64_t)(uintptr_t)f + sizeof(registers_t);
+    f->rip = (uint64_t)(uintptr_t)entry;
+    f->cs = GDT_KERNEL_CS;
+    f->rflags = 0x202;
+    f->rsp = top - 8;                  /* as if called: (rsp + 8) is 16-byte aligned */
+    f->ss = GDT_KERNEL_DS;
+    f->ds = f->es = GDT_KERNEL_DS;
 }
 
 static void idle_entry(void)
@@ -75,7 +85,7 @@ void scheduler_init(void)
     main_task->tls_gdt_entry = -1;
     main_task->in_use = 1;
     main_task->state = TASK_STATE_RUNNING;
-    asm volatile("mov %%esp, %0" : "=r"(main_task->esp));
+    asm volatile("mov %%rsp, %0" : "=r"(main_task->esp));
     strcpy(main_task->name, "main");
 
     idle_task->next = main_task;
@@ -95,13 +105,13 @@ void scheduler_init(void)
     io_wait();
     outb(0x40, (divisor >> 8) & 0xFF);
 
-    idt_set_gate(32, (uint32_t)timer_irq_stub, 0x08, 0x8E);
+    idt_set_gate(32, (uint64_t)(uintptr_t)timer_irq_stub, GDT_KERNEL_CS, 0x8E);
 
     serial_write("sched: PIT ~100Hz, main+idle tasks\n");
     terminal_writestring("[OK] Scheduler initialized\n");
 }
 
-static int task_spawn_internal(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir, uint32_t uid, uint32_t gid)
+static int task_spawn_internal(void (*entry)(void), const char *name, void *proc, uint64_t *pgdir, uint32_t uid, uint32_t gid)
 {
     int slot = find_free_slot();
     if (slot < 0) return -1;
@@ -150,13 +160,13 @@ int task_spawn(void (*entry)(void), const char *name)
     return task_spawn_internal(entry, name, 0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu);
 }
 
-int task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir, uint32_t uid, uint32_t gid)
+int task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint64_t *pgdir, uint32_t uid, uint32_t gid)
 {
     return task_spawn_internal(entry, name, proc, pgdir, uid, gid);
 }
 
-int task_spawn_user_thread(const registers_t *regs, uint32_t child_stack,
-                           void *proc, uint32_t *pgdir, uint32_t thread_group,
+int task_spawn_user_thread(const registers_t *regs, uint64_t child_stack,
+                           void *proc, uint64_t *pgdir, uint32_t thread_group,
                            int tls_gdt_entry, uint32_t tls_base, uint32_t tls_limit,
                            uint32_t tls_flags, uint32_t clear_tid)
 {
@@ -197,28 +207,14 @@ int task_spawn_user_thread(const registers_t *regs, uint32_t child_stack,
     else fpu_state_init(t->fpu_state);
 
     uint16_t gs = tls_gdt_entry >= 0 ? (uint16_t)((tls_gdt_entry << 3) | 3) : (uint16_t)regs->gs;
-    uint32_t eflags = (regs->eflags | 0x202u) & ~(0x3000u | 0x4000u | 0x20000u);
-    uint32_t *sp = (uint32_t *)((uint32_t)t->kernel_stack + KERNEL_STACK_SZ);
-    /* iret to the child at the instruction after int 0x80. The syscall's
-     * return register is zero in the child; other GPRs follow clone ABI. */
-    *(--sp) = 0x23;                 /* user SS */
-    *(--sp) = child_stack;
-    *(--sp) = eflags;
-    *(--sp) = 0x1B;                 /* user CS */
-    *(--sp) = regs->eip;
-    *(--sp) = 0;                    /* child EAX */
-    *(--sp) = regs->ecx;
-    *(--sp) = regs->edx;
-    *(--sp) = regs->ebx;
-    *(--sp) = 0;                    /* pusha's saved ESP slot is ignored */
-    *(--sp) = regs->ebp;
-    *(--sp) = regs->esi;
-    *(--sp) = regs->edi;
-    *(--sp) = regs->ds;
-    *(--sp) = regs->es;
-    *(--sp) = regs->fs;
-    *(--sp) = gs;
-    t->esp = (uint32_t)sp;
+    /* back to user mode at the instruction after the syscall, on the child's stack; the syscall's
+     * return register is zero in the child, the other registers are the parent's (clone) */
+    registers_t *f = initial_frame(t);
+    *f = *regs;
+    f->rax = 0;
+    f->rsp = child_stack;
+    f->rflags = (regs->rflags | 0x202u) & ~(0x3000ull | 0x4000ull | 0x20000ull);
+    f->gs = gs;
     strncpy(t->name, "elf-thread", sizeof(t->name) - 1);
 
     task_t *last = current;
@@ -260,12 +256,12 @@ static void futex_wake_timeouts(void)
     }
 }
 
-int task_futex_wait(uint32_t user_addr, uint32_t expected, uint64_t deadline_ms)
+int task_futex_wait(uint64_t user_addr, uint32_t expected, uint64_t deadline_ms)
 {
     uint32_t flags;
-    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
-    if (!current || *(volatile uint32_t *)user_addr != expected) {
-        asm volatile("pushl %0; popfl" : : "r"(flags));
+    flags = irq_save();
+    if (!current || *(volatile uint32_t *)(uintptr_t)user_addr != expected) {
+        irq_restore(flags);
         return -1;
     }
     current->futex_addr = user_addr;
@@ -273,17 +269,17 @@ int task_futex_wait(uint32_t user_addr, uint32_t expected, uint64_t deadline_ms)
     current->futex_waiting = 1;
     current->futex_result = 0;
     current->state = TASK_STATE_SLEEPING;
-    asm volatile("pushl %0; popfl" : : "r"(flags));
+    irq_restore(flags);
     task_yield();
     return current->futex_result;
 }
 
-int task_futex_wake(uint32_t user_addr, uint32_t count)
+int task_futex_wake(uint64_t user_addr, uint32_t count)
 {
     if (!current || count == 0) return 0;
     uint32_t flags;
     int woke = 0;
-    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    flags = irq_save();
     for (int i = 0; i < MAX_TASKS && (uint32_t)woke < count; i++) {
         task_t *t = &tasks[i];
         if (!t->in_use || !t->futex_waiting || t->futex_addr != user_addr ||
@@ -294,7 +290,7 @@ int task_futex_wake(uint32_t user_addr, uint32_t count)
         t->state = TASK_STATE_READY;
         woke++;
     }
-    asm volatile("pushl %0; popfl" : : "r"(flags));
+    irq_restore(flags);
     return woke;
 }
 
@@ -349,7 +345,7 @@ task_t *task_by_pid(uint32_t pid)
     return 0;
 }
 
-uint32_t timer_handler(uint32_t esp)
+uint64_t timer_handler(uint64_t esp)
 {
     /* The IRQ stub and scheduler run with integer-only kernel flags; capture
      * the interrupted task before changing its saved stack or selecting next. */
@@ -394,9 +390,9 @@ uint32_t timer_handler(uint32_t esp)
     /* each user process runs in its own address space; kernel tasks run in the kernel's (all of them see
      * the kernel half, so a kernel task does not care which one is loaded) */
     {
-        uint32_t *want = current->pgdir ? current->pgdir : paging_kernel_dir();
-        if (want && paging_current_dir() != want) asm volatile("mov %0, %%cr3" : : "r"(want) : "memory");
-        if (current->kernel_stack) tss_set_kernel_stack((uint32_t)current->kernel_stack + KERNEL_STACK_SZ);
+        uint64_t *want = current->pgdir ? current->pgdir : paging_kernel_dir();
+        if (want && paging_current_dir() != want) paging_switch(want);
+        if (current->kernel_stack) tss_set_kernel_stack(((uint64_t)(uintptr_t)current->kernel_stack + KERNEL_STACK_SZ) & ~15ull);
     }
     fpu_restore_state(current->fpu_state);
     return current->esp;

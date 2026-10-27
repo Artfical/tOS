@@ -20,31 +20,16 @@ static const char *exception_messages[] = {
     "Reserved", "Reserved", "Reserved", "Reserved"
 };
 
-__attribute__((naked)) void isr_common_stub(void)
+
+/* a 64-bit value: its low 32 bits, or all 64 when the upper half is used (kernel addresses) */
+static void hex16(char *buf, uint64_t val)
 {
-    asm volatile(
-        "pusha\n"
-        "push %ds\n"
-        "push %es\n"
-        "push %fs\n"
-        "push %gs\n"
-        "mov $0x10, %ax\n"
-        "mov %ax, %ds\n"
-        "mov %ax, %es\n"
-        "mov %ax, %fs\n"
-        "mov %ax, %gs\n"
-        "mov %esp, %eax\n"
-        "push %eax\n"
-        "call isr_handler\n"
-        "pop %eax\n"
-        "pop %gs\n"
-        "pop %fs\n"
-        "pop %es\n"
-        "pop %ds\n"
-        "popa\n"
-        "add $8, %esp\n"
-        "iret\n"
-    );
+    int n = (val >> 32) ? 16 : 8;
+    for (int i = n - 1; i >= 0; i--) {
+        buf[i] = "0123456789ABCDEF"[val & 0xF];
+        val >>= 4;
+    }
+    buf[n] = '\0';
 }
 
 static void hex8(char *buf, uint32_t val)
@@ -69,10 +54,10 @@ void crash_screen_clear(void)
 }
 
 void crash_screen_trigger(const char *exception_name, int exception_code,
-                           uint32_t cr2, uint32_t eip, uint32_t err_code, int fake,
+                           uint64_t cr2, uint64_t eip, uint64_t err_code, int fake,
                            const char *extra_line)
 {
-    char buf[9];
+    char buf[17];
 
     crash_active = 1;
     terminal_set_force_direct(1);
@@ -91,13 +76,13 @@ void crash_screen_trigger(const char *exception_name, int exception_code,
     terminal_writestring(")\n\n");
 
     terminal_writestring("        CR2: ");
-    hex8(buf, cr2);
+    hex16(buf, cr2);
     terminal_writestring(buf);
-    terminal_writestring("   EIP: ");
-    hex8(buf, eip);
+    terminal_writestring("   RIP: ");
+    hex16(buf, eip);
     terminal_writestring(buf);
     terminal_writestring("   ERR: ");
-    hex8(buf, err_code);
+    hex16(buf, err_code);
     terminal_writestring(buf);
     terminal_writestring("\n\n");
 
@@ -125,7 +110,7 @@ void isr_handler(registers_t *regs)
     if (regs->int_no < 32 && (regs->cs & 3) == 3 && proc_current()) {
         /* a user program misbehaved: that program ends, the system carries on */
         proc_t *p = proc_current();
-        uint32_t cr2 = 0;
+        uint64_t cr2 = 0;
         if (regs->int_no == 14) asm volatile("mov %%cr2, %0" : "=r"(cr2));
         terminal_writestring("\n");
         terminal_writestring(p->name);
@@ -152,7 +137,7 @@ void isr_handler(registers_t *regs)
                 for (uint32_t w = 0; w < words; w += 8) {
                     char row[96] = "  stack ";
                     for (uint32_t k = w; k < w + 8 && k < words; k++) {
-                        hex8(h, ((const uint32_t *)sp)[k]);
+                        hex8(h, ((const uint32_t *)(uintptr_t)sp)[k]);
                         strcat(row, h); strcat(row, " ");
                     }
                     strcat(row, "\n");
@@ -169,7 +154,7 @@ void isr_handler(registers_t *regs)
     if (regs->int_no < 32) {
         debugmon_log_line(exception_messages[regs->int_no]);
 
-        uint32_t cr2 = 0;
+        uint64_t cr2 = 0;
         if (regs->int_no == 14) {
             asm volatile("mov %%cr2, %0" : "=r"(cr2));
         }
@@ -182,15 +167,15 @@ void isr_handler(registers_t *regs)
          * of what a debugger would normally show. */
         char extra[96];
         int p = 0;
-        const char *lbl1 = "ESP:";
+        const char *lbl1 = "RSP:";
         while (*lbl1) extra[p++] = *lbl1++;
-        for (int nib = 28; nib >= 0; nib -= 4) extra[p++] = "0123456789ABCDEF"[(regs->esp >> nib) & 0xF];
-        const char *lbl2 = " EBP:";
+        for (int nib = 60; nib >= 0; nib -= 4) extra[p++] = "0123456789ABCDEF"[(regs->rsp >> nib) & 0xF];
+        const char *lbl2 = " RBP:";
         while (*lbl2) extra[p++] = *lbl2++;
-        for (int nib = 28; nib >= 0; nib -= 4) extra[p++] = "0123456789ABCDEF"[(regs->ebp >> nib) & 0xF];
+        for (int nib = 60; nib >= 0; nib -= 4) extra[p++] = "0123456789ABCDEF"[(regs->rbp >> nib) & 0xF];
         const char *lbl3 = " CS:";
         while (*lbl3) extra[p++] = *lbl3++;
-        for (int nib = 12; nib >= 0; nib -= 4) extra[p++] = "0123456789ABCDEF"[(regs->cs >> nib) & 0xF];
+        for (int nib = 4; nib >= 0; nib -= 4) extra[p++] = "0123456789ABCDEF"[(regs->cs >> nib) & 0xF];
         const char *lbl4 = " PID:";
         while (*lbl4) extra[p++] = *lbl4++;
         task_t *cur = task_current();
@@ -199,7 +184,7 @@ void isr_handler(registers_t *regs)
         extra[p] = 0;
 
         crash_screen_trigger(exception_messages[regs->int_no], (int)regs->int_no,
-                              cr2, regs->eip, regs->err_code, 0, extra);
+                              cr2, regs->rip, regs->err_code, 0, extra);
     }
 }
 

@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "apic.h"
 #include "io.h"
 #include "msr.h"
@@ -9,7 +10,7 @@ int apic_init(apic_timer_t *apic)
     if (!(edx & (1 << 9))) return -1;
     apic->base = APIC_BASE;
     msr_write(0x1B, (apic->base & 0xFFFFFFF0) | 0x800, 0);
-    volatile uint32_t *regs = (volatile uint32_t *)apic->base;
+    volatile uint32_t *regs = (volatile uint32_t *)P2V(apic->base);
     regs[APIC_SVR / 4] = APIC_SVR_ENABLE | 0xFF;
     apic->id = regs[APIC_ID / 4] >> 24;
     apic->version = regs[APIC_VER / 4] & 0xFF;

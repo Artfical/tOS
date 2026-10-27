@@ -2337,7 +2337,7 @@ int wm_gfx_init(void)
     SW = 1280; SH = 720;                        /* the first-boot mode */
     if (alloc_buffers(SW, SH) != 0) return -1;
     if (bochs_set_mode(&vdev, SW, SH, 32) != 0) return -1;
-    lfb = (uint32_t *)vdev.lfb;
+    lfb = (uint32_t *)P2V(vdev.lfb);
     bootsplash_handoff();
     load_user_desktop();
     mouse_set_pixel_mode(SW, SH);

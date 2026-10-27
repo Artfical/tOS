@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "virtio_net.h"
 #include "pci.h"
 #include "io.h"
@@ -112,16 +113,16 @@ static int virtq_setup(int idx, virtq_t *q)
         uint32_t p = alloc_physical_page();
         if (!p || p != base + i * PAGE_SIZE) return -1;
     }
-    memset((void *)(uintptr_t)base, 0, (size_t)pages * PAGE_SIZE);
+    memset(P2V(base), 0, (size_t)pages * PAGE_SIZE);
 
     uint32_t avail_off = 16u * num;
     uint32_t used_off = avail_off + 2u * (3 + num);
     used_off = (used_off + VRING_ALIGN - 1) & ~(uint32_t)(VRING_ALIGN - 1);
 
     q->num = num;
-    q->desc = (virtq_desc_t *)(uintptr_t)base;
-    q->avail = (virtq_avail_t *)(uintptr_t)(base + avail_off);
-    q->used = (virtq_used_t *)(uintptr_t)(base + used_off);
+    q->desc = (virtq_desc_t *)P2V(base);
+    q->avail = (virtq_avail_t *)P2V(base + avail_off);
+    q->used = (virtq_used_t *)P2V(base + used_off);
     q->last_used = 0;
 
     outl(io_base + VIRTIO_PCI_QUEUE_PFN, base / PAGE_SIZE);
@@ -169,7 +170,7 @@ int virtio_net_init(void)
     for (int i = 0; i < nrx; i++) {
         rx_bufs[i] = (uint8_t *)malloc(BUF_SIZE + RX_PAD);
         if (!rx_bufs[i]) return -1;
-        rxq.desc[i].addr = (uint64_t)(uintptr_t)rx_bufs[i];
+        rxq.desc[i].addr = V2P(rx_bufs[i]);
         rxq.desc[i].len = BUF_SIZE;
         rxq.desc[i].flags = VIRTQ_DESC_F_WRITE;
         rxq.desc[i].next = 0;
@@ -205,7 +206,7 @@ void virtio_net_send(void *data, int len)
     memset(tx_bufs[slot], 0, NET_HDR_LEN);
     memcpy(tx_bufs[slot] + NET_HDR_LEN, data, len);
 
-    txq.desc[slot].addr = (uint64_t)(uintptr_t)tx_bufs[slot];
+    txq.desc[slot].addr = V2P(tx_bufs[slot]);
     txq.desc[slot].len = NET_HDR_LEN + len;
     txq.desc[slot].flags = 0;
     txq.desc[slot].next = 0;

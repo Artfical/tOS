@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "ramfs.h"
 #include "vfs.h"
 #include "string.h"
@@ -731,7 +732,7 @@ static void import_parents(const char *path, int including_last)
  * paths split between the prefix field and the name. */
 void ramfs_import_initrd(uint32_t addr, uint32_t size)
 {
-    uint8_t *p = (uint8_t *)addr;
+    uint8_t *p = (uint8_t *)P2V(addr);
     uint8_t *end = p + size;
     serial_write("ramfs: importing initrd\n");
 

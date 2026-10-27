@@ -65,7 +65,7 @@ typedef struct proc {
     int used;
     int done;                           /* finished: exit_code is valid until someone waits for it */
     uint32_t pid, ppid;
-    uint32_t *pgdir;
+    uint64_t *pgdir;
     uint32_t brk;
     uint32_t brk_base;
     uint32_t entry;

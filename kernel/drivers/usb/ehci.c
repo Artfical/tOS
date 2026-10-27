@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "ehci.h"
 #include "pci.h"
 #include "io.h"
@@ -10,7 +11,7 @@ int ehci_init(ehci_controller_t *ctrl)
     uint32_t bar = pci_get_bar(devs[0].bus, devs[0].device, devs[0].func, 0);
     ctrl->mmio_base = bar & 0xFFFFFFF0;
     pci_write_config(devs[0].bus, devs[0].device, devs[0].func, 4, 0x2);
-    volatile uint32_t *regs = (volatile uint32_t *)ctrl->mmio_base;
+    volatile uint32_t *regs = (volatile uint32_t *)P2V(ctrl->mmio_base);
     regs[EHCI_USBCMD / 4] |= 0x02;
     for (int i = 0; i < 100000; i++) {
         if (!(regs[EHCI_USBCMD / 4] & 0x02)) break;

@@ -9,7 +9,7 @@ static int initial_state_ready;
 int fpu_init(fpu_device_t *fpu)
 {
     uint32_t a = 0, b = 0, c = 0, d = 0;
-    uint32_t cr0, cr4;
+    uint64_t cr0, cr4;
 
     if (!fpu) return -1;
     memset(fpu, 0, sizeof(*fpu));
@@ -49,7 +49,7 @@ int fpu_init(fpu_device_t *fpu)
     }
 
     if (fpu->has_fxsave) {
-        asm volatile("fxsave (%0)" : : "r"(initial_state) : "memory");
+        asm volatile("fxsave64 (%0)" : : "r"(initial_state) : "memory");
     } else {
         asm volatile("fnsave (%0)" : : "r"(initial_state) : "memory");
         asm volatile("frstor (%0)" : : "r"(initial_state) : "memory");
@@ -69,7 +69,7 @@ void fpu_save_state(void *state)
 {
     if (!state || !fpu_caps.present) return;
     if (fpu_caps.has_fxsave)
-        asm volatile("fxsave (%0)" : : "r"(state) : "memory");
+        asm volatile("fxsave64 (%0)" : : "r"(state) : "memory");
     else
         asm volatile("fnsave (%0)" : : "r"(state) : "memory");
 }
@@ -78,7 +78,7 @@ void fpu_restore_state(void *state)
 {
     if (!state || !fpu_caps.present) return;
     if (fpu_caps.has_fxsave)
-        asm volatile("fxrstor (%0)" : : "r"(state) : "memory");
+        asm volatile("fxrstor64 (%0)" : : "r"(state) : "memory");
     else
         asm volatile("frstor (%0)" : : "r"(state) : "memory");
 }

@@ -3,6 +3,19 @@
 
 #include <stdint.h>
 
+/* interrupts off, returning the flags to give back to irq_restore() (nests) */
+static inline uint64_t irq_save(void)
+{
+    uint64_t flags;
+    asm volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static inline void irq_restore(uint64_t flags)
+{
+    asm volatile("pushq %0; popfq" : : "r"(flags) : "memory", "cc");
+}
+
 static inline uint8_t inb(uint16_t port)
 {
     uint8_t value;

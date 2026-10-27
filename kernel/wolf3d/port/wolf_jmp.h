@@ -19,7 +19,7 @@
  * Saves only what the i386 SysV calling convention requires a callee
  * to preserve across a call (ebx, esi, edi, ebp, esp) plus the return
  * address -- enough to unwind the stack safely, nothing more. */
-typedef struct { unsigned long regs[6]; } wolf_jmp_buf;
+typedef struct { unsigned long regs[8]; } wolf_jmp_buf;   /* rbx rbp r12-r15 rsp rip */
 
 #ifdef __cplusplus
 extern "C" {

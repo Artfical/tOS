@@ -7,6 +7,7 @@
  * NOT bit 0 (which is GIE). Wrong bit was causing codec to never wake up.
  */
 
+#include "paging.h"
 #include "ich.h"
 #include "pci.h"
 #include "io.h"
@@ -168,13 +169,13 @@ int ich_audio_init(ich_dev_t *dev)
     for (int i = 0; i < ICH_BUF_SLOTS; i++)
         memset(dev->pcm_buf[i], 0, ICH_BUF_BYTES);
     for (int i = 0; i < ICH_BDL_ENTRIES; i++) {
-        dev->bdl[i].addr    = (uint32_t)(unsigned long)dev->pcm_buf[i % ICH_BUF_SLOTS];
+        dev->bdl[i].addr    = (uint32_t)V2P(dev->pcm_buf[i % ICH_BUF_SLOTS]);
         dev->bdl[i].samples = ICH_BUF_SAMPLES;
         dev->bdl[i].flags   = ICH_BDL_BUP;
     }
 
     /* Point BDBAR at BDL; LVI=0; do NOT start DMA yet */
-    bm32w(nabmbar, ICH_PCO_BDBAR, (uint32_t)(unsigned long)dev->bdl);
+    bm32w(nabmbar, ICH_PCO_BDBAR, (uint32_t)V2P(dev->bdl));
     bm8w(nabmbar, ICH_PCO_LVI, 0);
 
     dev->present  = 1;
@@ -222,7 +223,7 @@ void ich_audio_stop(ich_dev_t *dev)
     bm8w(dev->nabmbar, ICH_PCO_CR, 0);
     bm16w(dev->nabmbar, ICH_PCO_SR, 0x1C);
     /* RR wiped BDBAR — restore it */
-    bm32w(dev->nabmbar, ICH_PCO_BDBAR, (uint32_t)(unsigned long)dev->bdl);
+    bm32w(dev->nabmbar, ICH_PCO_BDBAR, (uint32_t)V2P(dev->bdl));
     for (int i = 0; i < ICH_BUF_SLOTS; i++)
         memset(dev->pcm_buf[i], 0, ICH_BUF_BYTES);
     dev->next_lvi = 0;
@@ -260,7 +261,7 @@ int ich_audio_submit(ich_dev_t *dev, const uint8_t *pcm8, uint32_t n8)
     }
 
     /* Update this BDL entry to point at the filled PCM buffer */
-    dev->bdl[lvi].addr    = (uint32_t)(unsigned long)dst;
+    dev->bdl[lvi].addr    = (uint32_t)V2P(dst);
     dev->bdl[lvi].samples = (uint16_t)out;
     dev->bdl[lvi].flags   = ICH_BDL_BUP;
 

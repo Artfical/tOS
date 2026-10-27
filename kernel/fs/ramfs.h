@@ -5,7 +5,7 @@
 #include "vfs.h"
 
 #define RAMFS_NAME_LEN    64
-#define RAMFS_MAX_INODES  8192      /* npm alone is ~5,500 files and folders */
+#define RAMFS_MAX_INODES  32768     /* npm alone is ~5,500 files and folders; Node 24 and its packages many more */
 #define RAMFS_BLOCK_SZ    512
 
 #define S_IFMT    0170000

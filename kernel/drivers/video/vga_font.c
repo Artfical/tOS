@@ -1,10 +1,11 @@
+#include "paging.h"
 #include "vga_font.h"
 #include "io.h"
 #include "keyboard.h"
 #include <stdint.h>
 #include <string.h>
 
-#define FONT_ADDR ((volatile uint8_t *)0xA0000)
+#define FONT_ADDR ((volatile uint8_t *)P2V(0xA0000))
 #define FONT_BYTES (256 * 16)
 #define GLYPH_ROWS 16
 /* Each character's slot in the VGA character generator's plane-2
@@ -66,7 +67,7 @@ static void font_read(void)
     uint8_t seq0, seq2, seq4, gc4, gc5, gc6;
     uint32_t flags;
 
-    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    flags = irq_save();
 
     outb(0x3C4, 0x00); seq0 = inb(0x3C5);
     outb(0x3C4, 0x02); seq2 = inb(0x3C5);
@@ -106,7 +107,7 @@ static void font_read(void)
     outb(0x3CE, 0x05); outb(0x3CF, gc5);
     outb(0x3CE, 0x06); outb(0x3CF, gc6);
 
-    asm volatile("pushl %0; popfl" :: "r"(flags));
+    irq_restore(flags);
 }
 
 static void font_write(void)
@@ -114,7 +115,7 @@ static void font_write(void)
     uint8_t seq0, seq2, seq4, gc5, gc6;
     uint32_t flags;
 
-    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    flags = irq_save();
 
     outb(0x3C4, 0x00); seq0 = inb(0x3C5);
     outb(0x3C4, 0x02); seq2 = inb(0x3C5);
@@ -138,7 +139,7 @@ static void font_write(void)
     outb(0x3CE, 0x05); outb(0x3CF, gc5);
     outb(0x3CE, 0x06); outb(0x3CF, gc6);
 
-    asm volatile("pushl %0; popfl" :: "r"(flags));
+    irq_restore(flags);
 }
 
 static void add_cedilla_below(uint8_t *glyph)

@@ -87,13 +87,13 @@ static void proc_entry(void)
                     p ? p->user_stack : USER_STACK_TOP);
 }
 
-static int proc_map_stack(uint32_t *dir)
+static int proc_map_stack(uint64_t *dir)
 {
     if (!dir) return -1;
     for (int i = 1; i <= USER_STACK_PAGES; i++) {
         uint32_t phys = alloc_physical_page();
         if (!phys) return -1;
-        memset((void *)phys, 0, PAGE_SIZE);
+        memset(P2V(phys), 0, PAGE_SIZE);
         if (paging_map_in(dir, USER_STACK_TOP - i * PAGE_SIZE, phys,
                           PTE_USER | PTE_WRITABLE) != 0) {
             free_physical_page(phys);
@@ -103,7 +103,7 @@ static int proc_map_stack(uint32_t *dir)
     return 0;
 }
 
-static int proc_write_user(uint32_t *dir, uint32_t dst, const void *src, uint32_t size)
+static int proc_write_user(uint64_t *dir, uint32_t dst, const void *src, uint32_t size)
 {
     const uint8_t *bytes = (const uint8_t *)src;
     while (size) {
@@ -111,7 +111,7 @@ static int proc_write_user(uint32_t *dir, uint32_t dst, const void *src, uint32_
         if (!phys) return -1;
         uint32_t n = PAGE_SIZE - (dst & (PAGE_SIZE - 1u));
         if (n > size) n = size;
-        memcpy((void *)phys, bytes, n);
+        memcpy(P2V(phys), bytes, n);
         dst += n;
         bytes += n;
         size -= n;
@@ -120,7 +120,7 @@ static int proc_write_user(uint32_t *dir, uint32_t dst, const void *src, uint32_
 }
 
 /* Linux i386 process-entry stack for the initial static ELF loader. */
-static int proc_stack_copy_string(uint32_t *dir, uint32_t *sp, uint32_t bottom,
+static int proc_stack_copy_string(uint64_t *dir, uint32_t *sp, uint32_t bottom,
                                   const char *s, uint32_t *addr_out)
 {
     uint32_t len = 0;
@@ -134,7 +134,7 @@ static int proc_stack_copy_string(uint32_t *dir, uint32_t *sp, uint32_t bottom,
     return 0;
 }
 
-static int proc_build_elf_stack(uint32_t *dir, const char *path, uint32_t entry,
+static int proc_build_elf_stack(uint64_t *dir, const char *path, uint32_t entry,
                                 uint32_t phdr, uint32_t phnum,
                                 int argc, const char *const argv[],
                                 int envc, const char *const envp[],
@@ -212,7 +212,7 @@ static int proc_build_elf_stack(uint32_t *dir, const char *path, uint32_t entry,
     return 0;
 }
 
-static int proc_start(proc_t *p, const char *path, uint32_t *dir,
+static int proc_start(proc_t *p, const char *path, uint64_t *dir,
                       uint32_t entry, uint32_t user_stack, uint32_t brk_base,
                       int linux_abi)
 {
@@ -280,7 +280,7 @@ int proc_spawn_argv(const char *path, const char *const argv[], const char *cons
     uint8_t magic[4];
     if (fsbridge_read(path, magic, sizeof(magic), 0) != (int)sizeof(magic)) return -5;
     if (magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
-        uint32_t *dir = paging_create_dir();
+        uint64_t *dir = paging_create_dir();
         if (!dir) return -3;
         uint32_t entry = 0, brk_base = 0, phdr = 0, phnum = 0;
         int rc = elf32_load_static(path, size, dir, &entry, &brk_base, &phdr, &phnum);
@@ -313,7 +313,7 @@ int proc_spawn_argv(const char *path, const char *const argv[], const char *cons
     if (mem_size < content) mem_size = content;
     if (mem_size > USER_CODE_MAX_SIZE) { free(buf); return -2; }
 
-    uint32_t *dir = paging_create_dir();
+    uint64_t *dir = paging_create_dir();
     if (!dir) { free(buf); return -3; }
     uint32_t pages = (mem_size + PAGE_SIZE - 1) / PAGE_SIZE;
     int ok = 1;
@@ -327,7 +327,7 @@ int proc_spawn_argv(const char *path, const char *const argv[], const char *cons
         }
         uint32_t off = i * PAGE_SIZE;
         if (off < content)
-            memcpy((void *)phys, buf + off,
+            memcpy(P2V(phys), buf + off,
                    content - off < PAGE_SIZE ? content - off : PAGE_SIZE);
     }
     if (ok && proc_map_stack(dir) != 0) ok = 0;
@@ -363,7 +363,7 @@ int proc_execve_argv(const char *path, const char *const argv[], const char *con
     if (magic[0] != 0x7F || magic[1] != 'E' || magic[2] != 'L' || magic[3] != 'F')
         return -ENOEXEC;
 
-    uint32_t *dir = paging_create_dir();
+    uint64_t *dir = paging_create_dir();
     if (!dir) return -ENOMEM;
     uint32_t entry = 0, brk_base = 0, phdr = 0, phnum = 0;
     int rc = elf32_load_static(path, size, dir, &entry, &brk_base, &phdr, &phnum);
@@ -382,7 +382,7 @@ int proc_execve_argv(const char *path, const char *const argv[], const char *con
         return -E2BIG;
     }
 
-    uint32_t *old_dir = p->pgdir;
+    uint64_t *old_dir = p->pgdir;
     for (int i = 0; i < PROC_MAX_FDS; i++) {
         if (!(p->fd_flags[i] & 1u)) continue; /* Linux FD_CLOEXEC */
         proc_fd_close(p, i);
@@ -403,7 +403,7 @@ int proc_execve_argv(const char *path, const char *const argv[], const char *con
     for (const char *s = path; *s; s++) if (*s == '/') base = s + 1;
     strncpy(p->name, base, sizeof(p->name) - 1);
     p->name[sizeof(p->name) - 1] = 0;
-    asm volatile("mov %0, %%cr3" : : "r"(dir) : "memory");
+    paging_switch(dir);
     if (old_dir) paging_destroy_dir(old_dir);
 
     enter_user_mode(entry, user_sp);
@@ -414,7 +414,7 @@ int proc_execve_argv(const char *path, const char *const argv[], const char *con
 static void proc_release(proc_t *p)
 {
     syscall_proc_cleanup(p);
-    uint32_t *dir = p->pgdir;
+    uint64_t *dir = p->pgdir;
     p->pgdir = 0;
     p->done = 1;
     if (dir) paging_destroy_dir(dir);
@@ -428,9 +428,9 @@ void proc_exit(int code)
         asm volatile("cli");
         task_t *t = task_current();
         task_kill_group(p->pid, t);
-        uint32_t *dir = p->pgdir;
+        uint64_t *dir = p->pgdir;
         t->pgdir = 0;                                     /* from now on this task runs in the kernel's address space */
-        asm volatile("mov %0, %%cr3" : : "r"(paging_kernel_dir()) : "memory");
+        paging_switch(paging_kernel_dir());
         syscall_proc_cleanup(p);
         p->pgdir = 0;
         p->done = 1;
@@ -459,7 +459,7 @@ void proc_thread_exit(int code)
     proc_t *p = proc_current();
     if (!t || !p || !t->user_thread) proc_exit(code);
     if (t->clear_tid && paging_user_range_ok(t->clear_tid, sizeof(uint32_t), 1)) {
-        *(volatile uint32_t *)t->clear_tid = 0;
+        *(volatile uint32_t *)(uintptr_t)t->clear_tid = 0;
         task_futex_wake(t->clear_tid, 1);
     }
     task_exit();

@@ -1,10 +1,11 @@
+#include "paging.h"
 #include "terminal.h"
 #include "io.h"
 #include "string.h"
 #include "serial.h"
 #include "scheduler.h"
 
-static uint16_t *const VGA_MEMORY = (uint16_t *)0xB8000;
+#define VGA_MEMORY ((uint16_t *)P2V(0xB8000))
 static uint8_t terminal_color;
 static size_t terminal_row;
 static size_t terminal_column;

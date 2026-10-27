@@ -1,3 +1,4 @@
+#include "io.h"
 #include "http.h"
 
 /* told how many bytes have arrived, while a response comes in (Software Update shows it) */
@@ -177,16 +178,16 @@ void http_lock(void)
     uint32_t me = task_get_pid();
     for (;;) {
         uint32_t fl;
-        asm volatile("pushfl; popl %0; cli" : "=r"(fl));
+        fl = irq_save();
         task_t *o = net_owner ? task_by_pid(net_owner) : 0;
         if (!net_owner || net_owner == me || !o || o->state == TASK_STATE_ZOMBIE) {   /* (an owner that died) */
             if (net_owner != me) net_depth = 0;
             net_owner = me;
             net_depth++;
-            asm volatile("pushl %0; popfl" : : "r"(fl));
+            irq_restore(fl);
             return;
         }
-        asm volatile("pushl %0; popfl" : : "r"(fl));
+        irq_restore(fl);
         task_yield();
     }
 }

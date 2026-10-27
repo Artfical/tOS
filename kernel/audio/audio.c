@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "audio.h"
 #include "sb16.h"
 #include "ich.h"
@@ -117,7 +118,7 @@ int audio_submit(const uint8_t *pcm, uint32_t len)
         if (!g_done) audio_stop();
         memcpy(dma_buf, pcm, len);
         g_done = 0;
-        dma_ch1_start((uint32_t)(unsigned long)dma_buf, len);
+        dma_ch1_start((uint32_t)V2P(dma_buf), len);
         sb16_write(&g_sb, SB16_CMD_SET_TIME_CONSTANT);
         sb16_write(&g_sb, 211U);
         sb16_write(&g_sb, SB16_CMD_8BIT_PLAY);

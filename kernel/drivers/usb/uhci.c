@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "uhci.h"
 #include "pci.h"
 #include "io.h"
@@ -39,7 +40,7 @@ static void *dma_zalloc(uint32_t sz, uint32_t *phys)
     /* transfer descriptors are only alive for one transfer at a time: once the area is used up,
      * start again from the beginning instead of running off its end */
     if (_dma_pos + ((sz + 15) & ~15) > sizeof(_uhci_dma)) _dma_pos = _dma_base;
-    *phys = (uint32_t)(_uhci_dma + _dma_pos);
+    *phys = (uint32_t)V2P((_uhci_dma + _dma_pos));
     void *p = _uhci_dma + _dma_pos;
     _dma_pos += (sz + 15) & ~15;
     memset(p, 0, (sz + 15) & ~15);
@@ -113,7 +114,7 @@ int uhci_init(uhci_controller_t *c)
         intr_qh[i]->link = head | 2;
         intr_qh[i]->element = 1;
         intr_td[i] = dma_zalloc(sizeof(uhci_td_t), &p);
-        head = (uint32_t)intr_qh[i];
+        head = (uint32_t)V2P(intr_qh[i]);
     }
 
     for (int i = 0; i < FRAME_NUM; i++)
@@ -177,7 +178,7 @@ int uhci_port_detect(uhci_controller_t *c, int port)
 
 static inline uint32_t uhci_link_td(void *td)
 {
-    return (uint32_t)td & 0xFFFFFFF0;
+    return (uint32_t)V2P(td) & 0xFFFFFFF0;
 }
 
 #define UHCI_PID_SETUP 0x2D
@@ -207,13 +208,13 @@ int uhci_control(uhci_controller_t *c, int dev, int ep, usb_device_request_t *re
     td[0].link = uhci_link_td(&td[1]);
     td[0].status = UHCI_TD_INIT_STATUS;
     td[0].token = uhci_token(UHCI_PID_SETUP, dev, ep, 0, 8);
-    td[0].buffer = (uint32_t)req;
+    td[0].buffer = (uint32_t)V2P(req);
 
     if (has_data) {
         td[1].link = uhci_link_td(&td[2]);
         td[1].status = UHCI_TD_INIT_STATUS;
         td[1].token = uhci_token((dir & 0x80) ? UHCI_PID_IN : UHCI_PID_OUT, dev, ep, 1, req->wLength);
-        td[1].buffer = (uint32_t)data;
+        td[1].buffer = (uint32_t)V2P(data);
     }
 
     td[status_idx].link = 1;
@@ -221,7 +222,7 @@ int uhci_control(uhci_controller_t *c, int dev, int ep, usb_device_request_t *re
     td[status_idx].buffer = 0;
     td[status_idx].token = uhci_token((dir & 0x80) ? UHCI_PID_OUT : UHCI_PID_IN, dev, ep, 1, 0);
 
-    c->async_qh->element = (uint32_t)&td[0];
+    c->async_qh->element = (uint32_t)V2P(&td[0]);
 
     /* done when the status stage is; a stage that fails (a stall, no device) halts the queue, so
      * that ends the wait too instead of running into the timeout */
@@ -249,9 +250,9 @@ int uhci_interrupt_read(uhci_controller_t *c, int dev, int ep, int max_len, void
     td->link = 1;
     td->status = UHCI_TD_INIT_STATUS;
     td->token = uhci_token(UHCI_PID_IN, dev, ep, 0, max_len);
-    td->buffer = (uint32_t)buf;
+    td->buffer = (uint32_t)V2P(buf);
 
-    c->async_qh->element = (uint32_t)td;
+    c->async_qh->element = (uint32_t)V2P(td);
     td_wait(td, 20);
     c->async_qh->element = 1;
 
@@ -281,16 +282,16 @@ int uhci_bulk_transfer(uhci_controller_t *c, int dev, int ep, int dir, void *buf
         int left = remaining;
         for (int i = 0; i < n; i++) {
             int chunk = left > maxpacket ? maxpacket : left;
-            td[i].link = i < n - 1 ? (((uint32_t)&td[i + 1]) | 4) : 1;     /* 4: depth first */
+            td[i].link = i < n - 1 ? (((uint32_t)V2P(&td[i + 1])) | 4) : 1;     /* 4: depth first */
             td[i].status = UHCI_TD_INIT_STATUS;
             td[i].token = uhci_token(dir ? UHCI_PID_IN : UHCI_PID_OUT, dev, ep, t, chunk);
-            td[i].buffer = (uint32_t)q;
+            td[i].buffer = (uint32_t)V2P(q);
             t ^= 1;
             q += chunk;
             left -= chunk;
         }
 
-        c->async_qh->element = (uint32_t)&td[0];
+        c->async_qh->element = (uint32_t)V2P(&td[0]);
         /* done when the last packet is; an error halts the queue and ends the wait too */
         uint32_t start = debugmon_uptime_ms();
         int failed = 0, done = 0;
@@ -325,10 +326,10 @@ int uhci_interrupt_poll(uhci_controller_t *c, int slot, int dev, int ep, int max
     uhci_td_t *td = intr_td[slot];
     if (!intr_armed[slot]) {
         td->link = 1;
-        td->buffer = (uint32_t)intr_buf[slot];
+        td->buffer = (uint32_t)V2P(intr_buf[slot]);
         td->token = uhci_token(UHCI_PID_IN, dev, ep, *toggle, max_len);
         td->status = UHCI_TD_INIT_STATUS;
-        intr_qh[slot]->element = (uint32_t)td;
+        intr_qh[slot]->element = (uint32_t)V2P(td);
         intr_armed[slot] = 1;
         return 0;
     }

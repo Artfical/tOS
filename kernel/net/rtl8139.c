@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "rtl8139.h"
 #include "pci.h"
 #include "io.h"
@@ -130,7 +131,7 @@ int rtl8139_init(void)
     }
     tx_cur = 0;
 
-    outl(io_base + RTL_REG_RBSTART, (uint32_t)(uintptr_t)rx_buf);
+    outl(io_base + RTL_REG_RBSTART, (uint32_t)V2P(rx_buf));
     outl(io_base + RTL_REG_RCR, 0x0000FF0E); /* AB+AM+APM, 64K rx buf, unlimited MXDMA, no RX-FIFO threshold */
     outl(io_base + RTL_REG_TCR, 0x00000A00);
     outb(io_base + RTL_REG_CR, 0x0C); /* RE + TE */
@@ -159,7 +160,7 @@ void rtl8139_send(void *data, int len)
     while (!(inl(io_base + tsd_off) & 0x2000) && timeout < 100000) { io_wait(); timeout++; }
 
     memcpy(tx_bufs[slot], data, len);
-    outl(io_base + tsad_off, (uint32_t)(uintptr_t)tx_bufs[slot]);
+    outl(io_base + tsad_off, (uint32_t)V2P(tx_bufs[slot]));
     outl(io_base + tsd_off, (uint32_t)len & 0x1FFF);
 
     tx_cur = (slot + 1) % NUM_TX_DESC;
@@ -173,7 +174,7 @@ void rtl8139_send(void *data, int len)
 static void rtl8139_rx_reset(void)
 {
     outb(io_base + RTL_REG_CR, 0x04);                       /* TE only: RE off */
-    outl(io_base + RTL_REG_RBSTART, (uint32_t)(uintptr_t)rx_buf);
+    outl(io_base + RTL_REG_RBSTART, (uint32_t)V2P(rx_buf));
     outl(io_base + RTL_REG_RCR, 0x0000FF0E);
     outb(io_base + RTL_REG_CR, 0x0C);                       /* RE + TE */
     outw(io_base + RTL_REG_ISR, 0xFFFF);

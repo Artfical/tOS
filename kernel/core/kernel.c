@@ -50,7 +50,7 @@ void wm_gfx_set_session(int s);
 
 #define MULTIBOOT_MAGIC 0x2BADB002
 
-extern uint32_t isr_stub_table[];
+extern uint64_t isr_stub_table[];
 
 static void busy_delay_ms(uint32_t ms)
 {
@@ -101,21 +101,21 @@ static void show_boot_intro(void)
 
 static void parse_multiboot2(uint32_t mb_info_addr, uint32_t *mem_upper, uint32_t *initrd_start, uint32_t *initrd_end)
 {
-    struct multiboot2_tag *tag = (struct multiboot2_tag *)(mb_info_addr + 8);
+    struct multiboot2_tag *tag = (struct multiboot2_tag *)P2V(mb_info_addr + 8);
     for (;;) {
         if (tag->type == 0) break;
 
         if (tag->type == MULTIBOOT2_TAG_TYPE_MMAP) {
             struct multiboot2_tag_mmap *mmap = (struct multiboot2_tag_mmap *)tag;
             struct multiboot2_mmap_entry *entry = mmap->entries;
-            while ((uint32_t)entry < (uint32_t)tag + tag->size) {
+            while ((uintptr_t)entry < (uintptr_t)tag + tag->size) {
                 if (entry->type == 1 && entry->len > *mem_upper * 1024ULL) {
                     uint64_t end = entry->addr + entry->len;
                     if (end > *mem_upper * 1024ULL) {
                         *mem_upper = (uint32_t)(end / 1024);
                     }
                 }
-                entry = (struct multiboot2_mmap_entry *)((uint32_t)entry + mmap->entry_size);
+                entry = (struct multiboot2_mmap_entry *)((uintptr_t)entry + mmap->entry_size);
             }
         }
 
@@ -126,13 +126,13 @@ static void parse_multiboot2(uint32_t mb_info_addr, uint32_t *mem_upper, uint32_
         }
 
         uint32_t padding = tag->size % 8 ? 8 - (tag->size % 8) : 0;
-        tag = (struct multiboot2_tag *)((uint32_t)tag + tag->size + padding);
+        tag = (struct multiboot2_tag *)((uintptr_t)tag + tag->size + padding);
     }
 }
 
 static void parse_multiboot1(uint32_t mb_info_addr, uint32_t *mem_upper, uint32_t *initrd_start, uint32_t *initrd_end)
 {
-    uint32_t *info = (uint32_t *)mb_info_addr;
+    uint32_t *info = (uint32_t *)P2V(mb_info_addr);
     uint32_t flags = info[0];
 
     if (flags & (1 << 0)) {
@@ -143,7 +143,7 @@ static void parse_multiboot1(uint32_t mb_info_addr, uint32_t *mem_upper, uint32_
         uint32_t mods_count = info[5];
         uint32_t mods_addr = info[6];
         if (mods_count > 0) {
-            uint32_t *mod = (uint32_t *)mods_addr;
+            uint32_t *mod = (uint32_t *)P2V(mods_addr);
             *initrd_start = mod[0];
             *initrd_end = mod[1];
         }
@@ -176,14 +176,14 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 
     isr_init();
     for (int i = 0; i < 48; i++)
-        idt_set_gate(i, isr_stub_table[i], 0x08, 0x8E);
+        idt_set_gate(i, isr_stub_table[i], GDT_KERNEL_CS, 0x8E);
     terminal_writestring("[OK] ISR handlers set\n");
     klog_write("[OK] ISR handlers set\n");
 
     irq_init();
-    idt_set_gate(32, isr_stub_table[32], 0x08, 0x8E);
-    idt_set_gate(33, isr_stub_table[33], 0x08, 0x8E);
-    idt_set_gate(0x80, isr_stub_table[48], 0x08, 0xEE);
+    idt_set_gate(32, isr_stub_table[32], GDT_KERNEL_CS, 0x8E);
+    idt_set_gate(33, isr_stub_table[33], GDT_KERNEL_CS, 0x8E);
+    idt_set_gate(0x80, isr_stub_table[48], GDT_KERNEL_CS, 0xEE);
     terminal_writestring("[OK] IRQ handlers set\n");
     klog_write("[OK] IRQ handlers set\n");
 

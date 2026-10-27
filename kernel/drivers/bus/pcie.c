@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "pcie.h"
 #include "pci.h"
 #include "io.h"
@@ -39,5 +40,5 @@ int pcie_find_capability(uint8_t bus, uint8_t device, uint8_t func, pcie_cap_t *
 uint32_t pcie_mmio_read(uint32_t mmio_base, uint8_t bus, uint8_t dev, uint8_t func, uint8_t offset)
 {
     uint32_t addr = mmio_base | ((uint32_t)bus << 20) | ((uint32_t)dev << 15) | ((uint32_t)func << 12) | offset;
-    return *(volatile uint32_t *)addr;
+    return *(volatile uint32_t *)P2V(addr);
 }

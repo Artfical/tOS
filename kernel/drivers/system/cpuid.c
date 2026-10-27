@@ -2,16 +2,7 @@
 #include "string.h"
 int cpuid_string(int code, uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d)
 {
-    uint32_t flags_before, flags_after;
-    asm volatile(
-        "pushfl; popl %0; "
-        "movl %0, %1; xorl $0x200000, %1; "
-        "pushl %1; popfl; pushfl; popl %1; "
-        "pushl %0; popfl"
-        : "=&r"(flags_before), "=&r"(flags_after)
-        :
-        : "cc");
-    if (((flags_before ^ flags_after) & 0x200000u) == 0) return -1;
+    /* every x86-64 processor has CPUID */
 
     uint32_t max_leaf, leaf0_b, leaf0_c, leaf0_d;
     asm volatile("cpuid"

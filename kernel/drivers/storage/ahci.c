@@ -49,18 +49,18 @@ static int ahci_setup_port(ahci_hba_t *hba, int i, ahci_port_t *port)
 
     void *cl = malloc(4096);
     if (!cl) return -1;
-    uint32_t cl_phys = ((uint32_t)cl + 1023) & ~1023u;
-    memset((void *)cl_phys, 0, 1024);
+    /* the direct map keeps page offsets, so aligning the virtual address aligns the physical one */
+    uintptr_t cl_v = ((uintptr_t)cl + 1023) & ~(uintptr_t)1023;
+    memset((void *)cl_v, 0, 1024);
+    uintptr_t fb_v = (cl_v + 1024 + 255) & ~(uintptr_t)255;
+    memset((void *)fb_v, 0, 256);
+    uintptr_t ct_v = (fb_v + 256 + 127) & ~(uintptr_t)127;
+    memset((void *)ct_v, 0, sizeof(ahci_cmd_tbl_t));
+    uint32_t cl_phys = (uint32_t)V2P((void *)cl_v), fb_phys = (uint32_t)V2P((void *)fb_v);
 
-    uint32_t fb_phys = (cl_phys + 1024 + 255) & ~255u;
-    memset((void *)fb_phys, 0, 256);
-
-    uint32_t ct_phys = (fb_phys + 256 + 127) & ~127u;
-    memset((void *)ct_phys, 0, sizeof(ahci_cmd_tbl_t));
-
-    hba->cmd_list[i] = (ahci_cmd_header_t *)cl_phys;
-    hba->fis_base[i] = (uint8_t *)fb_phys;
-    hba->cmd_tbl[i] = (ahci_cmd_tbl_t *)ct_phys;
+    hba->cmd_list[i] = (ahci_cmd_header_t *)cl_v;
+    hba->fis_base[i] = (uint8_t *)fb_v;
+    hba->cmd_tbl[i] = (ahci_cmd_tbl_t *)ct_v;
 
     port->clb = cl_phys;
     port->clbu = 0;
@@ -69,7 +69,7 @@ static int ahci_setup_port(ahci_hba_t *hba, int i, ahci_port_t *port)
     port->serr = port->serr;
     port->is = 0xFFFFFFFF;
 
-    hba->cmd_list[i][0].ctba = ct_phys;
+    hba->cmd_list[i][0].ctba = (uint32_t)V2P((void *)ct_v);
     hba->cmd_list[i][0].ctbau = 0;
 
     ahci_port_start(port);
@@ -86,17 +86,17 @@ int ahci_init(ahci_hba_t *hba)
 
     paging_map_range(hba->base, hba->base, 0x2000, PTE_PRESENT | PTE_WRITABLE);
 
-    volatile uint32_t *ghc = (volatile uint32_t *)(hba->base + 0x04);
+    volatile uint32_t *ghc = (volatile uint32_t *)P2V(hba->base + 0x04);
     *ghc |= (1u << 31);
 
-    volatile uint32_t *cap = (volatile uint32_t *)(hba->base);
+    volatile uint32_t *cap = (volatile uint32_t *)P2V(hba->base);
     int max_ports = ((*cap >> 8) & 0x1F) + 1;
-    volatile uint32_t *pi = (volatile uint32_t *)(hba->base + 0x0C);
+    volatile uint32_t *pi = (volatile uint32_t *)P2V(hba->base + 0x0C);
     uint32_t ports_implemented = *pi;
 
     for (int i = 0; i < max_ports && i < AHCI_MAX_PORTS; i++) {
         if (!(ports_implemented & (1u << i))) continue;
-        ahci_port_t *port = (ahci_port_t *)(hba->base + 0x100 + i * 0x80);
+        ahci_port_t *port = (ahci_port_t *)P2V(hba->base + 0x100 + i * 0x80);
         uint32_t ssts = port->ssts;
         uint8_t det = ssts & 0x0F;
         uint8_t ipm = (ssts >> 8) & 0x0F;
@@ -160,7 +160,7 @@ static int ahci_do_cmd(ahci_hba_t *hba, int port, uint64_t lba, int count, void 
 
     ahci_build_fis(tbl->cfis, ata_cmd, lba, (uint16_t)count);
 
-    tbl->prdt[0].dba = (uint32_t)buf;
+    tbl->prdt[0].dba = (uint32_t)V2P(buf);
     tbl->prdt[0].dbau = 0;
     tbl->prdt[0].dbc_flags = (uint32_t)(count * 512 - 1) & 0x3FFFFF;
 

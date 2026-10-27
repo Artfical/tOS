@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "xhci.h"
 #include "pci.h"
 #include "io.h"
@@ -10,7 +11,7 @@ int xhci_init(xhci_controller_t *ctrl)
     uint32_t bar = pci_get_bar(devs[0].bus, devs[0].device, devs[0].func, 0);
     ctrl->mmio_base = bar & 0xFFFFFFF0;
     pci_write_config(devs[0].bus, devs[0].device, devs[0].func, 4, 0x2);
-    volatile uint32_t *cap = (volatile uint32_t *)ctrl->mmio_base;
+    volatile uint32_t *cap = (volatile uint32_t *)P2V(ctrl->mmio_base);
     ctrl->max_slots = (cap[1] >> 8) & 0xFF;
     ctrl->max_ports = (cap[2] >> 24) & 0xFF;
     if (ctrl->max_ports > XHCI_MAX_PORTS) ctrl->max_ports = XHCI_MAX_PORTS;

@@ -1,14 +1,15 @@
+#include "paging.h"
 #include "ioapic.h"
 #include "io.h"
 static uint32_t ioapic_read(ioapic_device_t *ioapic, uint8_t reg)
 {
-    volatile uint32_t *base = (volatile uint32_t *)ioapic->base;
+    volatile uint32_t *base = (volatile uint32_t *)P2V(ioapic->base);
     base[0] = reg;
     return base[4];
 }
 static void ioapic_write(ioapic_device_t *ioapic, uint8_t reg, uint32_t val)
 {
-    volatile uint32_t *base = (volatile uint32_t *)ioapic->base;
+    volatile uint32_t *base = (volatile uint32_t *)P2V(ioapic->base);
     base[0] = reg;
     base[4] = val;
 }

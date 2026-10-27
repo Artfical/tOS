@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "virtio.h"
 #include "io.h"
 #include "memory.h"
@@ -43,15 +44,15 @@ int virtio_init_queue(virtio_device_t *dev, virtio_queue_t *queue, int index, in
     queue->size = virtio_read16(dev, VIRTIO_REG_QUEUE_SIZE);
     if (queue->size > size) queue->size = size;
 
-    uint32_t desc_addr = (uint32_t)malloc(queue->size * 16 + queue->size * 4 + queue->size * 8);
-    if (!desc_addr) return -1;
+    uint8_t *ring = malloc(queue->size * 16 + queue->size * 4 + queue->size * 8);
+    if (!ring) return -1;
 
-    queue->desc = (uint32_t *)desc_addr;
-    queue->avail = (uint32_t *)(desc_addr + queue->size * 16);
-    queue->used = (uint32_t *)(desc_addr + queue->size * 16 + queue->size * 4);
+    queue->desc = (uint32_t *)ring;
+    queue->avail = (uint32_t *)(ring + queue->size * 16);
+    queue->used = (uint32_t *)(ring + queue->size * 16 + queue->size * 4);
     queue->next_desc = 0;
 
-    virtio_write32(dev, VIRTIO_REG_QUEUE_ADDR, desc_addr);
+    virtio_write32(dev, VIRTIO_REG_QUEUE_ADDR, (uint32_t)V2P(ring));
     return 0;
 }
 

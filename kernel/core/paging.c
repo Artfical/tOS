@@ -3,243 +3,188 @@
 #include "string.h"
 #include "terminal.h"
 
-static uint32_t *kernel_dir = NULL;
+/* Four-level tables (PML4 -> PDPT -> PD -> PT). Every table is a physical page reached through
+ * the direct map; entries hold physical addresses. */
+#define ADDR_MASK 0x000FFFFFFFFFF000ull
 
-#define PAGING_MAX_DIRS 40
-static uint32_t *live_dirs[PAGING_MAX_DIRS];
+static uint64_t *kernel_pml4;
 
-uint32_t *paging_kernel_dir(void) { return kernel_dir; }
+static uint64_t *table(uint64_t entry) { return (uint64_t *)P2V(entry & ADDR_MASK); }
 
-uint32_t *paging_current_dir(void)
+static uint64_t *new_table(void)
 {
-    uint32_t cr3;
+    uint32_t phys = alloc_physical_page();
+    if (!phys) return 0;
+    uint64_t *t = (uint64_t *)P2V(phys);
+    memset(t, 0, PAGE_SIZE);
+    return t;
+}
+
+uint64_t *paging_kernel_dir(void) { return kernel_pml4; }
+
+uint64_t *paging_current_dir(void)
+{
+    uint64_t cr3;
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
-    return (uint32_t *)(cr3 & 0xFFFFF000);
+    return (uint64_t *)P2V(cr3 & ADDR_MASK);
 }
 
 void paging_init(void)
 {
-    kernel_dir = (uint32_t *)alloc_physical_page();
-    memset(kernel_dir, 0, PAGE_SIZE);
+    kernel_pml4 = new_table();
 
-    uint32_t total_mem = get_total_pages() * PAGE_SIZE;
-    if (total_mem < 0x2000000) total_mem = 0x2000000;
-
-    /* Deliberately *not* PTE_USER/PDE_USER here: this loop identity-maps
-     * every physical page the kernel itself uses (its own code/data/
-     * heap, MicroPython's heap, ramfs file contents, everything).
-     * Ring0 code ignores the U/S bit entirely, so the kernel's own
-     * access is unaffected -- this only stops ring3 code from touching
-     * any of it. Before cmd_run()'s loader existed, nothing ever ran
-     * in ring3, so this bit being wide open never mattered; now that
-     * `.t` programs do, user-mode code and stack get their own
-     * explicit PTE_USER mappings elsewhere (see cmd_run() and
-     * usermode_init()), and syscalls reach kernel memory via the
-     * int 0x80 trap gate, which switches to ring0 before touching
-     * anything here -- so nothing legitimate needs this range to be
-     * ring3-accessible. */
-    for (uint32_t virt = 0; virt < total_mem; virt += 0x400000) {
-        uint32_t pd_idx = virt >> 22;
-        uint32_t *pt = (uint32_t *)alloc_physical_page();
-        memset(pt, 0, PAGE_SIZE);
-
-        uint32_t pt_flags = PTE_PRESENT | PTE_WRITABLE;
-        for (uint32_t j = 0; j < 1024; j++) {
-            uint32_t phys = (virt + j * PAGE_SIZE);
-            pt[j] = phys | pt_flags;
-        }
-
-        kernel_dir[pd_idx] = ((uint32_t)pt) | PDE_PRESENT | PDE_WRITABLE;
+    /* the direct map: 2 MB pages over physical memory and at least the first 4 GB (devices) */
+    uint64_t total = (uint64_t)get_total_pages() * PAGE_SIZE;
+    if (total < 0x100000000ull) total = 0x100000000ull;
+    uint64_t *pdpt_direct = new_table();
+    kernel_pml4[256] = V2P(pdpt_direct) | PTE_PRESENT | PTE_WRITABLE;
+    uint64_t *first_pds[2] = { 0, 0 };
+    for (uint64_t gb = 0; gb * 0x40000000ull < total && gb < 512; gb++) {
+        uint64_t *pd = new_table();
+        for (int i = 0; i < 512; i++)
+            pd[i] = (gb * 0x40000000ull + (uint64_t)i * 0x200000ull) | PTE_PRESENT | PTE_WRITABLE | PTE_HUGE;
+        pdpt_direct[gb] = V2P(pd) | PTE_PRESENT | PTE_WRITABLE;
+        if (gb < 2) first_pds[gb] = pd;
     }
 
-    uint32_t vga_page = 0xB8000 >> 22;
-    uint32_t vga_table_idx = (0xB8000 >> 12) & 0x3FF;
-    uint32_t *vga_pt = (uint32_t *)(kernel_dir[vga_page] & 0xFFFFF000);
-    if (vga_pt) {
-        vga_pt[vga_table_idx] = 0xB8000 | PTE_PRESENT | PTE_WRITABLE;
-    }
+    /* the kernel image: the top 2 GB show the first 2 GB of physical memory (the same tables) */
+    uint64_t *pdpt_kernel = new_table();
+    pdpt_kernel[510] = V2P(first_pds[0]) | PTE_PRESENT | PTE_WRITABLE;
+    pdpt_kernel[511] = V2P(first_pds[1]) | PTE_PRESENT | PTE_WRITABLE;
+    kernel_pml4[511] = V2P(pdpt_kernel) | PTE_PRESENT | PTE_WRITABLE;
 
-    paging_switch(kernel_dir);
-
+    paging_switch(kernel_pml4);
     terminal_writestring("[OK] Paging enabled\n");
 }
 
-void paging_map(uint32_t virt, uint32_t phys, uint32_t flags)
+void paging_map(uint64_t virt, uint64_t phys, uint32_t flags)
 {
-    uint32_t pd_idx = virt >> 22;
-    uint32_t pt_idx = (virt >> 12) & 0x3FF;
-
-    /* Before paging_init() every address is physical and nothing needs mapping: the boot screen
-     * finds the display that early, and bootsplash_paging_ready() maps it once paging is on. */
-    if (!kernel_dir) return;
-
-    if (!(kernel_dir[pd_idx] & PDE_PRESENT)) {
-        uint32_t *pt = (uint32_t *)alloc_physical_page();
-        /* alloc_physical_page() returns 0 on exhaustion -- without
-         * this check that null pointer went straight into memset(),
-         * silently zeroing real physical address 0 (whatever lives in
-         * the kernel's low memory, e.g. the real-mode IVT) instead of
-         * failing loudly. */
-        if (!pt) {
-            terminal_writestring("[paging] out of physical pages, cannot map\n");
-            return;
-        }
-        memset(pt, 0, PAGE_SIZE);
-        kernel_dir[pd_idx] = ((uint32_t)pt) | PDE_PRESENT | PDE_WRITABLE | (flags & PDE_USER);
-        /* a page table the kernel just added is part of every process's view of the kernel half */
-        if (virt < PAGING_USER_START || virt >= PAGING_USER_END)
-            for (int i = 0; i < PAGING_MAX_DIRS; i++)
-                if (live_dirs[i]) live_dirs[i][pd_idx] = kernel_dir[pd_idx];
-    }
-
-    uint32_t *pt = (uint32_t *)(kernel_dir[pd_idx] & 0xFFFFF000);
-    pt[pt_idx] = (phys & 0xFFFFF000) | PTE_PRESENT | (flags & 0xFFF);
-
-    /* The CPU caches virtual->physical translations in the TLB and
-     * does NOT notice a page table entry changing underneath it --
-     * without this, remapping an address that was already mapped
-     * (e.g. cmd_run() reusing USER_CODE_BASE for a new .t program
-     * after a previous one ran there) leaves the CPU still executing
-     * out of the OLD physical page until something else happens to
-     * flush the TLB, which looks like the new program randomly
-     * running old/corrupted code. */
-    asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
+    (void)virt; (void)phys; (void)flags;
 }
 
-void paging_map_range(uint32_t virt, uint32_t phys, uint32_t size, uint32_t flags)
+void paging_map_range(uint64_t virt, uint64_t phys, uint64_t size, uint32_t flags)
 {
-    for (uint32_t offset = 0; offset < size; offset += PAGE_SIZE)
-        paging_map(virt + offset, phys + offset, flags);
+    (void)virt; (void)phys; (void)size; (void)flags;
 }
 
-void paging_switch(uint32_t *dir)
+void paging_switch(uint64_t *dir)
 {
-    asm volatile("mov %0, %%cr3" : : "r"(dir));
-    uint32_t cr0;
-    asm volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 |= 0x80000000;
-    asm volatile("mov %0, %%cr0" : : "r"(cr0));
+    asm volatile("mov %0, %%cr3" : : "r"(V2P(dir)) : "memory");
 }
 
-/* A new address space: the kernel half is shared with every other directory, the user half starts empty. */
-uint32_t *paging_create_dir(void)
+/* A new address space: the kernel half is the kernel's own (shared), the user half starts empty. */
+uint64_t *paging_create_dir(void)
 {
-    uint32_t *dir = (uint32_t *)alloc_physical_page();
-    if (!dir) return NULL;
-    memset(dir, 0, PAGE_SIZE);
-
-    for (int i = 0; i < 1024 && kernel_dir; i++) {
-        uint32_t base = (uint32_t)i << 22;
-        if ((kernel_dir[i] & PDE_PRESENT) && !(kernel_dir[i] & PDE_USER)) dir[i] = kernel_dir[i];   /* kernel mappings only */
-        (void)base;
-    }
-    uint32_t flags;
-    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
-    for (int i = 0; i < PAGING_MAX_DIRS; i++)
-        if (!live_dirs[i]) { live_dirs[i] = dir; break; }
-    asm volatile("pushl %0; popfl" : : "r"(flags));
+    uint64_t *dir = new_table();
+    if (!dir) return 0;
+    for (int i = 256; i < 512; i++) dir[i] = kernel_pml4[i];
     return dir;
 }
 
-/* Frees a directory made by paging_create_dir() and every page in its user half. */
-void paging_destroy_dir(uint32_t *dir)
+static void free_level(uint64_t *t, int level)
 {
-    if (!dir || dir == kernel_dir || paging_current_dir() == dir) return;
-    uint32_t flags;
-    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
-    for (int i = 0; i < PAGING_MAX_DIRS; i++)
-        if (live_dirs[i] == dir) live_dirs[i] = NULL;
-    asm volatile("pushl %0; popfl" : : "r"(flags));
-    for (uint32_t i = PAGING_USER_START >> 22; i < (PAGING_USER_END >> 22); i++) {
-        if (!(dir[i] & PDE_PRESENT)) continue;
-        uint32_t *pt = (uint32_t *)(dir[i] & 0xFFFFF000);
-        for (int j = 0; j < 1024; j++)
-            if (pt[j] & PTE_PRESENT) free_physical_page(pt[j] & 0xFFFFF000);
-        free_physical_page((uint32_t)pt);
+    for (int i = 0; i < 512; i++) {
+        if (!(t[i] & PTE_PRESENT)) continue;
+        if (level == 1 || (t[i] & PTE_HUGE)) {
+            if (level == 1) free_physical_page((uint32_t)(t[i] & ADDR_MASK));
+            continue;
+        }
+        free_level(table(t[i]), level - 1);
+        free_physical_page((uint32_t)(t[i] & ADDR_MASK));
     }
-    free_physical_page((uint32_t)dir);
 }
 
-/* Maps one page in an arbitrary directory (user half: its own page table, user-accessible). */
-int paging_map_in(uint32_t *dir, uint32_t virt, uint32_t phys, uint32_t flags)
+/* Frees tables made by paging_create_dir() and every page in their user half. */
+void paging_destroy_dir(uint64_t *dir)
 {
-    uint32_t pd_idx = virt >> 22, pt_idx = (virt >> 12) & 0x3FF;
-    if (!(dir[pd_idx] & PDE_PRESENT)) {
-        uint32_t *pt = (uint32_t *)alloc_physical_page();
-        if (!pt) return -1;
-        dir[pd_idx] = ((uint32_t)pt) | PDE_PRESENT | PDE_WRITABLE | PDE_USER;
+    if (!dir || dir == kernel_pml4 || paging_current_dir() == dir) return;
+    for (int i = 0; i < 256; i++) {
+        if (!(dir[i] & PTE_PRESENT)) continue;
+        free_level(table(dir[i]), 3);
+        free_physical_page((uint32_t)(dir[i] & ADDR_MASK));
     }
-    uint32_t *pt = (uint32_t *)(dir[pd_idx] & 0xFFFFF000);
-    pt[pt_idx] = (phys & 0xFFFFF000) | PTE_PRESENT | (flags & 0xFFF);
+    free_physical_page((uint32_t)V2P(dir));
+}
+
+/* the page-table entry for a user address, made (with the tables above it) when `make` */
+static uint64_t *pte_of(uint64_t *dir, uint64_t virt, int make)
+{
+    if (virt >= PAGING_USER_END) return 0;
+    uint64_t *t = dir;
+    for (int shift = 39; shift > 12; shift -= 9) {
+        uint64_t *e = &t[(virt >> shift) & 511];
+        if (!(*e & PTE_PRESENT)) {
+            if (!make) return 0;
+            uint64_t *n = new_table();
+            if (!n) return 0;
+            *e = V2P(n) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+        }
+        t = table(*e);
+    }
+    return &t[(virt >> 12) & 511];
+}
+
+static void flush(uint64_t *dir, uint64_t virt)
+{
     if (dir == paging_current_dir()) asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
+}
+
+int paging_map_in(uint64_t *dir, uint64_t virt, uint64_t phys, uint64_t flags)
+{
+    uint64_t *pte = pte_of(dir, virt, 1);
+    if (!pte) return -1;
+    *pte = (phys & ADDR_MASK) | PTE_PRESENT | (flags & (0xFFFull | PTE_NX));
+    flush(dir, virt);
     return 0;
 }
 
-int paging_unmap_in(uint32_t *dir, uint32_t virt, uint32_t *phys_out)
+int paging_unmap_in(uint64_t *dir, uint64_t virt, uint64_t *phys_out)
 {
-    if (!dir || (virt & (PAGE_SIZE - 1u)) ||
-        virt < PAGING_USER_START || virt >= PAGING_USER_END) return -1;
-    uint32_t pde = dir[virt >> 22];
-    if (!(pde & PDE_PRESENT)) return 0;
-    uint32_t *pt = (uint32_t *)(pde & 0xFFFFF000);
-    uint32_t idx = (virt >> 12) & 0x3FF;
-    if (!(pt[idx] & PTE_PRESENT)) return 0;
-    if (phys_out) *phys_out = pt[idx] & 0xFFFFF000;
-    pt[idx] = 0;
-    if (dir == paging_current_dir()) asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
+    if (!dir || (virt & (PAGE_SIZE - 1u)) || virt < PAGING_USER_START || virt >= PAGING_USER_END) return -1;
+    uint64_t *pte = pte_of(dir, virt, 0);
+    if (!pte || !(*pte & PTE_PRESENT)) return 0;
+    if (phys_out) *phys_out = *pte & ADDR_MASK;
+    *pte = 0;
+    flush(dir, virt);
     return 1;
 }
 
-int paging_protect_in(uint32_t *dir, uint32_t virt, uint32_t flags)
+int paging_protect_in(uint64_t *dir, uint64_t virt, uint64_t flags)
 {
-    if (!dir || (virt & (PAGE_SIZE - 1u)) ||
-        virt < PAGING_USER_START || virt >= PAGING_USER_END) return -1;
-    uint32_t pde = dir[virt >> 22];
-    if (!(pde & PDE_PRESENT)) return -1;
-    uint32_t *pt = (uint32_t *)(pde & 0xFFFFF000);
-    uint32_t idx = (virt >> 12) & 0x3FF;
-    if (!(pt[idx] & PTE_PRESENT)) return -1;
-    pt[idx] = (pt[idx] & 0xFFFFF000) | PTE_PRESENT | (flags & 0xFFF);
-    if (dir == paging_current_dir()) asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
+    if (!dir || (virt & (PAGE_SIZE - 1u)) || virt < PAGING_USER_START || virt >= PAGING_USER_END) return -1;
+    uint64_t *pte = pte_of(dir, virt, 0);
+    if (!pte || !(*pte & PTE_PRESENT)) return -1;
+    *pte = (*pte & ADDR_MASK) | PTE_PRESENT | (flags & (0xFFFull | PTE_NX));
+    flush(dir, virt);
     return 0;
 }
 
-int paging_user_range_ok(uint32_t virt, uint32_t len, int write)
+int paging_user_range_ok(uint64_t virt, uint64_t len, int write)
 {
     if (len == 0) return 0;
-    uint32_t end = virt + len;
+    uint64_t end = virt + len;
     if (end < virt || virt < PAGING_USER_START || end > PAGING_USER_END) return 0;
-    uint32_t *dir = paging_current_dir();
-    for (uint32_t page = virt & ~0xFFFu; page < end; page += PAGE_SIZE) {
-        uint32_t pde = dir[page >> 22];
-        if (!(pde & PDE_PRESENT) || !(pde & PDE_USER)) return 0;
-        uint32_t pte = ((uint32_t *)(pde & 0xFFFFF000))[(page >> 12) & 0x3FF];
+    uint64_t *dir = paging_current_dir();
+    for (uint64_t page = virt & ~0xFFFull; page < end; page += PAGE_SIZE) {
+        uint64_t *t = dir;
+        for (int shift = 39; shift > 12; shift -= 9) {
+            uint64_t e = t[(page >> shift) & 511];
+            if (!(e & PTE_PRESENT) || !(e & PTE_USER)) return 0;
+            t = table(e);
+        }
+        uint64_t pte = t[(page >> 12) & 511];
         if (!(pte & PTE_PRESENT) || !(pte & PTE_USER)) return 0;
         if (write && !(pte & PTE_WRITABLE)) return 0;
-        if (page + PAGE_SIZE < page) break;
     }
     return 1;
 }
 
-uint32_t paging_virt_to_phys(uint32_t *dir, uint32_t virt)
+uint64_t paging_virt_to_phys(uint64_t *dir, uint64_t virt)
 {
-    uint32_t pd_idx = virt >> 22;
-    uint32_t pt_idx = (virt >> 12) & 0x3FF;
-
-    uint32_t pd_phys;
-    if (dir) {
-        pd_phys = (uint32_t)dir;
-    } else {
-        asm volatile("mov %%cr3, %0" : "=r"(pd_phys));
-    }
-
-    uint32_t *pd = (uint32_t *)pd_phys;
-    if (!(pd[pd_idx] & PDE_PRESENT))
-        return 0;
-
-    uint32_t *pt = (uint32_t *)(pd[pd_idx] & 0xFFFFF000);
-    if (!(pt[pt_idx] & PTE_PRESENT))
-        return 0;
-
-    return (pt[pt_idx] & 0xFFFFF000) | (virt & 0xFFF);
+    if (!dir) dir = paging_current_dir();
+    if (virt >= KERNEL_VMA) return virt - KERNEL_VMA;
+    if (virt >= DIRECT_MAP_BASE) return virt - DIRECT_MAP_BASE;
+    uint64_t *pte = pte_of(dir, virt, 0);
+    if (!pte || !(*pte & PTE_PRESENT)) return 0;
+    return (*pte & ADDR_MASK) | (virt & 0xFFF);
 }

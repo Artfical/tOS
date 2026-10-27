@@ -157,7 +157,7 @@ int e1000_init(void)
     pci_write_config(bus, dev, func, 0x04, cmd);
 
     paging_map_range(mmio_addr, mmio_addr, 0x20000, PTE_WRITABLE);
-    mmio = (volatile uint8_t *)(uintptr_t)mmio_addr;
+    mmio = (volatile uint8_t *)P2V(mmio_addr);
 
     e1000_write(E1000_CTRL, e1000_read(E1000_CTRL) | E1000_CTRL_RST);
     int timeout = 0;
@@ -189,20 +189,20 @@ int e1000_init(void)
     memset(tx_ring, 0, sizeof(e1000_tx_desc_t) * E1000_NUM_TX_DESC);
     memset(rx_ring, 0, sizeof(e1000_rx_desc_t) * E1000_NUM_RX_DESC);
 
-    e1000_write(E1000_TDBAL, (uint32_t)(uintptr_t)tx_ring);
+    e1000_write(E1000_TDBAL, (uint32_t)V2P(tx_ring));
     e1000_write(E1000_TDBAH, 0);
     e1000_write(E1000_TDLEN, sizeof(e1000_tx_desc_t) * E1000_NUM_TX_DESC);
     e1000_write(E1000_TDH, 0);
     e1000_write(E1000_TDT, 0);
 
-    e1000_write(E1000_RDBAL, (uint32_t)(uintptr_t)rx_ring);
+    e1000_write(E1000_RDBAL, (uint32_t)V2P(rx_ring));
     e1000_write(E1000_RDBAH, 0);
     e1000_write(E1000_RDLEN, sizeof(e1000_rx_desc_t) * E1000_NUM_RX_DESC);
     e1000_write(E1000_RDH, 0);
     e1000_write(E1000_RDT, 0);
 
     for (int i = 0; i < E1000_NUM_RX_DESC; i++) {
-        rx_ring[i].addr = (uint64_t)(uintptr_t)rx_bufs[i];
+        rx_ring[i].addr = V2P(rx_bufs[i]);
         rx_ring[i].status = 0;
     }
     e1000_write(E1000_RDT, E1000_NUM_RX_DESC - 1);
@@ -236,7 +236,7 @@ void e1000_send(void *data, int len)
     while (tx_ring[idx].cmd && !(tx_ring[idx].status & 0x01) && timeout < 100000) timeout++;
 
     memcpy(tx_bufs[idx], data, len);
-    tx_ring[idx].addr = (uint64_t)(uintptr_t)tx_bufs[idx];
+    tx_ring[idx].addr = V2P(tx_bufs[idx]);
     tx_ring[idx].length = len;
     tx_ring[idx].cmd = 0x0B; /* EOP | IFCS | RS */
     tx_ring[idx].status = 0;

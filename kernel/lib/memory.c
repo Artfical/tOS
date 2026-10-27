@@ -1,6 +1,7 @@
 #include "memory.h"
 #include "terminal.h"
 #include "string.h"
+#include "paging.h"
 
 static uint32_t *page_bitmap = NULL;
 static uint32_t total_pages = 0;
@@ -9,9 +10,10 @@ static uint32_t total_pages = 0;
 static uint32_t heap_max_size = KERNEL_HEAP_MAX_SIZE;
 static uint32_t used_pages = 0;
 
-static uint32_t heap_start = KERNEL_HEAP_START;
-static uint32_t heap_end = KERNEL_HEAP_START + KERNEL_HEAP_INITIAL_SIZE;
-static uint32_t heap_current = KERNEL_HEAP_START;
+/* the heap lives in the direct map: these are virtual addresses (P2V of the physical pages) */
+static uintptr_t heap_start;
+static uintptr_t heap_end;
+static uintptr_t heap_current;
 
 /* size is the payload capacity handed to the caller; a 4-byte canary
  * word immediately follows the payload (before the next block's own
@@ -27,6 +29,7 @@ typedef struct heap_header {
     uint32_t req_size;
     uint32_t used;
     struct heap_header *next;
+    uint64_t pad;               /* 32 bytes, so every payload is 16-byte aligned like malloc's */
 } heap_header_t;
 
 #define HEAP_MAGIC   0xDEADBEEF
@@ -36,16 +39,16 @@ typedef struct heap_header {
  * further down the file) so alloc_physical_page()/free_physical_page()
  * -- which now need it too, see their own comment -- can use it
  * without a forward declaration. */
-static inline uint32_t heap_irq_save(void)
+static inline uint64_t heap_irq_save(void)
 {
-    uint32_t flags;
-    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    uint64_t flags;
+    asm volatile("pushfq; popq %0; cli" : "=r"(flags) :: "memory");
     return flags;
 }
 
-static inline void heap_irq_restore(uint32_t flags)
+static inline void heap_irq_restore(uint64_t flags)
 {
-    asm volatile("pushl %0; popfl" : : "r"(flags));
+    asm volatile("pushq %0; popfq" : : "r"(flags) : "memory", "cc");
 }
 
 /* Total bytes a block with `size`-byte payload occupies, header
@@ -53,7 +56,8 @@ static inline void heap_irq_restore(uint32_t flags)
  * next one -- every place that used to compute a "next block" address
  * as sizeof(heap_header_t) + size now goes through this instead, so
  * the canary reservation can't be forgotten in just one of the spots. */
-#define HEAP_SLOT(size) (sizeof(heap_header_t) + (size) + 4)
+#define HEAP_CANARY_SLOT 16      /* the canary's room, kept 16 so blocks stay 16-byte aligned */
+#define HEAP_SLOT(size) (sizeof(heap_header_t) + (size) + HEAP_CANARY_SLOT)
 
 static heap_header_t *heap_list = NULL;
 static int heap_corrupt_reported = 0;
@@ -72,9 +76,10 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
 
     uint32_t bitmap_size = total_pages / 8 + 1;
 
+    /* physical addresses from here on, except heap_start/heap_end (virtual, in the direct map) */
     uint32_t kernel_end = 0;
-    extern uint32_t end;
-    kernel_end = (uint32_t)&end;
+    extern char end[];
+    kernel_end = (uint32_t)V2P(end);
     if (reserved_end > kernel_end) kernel_end = reserved_end;
 
     /* page_bitmap used to sit at a fixed KERNEL_HEAP_START (0x1000000)
@@ -87,7 +92,7 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
      * heap_start already is below. */
     uint32_t bitmap_addr = (kernel_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     if (bitmap_addr < KERNEL_HEAP_START) bitmap_addr = KERNEL_HEAP_START;
-    page_bitmap = (uint32_t *)bitmap_addr;
+    page_bitmap = (uint32_t *)P2V(bitmap_addr);
     memset(page_bitmap, 0, bitmap_size);
 
     for (uint32_t i = 0; i < kernel_end / PAGE_SIZE + 1; i++) {
@@ -106,14 +111,14 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
      * bitmap bytes -- corrupting bitmap state that then produces
      * unpredictable double-use ups the moment any of those pages get
      * allocated. */
-    uint32_t bitmap_end = ((uint32_t)page_bitmap + bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    uint32_t bitmap_end = (bitmap_addr + bitmap_size + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
     uint32_t heap_align = (kernel_end + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     if (heap_align < bitmap_end)
         heap_align = bitmap_end;
-    heap_start = heap_align;
-    heap_current = heap_align;
-    heap_end = heap_align + KERNEL_HEAP_INITIAL_SIZE;
+    heap_start = (uintptr_t)P2V(heap_align);
+    heap_current = heap_start;
+    heap_end = heap_start + KERNEL_HEAP_INITIAL_SIZE;
 
     heap_list = (heap_header_t *)heap_start;
     heap_list->magic = HEAP_MAGIC;
@@ -138,7 +143,7 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
      * import's first multi-MB malloc() for doom1.wad/Wolf3D assets
      * grows the heap into memory usermode_init() had already claimed)
      * and then get silently overwritten once heap growth reaches it. */
-    uint32_t heap_max_page = (heap_start + heap_max_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint32_t heap_max_page = (uint32_t)((V2P((void *)heap_start) + heap_max_size + PAGE_SIZE - 1) / PAGE_SIZE);
     if (heap_max_page > total_pages) heap_max_page = total_pages;
     for (uint32_t i = bitmap_end / PAGE_SIZE; i < heap_max_page; i++) {
         page_bitmap[i / 32] |= (1 << (i % 32));
@@ -181,7 +186,7 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
  * this class of cross-task race. */
 uint32_t alloc_physical_page(void)
 {
-    uint32_t flags = heap_irq_save();
+    uint64_t flags = heap_irq_save();
     int found = 0;
     uint32_t addr = 0;
     for (uint32_t i = 0; i < total_pages; i++) {
@@ -195,7 +200,7 @@ uint32_t alloc_physical_page(void)
     }
     heap_irq_restore(flags);
     if (!found) return 0;
-    memset((void *)addr, 0, PAGE_SIZE);
+    memset(P2V(addr), 0, PAGE_SIZE);
     return addr;
 }
 
@@ -203,7 +208,7 @@ void free_physical_page(uint32_t addr)
 {
     uint32_t page = addr / PAGE_SIZE;
     if (page >= total_pages) return;
-    uint32_t flags = heap_irq_save();
+    uint64_t flags = heap_irq_save();
     page_bitmap[page / 32] &= ~(1 << (page % 32));
     used_pages--;
     heap_irq_restore(flags);
@@ -227,18 +232,18 @@ static void heap_report(const char *msg)
  * failure instead of an unchecked read that can fault anywhere. */
 static int heap_ptr_ok(heap_header_t *h)
 {
-    uint32_t addr = (uint32_t)h;
+    uintptr_t addr = (uintptr_t)h;
     if (addr < heap_start || addr >= heap_end) return 0;
-    if (addr % 4 != 0) return 0;
+    if (addr % 16 != 0) return 0;
     return 1;
 }
 
 static void *heap_alloc(uint32_t size)
 {
     if (size == 0 || size > heap_max_size) return NULL;
-    size = (size + 3) & ~3;
+    size = (size + 15) & ~15u;
 
-    uint32_t flags = heap_irq_save();
+    uint64_t flags = heap_irq_save();
 
     heap_header_t *curr = heap_list;
     while (curr) {
@@ -249,22 +254,22 @@ static void *heap_alloc(uint32_t size)
             }
             break;
         }
-        if (!curr->used && curr->size >= size + 4) {
+        if (!curr->used && curr->size >= size + HEAP_CANARY_SLOT) {
             if (curr->size > size + HEAP_SLOT(0) + 16) {
-                heap_header_t *new_hdr = (heap_header_t *)((uint32_t)curr + HEAP_SLOT(size));
+                heap_header_t *new_hdr = (heap_header_t *)((uintptr_t)curr + HEAP_SLOT(size));
                 new_hdr->magic = HEAP_MAGIC;
                 new_hdr->size = curr->size - size - HEAP_SLOT(0);
                 new_hdr->req_size = 0;
                 new_hdr->used = 0;
                 new_hdr->next = curr->next;
-                curr->size = size + 4;
+                curr->size = size + HEAP_CANARY_SLOT;
                 curr->next = new_hdr;
             }
             curr->req_size = size;
             curr->used = 1;
             *(uint32_t *)((uint8_t *)curr + sizeof(heap_header_t) + curr->size - 4) = HEAP_CANARY;
             heap_irq_restore(flags);
-            return (void *)((uint32_t)curr + sizeof(heap_header_t));
+            return (void *)((uintptr_t)curr + sizeof(heap_header_t));
         }
         curr = curr->next;
     }
@@ -276,7 +281,7 @@ static void *heap_alloc(uint32_t size)
      * KERNEL_HEAP_MAX_SIZE is raised (the very next check below would
      * always fail it). Found via DOOM's zone allocator, which wants a
      * single 5-6MB block up front. */
-    uint32_t old_heap_end = heap_end;
+    uintptr_t old_heap_end = heap_end;
     uint32_t needed = HEAP_SLOT(size);
     uint32_t grow = ((needed + 0xFFFFF) / 0x100000) * 0x100000;
     if (grow < 0x100000) grow = 0x100000;
@@ -307,8 +312,8 @@ static void *heap_alloc(uint32_t size)
      * they alone own it. Mark every newly claimed page used here so
      * that can't happen. */
     if (page_bitmap) {
-        uint32_t first_page = old_heap_end / PAGE_SIZE;
-        uint32_t last_page = (heap_end + PAGE_SIZE - 1) / PAGE_SIZE;
+        uint32_t first_page = (uint32_t)(V2P((void *)old_heap_end) / PAGE_SIZE);
+        uint32_t last_page = (uint32_t)((V2P((void *)heap_end) + PAGE_SIZE - 1) / PAGE_SIZE);
         for (uint32_t pg = first_page; pg < last_page && pg < total_pages; pg++) {
             if (!(page_bitmap[pg / 32] & (1u << (pg % 32)))) {
                 page_bitmap[pg / 32] |= (1u << (pg % 32));
@@ -340,22 +345,22 @@ static void *heap_alloc(uint32_t size)
     }
     last->next = new_hdr;
 
-    if (new_hdr->size >= size + 4) {
+    if (new_hdr->size >= size + HEAP_CANARY_SLOT) {
         if (new_hdr->size > size + HEAP_SLOT(0) + 16) {
-            heap_header_t *split = (heap_header_t *)((uint32_t)new_hdr + HEAP_SLOT(size));
+            heap_header_t *split = (heap_header_t *)((uintptr_t)new_hdr + HEAP_SLOT(size));
             split->magic = HEAP_MAGIC;
             split->size = new_hdr->size - size - HEAP_SLOT(0);
             split->req_size = 0;
             split->used = 0;
             split->next = NULL;
-            new_hdr->size = size + 4;
+            new_hdr->size = size + HEAP_CANARY_SLOT;
             new_hdr->next = split;
         }
         new_hdr->req_size = size;
         new_hdr->used = 1;
         *(uint32_t *)((uint8_t *)new_hdr + sizeof(heap_header_t) + new_hdr->size - 4) = HEAP_CANARY;
         heap_irq_restore(flags);
-        return (void *)((uint32_t)new_hdr + sizeof(heap_header_t));
+        return (void *)((uintptr_t)new_hdr + sizeof(heap_header_t));
     }
 
     heap_irq_restore(flags);
@@ -407,7 +412,7 @@ void heap_check(const char *tag)
                 terminal_writestring(nb);
                 terminal_writestring(" addr=");
                 char ab[9];
-                uint32_t addr = (uint32_t)curr;
+                uint32_t addr = (uint32_t)V2P(curr);
                 for (int k = 7; k >= 0; k--) { ab[k] = "0123456789ABCDEF"[addr & 0xF]; addr >>= 4; }
                 ab[8] = 0;
                 terminal_writestring(ab);
@@ -430,9 +435,9 @@ void heap_check(const char *tag)
 void free(void *ptr)
 {
     if (!ptr) return;
-    heap_header_t *hdr = (heap_header_t *)((uint32_t)ptr - sizeof(heap_header_t));
+    heap_header_t *hdr = (heap_header_t *)((uintptr_t)ptr - sizeof(heap_header_t));
 
-    uint32_t flags = heap_irq_save();
+    uint64_t flags = heap_irq_save();
 
     if (!heap_ptr_ok(hdr) || hdr->magic != HEAP_MAGIC) {
         heap_irq_restore(flags);
@@ -463,9 +468,9 @@ void *krealloc(void *ptr, size_t size)
 {
     if (!ptr) return malloc(size);
     if (size == 0) { free(ptr); return NULL; }
-    heap_header_t *hdr = (heap_header_t *)((uint32_t)ptr - sizeof(heap_header_t));
+    heap_header_t *hdr = (heap_header_t *)((uintptr_t)ptr - sizeof(heap_header_t));
     if (!heap_ptr_ok(hdr) || hdr->magic != HEAP_MAGIC) return NULL;
-    if (hdr->size >= size + 4) return ptr;
+    if (hdr->size >= size + HEAP_CANARY_SLOT) return ptr;
     void *new_ptr = malloc(size);
     if (new_ptr) {
         uint32_t old_data = hdr->req_size;
@@ -485,10 +490,10 @@ void *kcalloc(size_t num, size_t size)
 void memory_get_usage(uint32_t *total_kb, uint32_t *used_kb)
 {
     *total_kb = total_pages * 4;
-    extern uint32_t end;
-    uint32_t used_bytes = (uint32_t)&end;
+    extern char end[];
+    uint32_t used_bytes = (uint32_t)V2P(end);
 
-    uint32_t flags = heap_irq_save();
+    uint64_t flags = heap_irq_save();
     heap_header_t *curr = heap_list;
     int hops = 0;
     while (curr && heap_ptr_ok(curr) && curr->magic == HEAP_MAGIC && hops++ < 1000000) {

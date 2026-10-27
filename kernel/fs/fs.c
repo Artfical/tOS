@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "fs.h"
 #include "string.h"
 #include "memory.h"
@@ -28,7 +29,7 @@ void fs_init(uint32_t addr, uint32_t size)
 
     memset(file_table, 0, sizeof(file_table));
 
-    uint8_t *data = (uint8_t *)addr;
+    uint8_t *data = (uint8_t *)P2V(addr);
     if (size >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F') {
         terminal_writestring("Initrd: raw ELF detected\n");
         return;
@@ -106,7 +107,7 @@ int fs_read(fs_file_t *file, void *buf, uint32_t size, uint32_t offset)
     if (offset >= file->size) return 0;
     uint32_t readable = file->size - offset;
     if (size > readable) size = readable;
-    memcpy(buf, (void *)(initrd_addr + file->offset + offset), size);
+    memcpy(buf, P2V(initrd_addr + file->offset + offset), size);
     return size;
 }
 

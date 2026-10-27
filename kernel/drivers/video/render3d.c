@@ -10,6 +10,7 @@
  * <math.h>. Small self-contained approximations here avoid dragging
  * either of those in just for this one file.
  */
+#include "paging.h"
 #include "render3d.h"
 #include "bochs.h"
 #include "vga.h"
@@ -226,7 +227,7 @@ void render3d_run(void)
             }
         }
 
-        volatile uint32_t *lfb = (volatile uint32_t *)bochs.lfb;
+        volatile uint32_t *lfb = (volatile uint32_t *)P2V(bochs.lfb);
         for (int i = 0; i < R3D_W * R3D_H; i++) lfb[i] = frame[i];
     }
 

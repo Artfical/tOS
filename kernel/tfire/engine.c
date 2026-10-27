@@ -143,19 +143,22 @@ static void run_big(void (*fn)(void *), void *arg)
     if (on_big_stack) { fn(arg); return; }
     if (!big_stack) big_stack = malloc(BIG_STACK);
     if (!big_stack) { fn(arg); return; }
-    uint32_t top = ((uint32_t)(uintptr_t)big_stack + BIG_STACK - 16) & ~15u;
+    uintptr_t top = ((uintptr_t)big_stack + BIG_STACK - 16) & ~(uintptr_t)15;
     on_big_stack = 1;
     big_fn = fn;
     big_arg = arg;
-    /* the old stack pointer is kept at the top of the new stack, and taken back from there */
+    /* the old stack pointer is kept at the top of the new stack, and taken back from there (two
+     * slots keep the call 16-byte aligned); everything a call may change is clobbered */
     __asm__ volatile(
-        "movl %%esp, %%esi\n\t"
-        "movl %0, %%esp\n\t"
-        "subl $12, %%esp\n\t"
-        "pushl %%esi\n\t"
+        "movq %%rsp, %%rbx\n\t"
+        "movq %0, %%rsp\n\t"
+        "pushq %%rbx\n\t"
+        "pushq %%rbx\n\t"
         "call big_entry\n\t"
-        "movl (%%esp), %%esp\n\t"
-        : : "r"(top) : "eax", "ecx", "edx", "esi", "memory", "cc");
+        "movq 8(%%rsp), %%rsp\n\t"
+        : : "r"(top) : "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "memory", "cc",
+          "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10",
+          "xmm11", "xmm12", "xmm13", "xmm14", "xmm15");
     on_big_stack = 0;
     big_fn = 0;
     big_arg = 0;                        /* (it pointed at the caller's locals) */

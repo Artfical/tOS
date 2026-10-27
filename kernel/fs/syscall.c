@@ -1,3 +1,4 @@
+#include "io.h"
 #include "syscall.h"
 #include "isr.h"
 #include "terminal.h"
@@ -38,42 +39,45 @@
  * by hand in the SDK's tos.h (there's no shared kernel/userspace
  * header; the SDK lives in a separate repo). Keep field order/types
  * in sync if either side changes. */
+/* What 32-bit tOS programs pass: their pointers are 32-bit (uint32_t here), whatever the
+ * kernel's own pointer size. */
+#define UP(x) ((void *)(uintptr_t)(x))
 struct crypto_hash_args {
-    const uint8_t *data;
+    uint32_t data;
     uint32_t len;
-    uint8_t *out; /* 32 bytes */
+    uint32_t out; /* 32 bytes */
 };
 struct crypto_hmac_args {
-    const uint8_t *key;
+    uint32_t key;
     uint32_t klen;
-    const uint8_t *msg;
+    uint32_t msg;
     uint32_t mlen;
-    uint8_t *out; /* 32 bytes */
+    uint32_t out; /* 32 bytes */
 };
 struct crypto_aesctr_args {
-    const uint8_t *key16;
-    const uint8_t *iv16;
-    const uint8_t *in;
-    uint8_t *out;
+    uint32_t key16;
+    uint32_t iv16;
+    uint32_t in;
+    uint32_t out;
     uint32_t len;
 };
 struct crypto_modexp_args {
-    const uint8_t *base256;
-    const uint8_t *exp;
+    uint32_t base256;
+    uint32_t exp;
     uint32_t exp_len;
-    const uint8_t *mod256;
-    uint8_t *out256;
+    uint32_t mod256;
+    uint32_t out256;
 };
 struct gfx_blit_args {
     int x, y, w, h;
-    const uint32_t *pixels; /* w*h, packed 0x00RRGGBB, row-major */
+    uint32_t pixels; /* w*h, packed 0x00RRGGBB, row-major */
 };
 struct inflate_args {
-    const uint8_t *src;
+    uint32_t src;
     uint32_t src_len;
-    uint8_t *out;
+    uint32_t out;
     uint32_t out_cap;
-    uint32_t *out_len; /* written on success */
+    uint32_t out_len; /* written on success */
 };
 
 /* Seeded from RDTSC on first use rather than a fixed constant, so it
@@ -165,13 +169,13 @@ static void gfx_leave_if_active(void)
      * before it or the terminal calls after it. pushfl/popfl nests
      * safely with vga_set_mode()'s own inner disable. */
     uint32_t flags;
-    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    flags = irq_save();
     bochs_disable();
     vga_set_mode(VGA_MODE_TEXT);
     terminal_set_force_direct(0);
     terminal_setcolor(VGA_LIGHT_GREY | (VGA_BLACK << 4));
     terminal_clear();
-    asm volatile("pushl %0; popfl" :: "r"(flags));
+    irq_restore(flags);
 }
 
 /* set when a path was readable but longer than tOS allows: the Linux answer is ENAMETOOLONG,
@@ -182,7 +186,7 @@ static int user_cstr_ok(uint32_t ptr)
 {
     for (uint32_t i = 0; i < FS_NAME_LEN; i++) {
         if (!user_range_ok(ptr + i, 1)) return 0;
-        if (((const char *)ptr)[i] == 0) return 1;
+        if (((const char *)(uintptr_t)ptr)[i] == 0) return 1;
     }
     cstr_too_long = 1;
     return 0;
@@ -201,7 +205,7 @@ static int copy_user_vector(uint32_t vector, const char **out, int max,
     for (int i = 0; i <= max; i++) {
         uint32_t slot = vector + (uint32_t)i * sizeof(uint32_t);
         if (slot < vector || !user_range_ok(slot, sizeof(uint32_t))) return -EFAULT;
-        uint32_t src = ((const uint32_t *)slot)[0];
+        uint32_t src = ((const uint32_t *)(uintptr_t)slot)[0];
         if (!src) {
             out[i] = 0;
             return i;
@@ -214,7 +218,7 @@ static int copy_user_vector(uint32_t vector, const char **out, int max,
             uint32_t at = src + n;
             if (at < src || !user_range_ok(at, 1)) return -EFAULT;
             if (*used >= capacity) return -E2BIG;
-            char c = ((const char *)src)[n];
+            char c = ((const char *)(uintptr_t)src)[n];
             storage[(*used)++] = c;
             if (c == 0) { terminated = 1; break; }
         }
@@ -228,7 +232,7 @@ static int syscall_spawn_user(uint32_t path_ptr, uint32_t argv_ptr, uint32_t env
 {
     if (!user_cstr_ok(path_ptr)) return -EFAULT;
     char path[FS_NAME_LEN];
-    strncpy(path, (const char *)path_ptr, sizeof(path) - 1);
+    strncpy(path, (const char *)(uintptr_t)path_ptr, sizeof(path) - 1);
     path[sizeof(path) - 1] = 0;
     if (!argv_ptr && !envp_ptr) return proc_spawn(path);
 
@@ -250,7 +254,7 @@ static int syscall_exec_user(uint32_t path_ptr, uint32_t argv_ptr, uint32_t envp
 {
     if (!user_cstr_ok(path_ptr)) return -EFAULT;
     char path[FS_NAME_LEN];
-    strncpy(path, (const char *)path_ptr, sizeof(path) - 1);
+    strncpy(path, (const char *)(uintptr_t)path_ptr, sizeof(path) - 1);
     path[sizeof(path) - 1] = 0;
     char arg_storage[EXEC_VECTOR_BYTES_MAX];
     char env_storage[EXEC_VECTOR_BYTES_MAX];
@@ -296,7 +300,7 @@ static uint32_t linux_pipe_read(proc_t *p, int fd, uint32_t user_buf, uint32_t c
     proc_pipe_t *pipe = &p->pipes[pi];
     if (!pipe->count) return pipe->write_refs ? (uint32_t)-EAGAIN : 0;
     uint32_t n = count < pipe->count ? count : pipe->count;
-    uint8_t *dst = (uint8_t *)user_buf;
+    uint8_t *dst = (uint8_t *)(uintptr_t)user_buf;
     for (uint32_t i = 0; i < n; i++) {
         dst[i] = pipe->data[pipe->head];
         pipe->head = (pipe->head + 1u) % PROC_PIPE_CAPACITY;
@@ -317,7 +321,7 @@ static uint32_t linux_pipe_write(proc_t *p, int fd, uint32_t user_buf, uint32_t 
     uint32_t available = PROC_PIPE_CAPACITY - pipe->count;
     if (!available) return (uint32_t)-EAGAIN;
     uint32_t n = count < available ? count : available;
-    const uint8_t *src = (const uint8_t *)user_buf;
+    const uint8_t *src = (const uint8_t *)(uintptr_t)user_buf;
     for (uint32_t i = 0; i < n; i++) {
         pipe->data[pipe->tail] = src[i];
         pipe->tail = (pipe->tail + 1u) % PROC_PIPE_CAPACITY;
@@ -356,7 +360,7 @@ static uint32_t linux_pipe_create(uint32_t user_fds, uint32_t flags)
     p->fdpath[slots[0]][0] = p->fdpath[slots[1]][0] = 0;
     p->fd_dir_offset[slots[0]] = p->fd_dir_offset[slots[1]] = 0;
     uint32_t fds[2] = { (uint32_t)slots[0] + 3u, (uint32_t)slots[1] + 3u };
-    memcpy((void *)user_fds, fds, sizeof(fds));
+    memcpy((void *)(uintptr_t)user_fds, fds, sizeof(fds));
     return 0;
 }
 
@@ -421,24 +425,44 @@ static uint32_t linux_socket(int domain, int type, int protocol)
     return (uint32_t)slot + 3u;
 }
 
-static uint32_t sock_recv_on(proc_t *p, int fd, int s, uint32_t buf, uint32_t len, uint32_t flags,
-                             uint32_t from, uint32_t fromlen_ptr)
+/* the data goes to / comes from a kernel buffer (readv/writev gather into one) */
+static uint32_t sock_recv_k(proc_t *p, int fd, int s, uint8_t *buf, uint32_t len, uint32_t flags,
+                            uint32_t from, uint32_t fromlen_ptr)
 {
-    if (len && !user_wr_ok(buf, len)) return (uint32_t)-EFAULT;
     uint8_t addr[16];
     uint32_t alen = sizeof(addr);
     int nb = sock_nonblock(p, fd, flags);
     for (;;) {
         lsock_pump();
-        int r = lsock_recv(s, (uint8_t *)buf, len, addr, &alen, (flags & LINUX_MSG_PEEK) != 0);
+        int r = lsock_recv(s, buf, len, addr, &alen, (flags & LINUX_MSG_PEEK) != 0);
         if (r != -LINUX_E_AGAIN || nb) {
             if (r >= 0 && from && fromlen_ptr && user_wr_ok(fromlen_ptr, 4)) {
-                uint32_t cap = *(uint32_t *)fromlen_ptr;
-                if (cap && user_wr_ok(from, cap)) memcpy((void *)from, addr, cap < alen ? cap : alen);
-                *(uint32_t *)fromlen_ptr = alen;
+                uint32_t cap = *(uint32_t *)(uintptr_t)fromlen_ptr;
+                if (cap && user_wr_ok(from, cap)) memcpy((void *)(uintptr_t)from, addr, cap < alen ? cap : alen);
+                *(uint32_t *)(uintptr_t)fromlen_ptr = alen;
             }
             return (uint32_t)r;
         }
+        task_yield();
+    }
+}
+
+static uint32_t sock_recv_on(proc_t *p, int fd, int s, uint32_t buf, uint32_t len, uint32_t flags,
+                             uint32_t from, uint32_t fromlen_ptr)
+{
+    if (len && !user_wr_ok(buf, len)) return (uint32_t)-EFAULT;
+    return sock_recv_k(p, fd, s, (uint8_t *)(uintptr_t)buf, len, flags, from, fromlen_ptr);
+}
+
+static uint32_t sock_send_k(proc_t *p, int fd, int s, const uint8_t *buf, uint32_t len, uint32_t flags,
+                            uint32_t to, uint32_t tolen)
+{
+    if (to && tolen && !user_range_ok(to, tolen)) return (uint32_t)-EFAULT;
+    int nb = sock_nonblock(p, fd, flags);
+    for (;;) {
+        lsock_pump();
+        int r = lsock_send(s, buf, len, to ? (const uint8_t *)(uintptr_t)to : 0, to ? tolen : 0);
+        if (r != -LINUX_E_AGAIN || nb) return (uint32_t)r;
         task_yield();
     }
 }
@@ -447,14 +471,7 @@ static uint32_t sock_send_on(proc_t *p, int fd, int s, uint32_t buf, uint32_t le
                              uint32_t to, uint32_t tolen)
 {
     if (len && !user_range_ok(buf, len)) return (uint32_t)-EFAULT;
-    if (to && tolen && !user_range_ok(to, tolen)) return (uint32_t)-EFAULT;
-    int nb = sock_nonblock(p, fd, flags);
-    for (;;) {
-        lsock_pump();
-        int r = lsock_send(s, (const uint8_t *)buf, len, to ? (const uint8_t *)to : 0, to ? tolen : 0);
-        if (r != -LINUX_E_AGAIN || nb) return (uint32_t)r;
-        task_yield();
-    }
+    return sock_send_k(p, fd, s, (const uint8_t *)(uintptr_t)buf, len, flags, to, tolen);
 }
 
 /* one socket call, as socketcall() numbers them; args are the call's own arguments */
@@ -469,10 +486,10 @@ static uint32_t linux_sockcall(int call, const uint32_t *v)
     switch (call) {
     case 2:                                                      /* bind */
         if (!user_range_ok(v[1], v[2])) return (uint32_t)-EFAULT;
-        return (uint32_t)lsock_bind(s, (const uint8_t *)v[1], v[2]);
+        return (uint32_t)lsock_bind(s, (const uint8_t *)(uintptr_t)v[1], v[2]);
     case 3: {                                                    /* connect */
         if (!user_range_ok(v[1], v[2])) return (uint32_t)-EFAULT;
-        int r = lsock_connect_start(s, (const uint8_t *)v[1], v[2]);
+        int r = lsock_connect_start(s, (const uint8_t *)(uintptr_t)v[1], v[2]);
         if (r != -LINUX_E_INPROGRESS || sock_nonblock(p, fd, 0)) return (uint32_t)r;
         for (;;) {
             lsock_pump();
@@ -484,13 +501,13 @@ static uint32_t linux_sockcall(int call, const uint32_t *v)
     case 4: case 5: case 18: return (uint32_t)-95;              /* listen, accept: not yet */
     case 6: case 7: {                                            /* getsockname, getpeername */
         if (!user_wr_ok(v[2], 4)) return (uint32_t)-EFAULT;
-        uint32_t cap = *(uint32_t *)v[2], alen = 16;
+        uint32_t cap = *(uint32_t *)(uintptr_t)v[2], alen = 16;
         uint8_t addr[16];
         int r = lsock_name(s, call == 7, addr, &alen);
         if (r < 0) return (uint32_t)r;
         if (cap && !user_wr_ok(v[1], cap)) return (uint32_t)-EFAULT;
-        memcpy((void *)v[1], addr, cap < alen ? cap : alen);
-        *(uint32_t *)v[2] = alen;
+        memcpy((void *)(uintptr_t)v[1], addr, cap < alen ? cap : alen);
+        *(uint32_t *)(uintptr_t)v[2] = alen;
         return 0;
     }
     case 9:  return sock_send_on(p, fd, s, v[1], v[2], v[3], 0, 0);              /* send */
@@ -501,11 +518,11 @@ static uint32_t linux_sockcall(int call, const uint32_t *v)
     case 14: return 0;                                           /* setsockopt: accepted */
     case 15: {                                                   /* getsockopt */
         if (!user_wr_ok(v[4], 4)) return (uint32_t)-EFAULT;
-        uint32_t cap = *(uint32_t *)v[4];
+        uint32_t cap = *(uint32_t *)(uintptr_t)v[4];
         int val = 0;
         int r = lsock_getsockopt(s, (int)v[1], (int)v[2], &val);
         if (r < 0) return (uint32_t)r;
-        if (cap >= 4 && user_wr_ok(v[3], 4)) { memcpy((void *)v[3], &val, 4); *(uint32_t *)v[4] = 4; }
+        if (cap >= 4 && user_wr_ok(v[3], 4)) { memcpy((void *)(uintptr_t)v[3], &val, 4); *(uint32_t *)(uintptr_t)v[4] = 4; }
         return 0;
     }
     case 16: case 17: case 20: {                                 /* sendmsg, recvmsg, sendmmsg */
@@ -514,41 +531,41 @@ static uint32_t linux_sockcall(int call, const uint32_t *v)
         for (; done < count; done++) {
             uint32_t m = mp + done * stride;
             if (!user_wr_ok(m, stride)) return done ? done : (uint32_t)-EFAULT;
-            const uint32_t *h = (const uint32_t *)m;          /* name, namelen, iov, iovlen, control, controllen, flags */
+            const uint32_t *h = (const uint32_t *)(uintptr_t)m;          /* name, namelen, iov, iovlen, control, controllen, flags */
             uint32_t iov = h[2], iovlen = h[3], total = 0;
             if (iovlen > 64 || !user_range_ok(iov, iovlen * 8u)) return done ? done : (uint32_t)-EINVAL;
-            for (uint32_t i = 0; i < iovlen; i++) total += ((const uint32_t *)iov)[2 * i + 1];
+            for (uint32_t i = 0; i < iovlen; i++) total += ((const uint32_t *)(uintptr_t)iov)[2 * i + 1];
             if (total > 65536) total = 65536;
             uint8_t *tmp = malloc(total ? total : 1);
             if (!tmp) return done ? done : (uint32_t)-ENOMEM;
             uint32_t r;
             if (call == 17) {
-                r = sock_recv_on(p, fd, s, (uint32_t)tmp, total, flags | LINUX_MSG_DONTWAIT * sock_nonblock(p, fd, flags), h[0], h[0] ? m + 4 : 0);
+                r = sock_recv_k(p, fd, s, tmp, total, flags | LINUX_MSG_DONTWAIT * sock_nonblock(p, fd, flags), h[0], h[0] ? m + 4 : 0);
                 if ((int32_t)r > 0) {
                     uint32_t off = 0;
                     for (uint32_t i = 0; i < iovlen && off < r; i++) {
-                        uint32_t base = ((const uint32_t *)iov)[2 * i], l = ((const uint32_t *)iov)[2 * i + 1];
+                        uint32_t base = ((const uint32_t *)(uintptr_t)iov)[2 * i], l = ((const uint32_t *)(uintptr_t)iov)[2 * i + 1];
                         if (l > r - off) l = r - off;
-                        if (l && user_wr_ok(base, l)) memcpy((void *)base, tmp + off, l);
+                        if (l && user_wr_ok(base, l)) memcpy((void *)(uintptr_t)base, tmp + off, l);
                         off += l;
                     }
                 }
-                ((uint32_t *)m)[5] = 0;                         /* no control data */
-                ((uint32_t *)m)[6] = 0;
+                ((uint32_t *)(uintptr_t)m)[5] = 0;                         /* no control data */
+                ((uint32_t *)(uintptr_t)m)[6] = 0;
             } else {
                 uint32_t off = 0;
                 for (uint32_t i = 0; i < iovlen && off < total; i++) {
-                    uint32_t base = ((const uint32_t *)iov)[2 * i], l = ((const uint32_t *)iov)[2 * i + 1];
+                    uint32_t base = ((const uint32_t *)(uintptr_t)iov)[2 * i], l = ((const uint32_t *)(uintptr_t)iov)[2 * i + 1];
                     if (l > total - off) l = total - off;
-                    if (l && user_range_ok(base, l)) memcpy(tmp + off, (const void *)base, l);
+                    if (l && user_range_ok(base, l)) memcpy(tmp + off, (const void *)(uintptr_t)base, l);
                     off += l;
                 }
-                r = sock_send_on(p, fd, s, (uint32_t)tmp, total, flags, h[0], h[1]);
+                r = sock_send_k(p, fd, s, tmp, total, flags, h[0], h[1]);
             }
             free(tmp);
             if (call != 20) return r;
             if ((int32_t)r < 0) return done ? done : r;
-            ((uint32_t *)m)[7] = r;                              /* mmsghdr.msg_len */
+            ((uint32_t *)(uintptr_t)m)[7] = r;                              /* mmsghdr.msg_len */
         }
         return done;
     }
@@ -597,7 +614,7 @@ static uint32_t eventfd_read(proc_t *p, int fd, proc_eventfd_t *e, uint32_t buf,
     }
     uint64_t v = e->semaphore ? 1 : e->count;
     e->count -= v;
-    memcpy((void *)buf, &v, 8);
+    memcpy((void *)(uintptr_t)buf, &v, 8);
     return 8;
 }
 
@@ -606,7 +623,7 @@ static uint32_t eventfd_write(proc_eventfd_t *e, uint32_t buf, uint32_t count)
     if (count < 8) return (uint32_t)-EINVAL;
     if (!user_range_ok(buf, 8)) return (uint32_t)-EFAULT;
     uint64_t v;
-    memcpy(&v, (const void *)buf, 8);
+    memcpy(&v, (const void *)(uintptr_t)buf, 8);
     if (v == 0xFFFFFFFFFFFFFFFFull) return (uint32_t)-EINVAL;
     if (e->count + v < e->count || e->count + v == 0xFFFFFFFFFFFFFFFFull) return (uint32_t)-EAGAIN;
     e->count += v;
@@ -662,7 +679,7 @@ static uint32_t linux_epoll_ctl(int epfd, int op, int fd, uint32_t user_event)
     uint32_t ev[3] = { 0, 0, 0 };
     if (op != 2) {
         if (!user_range_ok(user_event, 12)) return (uint32_t)-EFAULT;
-        memcpy(ev, (const void *)user_event, 12);   /* struct epoll_event is packed on i386: events, data */
+        memcpy(ev, (const void *)(uintptr_t)user_event, 12);   /* struct epoll_event is packed on i386: events, data */
     }
     int found = -1, free_slot = -1;
     for (int i = 0; i < PROC_MAX_EPOLL_WATCH; i++) {
@@ -693,7 +710,7 @@ static uint32_t linux_poll(uint32_t user_fds, uint32_t nfds, int timeout_ms)
         lsock_pump();
         uint32_t n = 0;
         for (uint32_t i = 0; i < nfds; i++) {
-            uint8_t *pf = (uint8_t *)(user_fds + i * 8u);
+            uint8_t *pf = (uint8_t *)(uintptr_t)(user_fds + i * 8u);
             int fd;
             uint16_t events, rev = 0;
             memcpy(&fd, pf, 4);
@@ -727,7 +744,7 @@ static uint32_t linux_epoll_wait(int epfd, uint32_t user_events, int maxevents, 
             uint32_t got = fd_ready(p, w->fd) & (w->events | LINUX_EPOLLERR | LINUX_EPOLLHUP);
             if (!got) continue;
             uint32_t ev[3] = { got, w->data_lo, w->data_hi };
-            memcpy((void *)(user_events + (uint32_t)n * 12u), ev, 12);
+            memcpy((void *)(uintptr_t)(user_events + (uint32_t)n * 12u), ev, 12);
             n++;
             if (w->events & LINUX_EPOLLONESHOT) w->events = LINUX_EPOLLONESHOT;   /* disarmed until EPOLL_CTL_MOD */
         }
@@ -748,7 +765,7 @@ static uint32_t linux_ioctl(int fd, uint32_t req, uint32_t arg)
     case 0x5421:                                 /* FIONBIO */
         if (!user_range_ok(arg, 4)) return (uint32_t)-EFAULT;
         if (fd > 2) {
-            if (*(const int *)arg) p->fd_open_flags[slot] |= 0x800u;
+            if (*(const int *)(uintptr_t)arg) p->fd_open_flags[slot] |= 0x800u;
             else p->fd_open_flags[slot] &= ~0x800u;
         }
         return 0;
@@ -760,7 +777,7 @@ static uint32_t linux_ioctl(int fd, uint32_t req, uint32_t arg)
             int is_write = 0, pi = proc_pipe_endpoint(p, fd, &is_write);
             if (pi >= 0 && !is_write) n = p->pipes[pi].count;
         }
-        memcpy((void *)arg, &n, 4);
+        memcpy((void *)(uintptr_t)arg, &n, 4);
         return 0;
     }
     case 0x5451:                                 /* FIOCLEX */
@@ -788,10 +805,10 @@ static uint32_t linux_rlimit(int resource, uint32_t new_ptr, uint32_t old_ptr, i
     if (resource == 7) cur = max = PROC_MAX_FDS + 3;                     /* RLIMIT_NOFILE */
     if (wide) {
         uint32_t v[4] = { cur, cur == 0xFFFFFFFFu ? 0xFFFFFFFFu : 0, max, max == 0xFFFFFFFFu ? 0xFFFFFFFFu : 0 };
-        memcpy((void *)old_ptr, v, 16);
+        memcpy((void *)(uintptr_t)old_ptr, v, 16);
     } else {
         uint32_t v[2] = { cur, max };
-        memcpy((void *)old_ptr, v, 8);
+        memcpy((void *)(uintptr_t)old_ptr, v, 8);
     }
     return 0;
 }
@@ -903,7 +920,7 @@ static int proc_mmap_range_free(proc_t *p, uint32_t start, uint32_t end)
 static void proc_mmap_unmap_pages(proc_t *p, uint32_t start, uint32_t end)
 {
     for (uint32_t page = start; page < end; page += PAGE_SIZE) {
-        uint32_t phys = 0;
+        uint64_t phys = 0;
         if (paging_unmap_in(p->pgdir, page, &phys) > 0 && phys)
             free_physical_page(phys);
     }
@@ -963,7 +980,7 @@ static uint32_t syscall_mmap2(uint32_t hint, uint32_t len, uint32_t prot,
                 proc_vm_region_remove(p, start, end);
                 return (uint32_t)-ENOMEM;
             }
-            memset((void *)phys, 0, PAGE_SIZE);
+            memset(P2V(phys), 0, PAGE_SIZE);
             if (paging_map_in(p->pgdir, page, phys, pte_flags) != 0) {
                 free_physical_page(phys);
                 proc_mmap_unmap_pages(p, start, page);
@@ -1010,7 +1027,7 @@ static uint32_t syscall_mprotect(uint32_t addr, uint32_t len, uint32_t prot)
         if (!phys && prot) {
             phys = alloc_physical_page();
             if (!phys) return (uint32_t)-ENOMEM;
-            memset((void *)phys, 0, PAGE_SIZE);
+            memset(P2V(phys), 0, PAGE_SIZE);
             if (paging_map_in(p->pgdir, page, phys, pte_flags) != 0) {
                 free_physical_page(phys);
                 return (uint32_t)-ENOMEM;
@@ -1037,7 +1054,7 @@ static uint32_t linux_sys_brk(uint32_t requested)
         for (; page < new_page; page += PAGE_SIZE) {
             uint32_t phys = alloc_physical_page();
             if (!phys) break;
-            memset((void *)phys, 0, PAGE_SIZE);
+            memset(P2V(phys), 0, PAGE_SIZE);
             if (paging_map_in(p->pgdir, page, phys, PTE_USER | PTE_WRITABLE) != 0) {
                 free_physical_page(phys);
                 break;
@@ -1046,7 +1063,7 @@ static uint32_t linux_sys_brk(uint32_t requested)
         if (page < new_page) {
             while (page > old_page) {
                 page -= PAGE_SIZE;
-                uint32_t phys = 0;
+                uint64_t phys = 0;
                 if (paging_unmap_in(p->pgdir, page, &phys) > 0 && phys)
                     free_physical_page(phys);
             }
@@ -1054,7 +1071,7 @@ static uint32_t linux_sys_brk(uint32_t requested)
         }
     } else if (new_page < old_page) {
         for (uint32_t page = new_page; page < old_page; page += PAGE_SIZE) {
-            uint32_t phys = 0;
+            uint64_t phys = 0;
             if (paging_unmap_in(p->pgdir, page, &phys) > 0 && phys)
                 free_physical_page(phys);
         }
@@ -1185,7 +1202,7 @@ static uint32_t linux_getdents64(uint32_t fd, uint32_t user_buf, uint32_t count)
         uint32_t reclen = (19u + namelen + 1u + 7u) & ~7u;
         if (reclen > count - written) break;
 
-        uint8_t *record = (uint8_t *)(user_buf + written);
+        uint8_t *record = (uint8_t *)(uintptr_t)(user_buf + written);
         uint64_t ino = entries[i].inode;
         int64_t d_off = (int64_t)i + 1;
         uint16_t d_reclen = (uint16_t)reclen;
@@ -1258,7 +1275,7 @@ static uint32_t linux_open_path(uint32_t path_ptr, uint32_t flags, uint32_t mode
     proc_t *p = proc_current();
     if (!p || !user_cstr_ok(path_ptr)) return (uint32_t)-EFAULT;
     char path[FS_NAME_LEN];
-    strncpy(path, (const char *)path_ptr, sizeof(path) - 1);
+    strncpy(path, (const char *)(uintptr_t)path_ptr, sizeof(path) - 1);
     path[sizeof(path) - 1] = 0;
     if (!path[0]) return (uint32_t)-ENOENT;
 
@@ -1413,13 +1430,13 @@ static uint32_t linux_nanosleep_on(uint32_t clock_id, int absolute, uint32_t req
     if (time64) {
         linux_timespec64_t req;
         if (!user_range_ok(req_ptr, sizeof(req))) return (uint32_t)-EFAULT;
-        memcpy(&req, (const void *)req_ptr, sizeof(req));
+        memcpy(&req, (const void *)(uintptr_t)req_ptr, sizeof(req));
         sec = req.sec;
         nsec = req.nsec;
     } else {
         linux_timespec32_t req;
         if (!user_range_ok(req_ptr, sizeof(req))) return (uint32_t)-EFAULT;
-        memcpy(&req, (const void *)req_ptr, sizeof(req));
+        memcpy(&req, (const void *)(uintptr_t)req_ptr, sizeof(req));
         sec = req.sec;
         nsec = req.nsec;
     }
@@ -1428,7 +1445,7 @@ static uint32_t linux_nanosleep_on(uint32_t clock_id, int absolute, uint32_t req
     if (rem_ptr) {
         uint32_t rem_size = time64 ? sizeof(linux_timespec64_t) : sizeof(linux_timespec32_t);
         if (!user_wr_ok(rem_ptr, rem_size)) return (uint32_t)-EFAULT;
-        memset((void *)rem_ptr, 0, rem_size);
+        memset((void *)(uintptr_t)rem_ptr, 0, rem_size);
     }
     if (absolute) {
         int64_t now_s;
@@ -1457,7 +1474,7 @@ static uint32_t linux_set_thread_area(uint32_t user_desc_ptr)
     task_t *t = task_current();
     linux_user_desc_t desc;
     if (!t || !user_wr_ok(user_desc_ptr, sizeof(desc))) return (uint32_t)-EFAULT;
-    memcpy(&desc, (const void *)user_desc_ptr, sizeof(desc));
+    memcpy(&desc, (const void *)(uintptr_t)user_desc_ptr, sizeof(desc));
     if ((desc.flags & ~0xFFu) || (desc.flags & 0x80u) || desc.limit > 0xFFFFFu)
         return (uint32_t)-EINVAL;
     if (!(desc.flags & (1u << 5)) && !user_range_ok(desc.base_addr, 1))
@@ -1495,7 +1512,7 @@ static uint32_t linux_set_thread_area(uint32_t user_desc_ptr)
     t->tls_limit = desc.limit;
     t->tls_flags = desc.flags;
     desc.entry_number = entry;
-    memcpy((void *)user_desc_ptr, &desc, sizeof(desc));
+    memcpy((void *)(uintptr_t)user_desc_ptr, &desc, sizeof(desc));
     return 0;
 }
 
@@ -1504,13 +1521,13 @@ static uint32_t linux_get_thread_area(uint32_t user_desc_ptr)
     task_t *t = task_current();
     linux_user_desc_t desc;
     if (!t || !user_wr_ok(user_desc_ptr, sizeof(desc))) return (uint32_t)-EFAULT;
-    memcpy(&desc, (const void *)user_desc_ptr, sizeof(desc));
+    memcpy(&desc, (const void *)(uintptr_t)user_desc_ptr, sizeof(desc));
     if (t->tls_gdt_entry < 0 || desc.entry_number != t->tls_gdt_entry)
         return (uint32_t)-EINVAL;
     desc.base_addr = t->tls_base;
     desc.limit = t->tls_limit;
     desc.flags = t->tls_flags;
-    memcpy((void *)user_desc_ptr, &desc, sizeof(desc));
+    memcpy((void *)(uintptr_t)user_desc_ptr, &desc, sizeof(desc));
     return 0;
 }
 
@@ -1519,7 +1536,7 @@ static int linux_clone_tls(uint32_t user_desc_ptr, int *entry_out,
 {
     linux_user_desc_t desc;
     if (!user_range_ok(user_desc_ptr, sizeof(desc))) return -EFAULT;
-    memcpy(&desc, (const void *)user_desc_ptr, sizeof(desc));
+    memcpy(&desc, (const void *)(uintptr_t)user_desc_ptr, sizeof(desc));
     if ((desc.flags & ~0xFFu) || (desc.flags & 0x80u) || desc.limit > 0xFFFFFu ||
         (!(desc.flags & (1u << 5)) && !user_range_ok(desc.base_addr, 1))) return -EINVAL;
 
@@ -1597,9 +1614,9 @@ static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint32_t child_st
         return (uint32_t)-EAGAIN;
     }
     if ((flags & LINUX_CLONE_CHILD_SETTID) && child_tid)
-        *(uint32_t *)child_tid = (uint32_t)tid;
+        *(uint32_t *)(uintptr_t)child_tid = (uint32_t)tid;
     if ((flags & LINUX_CLONE_PARENT_SETTID) && parent_tid)
-        *(uint32_t *)parent_tid = (uint32_t)tid;
+        *(uint32_t *)(uintptr_t)parent_tid = (uint32_t)tid;
     task_preempt_enable();
     return (uint32_t)tid;
 }
@@ -1622,7 +1639,7 @@ static uint32_t linux_futex(uint32_t uaddr, uint32_t op, uint32_t value,
             if (timeout_or_val2) {
                 linux_timespec32_t ts;
                 if (!user_range_ok(timeout_or_val2, sizeof(ts))) return (uint32_t)-EFAULT;
-                memcpy(&ts, (const void *)timeout_or_val2, sizeof(ts));
+                memcpy(&ts, (const void *)(uintptr_t)timeout_or_val2, sizeof(ts));
                 if (ts.sec < 0 || ts.nsec < 0 || ts.nsec >= 1000000000)
                     return (uint32_t)-EINVAL;
                 uint64_t ms = (uint64_t)(uint32_t)ts.sec * 1000u +
@@ -1670,7 +1687,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
                 for (uint32_t w = 0; w < 160 && sp + w * 4 < 0xC0000000u; w += 8) {
                     strcpy(row, "  abort ");
                     for (uint32_t k = w; k < w + 8; k++) {
-                        uint32_t v = ((const uint32_t *)sp)[k];
+                        uint32_t v = ((const uint32_t *)(uintptr_t)sp)[k];
                         for (int sh = 28; sh >= 0; sh -= 4) { h[(28 - sh) / 4] = "0123456789ABCDEF"[(v >> sh) & 0xF]; }
                         h[8] = ' '; h[9] = 0;
                         strcat(row, h);
@@ -1700,7 +1717,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
                 uint32_t res32[2] = { 0, 1000000 };
                 uint32_t size = number == LINUX_SYS_CLOCK_GETRES64 ? 16u : 8u;
                 if (!user_wr_ok(b, size)) return (uint32_t)-EFAULT;
-                memcpy((void *)b, number == LINUX_SYS_CLOCK_GETRES64 ? (void *)res64 : (void *)res32, size);
+                memcpy((void *)(uintptr_t)b, number == LINUX_SYS_CLOCK_GETRES64 ? (void *)res64 : (void *)res32, size);
             }
             return 0;
 
@@ -1708,7 +1725,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (a && a != task_get_pid()) return (uint32_t)-ESRCH;
             if (b < 4) return (uint32_t)-EINVAL;
             if (!user_wr_ok(c, 4)) return (uint32_t)-EFAULT;
-            { uint32_t one = 1; memcpy((void *)c, &one, 4); }
+            { uint32_t one = 1; memcpy((void *)(uintptr_t)c, &one, 4); }
             return 4;
         case 241: /* sched_setaffinity: accepted, there is only the one CPU */
             if (a && a != task_get_pid()) return (uint32_t)-ESRCH;
@@ -1725,7 +1742,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
 
         case SYS_READ: {
             int fd = (int)a, count = (int)c;
-            char *buf = (char *)b;
+            char *buf = (char *)(uintptr_t)b;
             if (count <= 0) return 0;
             if (!user_wr_ok(b, (uint32_t)count)) return (uint32_t)-EFAULT;
             if (fd == 0) {
@@ -1759,7 +1776,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
 
         case SYS_WRITE: {
             int fd = (int)a, count = (int)c;
-            const char *buf = (const char *)b;
+            const char *buf = (const char *)(uintptr_t)b;
             if (count <= 0) return 0;
             if (!user_range_ok(b, (uint32_t)count)) return (uint32_t)-EFAULT;
             if (fd == 1 || fd == 2) {
@@ -1793,7 +1810,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (iovcnt == 0) return 0;
             uint32_t iov_bytes = (uint32_t)iovcnt * sizeof(linux_iovec32_t);
             if (!user_range_ok(b, iov_bytes)) return (uint32_t)-EFAULT;
-            const linux_iovec32_t *iov = (const linux_iovec32_t *)b;
+            const linux_iovec32_t *iov = (const linux_iovec32_t *)(uintptr_t)b;
             uint32_t total = 0;
             for (int i = 0; i < iovcnt; i++) {
                 if (iov[i].len > UINT32_MAX - total) return (uint32_t)-EINVAL;
@@ -1807,8 +1824,8 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
                 uint8_t *tmp = malloc(total ? total : 1);
                 if (!tmp) return (uint32_t)-ENOMEM;
                 uint32_t off = 0;
-                for (int i = 0; i < iovcnt; i++) { memcpy(tmp + off, (const void *)iov[i].base, iov[i].len); off += iov[i].len; }
-                uint32_t r = sock_send_on(wp, fd, wsk, (uint32_t)tmp, total, 0, 0, 0);
+                for (int i = 0; i < iovcnt; i++) { memcpy(tmp + off, (const void *)(uintptr_t)iov[i].base, iov[i].len); off += iov[i].len; }
+                uint32_t r = sock_send_k(wp, fd, wsk, tmp, total, 0, 0, 0);
                 free(tmp);
                 return r;
             }
@@ -1826,7 +1843,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             uint32_t written = 0;
             for (int i = 0; i < iovcnt; i++) {
                 if (fd == 1 || fd == 2) {
-                    const char *buf = (const char *)iov[i].base;
+                    const char *buf = (const char *)(uintptr_t)iov[i].base;
                     for (uint32_t j = 0; j < iov[i].len; j++) {
                         terminal_putchar(buf[j]);
                     }
@@ -1834,7 +1851,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
                 } else {
                     int vfd = proc_vfd(proc_current(), fd);
                     if (vfd < 0) return written ? written : (uint32_t)-EBADF;
-                    int n = vfs_write(vfd, (const void *)iov[i].base, iov[i].len);
+                    int n = vfs_write(vfd, (const void *)(uintptr_t)iov[i].base, iov[i].len);
                     if (n < 0) return written ? written : (uint32_t)-EIO;
                     written += (uint32_t)n;
                     if ((uint32_t)n < iov[i].len) break;
@@ -1847,7 +1864,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             int iovcnt = (int)c;
             if (iovcnt < 0 || iovcnt > 1024) return (uint32_t)-EINVAL;
             if (!user_range_ok(b, (uint32_t)iovcnt * 8u)) return (uint32_t)-EFAULT;
-            const uint32_t *iov = (const uint32_t *)b;
+            const uint32_t *iov = (const uint32_t *)(uintptr_t)b;
             uint32_t done = 0;
             for (int i = 0; i < iovcnt; i++) {
                 if (!iov[2 * i + 1]) continue;
@@ -1879,7 +1896,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (!child || child->ppid != task_get_pid()) return (uint32_t)-ECHILD;
             if (b && !user_wr_ok(b, sizeof(uint32_t))) return (uint32_t)-EFAULT;
             int code = proc_wait(a);
-            if (b) *(uint32_t *)b = ((uint32_t)(code & 0xFF)) << 8;
+            if (b) *(uint32_t *)(uintptr_t)b = ((uint32_t)(code & 0xFF)) << 8;
             return a;
         }
 
@@ -1893,12 +1910,12 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (!user_cstr_ok(a)) return (uint32_t)-EFAULT;
             {
                 vfs_entry_t entry;
-                if (vfs_stat((const char *)a, &entry) != 0 || !entry.is_dir)
+                if (vfs_stat((const char *)(uintptr_t)a, &entry) != 0 || !entry.is_dir)
                     return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
-                if (vfs_access((const char *)a, VFS_ACC_X) != 0)
+                if (vfs_access((const char *)(uintptr_t)a, VFS_ACC_X) != 0)
                     return (uint32_t)-EACCES;
             }
-            vfs_chdir((const char *)a);
+            vfs_chdir((const char *)(uintptr_t)a);
             return 0;
 
         case LINUX_SYS_BRK:
@@ -1917,12 +1934,12 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             return proc_current() ? proc_current()->pid : task_get_pid();
         case LINUX_SYS_ACCESS:
             if (!user_cstr_ok(a) || (b & ~7u)) return (uint32_t)-EFAULT;
-            if (vfs_access((const char *)a, (int)b) == 0) return 0;
+            if (vfs_access((const char *)(uintptr_t)a, (int)b) == 0) return 0;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
 
         case LINUX_SYS_GETCWD: {
             if (!b || !user_wr_ok(a, b)) return (uint32_t)-EFAULT;
-            int len = vfs_getcwd((char *)a, b);
+            int len = vfs_getcwd((char *)(uintptr_t)a, b);
             return len < 0 ? (uint32_t)-ERANGE : (uint32_t)(len + 1);
         }
 
@@ -1966,23 +1983,23 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (!user_cstr_ok(path_ptr)) return (uint32_t)-EFAULT;
             if (size == 0) return 0;
             if (!user_wr_ok(buf_ptr, size)) return (uint32_t)-EFAULT;
-            int n = vfs_readlink((const char *)path_ptr, (char *)buf_ptr, size);
+            int n = vfs_readlink((const char *)(uintptr_t)path_ptr, (char *)(uintptr_t)buf_ptr, size);
             if (n >= 0) return (uint32_t)n;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-EINVAL;
         }
 
         case LINUX_SYS_SYMLINK:
             if (!user_cstr_ok(a) || !user_cstr_ok(b)) return (uint32_t)-EFAULT;
-            if (vfs_symlink((const char *)a, (const char *)b) == 0) return 0;
+            if (vfs_symlink((const char *)(uintptr_t)a, (const char *)(uintptr_t)b) == 0) return 0;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-EEXIST;
 
         case LINUX_SYS_UNLINK: {
             vfs_entry_t entry;
             if (!user_cstr_ok(a)) return (uint32_t)-EFAULT;
-            if (vfs_stat((const char *)a, &entry) != 0)
+            if (vfs_stat((const char *)(uintptr_t)a, &entry) != 0)
                 return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
             if (entry.is_dir) return (uint32_t)-EISDIR;
-            if (vfs_unlink((const char *)a) == 0) return 0;
+            if (vfs_unlink((const char *)(uintptr_t)a) == 0) return 0;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-EPERM;
         }
 
@@ -1998,11 +2015,11 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
         case 40: { /* rmdir */
             vfs_entry_t entry;
             if (!user_cstr_ok(a)) return (uint32_t)-EFAULT;
-            if (vfs_stat((const char *)a, &entry) != 0)
+            if (vfs_stat((const char *)(uintptr_t)a, &entry) != 0)
                 return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
             if (!entry.is_dir) return (uint32_t)-ENOTDIR;
-            if (vfs_unlink((const char *)a) == 0) return 0;
-            if (!vfs_path_has_mount((const char *)a) && ramfs_rmdir(vfs_abspath((const char *)a)) == 0) return 0;
+            if (vfs_unlink((const char *)(uintptr_t)a) == 0) return 0;
+            if (!vfs_path_has_mount((const char *)(uintptr_t)a) && ramfs_rmdir(vfs_abspath((const char *)(uintptr_t)a)) == 0) return 0;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-39;        /* ENOTEMPTY */
         }
 
@@ -2025,7 +2042,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             vfs_entry_t entry;
             if (!path) return 0;                         /* utimensat on an open fd */
             if (!user_cstr_ok(path)) return (uint32_t)-EFAULT;
-            if (vfs_stat((const char *)path, &entry) != 0)
+            if (vfs_stat((const char *)(uintptr_t)path, &entry) != 0)
                 return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
             return 0;
         }
@@ -2035,17 +2052,17 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (!user_cstr_ok(a)) return (uint32_t)-EFAULT;
             /* "already there" has to be EEXIST: mkdir -p (npm's mkdirp) climbs to the parent on
              * ENOENT, and at / that never ends */
-            if (vfs_stat((const char *)a, &entry) == 0) return (uint32_t)-EEXIST;
-            if (vfs_mkdir((const char *)a, b & 0777u) == 0) return 0;
+            if (vfs_stat((const char *)(uintptr_t)a, &entry) == 0) return (uint32_t)-EEXIST;
+            if (vfs_mkdir((const char *)(uintptr_t)a, b & 0777u) == 0) return 0;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
         }
 
         case LINUX_SYS_RENAME: {
             char old_path[VFS_NAME_LEN], new_path[VFS_NAME_LEN];
             if (!user_cstr_ok(a) || !user_cstr_ok(b)) return (uint32_t)-EFAULT;
-            strncpy(old_path, (const char *)a, sizeof(old_path) - 1);
+            strncpy(old_path, (const char *)(uintptr_t)a, sizeof(old_path) - 1);
             old_path[sizeof(old_path) - 1] = 0;
-            strncpy(new_path, (const char *)b, sizeof(new_path) - 1);
+            strncpy(new_path, (const char *)(uintptr_t)b, sizeof(new_path) - 1);
             new_path[sizeof(new_path) - 1] = 0;
             if (vfs_rename(old_path, new_path) == 0) return 0;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
@@ -2053,7 +2070,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
 
         case LINUX_SYS_CHMOD:
             if (!user_cstr_ok(a)) return (uint32_t)-EFAULT;
-            if (vfs_chmod((const char *)a, b & 07777u) == 0) return 0;
+            if (vfs_chmod((const char *)(uintptr_t)a, b & 07777u) == 0) return 0;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-EPERM;
 
         case LINUX_SYS_DUP:
@@ -2159,7 +2176,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             strcpy(info.version, "tOS Linux-i386 ABI");
             strcpy(info.machine, "i686");
             strcpy(info.domainname, "localdomain");
-            memcpy((void *)a, &info, sizeof(info));
+            memcpy((void *)(uintptr_t)a, &info, sizeof(info));
             return 0;
         }
 
@@ -2168,10 +2185,10 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             linux_stat64_t st;
             vfs_entry_t entry;
             if (!user_cstr_ok(a) || !user_wr_ok(b, sizeof(st))) return (uint32_t)-EFAULT;
-            if (!strcmp((const char *)a, "/etc/resolv.conf") || !strcmp((const char *)a, "/etc/hosts")) write_net_files();
-            if (vfs_stat((const char *)a, &entry) != 0) return (uint32_t)-ENOENT;
+            if (!strcmp((const char *)(uintptr_t)a, "/etc/resolv.conf") || !strcmp((const char *)(uintptr_t)a, "/etc/hosts")) write_net_files();
+            if (vfs_stat((const char *)(uintptr_t)a, &entry) != 0) return (uint32_t)-ENOENT;
             linux_stat64_fill(&st, &entry);
-            memcpy((void *)b, &st, sizeof(st));
+            memcpy((void *)(uintptr_t)b, &st, sizeof(st));
             return 0;
         }
 
@@ -2180,7 +2197,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             linux_stat64_t st;
             vfs_entry_t entry;
             if (!user_cstr_ok(b) || !user_wr_ok(c, sizeof(st))) return (uint32_t)-EFAULT;
-            const char *path = (const char *)b;
+            const char *path = (const char *)(uintptr_t)b;
             if (path[0] == 0 && (d & 0x1000u)) { /* AT_EMPTY_PATH: glibc's fstat */
                 int r = linux_fd_stat(dirfd, &st);
                 if (r < 0) return (uint32_t)r;
@@ -2191,7 +2208,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
                     return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
                 linux_stat64_fill(&st, &entry);
             }
-            memcpy((void *)c, &st, sizeof(st));
+            memcpy((void *)(uintptr_t)c, &st, sizeof(st));
             return 0;
         }
 
@@ -2203,7 +2220,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (!user_wr_ok(b, sizeof(st))) return (uint32_t)-EFAULT;
             int r = linux_fd_stat((int)a, &st);
             if (r < 0) return (uint32_t)r;
-            memcpy((void *)b, &st, sizeof(st));
+            memcpy((void *)(uintptr_t)b, &st, sizeof(st));
             return 0;
         }
 
@@ -2211,7 +2228,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (a < 1 || a > 20) return (uint32_t)-EINVAL;
             if (!user_range_ok(b, 24)) return (uint32_t)-EFAULT;
             uint32_t v[6];
-            memcpy(v, (const void *)b, sizeof(v));
+            memcpy(v, (const void *)(uintptr_t)b, sizeof(v));
             return linux_sockcall((int)a, v);
         }
         /* the same calls, one syscall each (Linux 4.3 and later) */
@@ -2228,14 +2245,14 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (a == 15) {
                 if (!user_range_ok(b, 1)) return (uint32_t)-EFAULT;
                 int k = 0;
-                for (; k < 15 && k < (int)sizeof(pp->name) - 1 && ((const char *)b)[k]; k++) pp->name[k] = ((const char *)b)[k];
+                for (; k < 15 && k < (int)sizeof(pp->name) - 1 && ((const char *)(uintptr_t)b)[k]; k++) pp->name[k] = ((const char *)(uintptr_t)b)[k];
                 pp->name[k] = 0;
                 return 0;
             }
             if (a == 16) {
                 if (!user_wr_ok(b, 16)) return (uint32_t)-EFAULT;
-                memset((void *)b, 0, 16);
-                strncpy((char *)b, pp->name, 15);
+                memset((void *)(uintptr_t)b, 0, 16);
+                strncpy((char *)(uintptr_t)b, pp->name, 15);
                 return 0;
             }
             return (uint32_t)-EINVAL;
@@ -2254,7 +2271,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (number == 180 ? !user_wr_ok(b, c) : !user_range_ok(b, c)) return (uint32_t)-EFAULT;
             int cur = vfs_lseek(vfd, 0, 1);
             if (cur < 0 || vfs_lseek(vfd, d, 0) < 0) return (uint32_t)-ESPIPE;
-            int n = number == 180 ? vfs_read(vfd, (void *)b, c) : vfs_write(vfd, (const void *)b, c);
+            int n = number == 180 ? vfs_read(vfd, (void *)(uintptr_t)b, c) : vfs_write(vfd, (const void *)(uintptr_t)b, c);
             vfs_lseek(vfd, (uint32_t)cur, 0);
             return n < 0 ? (uint32_t)-EIO : (uint32_t)n;
         }
@@ -2267,7 +2284,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (!user_wr_ok(d, sizeof(uint64_t))) return (uint32_t)-EFAULT;
             int r = vfs_lseek(vfd, (uint32_t)offset, (int)e);
             if (r < 0) return (uint32_t)-EINVAL;
-            *(uint64_t *)d = (uint32_t)r;
+            *(uint64_t *)(uintptr_t)d = (uint32_t)r;
             return 0;
         }
 
@@ -2279,14 +2296,14 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (number == LINUX_SYS_CLOCK_GETTIME64) {
                 linux_timespec64_t ts = { sec, nsec };
                 if (!user_wr_ok(b, sizeof(ts))) return (uint32_t)-EFAULT;
-                memcpy((void *)b, &ts, sizeof(ts));
+                memcpy((void *)(uintptr_t)b, &ts, sizeof(ts));
             } else {
                 linux_timespec32_t ts;
                 if (sec > INT32_MAX) return (uint32_t)-EOVERFLOW;
                 ts.sec = (int32_t)sec;
                 ts.nsec = nsec;
                 if (!user_wr_ok(b, sizeof(ts))) return (uint32_t)-EFAULT;
-                memcpy((void *)b, &ts, sizeof(ts));
+                memcpy((void *)(uintptr_t)b, &ts, sizeof(ts));
             }
             return 0;
         }
@@ -2299,12 +2316,12 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
                     return (uint32_t)-EOVERFLOW;
                 linux_timeval32_t tv = { (int32_t)sec, nsec / 1000 };
                 if (!user_wr_ok(a, sizeof(tv))) return (uint32_t)-EFAULT;
-                memcpy((void *)a, &tv, sizeof(tv));
+                memcpy((void *)(uintptr_t)a, &tv, sizeof(tv));
             }
             if (b) {
                 uint32_t timezone[2] = { 0, 0 };
                 if (!user_wr_ok(b, sizeof(timezone))) return (uint32_t)-EFAULT;
-                memcpy((void *)b, timezone, sizeof(timezone));
+                memcpy((void *)(uintptr_t)b, timezone, sizeof(timezone));
             }
             return 0;
         }
@@ -2321,7 +2338,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (b && !user_range_ok(b, d)) return (uint32_t)-EFAULT;
             if (c) {
                 if (!user_wr_ok(c, d)) return (uint32_t)-EFAULT;
-                memset((void *)c, 0, d);
+                memset((void *)(uintptr_t)c, 0, d);
             }
             return 0; /* user signal delivery is not implemented yet */
         }
@@ -2333,7 +2350,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
                 if (!user_wr_ok(c, sizeof(linux_sigaction32_t))) return (uint32_t)-EFAULT;
                 linux_sigaction32_t old_action;
                 memset(&old_action, 0, sizeof(old_action));
-                memcpy((void *)c, &old_action, sizeof(old_action));
+                memcpy((void *)(uintptr_t)c, &old_action, sizeof(old_action));
             }
             return 0; /* accept dispositions; process signal delivery remains unsupported */
         }
@@ -2342,7 +2359,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (a && !user_range_ok(a, 12)) return (uint32_t)-EFAULT;
             if (b) {
                 if (!user_wr_ok(b, 12)) return (uint32_t)-EFAULT;
-                memset((void *)b, 0, 12);
+                memset((void *)(uintptr_t)b, 0, 12);
             }
             return 0;
 
@@ -2351,7 +2368,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
             if (b > 1024u * 1024u) return (uint32_t)-EINVAL;
             if (b == 0) return 0;
             if (!user_wr_ok(a, b)) return (uint32_t)-EFAULT;
-            csprng_fill((uint8_t *)a, (int)b);
+            csprng_fill((uint8_t *)(uintptr_t)a, (int)b);
             return b;
 
         case SYS_MMAP2:
@@ -2431,7 +2448,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
                     for (uint32_t w = 0; w < 64 && sp + w * 4 < 0xC0000000u; w += 8) {
                         char row[96] = "  stack ";
                         for (uint32_t k = w; k < w + 8; k++) {
-                            sprintf_u32(h, ((const uint32_t *)sp)[k]);
+                            sprintf_u32(h, ((const uint32_t *)(uintptr_t)sp)[k]);
                             strcat(row, h); strcat(row, " ");
                         }
                         strcat(row, "\n");
@@ -2458,7 +2475,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
 
         case SYS_READ: {
             int fd = (int)a;
-            char *buf = (char *)b;
+            char *buf = (char *)(uintptr_t)b;
             int count = (int)c;
             if (count <= 0) return 0;
             if (!user_wr_ok(b, (uint32_t)count)) return -1;
@@ -2485,7 +2502,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
 
         case SYS_WRITE: {
             int fd = (int)a;
-            const char *buf = (const char *)b;
+            const char *buf = (const char *)(uintptr_t)b;
             int count = (int)c;
             if (count <= 0) return 0;
             if (!user_range_ok(b, (uint32_t)count)) return -1;
@@ -2512,7 +2529,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
             int flags = (int)b;
             if (!p || !user_cstr_ok(a)) return -1;
             char path[FS_NAME_LEN];
-            strncpy(path, (const char *)a, sizeof(path) - 1);
+            strncpy(path, (const char *)(uintptr_t)a, sizeof(path) - 1);
             path[sizeof(path) - 1] = 0;
             int slot = -1;
             for (int i = 0; i < PROC_MAX_FDS; i++) if (p->fd[i] < 0) { slot = i; break; }
@@ -2622,7 +2639,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
 
         case SYS_FSTAT: {
             int fd = (int)a;
-            struct tos_stat *st = (struct tos_stat *)b;
+            struct tos_stat *st = (struct tos_stat *)(uintptr_t)b;
             if (!user_wr_ok(b, sizeof(*st))) return -1;
             memset(st, 0, sizeof(*st));
             if (fd >= 0 && fd <= 2) {
@@ -2646,7 +2663,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
             proc_t *p = proc_current();
             if (!p || p->win || !gui_is_active() || !user_cstr_ok(a)) return (uint32_t)-1;
             char title[64];
-            strncpy(title, (const char *)a, sizeof(title) - 1);
+            strncpy(title, (const char *)(uintptr_t)a, sizeof(title) - 1);
             title[sizeof(title) - 1] = 0;
             void *prev = 0;
             void *w = wm_script_open(title, &prev);
@@ -2672,8 +2689,8 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
             if (!user_wr_ok(a, 2 * sizeof(int))) return (uint32_t)-1;
             int x = 0, y = 0;
             if (!wm_get_content_click(&x, &y)) return 0;
-            ((int *)a)[0] = x;
-            ((int *)a)[1] = y;
+            ((int *)(uintptr_t)a)[0] = x;
+            ((int *)(uintptr_t)a)[1] = y;
             return 1;
         }
 
@@ -2693,13 +2710,13 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
             if (!user_cstr_ok(a)) return (uint32_t)-1;
             if (!gui_is_active()) return (uint32_t)-1;
             char app[FS_NAME_LEN];
-            strncpy(app, (const char *)a, sizeof(app) - 1);
+            strncpy(app, (const char *)(uintptr_t)a, sizeof(app) - 1);
             app[sizeof(app) - 1] = 0;
             return (uint32_t)tos_open_app(app);
         }
 
         case SYS_NET_RESOLVE: {
-            const char *host = (const char *)a;
+            const char *host = (const char *)(uintptr_t)a;
             uint32_t ip = 0;
             if (!user_cstr_ok(a)) return 0;
             if (dns_resolve(host, &ip) != 0) return 0;
@@ -2721,7 +2738,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
              * the status-code convention directly, which a caller
              * checking `r <= 0` would misread a *successful* 0 as a
              * failure. */
-            void *data = (void *)a;
+            void *data = (void *)(uintptr_t)a;
             int len = (int)b;
             if (len <= 0 || !user_range_ok(a, (uint32_t)len)) return -1;
             int rc = tcp_send(data, len);
@@ -2729,7 +2746,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
         }
 
         case SYS_NET_RECV: {
-            uint8_t *buf = (uint8_t *)a;
+            uint8_t *buf = (uint8_t *)(uintptr_t)a;
             int max_len = (int)b;
             if (max_len <= 0 || !user_wr_ok(a, (uint32_t)max_len)) return -1;
             return tcp_recv(buf, max_len);
@@ -2759,9 +2776,9 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
              * both early-return points below are before this or
              * restore flags themselves. */
             uint32_t flags;
-            asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+            flags = irq_save();
             if (bochs_set_mode(&gfx_dev, width, height, 32) != 0) {
-                asm volatile("pushl %0; popfl" :: "r"(flags));
+                irq_restore(flags);
                 return -1;
             }
             /* The LFB is a PCI BAR address, not RAM -- it sits well
@@ -2779,7 +2796,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
             gfx_ready = 1;
             { proc_t *gp = proc_current(); if (gp) gp->gfx = 1; }
             bochs_set_graphics_active(1);
-            asm volatile("pushl %0; popfl" :: "r"(flags));
+            irq_restore(flags);
             return 0;
         }
 
@@ -2795,7 +2812,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
         case SYS_GFX_BLIT: {
             if (!gfx_ready) return -1;
             if (!user_range_ok(a, sizeof(struct gfx_blit_args))) return -1;
-            struct gfx_blit_args *args = (struct gfx_blit_args *)a;
+            struct gfx_blit_args *args = (struct gfx_blit_args *)(uintptr_t)a;
             if (args->x < 0 || args->y < 0 || args->w <= 0 || args->h <= 0) return -1;
             if (args->x + args->w > gfx_dev.width || args->y + args->h > gfx_dev.height) return -1;
             /* args->pixels is a second, independent pointer read out of
@@ -2804,12 +2821,12 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
              * a ring3 program could point it at arbitrary kernel memory
              * and have this syscall copy it straight into the
              * framebuffer, an arbitrary kernel-read primitive. */
-            if (!user_range_ok((uint32_t)(unsigned long)args->pixels, (uint32_t)args->w * (uint32_t)args->h * 4))
+            if (!user_range_ok(args->pixels, (uint32_t)args->w * (uint32_t)args->h * 4))
                 return -1;
-            uint32_t *fb = (uint32_t *)(unsigned long)gfx_dev.lfb;
+            uint32_t *fb = (uint32_t *)P2V(gfx_dev.lfb);
             for (int row = 0; row < args->h; row++) {
                 memcpy(fb + (args->y + row) * gfx_dev.width + args->x,
-                       args->pixels + row * args->w,
+                       (const uint32_t *)UP(args->pixels) + row * args->w,
                        (uint32_t)args->w * 4);
             }
             return 0;
@@ -2848,7 +2865,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
              * observable read (audio output rather than a visible
              * framebuffer), capped at AUDIO_DMA_SIZE (4096) either way. */
             if (!user_range_ok(a, b)) return (uint32_t)-1;
-            const uint8_t *buf = (const uint8_t *)a;
+            const uint8_t *buf = (const uint8_t *)(uintptr_t)a;
             uint32_t len = b;
             return (uint32_t)audio_submit(buf, len);
         }
@@ -2870,14 +2887,14 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
              * target (the decompressed length gets stored there) and
              * needs the same check. */
             if (!user_range_ok(a, sizeof(struct inflate_args))) return (uint32_t)-1;
-            struct inflate_args *args = (struct inflate_args *)a;
-            if (!user_range_ok((uint32_t)(unsigned long)args->src, args->src_len)) return (uint32_t)-1;
-            if (!user_wr_ok((uint32_t)(unsigned long)args->out, args->out_cap)) return (uint32_t)-1;
-            if (!user_wr_ok((uint32_t)(unsigned long)args->out_len, sizeof(uint32_t))) return (uint32_t)-1;
+            struct inflate_args *args = (struct inflate_args *)(uintptr_t)a;
+            if (!user_range_ok(args->src, args->src_len)) return (uint32_t)-1;
+            if (!user_wr_ok(args->out, args->out_cap)) return (uint32_t)-1;
+            if (!user_wr_ok(args->out_len, sizeof(uint32_t))) return (uint32_t)-1;
             uint32_t out_len = 0;
-            int rc = inflate_raw_buffer(args->src, args->src_len, args->out, args->out_cap, &out_len);
+            int rc = inflate_raw_buffer(UP(args->src), args->src_len, UP(args->out), args->out_cap, &out_len);
             if (rc != 0) return (uint32_t)-1;
-            *args->out_len = out_len;
+            *(uint32_t *)UP(args->out_len) = out_len;
             return 0;
         }
 
@@ -2897,7 +2914,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
          * all five regardless while already auditing this file. */
         case SYS_CRYPTO_RANDOM: {
             if ((int)b < 0 || !user_wr_ok(a, b)) return (uint32_t)-1;
-            uint8_t *buf = (uint8_t *)a;
+            uint8_t *buf = (uint8_t *)(uintptr_t)a;
             int len = (int)b;
             for (int i = 0; i < len; i++) buf[i] = prng_syscall_byte();
             return 0;
@@ -2905,42 +2922,42 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
 
         case SYS_CRYPTO_SHA256: {
             if (!user_range_ok(a, sizeof(struct crypto_hash_args))) return (uint32_t)-1;
-            struct crypto_hash_args *args = (struct crypto_hash_args *)a;
-            if (!user_range_ok((uint32_t)(unsigned long)args->data, args->len)) return (uint32_t)-1;
-            if (!user_wr_ok((uint32_t)(unsigned long)args->out, 32)) return (uint32_t)-1;
-            sha256_hash(args->data, args->len, args->out);
+            struct crypto_hash_args *args = (struct crypto_hash_args *)(uintptr_t)a;
+            if (!user_range_ok(args->data, args->len)) return (uint32_t)-1;
+            if (!user_wr_ok(args->out, 32)) return (uint32_t)-1;
+            sha256_hash(UP(args->data), args->len, UP(args->out));
             return 0;
         }
 
         case SYS_CRYPTO_HMAC_SHA256: {
             if (!user_range_ok(a, sizeof(struct crypto_hmac_args))) return (uint32_t)-1;
-            struct crypto_hmac_args *args = (struct crypto_hmac_args *)a;
-            if (!user_range_ok((uint32_t)(unsigned long)args->key, args->klen)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->msg, args->mlen)) return (uint32_t)-1;
-            if (!user_wr_ok((uint32_t)(unsigned long)args->out, 32)) return (uint32_t)-1;
-            hmac_sha256(args->key, args->klen, args->msg, args->mlen, args->out);
+            struct crypto_hmac_args *args = (struct crypto_hmac_args *)(uintptr_t)a;
+            if (!user_range_ok(args->key, args->klen)) return (uint32_t)-1;
+            if (!user_range_ok(args->msg, args->mlen)) return (uint32_t)-1;
+            if (!user_wr_ok(args->out, 32)) return (uint32_t)-1;
+            hmac_sha256(UP(args->key), args->klen, UP(args->msg), args->mlen, UP(args->out));
             return 0;
         }
 
         case SYS_CRYPTO_AES128_CTR: {
             if (!user_range_ok(a, sizeof(struct crypto_aesctr_args))) return (uint32_t)-1;
-            struct crypto_aesctr_args *args = (struct crypto_aesctr_args *)a;
-            if (!user_range_ok((uint32_t)(unsigned long)args->key16, 16)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->iv16, 16)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->in, args->len)) return (uint32_t)-1;
-            if (!user_wr_ok((uint32_t)(unsigned long)args->out, args->len)) return (uint32_t)-1;
-            aes128_ctr_crypt(args->key16, args->iv16, args->in, args->out, args->len);
+            struct crypto_aesctr_args *args = (struct crypto_aesctr_args *)(uintptr_t)a;
+            if (!user_range_ok(args->key16, 16)) return (uint32_t)-1;
+            if (!user_range_ok(args->iv16, 16)) return (uint32_t)-1;
+            if (!user_range_ok(args->in, args->len)) return (uint32_t)-1;
+            if (!user_wr_ok(args->out, args->len)) return (uint32_t)-1;
+            aes128_ctr_crypt(UP(args->key16), UP(args->iv16), UP(args->in), UP(args->out), args->len);
             return 0;
         }
 
         case SYS_CRYPTO_MODEXP: {
             if (!user_range_ok(a, sizeof(struct crypto_modexp_args))) return (uint32_t)-1;
-            struct crypto_modexp_args *args = (struct crypto_modexp_args *)a;
-            if (!user_range_ok((uint32_t)(unsigned long)args->base256, 256)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->exp, args->exp_len)) return (uint32_t)-1;
-            if (!user_range_ok((uint32_t)(unsigned long)args->mod256, 256)) return (uint32_t)-1;
-            if (!user_wr_ok((uint32_t)(unsigned long)args->out256, 256)) return (uint32_t)-1;
-            bignum_modexp(args->base256, args->exp, args->exp_len, args->mod256, args->out256);
+            struct crypto_modexp_args *args = (struct crypto_modexp_args *)(uintptr_t)a;
+            if (!user_range_ok(args->base256, 256)) return (uint32_t)-1;
+            if (!user_range_ok(args->exp, args->exp_len)) return (uint32_t)-1;
+            if (!user_range_ok(args->mod256, 256)) return (uint32_t)-1;
+            if (!user_wr_ok(args->out256, 256)) return (uint32_t)-1;
+            bignum_modexp(UP(args->base256), UP(args->exp), args->exp_len, UP(args->mod256), UP(args->out256));
             return 0;
         }
 

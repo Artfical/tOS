@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "vga.h"
 #include "io.h"
 #include "serial.h"
@@ -212,7 +213,7 @@ void vga_set_mode(uint8_t mode)
      * interrupts early and reopen the same race for the rest of this
      * function). */
     uint32_t flags;
-    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    flags = irq_save();
 
     if (!g_boot_text_saved) {
         capture_current_regs(g_boot_text_regs);
@@ -243,7 +244,7 @@ void vga_set_mode(uint8_t mode)
         g_current_mode = VGA_MODE_TEXT;
     }
 
-    asm volatile("pushl %0; popfl" :: "r"(flags));
+    irq_restore(flags);
 }
 
 void vga_set_palette(uint8_t index, uint8_t r, uint8_t g, uint8_t b)
@@ -261,12 +262,12 @@ void vga_write_pixel(int x, int y, uint8_t color)
 {
     if (g_current_mode != VGA_MODE_320x200) return;
     if ((unsigned)x >= VGA_GFX_WIDTH || (unsigned)y >= VGA_GFX_HEIGHT) return;
-    ((uint8_t *)0xA0000)[y * VGA_GFX_WIDTH + x] = color;
+    ((uint8_t *)P2V(0xA0000))[y * VGA_GFX_WIDTH + x] = color;
 }
 
 uint8_t *vga_get_framebuffer(void)
 {
-    return (uint8_t *)0xA0000;
+    return (uint8_t *)P2V(0xA0000);
 }
 
 /* Temporary debug helper for the mode 13h driver bring-up: dumps the

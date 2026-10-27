@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "wm.h"
 #include "isr.h"
 #include "terminal.h"
@@ -39,7 +40,7 @@ void doom_window_run(void);
 #define MENU_ROW 0
 #define DOCK_ROW (WM_SCREEN_H - 1)
 
-static uint16_t *const VGA_MEM = (uint16_t *)0xB8000;
+#define VGA_MEM ((uint16_t *)P2V(0xB8000))
 static uint16_t backbuffer[WM_SCREEN_W * WM_SCREEN_H];
 
 static window_t *drag_window;

@@ -101,7 +101,7 @@ static int nvme_io_cmd(nvme_device_t *dev, nvme_command_t *cmd)
 
 static int nvme_identify_namespace(nvme_device_t *dev)
 {
-    uint8_t *buf = (uint8_t *)alloc_physical_page();
+    uint8_t *buf = (uint8_t *)P2V(alloc_physical_page());
     if (!buf) return -1;
     memset(buf, 0, 4096);
 
@@ -109,7 +109,7 @@ static int nvme_identify_namespace(nvme_device_t *dev)
     memset(&cmd, 0, sizeof(cmd));
     cmd.dword0 = NVME_ADMIN_IDENTIFY;
     cmd.dword1 = 1;
-    cmd.dword6 = (uint32_t)buf;
+    cmd.dword6 = (uint32_t)V2P(buf);
     cmd.dword10 = 0;
 
     if (nvme_admin_cmd(dev, &cmd, NULL) != 0) return -1;
@@ -126,9 +126,9 @@ static int nvme_identify_namespace(nvme_device_t *dev)
 
 static int nvme_create_io_queues(nvme_device_t *dev)
 {
-    dev->iocq = (volatile nvme_completion_t *)alloc_physical_page();
-    dev->iosq = (nvme_command_t *)alloc_physical_page();
-    dev->prp_list = (uint8_t *)alloc_physical_page();
+    dev->iocq = (volatile nvme_completion_t *)P2V(alloc_physical_page());
+    dev->iosq = (nvme_command_t *)P2V(alloc_physical_page());
+    dev->prp_list = (uint8_t *)P2V(alloc_physical_page());
     if (!dev->iocq || !dev->iosq || !dev->prp_list) return -1;
     memset((void *)dev->iocq, 0, 4096);
     memset(dev->iosq, 0, 4096);
@@ -139,14 +139,14 @@ static int nvme_create_io_queues(nvme_device_t *dev)
     nvme_command_t cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.dword0 = NVME_ADMIN_CREATE_CQ;
-    cmd.dword6 = (uint32_t)dev->iocq;
+    cmd.dword6 = (uint32_t)V2P(dev->iocq);
     cmd.dword10 = (uint32_t)((NVME_MAX_QUEUE_ENTRIES - 1) << 16) | 1;
     cmd.dword11 = 1;
     if (nvme_admin_cmd(dev, &cmd, NULL) != 0) return -1;
 
     memset(&cmd, 0, sizeof(cmd));
     cmd.dword0 = NVME_ADMIN_CREATE_SQ;
-    cmd.dword6 = (uint32_t)dev->iosq;
+    cmd.dword6 = (uint32_t)V2P(dev->iosq);
     cmd.dword10 = (uint32_t)((NVME_MAX_QUEUE_ENTRIES - 1) << 16) | 1;
     cmd.dword11 = (uint32_t)(1 << 16) | 1;
     if (nvme_admin_cmd(dev, &cmd, NULL) != 0) return -1;
@@ -169,7 +169,7 @@ int nvme_init(nvme_device_t *dev)
     if (is64 && bar1 != 0) return -1;
 
     dev->bar0 = bar0 & 0xFFFFFFF0;
-    dev->regs = (volatile uint8_t *)dev->bar0;
+    dev->regs = (volatile uint8_t *)P2V(dev->bar0);
 
     uint32_t cmd = pci_read_config(pd.bus, pd.device, pd.func, 4) & 0xFFFF;
     pci_write_config(pd.bus, pd.device, pd.func, 4, cmd | 0x06 | (1u << 10));
@@ -183,8 +183,8 @@ int nvme_init(nvme_device_t *dev)
     int t = 2000000;
     while ((reg_r32(dev, NVME_REG_CSTS) & 1) && --t);
 
-    dev->asq = (nvme_command_t *)alloc_physical_page();
-    dev->acq = (volatile nvme_completion_t *)alloc_physical_page();
+    dev->asq = (nvme_command_t *)P2V(alloc_physical_page());
+    dev->acq = (volatile nvme_completion_t *)P2V(alloc_physical_page());
     if (!dev->asq || !dev->acq) return -1;
     memset(dev->asq, 0, 4096);
     memset((void *)dev->acq, 0, 4096);
@@ -194,8 +194,8 @@ int nvme_init(nvme_device_t *dev)
     dev->next_cmd_id = 1;
 
     reg_w32(dev, NVME_REG_AQA, ((ADMIN_QUEUE_DEPTH - 1) << 16) | (ADMIN_QUEUE_DEPTH - 1));
-    reg_w64(dev, NVME_REG_ASQ, (uint32_t)dev->asq);
-    reg_w64(dev, NVME_REG_ACQ, (uint32_t)dev->acq);
+    reg_w64(dev, NVME_REG_ASQ, V2P(dev->asq));
+    reg_w64(dev, NVME_REG_ACQ, V2P(dev->acq));
 
     reg_w32(dev, NVME_REG_CC, (4u << 20) | (6u << 16) | 1u);
 
@@ -232,7 +232,7 @@ static void nvme_build_prp(nvme_device_t *dev, uint32_t phys, uint32_t nbytes, u
         page += 4096;
         remaining = (remaining > 4096) ? remaining - 4096 : 0;
     }
-    *prp2 = (uint32_t)dev->prp_list;
+    *prp2 = (uint32_t)V2P(dev->prp_list);
 }
 
 static int nvme_io(nvme_device_t *dev, uint64_t lba, uint32_t count, void *buf, uint8_t opcode)
@@ -240,7 +240,7 @@ static int nvme_io(nvme_device_t *dev, uint64_t lba, uint32_t count, void *buf, 
     if (!dev->present) return -1;
     uint32_t nbytes = count * dev->sector_size;
     uint32_t prp1, prp2;
-    nvme_build_prp(dev, (uint32_t)buf, nbytes, &prp1, &prp2);
+    nvme_build_prp(dev, (uint32_t)V2P(buf), nbytes, &prp1, &prp2);
 
     nvme_command_t cmd;
     memset(&cmd, 0, sizeof(cmd));

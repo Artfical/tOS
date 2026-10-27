@@ -147,7 +147,7 @@ int bootsplash_begin(void)
     /* called before paging is on: the framebuffer is reached at its physical address until
      * bootsplash_paging_ready() maps it */
     if (bochs_set_mode(&dev, SW, SH, 32) != 0) return -1;
-    fb = (volatile uint32_t *)dev.lfb;
+    fb = (volatile uint32_t *)P2V(dev.lfb);
     fill(0, 0, SW, SH, 0x000000);
     draw_logo((SW - boot_logo_w) / 2, SH * 4 / 9 - boot_logo_h / 2);
     shown = 0;
@@ -175,7 +175,7 @@ void bootsplash_set_initrd(uint32_t start, uint32_t end)
     static const char want[] = "bootvideo.bin";
     uint32_t at = start;
     while (at + 512 <= end) {
-        const char *h = (const char *)at;
+        const char *h = (const char *)P2V(at);
         if (!h[0]) break;
         uint32_t size = 0;
         for (int i = 124; i < 136 && h[i] >= '0' && h[i] <= '7'; i++) size = size * 8 + (uint32_t)(h[i] - '0');
@@ -183,7 +183,7 @@ void bootsplash_set_initrd(uint32_t start, uint32_t end)
         while (n < 100 && h[n]) n++;
         int w = (int)sizeof(want) - 1;
         if (n >= w && !memcmp(h + n - w, want, (size_t)w) && at + 512 + size <= end && size > 8) {
-            boot_video = (const uint8_t *)(at + 512);
+            boot_video = (const uint8_t *)P2V(at + 512);
             return;
         }
         at += 512 + ((size + 511) & ~511u);

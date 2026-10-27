@@ -240,7 +240,7 @@ static void keyboard_callback(registers_t *regs)
 {
     (void)regs;
     uint32_t flags;
-    asm volatile("pushfl; pop %0; cli" : "=r"(flags));
+    flags = irq_save();
     uint8_t status;
     while (((status = inb(0x64)) & 1) && !(status & 0x20))
         process_scancode(inb(0x60));
@@ -250,7 +250,7 @@ static void keyboard_callback(registers_t *regs)
 static void keyboard_poll(void)
 {
     uint32_t flags;
-    asm volatile("pushfl; pop %0; cli" : "=r"(flags));
+    flags = irq_save();
     uint8_t status = inb(0x64);
     if ((status & 1) && !(status & 0x20)) process_scancode(inb(0x60));
     if (flags & 0x200) asm volatile("sti");

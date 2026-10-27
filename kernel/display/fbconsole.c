@@ -1,3 +1,4 @@
+#include "paging.h"
 #include "fbconsole.h"
 #include "vga_font.h"
 
@@ -35,7 +36,7 @@ int fbconsole_rows(void) { return fb_rows; }
 void fbconsole_fill_rect(int x, int y, int w, int h, uint32_t color)
 {
     if (!fb_dev || !fb_dev->lfb) return;
-    volatile uint32_t *fb = (volatile uint32_t *)fb_dev->lfb;
+    volatile uint32_t *fb = (volatile uint32_t *)P2V(fb_dev->lfb);
 
     int x0 = x < 0 ? 0 : x;
     int y0 = y < 0 ? 0 : y;
@@ -63,7 +64,7 @@ void fbconsole_putc(int col, int row, char c, uint32_t fg, uint32_t bg)
     if (px + GLYPH_W > fb_dev->width || py + GLYPH_H > fb_dev->height) return;
 
     const uint8_t *glyph = vga_font_get_glyph((unsigned char)c);
-    volatile uint32_t *fb = (volatile uint32_t *)fb_dev->lfb;
+    volatile uint32_t *fb = (volatile uint32_t *)P2V(fb_dev->lfb);
 
     for (int ry = 0; ry < GLYPH_H; ry++) {
         uint8_t bits = glyph[ry];

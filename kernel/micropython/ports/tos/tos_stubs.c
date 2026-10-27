@@ -18,8 +18,13 @@
 // ---------------------------------------------------------------------------
 void gc_collect(void) {
     gc_collect_start();
-    volatile uintptr_t sp;
-    asm volatile("mov %%esp, %0" : "=r"(sp));
+    /* the callee-saved registers can hold the only reference to an object: they go on the stack
+     * first, and the scan starts at them */
+    volatile uintptr_t regs[6];
+    asm volatile("mov %%rbx, 0(%0)\n mov %%rbp, 8(%0)\n mov %%r12, 16(%0)\n"
+                 "mov %%r13, 24(%0)\n mov %%r14, 32(%0)\n mov %%r15, 40(%0)"
+                 : : "r"(regs) : "memory");
+    uintptr_t sp = (uintptr_t)regs;
     void *stack_top = MP_STATE_THREAD(stack_top);
     gc_collect_root((void **)sp,
         ((uintptr_t)stack_top - (uintptr_t)sp) / sizeof(uintptr_t));

@@ -1,40 +1,37 @@
-/* wolf_jmp_buf layout (see wolf_jmp.h): ebx=+0, esi=+4, edi=+8,
- * ebp=+12, esp=+16, eip=+20 -- the i386 SysV callee-saved registers
- * plus the return address, exactly enough to unwind the C call stack
- * safely (see wolf_jmp.h's comment for why this exists at all). */
+/* wolf_jmp_buf layout (see wolf_jmp.h): rbx, rbp, r12, r13, r14, r15, rsp, rip -- the x86-64
+ * SysV callee-saved registers plus where to resume, exactly enough to unwind the C call stack
+ * (see wolf_jmp.h's comment for why this exists at all). rsp is saved as it is after
+ * wolf_setjmp returns (past the return address), since wolf_longjmp resumes with a jmp. */
 .text
 
 .global wolf_setjmp
 .type wolf_setjmp, @function
 wolf_setjmp:
-    mov 4(%esp), %eax
-    mov %ebx, 0(%eax)
-    mov %esi, 4(%eax)
-    mov %edi, 8(%eax)
-    mov %ebp, 12(%eax)
-    /* Save the caller's esp as it will be right after this function
-     * returns via `ret` (i.e. post return-address-pop), not the raw
-     * entry esp -- wolf_longjmp below resumes via a bare `jmp` to the
-     * saved eip, which (unlike `ret`) never pops that return address
-     * off the stack itself. Saving the raw entry esp here left the
-     * jmp-restored stack 4 bytes short of where the resumed code
-     * actually expects it, corrupting every subsequent stack-relative
-     * access in the caller. */
-    lea 4(%esp), %ecx
-    mov %ecx, 16(%eax)
-    mov (%esp), %ecx
-    mov %ecx, 20(%eax)
-    xor %eax, %eax
+    movq %rbx, 0(%rdi)
+    movq %rbp, 8(%rdi)
+    movq %r12, 16(%rdi)
+    movq %r13, 24(%rdi)
+    movq %r14, 32(%rdi)
+    movq %r15, 40(%rdi)
+    leaq 8(%rsp), %rax
+    movq %rax, 48(%rdi)
+    movq (%rsp), %rax
+    movq %rax, 56(%rdi)
+    xorl %eax, %eax
     ret
 
 .global wolf_longjmp
 .type wolf_longjmp, @function
 wolf_longjmp:
-    mov 4(%esp), %ecx
-    mov 8(%esp), %eax
-    mov 0(%ecx), %ebx
-    mov 4(%ecx), %esi
-    mov 8(%ecx), %edi
-    mov 12(%ecx), %ebp
-    mov 16(%ecx), %esp
-    jmp *20(%ecx)
+    movl %esi, %eax
+    testl %eax, %eax
+    jnz 1f
+    incl %eax
+1:  movq 0(%rdi), %rbx
+    movq 8(%rdi), %rbp
+    movq 16(%rdi), %r12
+    movq 24(%rdi), %r13
+    movq 32(%rdi), %r14
+    movq 40(%rdi), %r15
+    movq 48(%rdi), %rsp
+    jmp *56(%rdi)
