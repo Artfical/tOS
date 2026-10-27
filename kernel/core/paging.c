@@ -154,7 +154,7 @@ void paging_destroy_dir(uint32_t *dir)
         if (!(dir[i] & PDE_PRESENT)) continue;
         uint32_t *pt = (uint32_t *)(dir[i] & 0xFFFFF000);
         for (int j = 0; j < 1024; j++)
-            if ((pt[j] & PTE_PRESENT) && (pt[j] & PTE_USER)) free_physical_page(pt[j] & 0xFFFFF000);
+            if (pt[j] & PTE_PRESENT) free_physical_page(pt[j] & 0xFFFFF000);
         free_physical_page((uint32_t)pt);
     }
     free_physical_page((uint32_t)dir);
@@ -171,6 +171,35 @@ int paging_map_in(uint32_t *dir, uint32_t virt, uint32_t phys, uint32_t flags)
     }
     uint32_t *pt = (uint32_t *)(dir[pd_idx] & 0xFFFFF000);
     pt[pt_idx] = (phys & 0xFFFFF000) | PTE_PRESENT | (flags & 0xFFF);
+    if (dir == paging_current_dir()) asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
+    return 0;
+}
+
+int paging_unmap_in(uint32_t *dir, uint32_t virt, uint32_t *phys_out)
+{
+    if (!dir || (virt & (PAGE_SIZE - 1u)) ||
+        virt < PAGING_USER_START || virt >= PAGING_USER_END) return -1;
+    uint32_t pde = dir[virt >> 22];
+    if (!(pde & PDE_PRESENT)) return 0;
+    uint32_t *pt = (uint32_t *)(pde & 0xFFFFF000);
+    uint32_t idx = (virt >> 12) & 0x3FF;
+    if (!(pt[idx] & PTE_PRESENT)) return 0;
+    if (phys_out) *phys_out = pt[idx] & 0xFFFFF000;
+    pt[idx] = 0;
+    if (dir == paging_current_dir()) asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
+    return 1;
+}
+
+int paging_protect_in(uint32_t *dir, uint32_t virt, uint32_t flags)
+{
+    if (!dir || (virt & (PAGE_SIZE - 1u)) ||
+        virt < PAGING_USER_START || virt >= PAGING_USER_END) return -1;
+    uint32_t pde = dir[virt >> 22];
+    if (!(pde & PDE_PRESENT)) return -1;
+    uint32_t *pt = (uint32_t *)(pde & 0xFFFFF000);
+    uint32_t idx = (virt >> 12) & 0x3FF;
+    if (!(pt[idx] & PTE_PRESENT)) return -1;
+    pt[idx] = (pt[idx] & 0xFFFFF000) | PTE_PRESENT | (flags & 0xFFF);
     if (dir == paging_current_dir()) asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
     return 0;
 }

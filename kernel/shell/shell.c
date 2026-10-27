@@ -13,8 +13,84 @@
 #include "memory.h"
 #include "auth.h"
 #include "perm.h"
+#include "proc.h"
 
 #define PATH_FILE "/system/path.tmbl"
+
+static int path_lookup(const char *cmd, char *out, int cap);
+
+/* A Linux program (ELF), or a script whose first line names its interpreter ("#!/usr/bin/env
+ * node" is npm's): it starts with the shell's arguments and the session's HOME, USER, PWD and
+ * PATH, and the shell waits for it. */
+static int run_program(const char *fullpath, int argc, char **args)
+{
+    uint8_t head[128];
+    int hn = fsbridge_read(fullpath, head, sizeof(head) - 1, 0);
+    if (hn < 4) return 0;
+    head[hn] = 0;
+    const char *argv[34];
+    int n = 0;
+    char interp[VFS_NAME_LEN], interp_arg[64];
+    if (head[0] == 0x7F && head[1] == 'E' && head[2] == 'L' && head[3] == 'F') {
+        argv[n++] = fullpath;
+    } else if (head[0] == '#' && head[1] == '!') {
+        /* "#!/path/prog [arg]"; "/usr/bin/env name" finds name the way the shell does */
+        char *l = (char *)head + 2;
+        while (*l == ' ') l++;
+        char *e = l;
+        while (*e && *e != ' ' && *e != '\n' && *e != '\r') e++;
+        char first[VFS_NAME_LEN];
+        int fl = (int)(e - l) < (int)sizeof(first) - 1 ? (int)(e - l) : (int)sizeof(first) - 1;
+        memcpy(first, l, (size_t)fl);
+        first[fl] = 0;
+        while (*e == ' ') e++;
+        char *e2 = e;
+        while (*e2 && *e2 != ' ' && *e2 != '\n' && *e2 != '\r') e2++;
+        int al = (int)(e2 - e) < (int)sizeof(interp_arg) - 1 ? (int)(e2 - e) : (int)sizeof(interp_arg) - 1;
+        memcpy(interp_arg, e, (size_t)al);
+        interp_arg[al] = 0;
+        if (!strcmp(first, "/usr/bin/env") && interp_arg[0]) {
+            if (!path_lookup(interp_arg, interp, sizeof(interp))) {
+                terminal_writestring(fullpath);
+                terminal_writestring(": needs ");
+                terminal_writestring(interp_arg);
+                terminal_writestring(", which is not installed\n");
+                return 1;
+            }
+            interp_arg[0] = 0;
+        } else {
+            strcpy(interp, first);
+        }
+        argv[n++] = interp;
+        if (interp_arg[0]) argv[n++] = interp_arg;
+        argv[n++] = fullpath;
+    } else {
+        return 0;
+    }
+    for (int i = 1; i < argc && n < 33; i++) argv[n++] = args[i];
+    argv[n] = 0;
+
+    uint32_t uid, gid;
+    auth_session(&uid, &gid);
+    auth_user_t u;
+    static char env_home[80], env_user[48], env_pwd[VFS_NAME_LEN + 8], env_path[256];
+    strcpy(env_home, "HOME=");
+    strcat(env_home, auth_lookup_uid(uid, &u) == 0 && u.home[0] ? u.home : "/root");
+    strcpy(env_user, "USER=");
+    strcat(env_user, auth_name_of(uid));
+    strcpy(env_pwd, "PWD=");
+    vfs_getcwd(env_pwd + 4, sizeof(env_pwd) - 4);
+    strcpy(env_path, "PATH=/system/pkg/node/bin:/system/programs:/programs");
+    const char *envp[] = { env_home, env_user, env_pwd, env_path, "TERM=dumb", "TMPDIR=/tmp", 0 };
+    int pid = proc_spawn_argv(argv[0], argv, envp);
+    if (pid < 0) {
+        terminal_writestring(argv[0]);
+        terminal_writestring(": could not start it\n");
+        return 1;
+    }
+    proc_wait((uint32_t)pid);
+    return 1;
+}
 
 /* Runs whatever `fullpath` is, dispatching on its extension --
  * shared by the "cmdname=fullpath" lookup below and the legacy
@@ -33,7 +109,36 @@ static int path_run_file(const char *fullpath, int argc, char **args)
         cmd_run(2, run_args);
         return 1;
     }
-    return 0;
+    return run_program(fullpath, argc, args);
+}
+
+/* the path.tmbl entry for `cmd` (tpkg writes them, through the VFS: on an installed system
+ * /system is on the disk) */
+static int path_lookup(const char *cmd, char *out, int cap)
+{
+    if (!fsbridge_exists(PATH_FILE)) return 0;
+    uint32_t size = fsbridge_size(PATH_FILE);
+    char *buf = (char *)malloc(size + 1);
+    if (!buf) return 0;
+    int n = fsbridge_read(PATH_FILE, buf, size, 0);
+    int found = 0;
+    if (n > 0) {
+        buf[n] = 0;
+        int cmd_len = strlen(cmd);
+        for (char *p = buf; *p && !found;) {
+            char *line = p;
+            while (*p && *p != '\n') p++;
+            if (*p) *p++ = 0;
+            char *eq = strchr(line, '=');
+            if (eq && eq - line == cmd_len && !strncmp(line, cmd, cmd_len)) {
+                strncpy(out, eq + 1, cap - 1);
+                out[cap - 1] = 0;
+                found = 1;
+            }
+        }
+    }
+    free(buf);
+    return found;
 }
 
 /* Resolves an unrecognized command against /sys/path.tmbl -- plain
@@ -48,34 +153,15 @@ static int path_run_file(const char *fullpath, int argc, char **args)
  * path.tmbl existed. Returns 1 if something ran. */
 static int path_fallback_exec(const char *cmd, int argc, char **args)
 {
-    if (ramfs_exists(PATH_FILE)) {
-        uint32_t size = ramfs_size(PATH_FILE);
-        char *buf = (char *)malloc(size + 1);
-        if (buf) {
-            int n = ramfs_read(PATH_FILE, buf, size, 0);
-            if (n > 0) {
-                buf[n] = 0;
-                int cmd_len = strlen(cmd);
-                char *p = buf;
-                while (*p) {
-                    char *line_start = p;
-                    while (*p && *p != '\n') p++;
-                    int line_len = (int)(p - line_start);
-                    if (*p == '\n') { *p = 0; p++; }
-                    char *eq = NULL;
-                    for (int i = 0; i < line_len; i++) {
-                        if (line_start[i] == '=') { eq = line_start + i; break; }
-                    }
-                    if (eq && (eq - line_start) == cmd_len &&
-                        strncmp(line_start, cmd, cmd_len) == 0) {
-                        int ran = path_run_file(eq + 1, argc, args);
-                        free(buf);
-                        return ran;
-                    }
-                }
-            }
-            free(buf);
+    char full[VFS_NAME_LEN];
+    if (path_lookup(cmd, full, sizeof(full))) {
+        if (!path_run_file(full, argc, args)) {
+            terminal_writestring(cmd);
+            terminal_writestring(": ");
+            terminal_writestring(full);
+            terminal_writestring(" is not a program tOS can run\n");
         }
+        return 1;
     }
 
     /* the applications in /system/apps, the system's own programs, then the legacy initrd location */

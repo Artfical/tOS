@@ -8,6 +8,8 @@
 #include "debugmon.h"
 #include "paging.h"
 #include "tss.h"
+#include "fpu.h"
+#include "gdt.h"
 
 static task_t tasks[MAX_TASKS];
 static task_t *current = 0;
@@ -17,6 +19,7 @@ static uint32_t next_pid = 1;
 static volatile uint32_t system_ticks = 0;
 
 extern void timer_irq_stub(void);
+static void unlink_task(task_t *t);
 
 static void setup_task_stack(task_t *t, void (*entry)(void))
 {
@@ -55,15 +58,21 @@ void scheduler_init(void)
 
     idle_task = &tasks[0];
     idle_task->pid = 0;
+    idle_task->thread_group = 0;
+    idle_task->tls_gdt_entry = -1;
     idle_task->in_use = 1;
     idle_task->state = TASK_STATE_READY;
+    fpu_state_init(idle_task->fpu_state);
     idle_task->kernel_stack = malloc(KERNEL_STACK_SZ);
     memset(idle_task->kernel_stack, 0, KERNEL_STACK_SZ);
     strcpy(idle_task->name, "idle");
     setup_task_stack(idle_task, idle_entry);
 
     task_t *main_task = &tasks[1];
+    fpu_state_init(main_task->fpu_state);
     main_task->pid = 1;
+    main_task->thread_group = 1;
+    main_task->tls_gdt_entry = -1;
     main_task->in_use = 1;
     main_task->state = TASK_STATE_RUNNING;
     asm volatile("mov %%esp, %0" : "=r"(main_task->esp));
@@ -73,6 +82,9 @@ void scheduler_init(void)
     main_task->next = idle_task;
 
     current = main_task;
+    /* Preserve any FP state used during boot as the main task's initial state. */
+    fpu_save_state(main_task->fpu_state);
+    fpu_restore_state(main_task->fpu_state);
     task_count_val = 2;
     next_pid = 2;
 
@@ -96,10 +108,13 @@ static int task_spawn_internal(void (*entry)(void), const char *name, void *proc
 
     task_t *t = &tasks[slot];
     memset(t, 0, sizeof(task_t));
+    fpu_state_init(t->fpu_state);
     t->proc = proc;
     t->pgdir = pgdir;
     if (proc && current) t->user_data = current->user_data;      /* output goes to the spawner's window */
     t->pid = next_pid++;
+    t->thread_group = t->pid;
+    t->tls_gdt_entry = -1;
     t->in_use = 1;
     t->state = TASK_STATE_READY;
     if (current) { t->uid = current->uid; t->gid = current->gid; }   /* children run as their parent */
@@ -140,6 +155,193 @@ int task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint32_t 
     return task_spawn_internal(entry, name, proc, pgdir, uid, gid);
 }
 
+int task_spawn_user_thread(const registers_t *regs, uint32_t child_stack,
+                           void *proc, uint32_t *pgdir, uint32_t thread_group,
+                           int tls_gdt_entry, uint32_t tls_base, uint32_t tls_limit,
+                           uint32_t tls_flags, uint32_t clear_tid)
+{
+    if (!regs || !proc || !pgdir || !thread_group) return -1;
+    if (!child_stack) child_stack = regs->useresp;
+    if (child_stack < PAGING_USER_START || child_stack >= PAGING_USER_END ||
+        !paging_user_range_ok(child_stack - 1, 1, 1)) return -1;
+
+    int slot = find_free_slot();
+    if (slot < 0) return -1;
+    task_t *t = &tasks[slot];
+    memset(t, 0, sizeof(*t));
+    t->proc = proc;
+    t->pgdir = pgdir;
+    t->user_data = current ? current->user_data : 0;
+    t->uid = current ? current->uid : 0;
+    t->gid = current ? current->gid : 0;
+    t->pid = next_pid++;
+    t->thread_group = thread_group;
+    t->clear_tid = clear_tid;
+    t->tls_gdt_entry = tls_gdt_entry;
+    t->tls_base = tls_base;
+    t->tls_limit = tls_limit;
+    t->tls_flags = tls_flags;
+    t->user_thread = 1;
+    t->in_use = 1;
+    t->state = TASK_STATE_READY;
+    t->kernel_stack = malloc(KERNEL_STACK_SZ);
+    if (!t->kernel_stack) {
+        t->in_use = 0;
+        return -1;
+    }
+    memset(t->kernel_stack, 0, KERNEL_STACK_SZ);
+
+    /* Inherit the parent thread's floating-point/vector registers exactly. */
+    if (current) fpu_save_state(current->fpu_state);
+    if (current) memcpy(t->fpu_state, current->fpu_state, sizeof(t->fpu_state));
+    else fpu_state_init(t->fpu_state);
+
+    uint16_t gs = tls_gdt_entry >= 0 ? (uint16_t)((tls_gdt_entry << 3) | 3) : (uint16_t)regs->gs;
+    uint32_t eflags = (regs->eflags | 0x202u) & ~(0x3000u | 0x4000u | 0x20000u);
+    uint32_t *sp = (uint32_t *)((uint32_t)t->kernel_stack + KERNEL_STACK_SZ);
+    /* iret to the child at the instruction after int 0x80. The syscall's
+     * return register is zero in the child; other GPRs follow clone ABI. */
+    *(--sp) = 0x23;                 /* user SS */
+    *(--sp) = child_stack;
+    *(--sp) = eflags;
+    *(--sp) = 0x1B;                 /* user CS */
+    *(--sp) = regs->eip;
+    *(--sp) = 0;                    /* child EAX */
+    *(--sp) = regs->ecx;
+    *(--sp) = regs->edx;
+    *(--sp) = regs->ebx;
+    *(--sp) = 0;                    /* pusha's saved ESP slot is ignored */
+    *(--sp) = regs->ebp;
+    *(--sp) = regs->esi;
+    *(--sp) = regs->edi;
+    *(--sp) = regs->ds;
+    *(--sp) = regs->es;
+    *(--sp) = regs->fs;
+    *(--sp) = gs;
+    t->esp = (uint32_t)sp;
+    strncpy(t->name, "elf-thread", sizeof(t->name) - 1);
+
+    task_t *last = current;
+    while (last->next != current) last = last->next;
+    t->next = current;
+    last->next = t;
+    task_count_val++;
+    return (int)t->pid;
+}
+
+int task_kill_group(uint32_t thread_group, task_t *except)
+{
+    int killed = 0;
+    for (int i = 0; i < MAX_TASKS; i++) {
+        task_t *t = &tasks[i];
+        if (!t->in_use || t == except || t->thread_group != thread_group ||
+            t->state == TASK_STATE_ZOMBIE) continue;
+        unlink_task(t);
+        t->state = TASK_STATE_ZOMBIE;
+        if (t->tls_gdt_entry >= 0) {
+            gdt_tls_release(t->tls_gdt_entry);
+            t->tls_gdt_entry = -1;
+        }
+        killed++;
+    }
+    return killed;
+}
+
+static void futex_wake_timeouts(void)
+{
+    uint64_t now = debugmon_uptime_ms64();
+    for (int i = 0; i < MAX_TASKS; i++) {
+        task_t *t = &tasks[i];
+        if (!t->in_use || !t->futex_waiting || !t->futex_deadline_ms ||
+            now < t->futex_deadline_ms) continue;
+        t->futex_waiting = 0;
+        t->futex_result = 1;
+        t->state = TASK_STATE_READY;
+    }
+}
+
+int task_futex_wait(uint32_t user_addr, uint32_t expected, uint64_t deadline_ms)
+{
+    uint32_t flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    if (!current || *(volatile uint32_t *)user_addr != expected) {
+        asm volatile("pushl %0; popfl" : : "r"(flags));
+        return -1;
+    }
+    current->futex_addr = user_addr;
+    current->futex_deadline_ms = deadline_ms;
+    current->futex_waiting = 1;
+    current->futex_result = 0;
+    current->state = TASK_STATE_SLEEPING;
+    asm volatile("pushl %0; popfl" : : "r"(flags));
+    task_yield();
+    return current->futex_result;
+}
+
+int task_futex_wake(uint32_t user_addr, uint32_t count)
+{
+    if (!current || count == 0) return 0;
+    uint32_t flags;
+    int woke = 0;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    for (int i = 0; i < MAX_TASKS && (uint32_t)woke < count; i++) {
+        task_t *t = &tasks[i];
+        if (!t->in_use || !t->futex_waiting || t->futex_addr != user_addr ||
+            t->pgdir != current->pgdir) continue;
+        t->futex_waiting = 0;
+        t->futex_deadline_ms = 0;
+        t->futex_result = 0;
+        t->state = TASK_STATE_READY;
+        woke++;
+    }
+    asm volatile("pushl %0; popfl" : : "r"(flags));
+    return woke;
+}
+
+#ifdef TOS_FPU_CONTEXT_SELFTEST
+static void fpu_context_worker(uint32_t expected, const char *label)
+{
+    /* These self-test functions are built with the kernel's -mno-sse flags;
+     * keep XMM0 out of the compiler's register model and use it only here. */
+    asm volatile("movd %0, %%xmm0" : : "r"(expected) : "memory");
+    for (uint32_t i = 0; i < 2048; i++) {
+        uint32_t actual;
+        asm volatile("movd %%xmm0, %0" : "=r"(actual));
+        if (actual != expected) {
+            serial_write("[FPU-SELFTEST] FAIL: task XMM state was not restored\n");
+            task_exit();
+        }
+        task_yield();
+    }
+    serial_write(label);
+    task_exit();
+}
+
+static void fpu_context_worker_a(void)
+{
+    fpu_context_worker(0x13579BDFu, "[FPU-SELFTEST] PASS worker A\n");
+}
+
+static void fpu_context_worker_b(void)
+{
+    fpu_context_worker(0x2468ACE0u, "[FPU-SELFTEST] PASS worker B\n");
+}
+
+void scheduler_fpu_context_selftest(void)
+{
+    if (!fpu_has_sse2()) {
+        serial_write("[FPU-SELFTEST] SKIP: SSE2 unavailable\n");
+        return;
+    }
+    if (task_spawn(fpu_context_worker_a, "fpu-test-a") < 0 ||
+        task_spawn(fpu_context_worker_b, "fpu-test-b") < 0) {
+        serial_write("[FPU-SELFTEST] FAIL: could not spawn workers\n");
+        return;
+    }
+    serial_write("[FPU-SELFTEST] two SSE2 workers started\n");
+}
+#endif
+
 task_t *task_by_pid(uint32_t pid)
 {
     for (int i = 0; i < MAX_TASKS; i++)
@@ -149,6 +351,9 @@ task_t *task_by_pid(uint32_t pid)
 
 uint32_t timer_handler(uint32_t esp)
 {
+    /* The IRQ stub and scheduler run with integer-only kernel flags; capture
+     * the interrupted task before changing its saved stack or selecting next. */
+    if (current) fpu_save_state(current->fpu_state);
     outb(0x20, 0x20);
     system_ticks++;
     /* debugmon_uptime_ms() is TSC-based (calibrated once in kernel.c
@@ -159,6 +364,7 @@ uint32_t timer_handler(uint32_t esp)
      * software self-yield via the PIC's In-Service Register, but that
      * didn't hold up consistently across hypervisors.) */
     debugmon_tick();
+    futex_wake_timeouts();
     current->cpu_ticks++;
     current->esp = esp;
 
@@ -169,6 +375,7 @@ uint32_t timer_handler(uint32_t esp)
          * IRQ0 already in flight when the mask was applied). Still
          * counting ticks/cpu_ticks above keeps wall-clock timing and
          * accounting correct; we just skip the actual task switch. */
+        fpu_restore_state(current->fpu_state);
         return current->esp;
     }
 
@@ -191,6 +398,7 @@ uint32_t timer_handler(uint32_t esp)
         if (want && paging_current_dir() != want) asm volatile("mov %0, %%cr3" : : "r"(want) : "memory");
         if (current->kernel_stack) tss_set_kernel_stack((uint32_t)current->kernel_stack + KERNEL_STACK_SZ);
     }
+    fpu_restore_state(current->fpu_state);
     return current->esp;
 }
 
@@ -208,6 +416,10 @@ static void unlink_task(task_t *t)
 
 void task_exit(void)
 {
+    if (current && current->tls_gdt_entry >= 0) {
+        gdt_tls_release(current->tls_gdt_entry);
+        current->tls_gdt_entry = -1;
+    }
     unlink_task(current);
     current->state = TASK_STATE_ZOMBIE;
     for (;;) asm volatile("int $32");
@@ -252,6 +464,10 @@ int task_kill(uint32_t pid)
         if (tasks[i].in_use && tasks[i].pid == pid && tasks[i].state != TASK_STATE_ZOMBIE) {
             unlink_task(&tasks[i]);
             tasks[i].state = TASK_STATE_ZOMBIE;
+            if (tasks[i].tls_gdt_entry >= 0) {
+                gdt_tls_release(tasks[i].tls_gdt_entry);
+                tasks[i].tls_gdt_entry = -1;
+            }
             return 0;
         }
     }

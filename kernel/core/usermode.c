@@ -100,6 +100,16 @@ __attribute__((noreturn)) void enter_user_mode(uint32_t entry, uint32_t user_sta
         "pushl %%eax\n"
         "pushl %2\n"
         "pushl %3\n"
+        /* a program starts with clean registers, as on Linux: glibc's _start reads %edx as a
+         * function to run at exit (the dynamic linker's), and a leftover kernel value there made
+         * every static glibc program jump into its own stack when it exited */
+        "xorl %%eax, %%eax\n"
+        "xorl %%ebx, %%ebx\n"
+        "xorl %%ecx, %%ecx\n"
+        "xorl %%edx, %%edx\n"
+        "xorl %%esi, %%esi\n"
+        "xorl %%edi, %%edi\n"
+        "xorl %%ebp, %%ebp\n"
         "iret\n"
         :
         : "i"(0x23),

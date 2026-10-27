@@ -8,6 +8,7 @@ void debugmon_tick(void);
 
 /* Approximate uptime in milliseconds since boot. */
 uint32_t debugmon_uptime_ms(void);
+uint64_t debugmon_uptime_ms64(void);
 
 /* Call once after interrupts are enabled but before scheduler_init()
  * takes over IDT gate 32 — calibrates the TSC against ~200ms of real

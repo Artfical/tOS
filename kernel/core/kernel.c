@@ -37,6 +37,8 @@ void wm_gfx_set_session(int s);
 #include "installer.h"
 #include "sysdirs.h"
 #include "auth.h"
+#include "fpu.h"
+#include "proc.h"
 #include "ata.h"
 #include "io.h"
 #include "ahci.h"
@@ -152,6 +154,12 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     serial_init();
     terminal_init();
     klog_init();
+    fpu_device_t fpu;
+    if (fpu_init(&fpu) == 0) {
+        serial_write(fpu.has_sse2 ? "[OK] FPU/SSE2 state enabled\n" : "[OK] FPU state enabled\n");
+    } else {
+        serial_write("[WARN] FPU unavailable\n");
+    }
     bootsplash_begin();          /* the logo on white from here to the first question */
     serial_write(TOS_BOOT_STRING "\n");
     terminal_writestring(TOS_BOOT_STRING "\n");
@@ -515,6 +523,123 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     micropython_init();
 
     scheduler_init();
+#ifdef TOS_FPU_CONTEXT_SELFTEST
+    extern void scheduler_fpu_context_selftest(void);
+    scheduler_fpu_context_selftest();
+#endif
+#ifdef TOS_ELF32_SELFTEST
+    int flat_test_pid = proc_spawn("/programs/hello.t");
+    if (flat_test_pid < 0 || proc_wait((uint32_t)flat_test_pid) != 0) {
+        serial_write("[LEGACY-T-SELFTEST] FAIL flat .t compatibility\n");
+    } else {
+        serial_write("[LEGACY-T-SELFTEST] PASS flat .t compatibility\n");
+    }
+    const char *elf_test_path = "/programs/elf32_hello.elf";
+    const char *elf_test_argv[] = { elf_test_path, "kernel-args", 0 };
+    const char *elf_test_envp[] = { "TOS_ELF32_SELFTEST=1", 0 };
+    int elf_test_pid = proc_spawn_argv(elf_test_path, elf_test_argv, elf_test_envp);
+    if (elf_test_pid < 0) {
+        serial_write("[ELF32-SELFTEST] FAIL: loader rejected test image\n");
+    } else if (proc_wait((uint32_t)elf_test_pid) == 0) {
+        serial_write("[ELF32-SELFTEST] PASS Linux ELF argv/env/execve/clone/futex\n");
+    } else {
+        serial_write("[ELF32-SELFTEST] FAIL: test process returned nonzero\n");
+    }
+#endif
+#ifdef TOS_NODE_STATIC_SELFTEST
+    {
+        {
+            /* glibc piece by piece: printf, getrlimit, atexit, threads, a big malloc, returning from main */
+            const char *lt = "/programs/libc-test";
+            const char *lt_argv[] = { lt, 0 };
+            int lp = proc_spawn_argv(lt, lt_argv, 0);
+            int ls = lp < 0 ? lp : proc_wait((uint32_t)lp);
+            char lb[12];
+            sprintf_u32(lb, (uint32_t)ls);
+            serial_write("[LIBC-TEST] exit=");
+            serial_write(lb);
+            serial_write("\n");
+        }
+        {
+            /* tpkg end to end: Node comes from update.artfical.com, not from the initrd */
+            static const char *const steps[] = {
+                "tpkg look", "tpkg install node", "tpkg list", "node -v",
+                "node -e console.log(require('os').platform(),6*7)", "npm -v",
+                "npm install is-number@7.0.0 --prefix /tmp/p2 --no-audit --no-progress", 0 };
+            static char out[16384];
+            for (int i = 0; steps[i]; i++) {
+                serial_write("[TPKG-STEP] $ ");
+                serial_write(steps[i]);
+                serial_write("\n");
+                out[0] = 0;
+                shell_exec_capture(steps[i], out, sizeof(out));
+                serial_write(out);
+                serial_write("[TPKG-STEP] done\n");
+            }
+        }
+        {
+            /* sockets: DNS through glibc's resolver, a TCP connection, HTTP */
+            const char *nt = "/programs/net-test";
+            const char *nt_argv[] = { nt, 0 };
+            int np = proc_spawn_argv(nt, nt_argv, 0);
+            int ns = np < 0 ? np : proc_wait((uint32_t)np);
+            char nb[12];
+            sprintf_u32(nb, (uint32_t)ns);
+            serial_write("[NET-TEST] exit=");
+            serial_write(nb);
+            serial_write("\n");
+        }
+        const char *glibc_path = "/programs/glibc-hello";
+        const char *glibc_argv[] = { glibc_path, 0 };
+        int glibc_pid = proc_spawn_argv(glibc_path, glibc_argv, 0);
+        int glibc_status = glibc_pid < 0 ? glibc_pid : proc_wait((uint32_t)glibc_pid);
+        if (glibc_status == 0)
+            serial_write("[GLIBC-SELFTEST] PASS static ELF return/exit\n");
+        else
+            serial_write("[GLIBC-SELFTEST] FAIL static ELF return/exit\n");
+
+        const char *node_path = "/programs/node";
+        /* first without V8's event loop: the version (no V8 at all), then plain synchronous JS */
+        static const char *const quick[5][12] = {
+            { "/programs/node", "--version", 0 },
+            { "/programs/node", "-e", "console.log('sync-js-ok', 6 * 7)", 0 },
+            { "/programs/node", "/npm/bin/npm-cli.js", "--version", 0 },
+            { "/programs/node", "/programs/js/t2.js", 0 },
+            { "/programs/node", "/npm/bin/npm-cli.js", "install", "is-number@7.0.0", "--prefix", "/tmp/np", "--no-audit", "--no-progress", "--loglevel", "silly", 0 },
+        };
+        static const char *const quick_name[5] = { "--version", "sync -e", "npm --version", "network t2.js", "npm install" };
+        for (int q = 0; q < 5; q++) {
+            static const char *const quick_env[] = { "HOME=/root", "PATH=/programs", "TMPDIR=/tmp", 0 };
+            int qp = proc_spawn_argv(node_path, (const char **)quick[q], (const char **)quick_env);
+            int qs = qp < 0 ? qp : proc_wait((uint32_t)qp);
+            serial_write("[NODE-QUICK] ");
+            serial_write(quick_name[q]);
+            serial_write(" exit=");
+            char qb[12];
+            sprintf_u32(qb, (uint32_t)qs);
+            serial_write(qb);
+            serial_write("\n");
+        }
+        const char *node_argv[] = { node_path, "/programs/js/t1.js", 0 };
+        const char *node_envp[] = { "HOME=/root", "PATH=/programs", "UV_THREADPOOL_SIZE=1", 0 };
+        int node_pid = proc_spawn_argv(node_path, node_argv, node_envp);
+        if (node_pid < 0) {
+            serial_write("[NODE-SELFTEST] FAIL: could not load static Node ELF\n");
+        } else {
+            int node_status = proc_wait((uint32_t)node_pid);
+            if (node_status == 0)
+                serial_write("[NODE-SELFTEST] PASS static Node --version\n");
+            else
+                serial_write("[NODE-SELFTEST] FAIL static Node exit=");
+            if (node_status != 0) {
+                char status_buf[12];
+                sprintf_u32(status_buf, (uint32_t)node_status);
+                serial_write(status_buf);
+                serial_write("\n");
+            }
+        }
+    }
+#endif
     bootsplash_progress(97);
     terminal_writestring("[OK] Scheduler initialized\n");
     klog_write("[OK] Scheduler initialized\n");

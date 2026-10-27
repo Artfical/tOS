@@ -2,6 +2,7 @@
 #define SCHEDULER_H
 
 #include <stdint.h>
+#include "isr.h"
 
 #define TASK_STATE_READY    0
 #define TASK_STATE_RUNNING  1
@@ -20,6 +21,15 @@ typedef struct task {
     uint32_t cpu_ticks;
     uint32_t in_use;
     uint32_t no_preempt;
+    int user_thread;
+    uint32_t thread_group;
+    uint32_t clear_tid;
+    uint32_t futex_addr;
+    uint64_t futex_deadline_ms;
+    uint32_t futex_waiting;
+    int32_t futex_result;
+    int tls_gdt_entry;
+    uint32_t tls_base, tls_limit, tls_flags;
     struct task *next;
     uint8_t *kernel_stack;
     char name[TASK_NAME_MAX];
@@ -27,6 +37,7 @@ typedef struct task {
     uint32_t uid, gid;      /* whose credentials the task runs with (0 = root / kernel) */
     uint32_t *pgdir;        /* the address space of a user process (NULL = the kernel's) */
     void *proc;             /* the process this task is, if any (see proc.h) */
+    uint8_t fpu_state[512] __attribute__((aligned(16)));
 } task_t;
 
 void scheduler_init(void);
@@ -34,6 +45,13 @@ int  task_spawn(void (*entry)(void), const char *name);
 /* Starts a task that is a user process: it gets its own address space, inherits the spawner's credentials and
  * terminal window, and is fully set up before the scheduler can first pick it. */
 int  task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint32_t *pgdir, uint32_t uid, uint32_t gid);   /* uid/gid 0xFFFFFFFF = the spawner's */
+int  task_spawn_user_thread(const registers_t *parent_regs, uint32_t child_stack,
+                            void *proc, uint32_t *pgdir, uint32_t thread_group,
+                            int tls_gdt_entry, uint32_t tls_base, uint32_t tls_limit,
+                            uint32_t tls_flags, uint32_t clear_tid);
+int  task_kill_group(uint32_t thread_group, task_t *except);
+int  task_futex_wait(uint32_t user_addr, uint32_t expected, uint64_t deadline_ms);
+int  task_futex_wake(uint32_t user_addr, uint32_t count);
 task_t *task_by_pid(uint32_t pid);
 void task_yield(void);
 void task_exit(void);

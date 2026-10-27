@@ -2,9 +2,11 @@
 #define SYSCALL_H
 
 #include <stdint.h>
+#include "isr.h"
 
 #define SYS_EXIT    1
 #define SYS_FORK    2
+#define LINUX_SYS_CLONE 120
 #define SYS_READ    3
 #define SYS_WRITE   4
 #define SYS_OPEN    5
@@ -20,10 +22,75 @@
 #define SYS_KILL    37
 #define SYS_ISATTY  71
 #define SYS_FSTAT   108
+#define SYS_MUNMAP  91
+#define SYS_MPROTECT 125
+#define SYS_MMAP2   192
 
-/* tOS-specific extensions -- deliberately numbered well above the
- * Linux-i386-compatible range above (highest real one there is 108)
- * so a future real syscall never collides with these. */
+/* Linux i386 syscalls needed by a static ELF runtime. Kept explicitly
+ * prefixed because 199-204 overlap tOS-specific network extensions. */
+#define LINUX_SYS_GETPPID          64
+#define LINUX_SYS_OPENAT           295
+#define LINUX_SYS_WRITEV           146
+#define LINUX_SYS_BRK              45
+#define LINUX_SYS_UNLINK           10
+#define LINUX_SYS_PIPE             42
+#define LINUX_SYS_CHMOD            15
+#define LINUX_SYS_ACCESS           33
+#define LINUX_SYS_RENAME           38
+#define LINUX_SYS_MKDIR            39
+#define LINUX_SYS_FCNTL            55
+#define LINUX_SYS_DUP              41
+#define LINUX_SYS_DUP2             63
+#define LINUX_SYS_READLINK         85
+#define LINUX_SYS_SYMLINK          83
+#define LINUX_SYS_GETCWD           183
+#define LINUX_SYS_GETTIMEOFDAY     78
+#define LINUX_SYS_EPOLL_CREATE     254
+#define LINUX_SYS_EPOLL_CTL        255
+#define LINUX_SYS_EPOLL_WAIT       256
+#define LINUX_SYS_RT_SIGACTION     174
+#define LINUX_SYS_IOCTL            54
+#define LINUX_SYS_UGETRLIMIT       191
+#define LINUX_SYS_TKILL            238
+#define LINUX_SYS_CLOCK_GETRES     266
+#define LINUX_SYS_TGKILL           270
+#define LINUX_SYS_PRLIMIT64        340
+#define LINUX_SYS_ARCH_PRCTL       384
+#define LINUX_SYS_CLOCK_GETRES64   406
+#define LINUX_SYS_RT_SIGPROCMASK   175
+#define LINUX_SYS_SIGALTSTACK      186
+#define LINUX_SYS_GETDENTS64       220
+#define LINUX_SYS_UNAME            122
+#define LINUX_SYS_NANOSLEEP        162
+#define LINUX_SYS_GETEUID          49
+#define LINUX_SYS_GETEGID          50
+#define LINUX_SYS_GETUID32         199
+#define LINUX_SYS_GETGID32         200
+#define LINUX_SYS_GETEUID32        201
+#define LINUX_SYS_GETEGID32        202
+#define LINUX_SYS_GETTID           224
+#define LINUX_SYS_FUTEX            240
+#define LINUX_SYS_EPOLL_PWAIT      319
+#define LINUX_SYS_EPOLL_CREATE1    329
+#define LINUX_SYS_PIPE2            331
+#define LINUX_SYS_SET_THREAD_AREA  243
+#define LINUX_SYS_GET_THREAD_AREA  244
+#define LINUX_SYS_LLSEEK           140
+#define LINUX_SYS_SET_TID_ADDRESS  258
+#define LINUX_SYS_CLOCK_GETTIME    265
+#define LINUX_SYS_SET_ROBUST_LIST  311
+#define LINUX_SYS_GETRANDOM        355
+#define LINUX_SYS_STAT64           195
+#define LINUX_SYS_LSTAT64          196
+#define LINUX_SYS_FSTAT64          197
+#define LINUX_SYS_FSTATAT64        300
+#define LINUX_SYS_CLOCK_GETTIME64  403
+#define LINUX_SYS_NANOSLEEP64      407
+#define LINUX_SYS_FCNTL64          221
+#define LINUX_SYS_READLINKAT       305
+
+/* tOS-specific extensions. ELF processes dispatch through the isolated
+ * Linux-i386 syscall table, so matching numeric values are ABI-specific. */
 /* Windows and text output, so a program can be a real windowed app of its own instead of only writing to
  * whatever window started it. A window belongs to the process that opened it and is closed with it. */
 #define SYS_WIN_OPEN     260 /* a=title -- opens this process's own window; 0 = ok, -1 without a GUI or when none is free */
@@ -34,7 +101,7 @@
 #define SYS_TERM_SETPOS  265 /* a=column, b=row */
 #define SYS_TERM_COLOR   266 /* a=VGA attribute byte (foreground | background << 4) */
 
-#define SYS_SPAWN        251 /* a=path of a .t program -- starts it as a new process (credentials of the caller); returns its pid or -1 */
+#define SYS_SPAWN        251 /* a=path; b=optional argv[]; c=optional envp[]; starts a new .t/ELF process */
 #define SYS_OPEN_APP     250 /* a=app name -- opens a built-in window-manager app (what the programs in /system/apps do); -1 without a GUI */
 #define SYS_NET_RESOLVE  200
 #define SYS_NET_CONNECT  201
@@ -108,10 +175,13 @@ struct tos_stat {
 };
 
 void syscall_init(void);
-uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c, uint32_t d);
+uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
+                         uint32_t d, uint32_t e, uint32_t f, registers_t *regs);
 
 
 struct proc;
 void syscall_proc_cleanup(struct proc *p);   /* closes a finished process's files and display mode */
+
+void syscall_dump_recent(void);   /* the last Linux syscalls, to the serial port */
 
 #endif

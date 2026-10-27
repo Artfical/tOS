@@ -369,6 +369,31 @@ int vfs_lseek(int fd, uint32_t offset, int whence)
     return m->ops->lseek(m->private_data, fd_table[fd].fd, offset, whence);
 }
 
+int vfs_fd_get_path(int fd, char *buf, uint32_t size)
+{
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].used || !buf || size == 0)
+        return -1;
+    uint32_t i = 0;
+    while (i + 1 < size && fd_table[fd].path[i]) {
+        buf[i] = fd_table[fd].path[i];
+        i++;
+    }
+    buf[i] = 0;
+    return fd_table[fd].path[i] ? -1 : (int)i;
+}
+
+int vfs_getcwd(char *buf, uint32_t size)
+{
+    if (!buf || size == 0) return -1;
+    uint32_t i = 0;
+    while (i + 1 < size && cwd[i]) {
+        buf[i] = cwd[i];
+        i++;
+    }
+    buf[i] = 0;
+    return cwd[i] ? -1 : (int)i;
+}
+
 int vfs_readdir(const char *path, vfs_entry_t *entries, int max)
 {
     denied_flag = 0;
@@ -462,6 +487,17 @@ int vfs_symlink(const char *target, const char *path)
     int rc = m->ops->symlink(m->private_data, target, strip_mount(abs, m));
     if (rc == 0) own_new(m, abs, 0);
     return rc;
+}
+
+int vfs_readlink(const char *path, char *buf, uint32_t size)
+{
+    denied_flag = 0;
+    if (!path || !buf) return -1;
+    char abs[VFS_NAME_LEN];
+    abspath_into(path, abs);
+    mount_t *m = resolve_mount(abs);
+    if (!m || !m->ops || !m->ops->readlink || !may_access(m, abs, VFS_ACC_R)) return -1;
+    return m->ops->readlink(m->private_data, strip_mount(abs, m), buf, size);
 }
 
 int vfs_chmod(const char *path, uint32_t mode)

@@ -43,6 +43,7 @@ typedef struct vfs_ops {
     /* change permission bits (mode != VFS_KEEP) and/or owner (uid/gid != VFS_KEEP); a file system that
      * stores no ownership leaves this NULL and is then not subject to permission checks */
     int   (*setattr)(void *ctx, const char *path, uint32_t mode, uint32_t uid, uint32_t gid);
+    int   (*readlink)(void *ctx, const char *path, char *buf, uint32_t size);
 } vfs_ops_t;
 
 #define VFS_KEEP 0xFFFFFFFFu
@@ -67,6 +68,9 @@ int  vfs_unlink(const char *path);
 int  vfs_stat(const char *path, vfs_entry_t *entry);
 int  vfs_rename(const char *oldpath, const char *newpath);
 int  vfs_symlink(const char *target, const char *path);
+int  vfs_readlink(const char *path, char *buf, uint32_t size);
+int  vfs_fd_get_path(int fd, char *buf, uint32_t size);
+int  vfs_getcwd(char *buf, uint32_t size);
 int  vfs_denied(void);                       /* was the last refused call a permission refusal? */
 int  vfs_chmod_supported(const char *path);  /* does the file system under path keep owners and modes? */
 int  vfs_check_remove(const char *path);     /* 0 = the current user may remove this entry */

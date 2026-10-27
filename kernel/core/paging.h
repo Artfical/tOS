@@ -32,6 +32,8 @@ uint32_t paging_virt_to_phys(uint32_t *dir, uint32_t virt);
 uint32_t *paging_kernel_dir(void);
 uint32_t *paging_current_dir(void);                     /* page directory loaded in CR3 */
 int  paging_map_in(uint32_t *dir, uint32_t virt, uint32_t phys, uint32_t flags);   /* 0 = ok */
+int  paging_unmap_in(uint32_t *dir, uint32_t virt, uint32_t *phys_out);
+int  paging_protect_in(uint32_t *dir, uint32_t virt, uint32_t flags);
 /* Is [virt, virt+len) mapped user-accessible (and writable when `write`) in the loaded directory? */
 int  paging_user_range_ok(uint32_t virt, uint32_t len, int write);
 

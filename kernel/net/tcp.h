@@ -47,6 +47,14 @@ int  tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port);
 int  tcp_send2(int fd, void *data, int len);
 int  tcp_recv2(int fd, uint8_t *buf, int max_len);
 void tcp_close2(int fd);
+void tcp_pump(void);
+int  tcp_connect_begin(int fd, uint32_t dst_ip, uint16_t dst_port);
+int  tcp_connect_poll(int fd);
+int  tcp_rx_ready(int fd);
+int  tcp_recv_nb(int fd, uint8_t *buf, int max_len);
+int  tcp_is_established(int fd);
+void tcp_local(int fd, uint16_t *port);
+void tcp_release(int fd);
 int  tcp_listen(int fd, uint16_t port);
 int  tcp_accept(int fd);
 

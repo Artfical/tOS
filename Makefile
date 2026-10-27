@@ -23,6 +23,20 @@ CFLAGS = -MMD -MP -m32 -ffreestanding -nostdlib -nostartfiles -nodefaultlibs \
          -Ikernel/micropython/ports/tos \
          -Ikernel/audio
 
+ifeq ($(FPU_CONTEXT_SELFTEST),1)
+CFLAGS += -DTOS_FPU_CONTEXT_SELFTEST
+kernel/core/kernel.o kernel/core/scheduler.o: FORCE
+endif
+ifeq ($(ELF32_SELFTEST),1)
+CFLAGS += -DTOS_ELF32_SELFTEST
+kernel/core/kernel.o: FORCE
+initrd.tar: FORCE
+endif
+ifeq ($(NODE_STATIC_SELFTEST),1)
+CFLAGS += -DTOS_NODE_STATIC_SELFTEST
+kernel/core/kernel.o: FORCE
+endif
+
 # Relaxed flags for MicroPython core. It includes a few host libc headers;
 # use the installed host multiarch headers rather than a machine-specific
 # /tmp symlink. With GCC -m32, -print-multiarch names the target tuple, which
@@ -158,6 +172,7 @@ KERNEL_OBJS = \
     kernel/core/tss.o \
     kernel/core/usermode.o \
     kernel/core/proc.o \
+    kernel/core/elf32.o \
     kernel/shell/shell.o \
     kernel/shell/commands/cmd_file.o \
     kernel/shell/commands/cmd_fs.o \
@@ -250,6 +265,7 @@ KERNEL_OBJS = \
     kernel/net/dns.o \
     kernel/net/dhcp.o \
     kernel/net/tcp.o \
+    kernel/net/lsock.o \
     kernel/net/sctp.o \
     kernel/net/dccp.o \
     kernel/net/udplite.o \
@@ -342,6 +358,10 @@ PROGRAMS = assets/boot/bootvideo.bin programs/tosgui_demo.py programs/hello.t pr
 	assets/wolf3d/audiohed.wl1 assets/wolf3d/audiot.wl1 assets/wolf3d/gamemaps.wl1 \
 	assets/wolf3d/maphead.wl1 assets/wolf3d/vgadict.wl1 assets/wolf3d/vgagraph.wl1 \
 	assets/wolf3d/vgahead.wl1 assets/wolf3d/vswap.wl1
+
+ifeq ($(ELF32_SELFTEST),1)
+PROGRAMS += programs/elf32_hello.elf
+endif
 
 .PHONY: all clean run iso
 
@@ -492,11 +512,17 @@ kernel/audio/demo_song.wav: gen_demo_song.py
 kernel/boot/boot.o: kernel/boot/boot.s
 	$(CC) $(CFLAGS) -x assembler-with-cpp -c $< -o $@
 
+programs/elf32_hello.o: programs/elf32_hello.s
+	$(AS) --32 $< -o $@
+
+programs/elf32_hello.elf: programs/elf32_hello.o programs/elf32_hello.ld
+	$(LD) -m elf_i386 -T programs/elf32_hello.ld -o $@ programs/elf32_hello.o
+
 kernel/tOS.elf: $(KERNEL_OBJS)
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
 
 initrd.tar: $(PROGRAMS)
-	tar cf $@ --format=ustar $^
+	tar cf $@ --format=ustar $(PROGRAMS)
 
 tOS.iso: kernel/tOS.elf initrd.tar
 	mkdir -p iso/boot/grub
@@ -541,7 +567,7 @@ FORCE:
 .PHONY: FORCE
 
 clean:
-	rm -f $(KERNEL_OBJS) $(TFIRE_PARTS) kernel/tOS.elf initrd.tar tOS.iso
+	rm -f $(KERNEL_OBJS) $(TFIRE_PARTS) programs/elf32_hello.o programs/elf32_hello.elf kernel/tOS.elf initrd.tar tOS.iso
 	rm -rf iso
 	find kernel -name '*.d' -delete
 

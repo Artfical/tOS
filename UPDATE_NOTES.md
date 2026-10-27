@@ -1,24 +1,12 @@
-# A new start-up, VMware graphics, and Settings that all work
+# Node.js and npm, from tpkg
 
-## about | Start-up and VMware
-- tOS now starts with the Artfical animation, played at its own speed with smooth scaling, and ends on the logo.
-- VMware (SVGA II) shows the boot screen, tOS Recovery and the desktop instead of a black screen or the old text console.
-- VMware needs at least 4 MB of graphics memory for 1280 x 720; with less, tOS starts in text mode and writes the reason to the serial log.
-![The start-up animation](docs/videos/boot-animation.mp4)
-![The desktop on VMware's SVGA II display](docs/screenshots/vmware_desktop.png)
+## terminal | Terminal and tpkg
+- Install Node.js 8 and npm with `sudo tpkg install node`; `node`, `npm` and `npx` are then commands in Terminal.
+- `npm install` does not finish yet; Node itself runs scripts, reads and writes files, and uses the network.
+- tpkg now gets packages from update.artfical.com, checks each download's SHA-256, carries on after a dropped connection, and installs to /system/pkg (on the disk when tOS is installed).
+- The packages, their licenses and their sources are listed at update.artfical.com/pkg.
 
-## settings | System Settings
-- Accent colour now changes buttons, selections and highlights across tOS, and is remembered.
-- The Window shadows and the Show indicators for open apps switches now work.
-- Type in Search to find a section; the first match opens as you type.
-![Accent colour, shadows, Search and the Dock dots](docs/videos/settings.mp4)
-![A pink accent colour](docs/screenshots/settings_accent.png)
-![Search opening Displays](docs/screenshots/settings_search.png)
-
-## launcher | Desktop and Dock
-- The Dock is transparent, and windows stop at the Dock instead of sliding under it.
-- tOS Recovery no longer responds to clicks on its hidden Dock.
-- The pointer speeds up smoothly, and screen updates on VMware no longer wait for each frame.
-- Interface beeps are off by default; turn them on with `beep on` in Terminal.
-![The Dock without the dots under open apps](docs/screenshots/dock_indicators.png)
-![A window stopped above the Dock](docs/screenshots/window_above_dock.png)
+## settings | Linux programs
+- tOS runs static 32-bit Linux programs: threads, timers, files and pipes, /dev/urandom, and network connections over tOS's own TCP/IP (DNS, HTTP and HTTPS).
+- Terminal starts them, and scripts that begin with `#!/usr/bin/env node`, with the session's HOME, USER, PWD and PATH.
+- The initrd can hold up to 8,192 files and folders, with long paths and symbolic links.

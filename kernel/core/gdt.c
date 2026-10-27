@@ -1,5 +1,8 @@
 #include "gdt.h"
 
+#define GDT_TLS_FIRST 6
+#define GDT_TLS_SLOTS 16
+
 struct gdt_entry {
     uint16_t limit_low;
     uint16_t base_low;
@@ -14,8 +17,9 @@ struct gdt_ptr {
     uint32_t base;
 } __attribute__((packed));
 
-static struct gdt_entry gdt_entries[6];
+static struct gdt_entry gdt_entries[GDT_TLS_FIRST + GDT_TLS_SLOTS];
 static struct gdt_ptr gdt_ptr;
+static uint32_t gdt_tls_used;
 
 static void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran)
 {
@@ -36,8 +40,56 @@ void gdt_set_tss(uint32_t tss_addr)
     asm volatile("ltr %%ax" : : "a"(5 << 3));
 }
 
+int gdt_tls_alloc(int requested_entry)
+{
+    uint32_t flags;
+    int result = -1;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    if (requested_entry >= GDT_TLS_FIRST &&
+        requested_entry < GDT_TLS_FIRST + GDT_TLS_SLOTS) {
+        uint32_t bit = 1u << (requested_entry - GDT_TLS_FIRST);
+        if (!(gdt_tls_used & bit)) {
+            gdt_tls_used |= bit;
+            result = requested_entry;
+        }
+    } else if (requested_entry < 0) {
+        for (int i = 0; i < GDT_TLS_SLOTS; i++) {
+            uint32_t bit = 1u << i;
+            if (gdt_tls_used & bit) continue;
+            gdt_tls_used |= bit;
+            result = GDT_TLS_FIRST + i;
+            break;
+        }
+    }
+    asm volatile("pushl %0; popfl" : : "r"(flags));
+    return result;
+}
+
+void gdt_tls_release(int entry)
+{
+    if (entry < GDT_TLS_FIRST || entry >= GDT_TLS_FIRST + GDT_TLS_SLOTS) return;
+    uint32_t flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    gdt_tls_used &= ~(1u << (entry - GDT_TLS_FIRST));
+    gdt_set_gate(entry, 0, 0, 0, 0);
+    asm volatile("pushl %0; popfl" : : "r"(flags));
+}
+
+int gdt_tls_set(int entry, uint32_t base, uint32_t limit,
+                uint8_t access, uint8_t granularity)
+{
+    if (entry < GDT_TLS_FIRST || entry >= GDT_TLS_FIRST + GDT_TLS_SLOTS ||
+        !(gdt_tls_used & (1u << (entry - GDT_TLS_FIRST)))) return -1;
+    uint32_t flags;
+    asm volatile("pushfl; popl %0; cli" : "=r"(flags));
+    gdt_set_gate(entry, base, limit, access, granularity);
+    asm volatile("pushl %0; popfl" : : "r"(flags));
+    return 0;
+}
+
 void gdt_init(void)
 {
+    gdt_tls_used = 0;
     gdt_ptr.limit = sizeof(gdt_entries) - 1;
     gdt_ptr.base = (uint32_t)&gdt_entries;
 

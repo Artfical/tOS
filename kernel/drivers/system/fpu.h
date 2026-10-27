@@ -1,6 +1,7 @@
 #ifndef FPU_H
 #define FPU_H
 #include <stdint.h>
+#define FPU_STATE_SIZE 512
 #define FPU_CR0_EM (1 << 2)
 #define FPU_CR0_MP (1 << 1)
 #define FPU_CR0_NE (1 << 5)
@@ -10,8 +11,12 @@
 typedef struct {
     int present;
     int has_sse;
+    int has_sse2;
+    int has_fxsave;
 } fpu_device_t;
 int fpu_init(fpu_device_t *fpu);
+void fpu_state_init(void *state);
 void fpu_save_state(void *state);
 void fpu_restore_state(void *state);
+int fpu_has_sse2(void);
 #endif

@@ -15,7 +15,7 @@ typedef struct {
     uint16_t src_port;
 } udp_socket_t;
 
-#define UDP_SOCKETS 4
+#define UDP_SOCKETS 16
 static udp_socket_t udp_sockets[UDP_SOCKETS];
 
 void udp_init(void)
@@ -45,6 +45,14 @@ int udp_listen(uint16_t port, uint8_t *resp, int max_len, uint32_t *src_ip, uint
     udp_sockets[idx].has_data = 0;
     udp_sockets[idx].data = 0;
     return n;
+}
+
+/* a datagram waiting on the port? (without taking it) */
+int udp_has_data(uint16_t port)
+{
+    for (int i = 0; i < UDP_SOCKETS; i++)
+        if (udp_sockets[i].used && udp_sockets[i].port == port && udp_sockets[i].has_data) return udp_sockets[i].len;
+    return -1;
 }
 
 void udp_close(uint16_t port)

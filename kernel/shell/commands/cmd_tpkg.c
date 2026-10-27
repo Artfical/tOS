@@ -3,854 +3,567 @@
 #include "terminal.h"
 #include "string.h"
 #include "memory.h"
-#include "ramfs.h"
+#include "fsbridge.h"
 #include "dns.h"
 #include "http.h"
-#include "tarfmt.h"
+#include "https.h"
+#include "sha256.h"
+#include "png.h"
 
-/* tpkg: a minimal package manager talking to a Flask+Waitress server
- * at a fixed, well-known address -- no host/port argument needed.
- * `tpkg list` hits /api/list (plain text, one
- * "name|version|license|desc" per line); `tpkg install <name>` hits
- * /api/download/<name> (a raw ustar .tar), saves it to ramfs, and
- * extracts it into /system/programs/<name>/ with the tar support this
- * kernel already has. */
-#define TPKG_HOST "pkg.artfical.com"
-#define TPKG_PORT 80
-#define TPKG_BUF_SIZE (256 * 1024)
+/* tpkg: tOS's package manager. Packages live on update.artfical.com:
+ *   GET https://update.artfical.com/pkg/api/list
+ *       one "name|version|license|desc|size|sha256|path" line per package
+ *   GET http://update.artfical.com<path>
+ *       the package: a gzip-compressed ustar archive. It comes over plain HTTP, the way Software
+ *       Update fetches the kernel (its SHA-256 came over HTTPS and is checked; TLS in software is
+ *       many times slower), and a broken download carries on from where it stopped.
+ * A package unpacks into /system/pkg/<name> (on the disk of an installed system), and the
+ * commands listed in its tpkg.commands ("name=path inside the package") go on the PATH. */
+
+#define TPKG_HOST       "update.artfical.com"
+#define TPKG_PKG_ROOT   "/system/pkg"
+#define TPKG_PATH_FILE  "/system/path.tmbl"      /* name=/full/path, read by the shell */
+#define TPKG_DB_FILE    "/system/tpkg_db.tmbl"   /* installed: name|version|destdir */
+#define TPKG_CACHE_FILE "/system/tpkg_cache.tmbl"/* the last server list */
+#define TPKG_LIST_CAP   (64 * 1024)
+
+typedef struct {
+    char name[40], version[32], license[32], desc[120], sha[65], path[128];
+    uint32_t size;
+} tpkg_entry_t;
 
 static void print_uint(uint32_t n)
 {
-    char buf[12];
+    char b[12];
     int i = 11;
-    buf[11] = '\0';
-    if (n == 0) { buf[10] = '0'; terminal_writestring(buf + 10); return; }
-    while (n > 0 && i > 0) { buf[--i] = '0' + (n % 10); n /= 10; }
-    terminal_writestring(buf + i);
+    b[11] = 0;
+    if (!n) { terminal_writestring("0"); return; }
+    while (n && i) { b[--i] = (char)('0' + n % 10); n /= 10; }
+    terminal_writestring(b + i);
 }
 
-#define TPKG_PATH_FILE "/system/path.tmbl"
-#define TPKG_DB_FILE "/system/tpkg_db.tmbl"     /* installed packages: name|version|destdir */
-#define TPKG_CACHE_FILE "/system/tpkg_cache.tmbl" /* last `tpkg update`: raw server list body */
-
-/* Reads a whole file into a malloc'd, NUL-terminated buffer. NULL if
- * missing/empty/OOM. *len_out (if given) is the byte count, not
- * counting the added NUL. */
-static char *tpkg_read_whole(const char *path, int *len_out)
+static void print_mb(uint32_t bytes)
 {
-    if (!ramfs_exists(path)) return NULL;
-    uint32_t size = ramfs_size(path);
-    if (size == 0) return NULL;
-    char *buf = (char *)malloc(size + 1);
-    if (!buf) return NULL;
-    int n = ramfs_read(path, buf, size, 0);
-    if (n <= 0) { free(buf); return NULL; }
+    print_uint(bytes / 1000000);
+    terminal_putchar('.');
+    print_uint(bytes / 100000 % 10);
+    terminal_writestring(" MB");
+}
+
+/* ---- files, through the VFS: /system is the disk on an installed system ---- */
+
+static char *read_whole(const char *path, uint32_t *len)
+{
+    if (!fsbridge_exists(path)) return 0;
+    uint32_t size = fsbridge_size(path);
+    char *buf = malloc(size + 1);
+    if (!buf) return 0;
+    int n = size ? fsbridge_read(path, buf, size, 0) : 0;
+    if (n < 0) { free(buf); return 0; }
     buf[n] = 0;
-    if (len_out) *len_out = n;
+    if (len) *len = (uint32_t)n;
     return buf;
 }
 
-/* Replaces a file's entire contents. ramfs_write() only ever grows a
- * file's reported size, never shrinks it (see ramfs_vfs_write() in
- * ramfs.c), so an in-place overwrite can't be used when the new
- * content might be shorter than the old -- delete and recreate
- * instead, every time, for a real "this is now the whole file"
- * semantic. */
-static void tpkg_write_whole(const char *path, const char *content, int len)
+/* replaces the file's contents (a write never makes a file shorter) */
+static int write_whole(const char *path, const void *data, uint32_t len)
 {
-    if (!ramfs_exists("/system")) ramfs_mkdir("/system");
-    if (ramfs_exists(path)) ramfs_delete(path);
-    if (ramfs_create(path) != 0) return;
-    if (len > 0) ramfs_write(path, content, (uint32_t)len, 0);
-}
-
-/* Appends one "cmdname=fullpath\n" line to /sys/path.tmbl for the
- * shell's command fallback (shell.c's path_fallback_exec()).
- * Idempotent against the exact same line, so re-installing the same
- * package version doesn't grow the file forever. */
-static void tpkg_path_register(const char *cmdname, const char *fullpath)
-{
-    if (!ramfs_exists("/system")) ramfs_mkdir("/system");
-
-    char line[224];
-    int i = 0;
-    while (cmdname[i] && i < 60) { line[i] = cmdname[i]; i++; }
-    line[i++] = '=';
-    const char *p = fullpath;
-    while (*p && i < 222) { line[i++] = *p++; }
-    line[i++] = '\n';
-
-    uint32_t size = ramfs_exists(TPKG_PATH_FILE) ? ramfs_size(TPKG_PATH_FILE) : 0;
-    if (size > 0) {
-        char *buf = (char *)malloc(size + 1);
-        if (buf) {
-            int n = ramfs_read(TPKG_PATH_FILE, buf, size, 0);
-            if (n > 0) {
-                buf[n] = 0;
-                char *found = strstr(buf, line);
-                /* strstr alone could match a substring spanning two
-                 * lines by accident; also require it to start right
-                 * after a '\n' (or at the very start of the file). */
-                if (found && (found == buf || *(found - 1) == '\n')) {
-                    free(buf);
-                    return; /* already registered */
-                }
-            }
-            free(buf);
-        }
-    }
-
-    if (!ramfs_exists(TPKG_PATH_FILE)) ramfs_create(TPKG_PATH_FILE);
-    ramfs_write(TPKG_PATH_FILE, line, i, size);
-}
-
-/* Trims a trailing \r/\n/space run off a command-name sidecar's
- * content -- files written from a text editor or `echo` almost
- * always carry a trailing newline that isn't part of the name. */
-static void trim_trailing_ws(char *s)
-{
-    int n = strlen(s);
-    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' ' || s[n - 1] == '\t')) {
-        s[--n] = 0;
-    }
-}
-
-/* Scans an extracted package directory for "<file>.txt" sidecars --
- * each one declares the command name that "<file>" (a .py or .t
- * sitting right next to it) should be invokable as, decoupling the
- * shell command name from the file's own basename and letting one
- * package expose several commands. Falls back to registering
- * <pkgname> -> <destdir>/<pkgname>.py or .t if the package ships no
- * sidecars at all (older/simpler packages). */
-static void tpkg_register_package(const char *destdir, const char *pkgname)
-{
-    vfs_entry_t entries[64];
-    int count = ramfs_list(destdir, entries, 64);
-    int registered_any = 0;
-
-    for (int i = 0; i < count; i++) {
-        if (entries[i].is_dir) continue;
-        int name_len = strlen(entries[i].name);
-        if (name_len <= 4 || strcmp(entries[i].name + name_len - 4, ".txt") != 0)
-            continue;
-
-        char base_name[VFS_NAME_LEN];
-        int base_len = name_len - 4;
-        int k = 0;
-        while (k < base_len && k < VFS_NAME_LEN - 1) { base_name[k] = entries[i].name[k]; k++; }
-        base_name[k] = 0;
-
-        int base_ok = 0;
-        for (int j = 0; j < count; j++) {
-            if (!entries[j].is_dir && strcmp(entries[j].name, base_name) == 0) { base_ok = 1; break; }
-        }
-        if (!base_ok) continue;
-
-        char sidecar_path[192];
-        int p = 0;
-        while (destdir[p] && p < 160) { sidecar_path[p] = destdir[p]; p++; }
-        sidecar_path[p++] = '/';
-        int q = 0;
-        while (entries[i].name[q] && p < 190) sidecar_path[p++] = entries[i].name[q++];
-        sidecar_path[p] = 0;
-
-        uint32_t sc_size = ramfs_size(sidecar_path);
-        if (sc_size == 0 || sc_size > 60) continue;
-        char cmdname[64];
-        int n = ramfs_read(sidecar_path, cmdname, sc_size, 0);
-        if (n <= 0) continue;
-        cmdname[n] = 0;
-        trim_trailing_ws(cmdname);
-        if (!cmdname[0]) continue;
-
-        char full_path[192];
-        p = 0;
-        while (destdir[p] && p < 160) { full_path[p] = destdir[p]; p++; }
-        full_path[p++] = '/';
-        q = 0;
-        while (base_name[q] && p < 190) full_path[p++] = base_name[q++];
-        full_path[p] = 0;
-
-        tpkg_path_register(cmdname, full_path);
-        registered_any = 1;
-    }
-
-    if (!registered_any) {
-        char full_path[192];
-        int p = 0;
-        while (destdir[p] && p < 150) { full_path[p] = destdir[p]; p++; }
-        full_path[p] = 0;
-        int base = p;
-        full_path[base++] = '/';
-        int q = 0;
-        while (pkgname[q] && base < 180) full_path[base++] = pkgname[q++];
-        full_path[base] = 0;
-        int ext_at = base;
-
-        strcat(full_path, ".py");
-        if (ramfs_exists(full_path)) {
-            tpkg_path_register(pkgname, full_path);
-            return;
-        }
-        full_path[ext_at] = 0;
-        strcat(full_path, ".t");
-        if (ramfs_exists(full_path)) {
-            tpkg_path_register(pkgname, full_path);
-        }
-    }
-}
-
-/* Drops every path.tmbl line whose target lives under `destdir/` --
- * used by `tpkg remove` to undo whatever tpkg_register_package()
- * (or tpkg_path_register() directly) added for this package,
- * whether that was one line (no sidecars) or several (one per
- * sidecar-declared command). */
-static void tpkg_path_unregister_dir(const char *destdir)
-{
-    int len;
-    char *buf = tpkg_read_whole(TPKG_PATH_FILE, &len);
-    if (!buf) return;
-
-    char *out = (char *)malloc(len + 1);
-    if (!out) { free(buf); return; }
-    int out_len = 0;
-    int dir_len = strlen(destdir);
-
-    char *p = buf;
-    while (*p) {
-        char *line_start = p;
-        while (*p && *p != '\n') p++;
-        int line_len = (int)(p - line_start);
-        if (*p == '\n') p++;
-
-        char *eq = NULL;
-        for (int i = 0; i < line_len; i++) {
-            if (line_start[i] == '=') { eq = line_start + i; break; }
-        }
-        int drop = 0;
-        if (eq) {
-            char *val = eq + 1;
-            int val_len = line_len - (int)(val - line_start);
-            if (val_len > dir_len && strncmp(val, destdir, dir_len) == 0 && val[dir_len] == '/')
-                drop = 1;
-        }
-        if (!drop && line_len > 0) {
-            memcpy(out + out_len, line_start, line_len);
-            out_len += line_len;
-            out[out_len++] = '\n';
-        }
-    }
-
-    tpkg_write_whole(TPKG_PATH_FILE, out, out_len);
-    free(out);
-    free(buf);
-}
-
-/* Adds or updates one "name|version|destdir\n" line in the local
- * installed-packages database (/sys/tpkg_db.tmbl) -- rewrites the
- * whole file with any existing line for this name replaced, since
- * ramfs_write() can't shrink a file for a plain in-place edit. */
-static void tpkg_db_upsert(const char *name, const char *version, const char *destdir)
-{
-    int len = 0;
-    char *buf = tpkg_read_whole(TPKG_DB_FILE, &len);
-    int name_len = strlen(name);
-
-    int cap = (buf ? len : 0) + strlen(name) + strlen(version) + strlen(destdir) + 8;
-    char *out = (char *)malloc(cap);
-    if (!out) { if (buf) free(buf); return; }
-    int out_len = 0;
-
-    if (buf) {
-        char *p = buf;
-        while (*p) {
-            char *line_start = p;
-            while (*p && *p != '\n') p++;
-            int line_len = (int)(p - line_start);
-            if (*p == '\n') p++;
-
-            char *bar = NULL;
-            for (int i = 0; i < line_len; i++) {
-                if (line_start[i] == '|') { bar = line_start + i; break; }
-            }
-            int is_match = bar && (bar - line_start) == name_len &&
-                           strncmp(line_start, name, name_len) == 0;
-            if (!is_match && line_len > 0) {
-                memcpy(out + out_len, line_start, line_len);
-                out_len += line_len;
-                out[out_len++] = '\n';
-            }
-        }
-        free(buf);
-    }
-
-    const char *s = name;
-    while (*s) out[out_len++] = *s++;
-    out[out_len++] = '|';
-    s = version;
-    while (*s) out[out_len++] = *s++;
-    out[out_len++] = '|';
-    s = destdir;
-    while (*s) out[out_len++] = *s++;
-    out[out_len++] = '\n';
-
-    tpkg_write_whole(TPKG_DB_FILE, out, out_len);
-    free(out);
-}
-
-/* Drops the line for `name` from the local installed-packages
- * database, if present. */
-static void tpkg_db_remove(const char *name)
-{
-    int len;
-    char *buf = tpkg_read_whole(TPKG_DB_FILE, &len);
-    if (!buf) return;
-    int name_len = strlen(name);
-
-    char *out = (char *)malloc(len + 1);
-    if (!out) { free(buf); return; }
-    int out_len = 0;
-
-    char *p = buf;
-    while (*p) {
-        char *line_start = p;
-        while (*p && *p != '\n') p++;
-        int line_len = (int)(p - line_start);
-        if (*p == '\n') p++;
-
-        char *bar = NULL;
-        for (int i = 0; i < line_len; i++) {
-            if (line_start[i] == '|') { bar = line_start + i; break; }
-        }
-        int is_match = bar && (bar - line_start) == name_len &&
-                       strncmp(line_start, name, name_len) == 0;
-        if (!is_match && line_len > 0) {
-            memcpy(out + out_len, line_start, line_len);
-            out_len += line_len;
-            out[out_len++] = '\n';
-        }
-    }
-
-    tpkg_write_whole(TPKG_DB_FILE, out, out_len);
-    free(out);
-    free(buf);
-}
-
-/* Looks up `name`'s installed destdir (and optionally its recorded
- * version) in the local database. Returns 1 if found. Both out
- * buffers are 128 bytes; pass NULL for version_out to skip it. */
-static int tpkg_db_find(const char *name, char *destdir_out, char *version_out)
-{
-    int len;
-    char *buf = tpkg_read_whole(TPKG_DB_FILE, &len);
-    if (!buf) return 0;
-    int name_len = strlen(name);
-    int found = 0;
-
-    char *p = buf;
-    while (*p) {
-        char *line_start = p;
-        while (*p && *p != '\n') p++;
-        int line_len = (int)(p - line_start);
-        if (*p == '\n') p++;
-
-        char *bar1 = NULL;
-        for (int i = 0; i < line_len; i++) {
-            if (line_start[i] == '|') { bar1 = line_start + i; break; }
-        }
-        if (bar1 && (bar1 - line_start) == name_len && strncmp(line_start, name, name_len) == 0) {
-            char *bar2 = NULL;
-            for (char *q = bar1 + 1; q < line_start + line_len; q++) {
-                if (*q == '|') { bar2 = q; break; }
-            }
-            if (bar2) {
-                if (version_out) {
-                    int vlen = (int)(bar2 - (bar1 + 1));
-                    int k = 0;
-                    while (k < vlen && k < 127) { version_out[k] = bar1[1 + k]; k++; }
-                    version_out[k] = 0;
-                }
-                if (destdir_out) {
-                    int dlen = (int)(line_start + line_len - (bar2 + 1));
-                    int k = 0;
-                    while (k < dlen && k < 127) { destdir_out[k] = bar2[1 + k]; k++; }
-                    destdir_out[k] = 0;
-                }
-                found = 1;
-            }
-            break;
-        }
-    }
-    free(buf);
-    return found;
-}
-
-/* Looks up `name`'s version in the cached server list
- * (/sys/tpkg_cache.tmbl, refreshed by `tpkg update`). Returns 1 if
- * found. version_out is 64 bytes. */
-static int tpkg_cache_find_version(const char *name, char *version_out)
-{
-    int len;
-    char *buf = tpkg_read_whole(TPKG_CACHE_FILE, &len);
-    if (!buf) return 0;
-    int name_len = strlen(name);
-    int found = 0;
-
-    char *p = buf;
-    while (*p) {
-        char *line_start = p;
-        while (*p && *p != '\n') p++;
-        int line_len = (int)(p - line_start);
-        if (*p == '\n') p++;
-
-        char *bar1 = NULL;
-        for (int i = 0; i < line_len; i++) {
-            if (line_start[i] == '|') { bar1 = line_start + i; break; }
-        }
-        if (bar1 && (bar1 - line_start) == name_len && strncmp(line_start, name, name_len) == 0) {
-            char *bar2 = NULL;
-            for (char *q = bar1 + 1; q < line_start + line_len; q++) {
-                if (*q == '|') { bar2 = q; break; }
-            }
-            int vend_len = bar2 ? (int)(bar2 - (bar1 + 1)) : (int)(line_start + line_len - (bar1 + 1));
-            int k = 0;
-            while (k < vend_len && k < 63) { version_out[k] = bar1[1 + k]; k++; }
-            version_out[k] = 0;
-            found = 1;
-            break;
-        }
-    }
-    free(buf);
-    return found;
-}
-
-/* Looks up `name`'s license (3rd field) in the cached server list
- * (/sys/tpkg_cache.tmbl, refreshed by `tpkg update`). Returns 1 if
- * found. license_out is 64 bytes. */
-static int tpkg_cache_find_license(const char *name, char *license_out)
-{
-    int len;
-    char *buf = tpkg_read_whole(TPKG_CACHE_FILE, &len);
-    if (!buf) return 0;
-    int name_len = strlen(name);
-    int found = 0;
-
-    char *p = buf;
-    while (*p) {
-        char *line_start = p;
-        while (*p && *p != '\n') p++;
-        int line_len = (int)(p - line_start);
-        if (*p == '\n') p++;
-
-        char *bar1 = NULL;
-        for (int i = 0; i < line_len; i++) {
-            if (line_start[i] == '|') { bar1 = line_start + i; break; }
-        }
-        if (bar1 && (bar1 - line_start) == name_len && strncmp(line_start, name, name_len) == 0) {
-            char *bar2 = NULL;
-            for (char *q = bar1 + 1; q < line_start + line_len; q++) {
-                if (*q == '|') { bar2 = q; break; }
-            }
-            if (!bar2) break; /* malformed line, bail */
-            char *bar3 = NULL;
-            for (char *q = bar2 + 1; q < line_start + line_len; q++) {
-                if (*q == '|') { bar3 = q; break; }
-            }
-            if (!bar3) break; /* older 3-field entry (name|version|desc)
-                                * -- no license field to read, and the
-                                * text after bar2 here is the
-                                * description, not a license. */
-            int lend_len = (int)(bar3 - (bar2 + 1));
-            int k = 0;
-            while (k < lend_len && k < 63) { license_out[k] = bar2[1 + k]; k++; }
-            license_out[k] = 0;
-            found = 1;
-            break;
-        }
-    }
-    free(buf);
-    return found;
-}
-
-static int tpkg_resolve(uint32_t *ip)
-{
-    terminal_writestring("Resolving " TPKG_HOST "... ");
-    int rc = dns_resolve(TPKG_HOST, ip);
-    if (rc != 0) {
-        terminal_writestring("FAILED (");
-        terminal_writestring(dns_strerror(rc));
-        terminal_writestring(")\n");
-        return -1;
-    }
-    terminal_writestring("OK\n");
+    if (fsbridge_exists(path)) fsbridge_delete(path);
+    if (fsbridge_create(path) != 0) return -1;
+    if (len && fsbridge_write(path, data, len, 0) != (int)len) return -1;
     return 0;
 }
 
-/* Prints a "name|version|description" list (either the raw server
- * response body or the cached copy of it) as a formatted table. */
-static void tpkg_print_list_body(char *body)
+/* every folder of `path` (and `path` itself if `self`), made if missing */
+static void mkdir_p(const char *path, int self)
 {
-    terminal_writestring("NAME            VERSION    LICENSE              DESCRIPTION\n");
-    char *line = body;
-    while (*line) {
-        char *nl = strchr(line, '\n');
-        if (nl) *nl = '\0';
-
-        if (*line) {
-            char *bar1 = strchr(line, '|');
-            char *bar2 = bar1 ? strchr(bar1 + 1, '|') : 0;
-            char *bar3 = bar2 ? strchr(bar2 + 1, '|') : 0;
-            if (bar1 && bar2 && bar3) {
-                *bar1 = '\0'; *bar2 = '\0'; *bar3 = '\0';
-                const char *name = line, *ver = bar1 + 1, *lic = bar2 + 1, *desc = bar3 + 1;
-                terminal_writestring(name);
-                int pad = 16 - (int)strlen(name);
-                for (int k = 0; k < pad; k++) terminal_putchar(' ');
-                terminal_writestring(ver);
-                pad = 11 - (int)strlen(ver);
-                for (int k = 0; k < pad; k++) terminal_putchar(' ');
-                terminal_writestring(lic);
-                pad = 21 - (int)strlen(lic);
-                for (int k = 0; k < pad; k++) terminal_putchar(' ');
-                terminal_writestring(desc);
-                terminal_putchar('\n');
-            } else if (bar1 && bar2) {
-                /* backward-compat: older 3-field cache entries */
-                *bar1 = '\0'; *bar2 = '\0';
-                const char *name = line, *ver = bar1 + 1, *desc = bar2 + 1;
-                terminal_writestring(name);
-                int pad = 16 - (int)strlen(name);
-                for (int k = 0; k < pad; k++) terminal_putchar(' ');
-                terminal_writestring(ver);
-                pad = 11 - (int)strlen(ver);
-                for (int k = 0; k < pad; k++) terminal_putchar(' ');
-                terminal_writestring("?");
-                pad = 20;
-                for (int k = 0; k < pad; k++) terminal_putchar(' ');
-                terminal_writestring(desc);
-                terminal_putchar('\n');
-            }
-        }
-
-        if (!nl) break;
-        line = nl + 1;
+    char p[VFS_NAME_LEN];
+    strncpy(p, path, sizeof(p) - 1);
+    p[sizeof(p) - 1] = 0;
+    int n = (int)strlen(p);
+    for (int i = 1; i <= n; i++) {
+        if (p[i] != '/' && !(self && i == n)) continue;
+        char c = p[i];
+        p[i] = 0;
+        if (!fsbridge_exists(p)) fsbridge_mkdir(p);
+        p[i] = c;
     }
 }
 
-/* Fetches /api/list from the server and saves the raw body to the
- * local cache (/sys/tpkg_cache.tmbl) -- `tpkg look`/`tpkg upgrade`
- * read that cache instead of hitting the network every time.
- * Returns 1 on success. */
-static int tpkg_update(uint32_t ip, int quiet)
+/* the folder and everything in it */
+static void remove_tree(const char *path)
 {
-    uint8_t *resp = (uint8_t *)malloc(TPKG_BUF_SIZE);
-    if (!resp) { terminal_writestring("tpkg: out of memory\n"); return 0; }
+    if (fsbridge_is_dir(path)) {
+        int n;
+        vfs_entry_t *list = fsbridge_list_all(path, &n);
+        for (int i = 0; list && i < n; i++) {
+            if (!strcmp(list[i].name, ".") || !strcmp(list[i].name, "..")) continue;
+            char child[VFS_NAME_LEN];
+            strcpy(child, path);
+            if (strlen(child) + strlen(list[i].name) + 2 > sizeof(child)) continue;
+            strcat(child, "/");
+            strcat(child, list[i].name);
+            remove_tree(child);
+        }
+        if (list) free(list);
+    }
+    fsbridge_delete(path);
+}
 
-    int n = http_get(ip, TPKG_HOST, TPKG_PORT, "/api/list", resp, TPKG_BUF_SIZE - 1);
-    if (n < 0) {
-        terminal_writestring("tpkg: update FAILED (");
-        terminal_writestring(http_strerror(n));
-        terminal_writestring(")\n");
+/* ---- the line files: path.tmbl and the database ---- */
+
+/* drops every line whose value (after '=' or the second '|') starts with `prefix`, or whose
+ * key (before '=' or '|') is `key`; then appends `add` if given */
+static void edit_lines(const char *file, char sep, const char *key, const char *prefix, const char *add)
+{
+    uint32_t len = 0;
+    char *old = read_whole(file, &len);
+    uint32_t cap = len + (add ? strlen(add) : 0) + 2;
+    char *out = malloc(cap);
+    if (!out) { if (old) free(old); return; }
+    uint32_t o = 0;
+    for (char *p = old; p && *p;) {
+        char *line = p;
+        while (*p && *p != '\n') p++;
+        uint32_t ll = (uint32_t)(p - line);
+        if (*p) p++;
+        if (!ll) continue;
+        char *s = 0;
+        for (uint32_t i = 0; i < ll; i++) if (line[i] == sep) { s = line + i; break; }
+        int drop = 0;
+        if (s && key && (uint32_t)(s - line) == strlen(key) && !strncmp(line, key, strlen(key))) drop = 1;
+        if (s && prefix) {
+            const char *val = s + 1;
+            if (sep == '|') { const char *v2 = 0; for (const char *c = val; c < line + ll; c++) if (*c == '|') { v2 = c + 1; break; } val = v2 ? v2 : val; }
+            uint32_t pl = (uint32_t)strlen(prefix);
+            if ((uint32_t)(line + ll - val) >= pl && !strncmp(val, prefix, pl)) drop = 1;
+        }
+        if (drop) continue;
+        memcpy(out + o, line, ll);
+        o += ll;
+        out[o++] = '\n';
+    }
+    if (add) {
+        uint32_t al = (uint32_t)strlen(add);
+        memcpy(out + o, add, al);
+        o += al;
+        out[o++] = '\n';
+    }
+    if (!fsbridge_exists("/system")) fsbridge_mkdir("/system");
+    write_whole(file, out, o);
+    free(out);
+    if (old) free(old);
+}
+
+static int db_find(const char *name, char *version, char *destdir)
+{
+    char *db = read_whole(TPKG_DB_FILE, 0);
+    int found = 0;
+    for (char *p = db; p && *p && !found;) {
+        char *line = p;
+        while (*p && *p != '\n') p++;
+        if (*p) *p++ = 0;
+        char *a = strchr(line, '|');
+        if (!a) continue;
+        *a = 0;
+        char *b = strchr(a + 1, '|');
+        if (!b) continue;
+        *b = 0;
+        if (strcmp(line, name)) continue;
+        if (version) { strncpy(version, a + 1, 31); version[31] = 0; }
+        if (destdir) { strncpy(destdir, b + 1, VFS_NAME_LEN - 1); destdir[VFS_NAME_LEN - 1] = 0; }
+        found = 1;
+    }
+    if (db) free(db);
+    return found;
+}
+
+/* ---- the server ---- */
+
+static int field_copy(char **p, char *out, uint32_t cap)
+{
+    char *s = *p, *e = s;
+    while (*e && *e != '|' && *e != '\n') e++;
+    uint32_t n = (uint32_t)(e - s);
+    if (n >= cap) n = cap - 1;
+    memcpy(out, s, n);
+    out[n] = 0;
+    *p = *e == '|' ? e + 1 : e;
+    return *e == '|';
+}
+
+/* the n-th package line of a list (0-based); 0 when there is none */
+static int list_entry(const char *list, int n, tpkg_entry_t *e)
+{
+    const char *p = list;
+    for (int i = 0; p && *p; i++) {
+        const char *line = p;
+        while (*p && *p != '\n') p++;
+        uint32_t ll = (uint32_t)(p - line);
+        if (*p) p++;
+        if (!ll || line[0] == '#') { i--; continue; }
+        if (i != n) continue;
+        char buf[512];
+        if (ll >= sizeof(buf)) ll = sizeof(buf) - 1;
+        memcpy(buf, line, ll);
+        buf[ll] = 0;
+        char *c = buf, size[16] = "";
+        memset(e, 0, sizeof(*e));
+        field_copy(&c, e->name, sizeof(e->name));
+        field_copy(&c, e->version, sizeof(e->version));
+        field_copy(&c, e->license, sizeof(e->license));
+        field_copy(&c, e->desc, sizeof(e->desc));
+        field_copy(&c, size, sizeof(size));
+        field_copy(&c, e->sha, sizeof(e->sha));
+        field_copy(&c, e->path, sizeof(e->path));
+        for (char *s = size; *s >= '0' && *s <= '9'; s++) e->size = e->size * 10 + (uint32_t)(*s - '0');
+        return 1;
+    }
+    return 0;
+}
+
+static int find_entry(const char *list, const char *name, tpkg_entry_t *e)
+{
+    for (int i = 0; list_entry(list, i, e); i++) if (!strcmp(e->name, name)) return 1;
+    return 0;
+}
+
+static int resolve(uint32_t *ip)
+{
+    if (dns_resolve(TPKG_HOST, ip) == 0) return 0;
+    terminal_writestring("tpkg: can't reach " TPKG_HOST " (check the network)\n");
+    return -1;
+}
+
+static int header_end(const uint8_t *b, int n)
+{
+    for (int i = 0; i + 3 < n; i++) if (b[i] == '\r' && b[i + 1] == '\n' && b[i + 2] == '\r' && b[i + 3] == '\n') return i + 4;
+    return -1;
+}
+
+/* the server's list, saved as the cache; a malloc'd string, or 0 */
+static char *fetch_list(uint32_t ip, int quiet)
+{
+    uint8_t *resp = malloc(TPKG_LIST_CAP);
+    if (!resp) return 0;
+    int n = https_get(ip, TPKG_HOST, 443, "/pkg/api/list", resp, TPKG_LIST_CAP - 1);
+    int he = n > 12 ? header_end(resp, n) : -1;
+    if (n <= 12 || strncmp((char *)resp + 9, "200", 3) || he < 0) {
+        if (!quiet) terminal_writestring("tpkg: the package server did not answer\n");
         free(resp);
         return 0;
     }
-    if (n == 0) { terminal_writestring("tpkg: server returned no data\n"); free(resp); return 0; }
-    resp[n] = '\0';
-
-    char *body = strstr((char *)resp, "\r\n\r\n");
-    if (!body) { terminal_writestring("tpkg: malformed server response\n"); free(resp); return 0; }
-    body += 4;
-    int body_len = n - (int)(body - (char *)resp);
-
-    tpkg_write_whole(TPKG_CACHE_FILE, body, body_len);
-    if (!quiet) {
-        terminal_writestring("Package list updated (");
-        int count = 0;
-        for (char *p = body; *p; p++) if (*p == '\n') count++;
-        print_uint((uint32_t)count);
-        terminal_writestring(" package(s))\n");
+    uint32_t bl = (uint32_t)(n - he);
+    char *list = malloc(bl + 1);
+    if (list) {
+        memcpy(list, resp + he, bl);
+        list[bl] = 0;
+        write_whole(TPKG_CACHE_FILE, list, bl);
     }
     free(resp);
+    return list;
+}
+
+static char *cached_or_fetched(uint32_t ip)
+{
+    char *list = read_whole(TPKG_CACHE_FILE, 0);
+    return list ? list : fetch_list(ip, 0);
+}
+
+/* ---- downloading ---- */
+
+static uint32_t dl_total, dl_part, dl_shown;
+
+static void on_progress(int received)
+{
+    uint32_t got = dl_part + (uint32_t)received;
+    uint32_t pct = dl_total ? (uint32_t)((uint64_t)got * 100 / dl_total) : 0;
+    if (pct > 100) pct = 100;
+    if (pct >= dl_shown + 10) {
+        dl_shown = pct - pct % 10;
+        terminal_writestring(" ");
+        print_uint(dl_shown);
+        terminal_writestring("%");
+    }
+}
+
+/* the whole file at `path`, `size` bytes, into *data (inside *buf, which the caller frees) */
+static int download(uint32_t ip, const char *path, uint32_t size, uint8_t **buf, uint8_t **data)
+{
+    int cap = (int)size + 32768;
+    uint8_t *b = malloc((uint32_t)cap);
+    if (!b) { terminal_writestring(" not enough memory\n"); return -1; }
+    uint32_t got = 0;
+    int he0 = -1;
+    dl_total = size; dl_part = 0; dl_shown = 0;
+    http_progress = on_progress;
+    for (int attempt = 0; attempt < 8 && (he0 < 0 || got < size); attempt++) {
+        if (he0 < 0) {
+            int n = http_get(ip, TPKG_HOST, 80, path, b, cap);
+            if (n <= 12 || strncmp((char *)b, "HTTP/1.", 7) || strncmp((char *)b + 9, "200", 3)) continue;
+            he0 = header_end(b, n);
+            if (he0 < 0) continue;
+            got = (uint32_t)(n - he0);
+        } else {
+            /* the rest: read after what is there, then drop the answer's headers */
+            uint8_t *dst = b + he0 + got;
+            dl_part = got;
+            int n = http_get_from(ip, TPKG_HOST, 80, path, got, dst, cap - he0 - (int)got);
+            if (n <= 12 || strncmp((char *)dst, "HTTP/1.", 7) || strncmp((char *)dst + 9, "206", 3)) continue;
+            int he = header_end(dst, n);
+            if (he < 0) continue;
+            memmove(dst, dst + he, (size_t)(n - he));
+            got += (uint32_t)(n - he);
+        }
+    }
+    http_progress = 0;
+    terminal_putchar('\n');
+    if (he0 < 0 || got != size) { free(b); terminal_writestring("tpkg: the download stopped (check the network and try again)\n"); return -1; }
+    *buf = b;
+    *data = b + he0;
+    return 0;
+}
+
+static int sha_ok(const uint8_t *d, uint32_t n, const char *want)
+{
+    uint8_t h[32];
+    sha256_hash(d, n, h);
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++)
+        if (want[2 * i] != hx[h[i] >> 4] || want[2 * i + 1] != hx[h[i] & 15]) return 0;
     return 1;
 }
 
-/* `tpkg look`: shows the server's package list from the local cache,
- * auto-refreshing it first if there isn't one yet. */
-static void tpkg_look(uint32_t ip)
+/* a gzip member -> its contents (malloc'd), or 0 */
+static uint8_t *gunzip(const uint8_t *g, uint32_t n, uint32_t *out_len)
 {
-    if (!ramfs_exists(TPKG_CACHE_FILE)) {
-        if (!tpkg_update(ip, 1)) return;
-    }
-    int len;
-    char *buf = tpkg_read_whole(TPKG_CACHE_FILE, &len);
-    if (!buf) { terminal_writestring("tpkg: no cached package list\n"); return; }
-    tpkg_print_list_body(buf);
-    free(buf);
+    if (n < 18 || g[0] != 0x1F || g[1] != 0x8B || g[2] != 8) return 0;
+    uint8_t flags = g[3];
+    uint32_t o = 10;
+    if (flags & 4) { if (o + 2 > n) return 0; o += 2 + (uint32_t)(g[o] | (g[o + 1] << 8)); }   /* FEXTRA */
+    if (flags & 8) { while (o < n && g[o]) o++; o++; }                                         /* FNAME */
+    if (flags & 16) { while (o < n && g[o]) o++; o++; }                                        /* FCOMMENT */
+    if (flags & 2) o += 2;                                                                     /* FHCRC */
+    if (o + 8 > n) return 0;
+    uint32_t isize = (uint32_t)g[n - 4] | ((uint32_t)g[n - 3] << 8) | ((uint32_t)g[n - 2] << 16) | ((uint32_t)g[n - 1] << 24);
+    uint8_t *out = malloc(isize ? isize : 1);
+    if (!out) return 0;
+    uint32_t got = 0;
+    if (inflate_raw_buffer(g + o, n - o - 8, out, isize, &got) != 0 || got != isize) { free(out); return 0; }
+    *out_len = got;
+    return out;
 }
 
-/* `tpkg list`: shows locally *installed* packages (from
- * /sys/tpkg_db.tmbl), purely local -- no network needed. */
+/* the ustar archive's files and folders under `dest`; returns how many files, or -1 */
+static int untar(const uint8_t *t, uint32_t n, const char *dest)
+{
+    int files = 0;
+    for (uint32_t at = 0; at + 512 <= n;) {
+        const uint8_t *h = t + at;
+        if (!h[0]) break;
+        uint32_t size = 0;
+        for (int i = 124; i < 136; i++) if (h[i] >= '0' && h[i] <= '7') size = size * 8 + (uint32_t)(h[i] - '0');
+        char name[VFS_NAME_LEN];
+        int k = 0;
+        if (!memcmp(h + 257, "ustar", 5) && h[345]) {
+            for (int i = 0; i < 155 && h[345 + i] && k < VFS_NAME_LEN - 2; i++) name[k++] = (char)h[345 + i];
+            name[k++] = '/';
+        }
+        for (int i = 0; i < 100 && h[i] && k < VFS_NAME_LEN - 1; i++) name[k++] = (char)h[i];
+        name[k] = 0;
+        char *nm = name;
+        while (nm[0] == '.' && nm[1] == '/') nm += 2;
+        int len = (int)strlen(nm);
+        while (len && nm[len - 1] == '/') nm[--len] = 0;
+        char full[VFS_NAME_LEN];
+        if (strlen(dest) + (uint32_t)len + 2 > sizeof(full)) { terminal_writestring("tpkg: a path in the package is too long\n"); return -1; }
+        strcpy(full, dest);
+        strcat(full, "/");
+        strcat(full, nm);
+        char type = (char)h[156];
+        if (!len) {
+            /* the archive's own "./" */
+        } else if (type == '5') {
+            mkdir_p(full, 1);
+        } else if (type == '0' || type == 0) {
+            if (at + 512 + size > n) return -1;
+            mkdir_p(full, 0);
+            if (write_whole(full, t + at + 512, size) != 0) { terminal_writestring("tpkg: could not write "); terminal_writestring(full); terminal_putchar('\n'); return -1; }
+            files++;
+        }
+        at += 512 + ((size + 511) & ~511u);
+    }
+    return files;
+}
+
+/* tpkg.commands in the package: "cmd=path inside it" -> path.tmbl */
+static int register_commands(const char *destdir)
+{
+    char f[VFS_NAME_LEN];
+    strcpy(f, destdir);
+    strcat(f, "/tpkg.commands");
+    char *c = read_whole(f, 0);
+    int n = 0;
+    for (char *p = c; p && *p;) {
+        char *line = p;
+        while (*p && *p != '\n') p++;
+        if (*p) *p++ = 0;
+        char *eq = strchr(line, '=');
+        if (!eq || eq == line) continue;
+        *eq = 0;
+        char add[VFS_NAME_LEN + 64];
+        strcpy(add, line);
+        strcat(add, "=");
+        strcat(add, destdir);
+        strcat(add, "/");
+        strcat(add, eq + 1);
+        edit_lines(TPKG_PATH_FILE, '=', line, 0, add);
+        terminal_writestring("  ");
+        terminal_writestring(line);
+        n++;
+    }
+    if (c) free(c);
+    if (n) terminal_writestring("  (on the PATH)\n");
+    return n;
+}
+
+/* ---- the subcommands ---- */
+
 static void tpkg_list_installed(void)
 {
-    int len;
-    char *buf = tpkg_read_whole(TPKG_DB_FILE, &len);
-    if (!buf) { terminal_writestring("(no packages installed)\n"); return; }
-
-    terminal_writestring("NAME            VERSION    DIR\n");
-    char *line = buf;
-    while (*line) {
-        char *nl = strchr(line, '\n');
-        if (nl) *nl = '\0';
-        if (*line) {
-            char *bar1 = strchr(line, '|');
-            char *bar2 = bar1 ? strchr(bar1 + 1, '|') : 0;
-            if (bar1 && bar2) {
-                *bar1 = '\0'; *bar2 = '\0';
-                const char *name = line, *ver = bar1 + 1, *dir = bar2 + 1;
-                terminal_writestring(name);
-                int pad = 16 - (int)strlen(name);
-                for (int k = 0; k < pad; k++) terminal_putchar(' ');
-                terminal_writestring(ver);
-                pad = 11 - (int)strlen(ver);
-                for (int k = 0; k < pad; k++) terminal_putchar(' ');
-                terminal_writestring(dir);
-                terminal_putchar('\n');
-            }
-        }
-        if (!nl) break;
-        line = nl + 1;
+    char *db = read_whole(TPKG_DB_FILE, 0);
+    if (!db || !db[0]) { terminal_writestring("No packages installed.\n"); if (db) free(db); return; }
+    for (char *p = db; *p;) {
+        char *line = p;
+        while (*p && *p != '\n') p++;
+        if (*p) *p++ = 0;
+        char *a = strchr(line, '|');
+        if (!a) continue;
+        *a = 0;
+        char *b = strchr(a + 1, '|');
+        if (b) *b = 0;
+        terminal_writestring(line);
+        terminal_writestring("  ");
+        terminal_writestring(a + 1);
+        if (b) { terminal_writestring("  "); terminal_writestring(b + 1); }
+        terminal_putchar('\n');
     }
-    free(buf);
+    free(db);
 }
 
-static void tpkg_install(uint32_t ip, const char *name)
+static void print_list(const char *list)
 {
-    char path[160];
-    int pi = 0;
-    const char *prefix = "/api/download/";
-    while (*prefix) path[pi++] = *prefix++;
-    const char *p = name;
-    while (*p && pi < 150) path[pi++] = *p++;
-    path[pi] = '\0';
-
-    uint8_t *resp = (uint8_t *)malloc(TPKG_BUF_SIZE);
-    if (!resp) { terminal_writestring("tpkg: out of memory\n"); return; }
-
-    terminal_writestring("Downloading ");
-    terminal_writestring(path);
-    terminal_writestring("... ");
-    int n = http_get(ip, TPKG_HOST, TPKG_PORT, path, resp, TPKG_BUF_SIZE - 1);
-    if (n < 0) {
-        terminal_writestring("FAILED (");
-        terminal_writestring(http_strerror(n));
-        terminal_writestring(")\n");
-        free(resp);
-        return;
-    }
-    if (n == 0) { terminal_writestring("FAILED (no data)\n"); free(resp); return; }
-
-    char *body = strstr((char *)resp, "\r\n\r\n");
-    if (!body) { terminal_writestring("FAILED (malformed server response)\n"); free(resp); return; }
-    body += 4;
-    int body_len = n - (int)(body - (char *)resp);
-    if (body_len <= 0) { terminal_writestring("FAILED (empty package archive -- check the name)\n"); free(resp); return; }
-
-    terminal_writestring("OK (");
-    print_uint((uint32_t)body_len);
-    terminal_writestring(" bytes)\n");
-
-    char tarfile[160];
-    pi = 0;
-    const char *tprefix = "/tmp_tpkg_";
-    while (*tprefix) tarfile[pi++] = *tprefix++;
-    p = name;
-    while (*p && pi < 140) tarfile[pi++] = *p++;
-    const char *tsuffix = ".tar";
-    while (*tsuffix) tarfile[pi++] = *tsuffix++;
-    tarfile[pi] = '\0';
-
-    if (ramfs_exists(tarfile)) ramfs_delete(tarfile);
-    if (ramfs_create(tarfile) != 0) {
-        terminal_writestring("tpkg: failed to create ");
-        terminal_writestring(tarfile);
+    tpkg_entry_t e;
+    int any = 0;
+    for (int i = 0; list_entry(list, i, &e); i++) {
+        any = 1;
+        char ver[32];
+        int have = db_find(e.name, ver, 0);
+        terminal_writestring(e.name);
+        terminal_writestring("  ");
+        terminal_writestring(e.version);
+        terminal_writestring("  ");
+        print_mb(e.size);
+        if (have) { terminal_writestring("  [installed "); terminal_writestring(ver); terminal_writestring("]"); }
+        terminal_writestring("\n    ");
+        terminal_writestring(e.desc);
+        if (e.license[0]) { terminal_writestring(" ("); terminal_writestring(e.license); terminal_writestring(")"); }
         terminal_putchar('\n');
-        free(resp);
+    }
+    if (!any) terminal_writestring("The server has no packages.\n");
+}
+
+static void tpkg_install(uint32_t ip, const char *name, const char *list)
+{
+    tpkg_entry_t e;
+    if (!find_entry(list, name, &e)) {
+        terminal_writestring("tpkg: no package called ");
+        terminal_writestring(name);
+        terminal_writestring(" (see: tpkg look)\n");
         return;
     }
-    ramfs_write(tarfile, body, (uint32_t)body_len, 0);
-    free(resp);
-
-    char destdir[160];
-    pi = 0;
-    const char *dprefix = "/system/programs/";
-    while (*dprefix) destdir[pi++] = *dprefix++;
-    p = name;
-    while (*p && pi < 150) destdir[pi++] = *p++;
-    destdir[pi] = '\0';
-
-    if (!ramfs_exists(destdir)) {
-        if (ramfs_mkdir(destdir) != 0) {
-            terminal_writestring("tpkg: failed to create ");
-            terminal_writestring(destdir);
-            terminal_putchar('\n');
-            ramfs_delete(tarfile);
-            return;
-        }
-    }
-
-    char err[128];
-    int cnt = tar_extract(tarfile, destdir, err, sizeof(err));
-    ramfs_delete(tarfile);
-
-    if (cnt < 0) {
-        terminal_writestring("tpkg: extract FAILED (");
-        terminal_writestring(err);
-        terminal_writestring(")\n");
-        return;
-    }
-    tpkg_register_package(destdir, name);
-
-    /* Refresh the cache before reading version/license from it --
-     * without this, a fresh install on a system that never ran
-     * `tpkg update`/`tpkg look` first always reports "?" for both,
-     * even though the server has real values. */
-    tpkg_update(ip, 1);
-
-    char version[64];
-    if (!tpkg_cache_find_version(name, version)) {
-        version[0] = '?'; version[1] = 0;
-    }
-    tpkg_db_upsert(name, version, destdir);
-
-    char license[64];
-    if (!tpkg_cache_find_license(name, license)) {
-        license[0] = '?'; license[1] = 0;
-    }
-
-    terminal_writestring("Installed to ");
-    terminal_writestring(destdir);
+    if (strlen(e.sha) != 64 || !e.size || e.path[0] != '/') { terminal_writestring("tpkg: the server's entry for it is incomplete\n"); return; }
+    terminal_writestring("Downloading ");
+    terminal_writestring(e.name);
+    terminal_writestring(" ");
+    terminal_writestring(e.version);
     terminal_writestring(" (");
-    print_uint((uint32_t)cnt);
+    print_mb(e.size);
+    terminal_writestring(")");
+    uint8_t *buf, *data;
+    if (download(ip, e.path, e.size, &buf, &data) != 0) return;
+    if (!sha_ok(data, e.size, e.sha)) { free(buf); terminal_writestring("tpkg: the download is damaged (checksum); nothing was installed\n"); return; }
+
+    terminal_writestring("Unpacking...\n");
+    uint32_t tlen = 0;
+    uint8_t *tar = gunzip(data, e.size, &tlen);
+    free(buf);
+    if (!tar) { terminal_writestring("tpkg: the package could not be unpacked (not enough memory, or not a .tar.gz)\n"); return; }
+
+    char dest[VFS_NAME_LEN];
+    strcpy(dest, TPKG_PKG_ROOT "/");
+    strcat(dest, e.name);
+    char oldv[32], olddir[VFS_NAME_LEN];
+    if (db_find(e.name, oldv, olddir)) {                     /* an older version goes first */
+        edit_lines(TPKG_PATH_FILE, '=', 0, olddir, 0);
+        remove_tree(olddir);
+    }
+    if (fsbridge_exists(dest)) remove_tree(dest);
+    mkdir_p(dest, 1);
+    int files = untar(tar, tlen, dest);
+    free(tar);
+    if (files < 0) { remove_tree(dest); terminal_writestring("tpkg: installing failed; nothing was kept\n"); return; }
+
+    char line[VFS_NAME_LEN + 80];
+    strcpy(line, e.name); strcat(line, "|"); strcat(line, e.version); strcat(line, "|"); strcat(line, dest);
+    edit_lines(TPKG_DB_FILE, '|', e.name, 0, line);
+    terminal_writestring("Installed ");
+    terminal_writestring(e.name);
+    terminal_writestring(" ");
+    terminal_writestring(e.version);
+    terminal_writestring(" in ");
+    terminal_writestring(dest);
+    terminal_writestring(" (");
+    print_uint((uint32_t)files);
     terminal_writestring(" files)\n");
-    terminal_writestring("Version: ");
-    terminal_writestring(version);
-    terminal_writestring("  License: ");
-    terminal_writestring(license);
+    register_commands(dest);
+}
+
+static void tpkg_remove(const char *name)
+{
+    char ver[32], dir[VFS_NAME_LEN];
+    if (!db_find(name, ver, dir)) { terminal_writestring("tpkg: "); terminal_writestring(name); terminal_writestring(" is not installed\n"); return; }
+    edit_lines(TPKG_PATH_FILE, '=', 0, dir, 0);
+    remove_tree(dir);
+    edit_lines(TPKG_DB_FILE, '|', name, 0, 0);
+    terminal_writestring("Removed ");
+    terminal_writestring(name);
     terminal_putchar('\n');
 }
 
-/* `tpkg remove <name>`: deletes every file the package's directory
- * holds, the (now-empty) directory itself, its path.tmbl entries,
- * and its line in the local database. Purely local -- no network. */
-static void tpkg_remove(const char *name)
-{
-    char destdir[128];
-    if (!tpkg_db_find(name, destdir, NULL)) {
-        /* not in the db (installed before this feature existed?) --
-         * fall back to the standard convention so removal still
-         * works for it. */
-        int p = 0;
-        const char *prefix = "/system/programs/";
-        while (prefix[p]) { destdir[p] = prefix[p]; p++; }
-        int q = 0;
-        while (name[q] && p < 120) destdir[p++] = name[q++];
-        destdir[p] = 0;
-        if (!ramfs_exists(destdir)) {
-            terminal_writestring("tpkg: not installed: ");
-            terminal_writestring(name);
-            terminal_putchar('\n');
-            return;
-        }
-    }
-
-    vfs_entry_t entries[64];
-    int count = ramfs_list(destdir, entries, 64);
-    for (int i = 0; i < count; i++) {
-        if (entries[i].is_dir) continue;
-        char file_path[192];
-        int p = 0;
-        while (destdir[p] && p < 160) { file_path[p] = destdir[p]; p++; }
-        file_path[p++] = '/';
-        int q = 0;
-        while (entries[i].name[q] && p < 190) file_path[p++] = entries[i].name[q++];
-        file_path[p] = 0;
-        ramfs_delete(file_path);
-    }
-    ramfs_rmdir(destdir);
-
-    tpkg_path_unregister_dir(destdir);
-    tpkg_db_remove(name);
-
-    terminal_writestring("Removed ");
-    terminal_writestring(name);
-    terminal_writestring(" (");
-    terminal_writestring(destdir);
-    terminal_writestring(")\n");
-}
-
-/* `tpkg upgrade`: reinstalls any locally-installed package whose
- * recorded version doesn't match what's in the cached server list.
- * Needs a cache -- run `tpkg update` first if there isn't one. */
 static void tpkg_upgrade(uint32_t ip)
 {
-    if (!ramfs_exists(TPKG_CACHE_FILE)) {
-        terminal_writestring("tpkg: no cached package list, run `tpkg update` first\n");
-        return;
-    }
-    int len;
-    char *buf = tpkg_read_whole(TPKG_DB_FILE, &len);
-    if (!buf) { terminal_writestring("(no packages installed)\n"); return; }
-
-    /* names are extracted up front into a fixed table before doing
-     * any installs, since tpkg_install() rewrites tpkg_db.tmbl (via
-     * tpkg_db_upsert()) -- walking `buf` (a snapshot from before any
-     * of that) while also calling functions that mutate the live
-     * file on disk is fine, but the *installed* line for whichever
-     * name update it changes for should never be re-read out of buf
-     * again. */
-    char names[32][64];
-    char installed_vers[32][64];
-    int n = 0;
-    char *p = buf;
-    while (*p && n < 32) {
-        char *line_start = p;
+    char *list = fetch_list(ip, 0);
+    if (!list) return;
+    char *db = read_whole(TPKG_DB_FILE, 0);
+    int any = 0;
+    for (char *p = db; p && *p;) {
+        char *line = p;
         while (*p && *p != '\n') p++;
-        int line_len = (int)(p - line_start);
-        if (*p == '\n') p++;
-        char *bar1 = NULL;
-        for (int i = 0; i < line_len; i++) if (line_start[i] == '|') { bar1 = line_start + i; break; }
-        if (bar1 && line_len > 0) {
-            int nlen = (int)(bar1 - line_start);
-            int k = 0;
-            while (k < nlen && k < 63) { names[n][k] = line_start[k]; k++; }
-            names[n][k] = 0;
-            char *bar2 = NULL;
-            for (char *q = bar1 + 1; q < line_start + line_len; q++) if (*q == '|') { bar2 = q; break; }
-            int vlen = bar2 ? (int)(bar2 - (bar1 + 1)) : 0;
-            k = 0;
-            while (k < vlen && k < 63) { installed_vers[n][k] = bar1[1 + k]; k++; }
-            installed_vers[n][k] = 0;
-            n++;
-        }
+        if (*p) *p++ = 0;
+        char *a = strchr(line, '|');
+        if (!a) continue;
+        *a = 0;
+        char *b = strchr(a + 1, '|');
+        if (b) *b = 0;
+        tpkg_entry_t e;
+        if (!find_entry(list, line, &e) || !strcmp(e.version, a + 1)) continue;
+        any = 1;
+        tpkg_install(ip, line, list);
     }
-    free(buf);
-
-    int upgraded = 0;
-    for (int i = 0; i < n; i++) {
-        char server_ver[64];
-        if (!tpkg_cache_find_version(names[i], server_ver)) continue; /* no longer on the server */
-        if (strcmp(server_ver, installed_vers[i]) == 0) continue; /* already current */
-        terminal_writestring("Upgrading ");
-        terminal_writestring(names[i]);
-        terminal_writestring(" (");
-        terminal_writestring(installed_vers[i]);
-        terminal_writestring(" -> ");
-        terminal_writestring(server_ver);
-        terminal_writestring(")...\n");
-        tpkg_install(ip, names[i]);
-        upgraded++;
-    }
-    if (!upgraded) terminal_writestring("Everything up to date.\n");
+    if (!any) terminal_writestring("Everything is up to date.\n");
+    if (db) free(db);
+    free(list);
 }
 
 void cmd_tpkg(int argc, char **args)
@@ -858,46 +571,39 @@ void cmd_tpkg(int argc, char **args)
     if (argc < 2) {
         terminal_writestring(
             "usage: tpkg <subcommand>\n"
-            "  list             locally installed packages (no network)\n"
-            "  look             server's available packages (cached; use `update` to refresh)\n"
-            "  update           refresh the cached server package list\n"
-            "  install <name>   install a package\n"
-            "  remove <name>    uninstall a package (no network)\n"
-            "  upgrade          reinstall any installed package with a newer server version\n"
-        );
+            "  list             installed packages\n"
+            "  look             the packages on " TPKG_HOST "\n"
+            "  update           refresh that list\n"
+            "  install <name>   install a package (its commands go on the PATH)\n"
+            "  remove <name>    uninstall a package\n"
+            "  upgrade          install newer versions of what is installed\n");
         return;
     }
-
-    /* Everything that changes the system -- install, remove, update, upgrade -- is for root. */
-    if (strcmp(args[1], "list") != 0 && strcmp(args[1], "look") != 0 && !auth_is_root()) {
+    /* everything that changes the system is for root */
+    if (strcmp(args[1], "list") && strcmp(args[1], "look") && !auth_is_root()) {
         terminal_writestring("tpkg: permission denied: package management needs root (try: sudo tpkg ");
         terminal_writestring(args[1]);
         terminal_writestring(" ...)\n");
         return;
     }
-
-    /* list/remove are purely local -- don't force a DNS resolve for them. */
-    if (strcmp(args[1], "list") == 0) {
-        tpkg_list_installed();
-        return;
-    }
-    if (strcmp(args[1], "remove") == 0) {
+    if (!strcmp(args[1], "list")) { tpkg_list_installed(); return; }
+    if (!strcmp(args[1], "remove")) {
         if (argc < 3) { terminal_writestring("usage: tpkg remove <name>\n"); return; }
         tpkg_remove(args[2]);
         return;
     }
-
     uint32_t ip;
-    if (tpkg_resolve(&ip) != 0) return;
-
-    if (strcmp(args[1], "look") == 0) {
-        tpkg_look(ip);
-    } else if (strcmp(args[1], "update") == 0) {
-        tpkg_update(ip, 0);
-    } else if (strcmp(args[1], "install") == 0) {
+    if (resolve(&ip) != 0) return;
+    if (!strcmp(args[1], "look") || !strcmp(args[1], "update")) {
+        char *list = !strcmp(args[1], "look") ? cached_or_fetched(ip) : fetch_list(ip, 0);
+        if (list) { print_list(list); free(list); }
+    } else if (!strcmp(args[1], "install")) {
         if (argc < 3) { terminal_writestring("usage: tpkg install <name>\n"); return; }
-        tpkg_install(ip, args[2]);
-    } else if (strcmp(args[1], "upgrade") == 0) {
+        char *list = fetch_list(ip, 0);
+        if (!list) return;
+        tpkg_install(ip, args[2], list);
+        free(list);
+    } else if (!strcmp(args[1], "upgrade")) {
         tpkg_upgrade(ip);
     } else {
         terminal_writestring("tpkg: unknown subcommand (try: list, look, update, install, remove, upgrade)\n");

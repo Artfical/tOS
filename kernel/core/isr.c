@@ -4,6 +4,9 @@
 #include "debugmon.h"
 #include "scheduler.h"
 #include "proc.h"
+#include "serial.h"
+#include "string.h"
+#include "syscall.h"
 
 isr_handler_t interrupt_handlers[256];
 static const char *exception_messages[] = {
@@ -129,6 +132,37 @@ void isr_handler(registers_t *regs)
         terminal_writestring(": ");
         terminal_writestring(regs->int_no == 14 ? "segmentation fault" : exception_messages[regs->int_no]);
         terminal_writestring(" (killed)\n");
+        {
+            /* where it happened, for the serial log: eip, the faulting address, the error code */
+            char line[96] = "user fault: eip=", h[12];
+            uint32_t vals[4] = { regs->eip, cr2, regs->err_code, regs->useresp };
+            static const char *const names[4] = { "", " cr2=", " err=", " esp=" };
+            for (int k = 0; k < 4; k++) {
+                if (k) strcat(line, names[k]);
+                hex8(h, vals[k]);
+                strcat(line, h);
+            }
+            strcat(line, "\n");
+            serial_write(line);
+            /* the stack, to find the calls that led here */
+            uint32_t sp = regs->useresp;
+            if (sp >= 0x80000000u && sp < 0xC0000000u && !(sp & 3)) {
+                uint32_t words = (0xC0000000u - sp) / 4;
+                if (words > 96) words = 96;
+                for (uint32_t w = 0; w < words; w += 8) {
+                    char row[96] = "  stack ";
+                    for (uint32_t k = w; k < w + 8 && k < words; k++) {
+                        hex8(h, ((const uint32_t *)sp)[k]);
+                        strcat(row, h); strcat(row, " ");
+                    }
+                    strcat(row, "\n");
+                    serial_write(row);
+                }
+            }
+            syscall_dump_recent();
+        }
+        if (task_current() && task_current()->user_thread)
+            proc_thread_exit(-(int)regs->int_no - 128);
         proc_exit(-(int)regs->int_no - 128);
     }
 

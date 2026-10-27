@@ -62,6 +62,11 @@ typedef struct {
     int      got_rst;
 
     int      syn_age;   /* tcp_tick() ticks spent in SYN_RECEIVED */
+
+    /* a non-blocking connect (tcp_connect_begin): the SYN to resend, and when */
+    uint32_t syn_seq;
+    uint32_t syn_next_ms;
+    uint32_t syn_deadline_ms;
 } tcp_sock_t;
 
 static tcp_sock_t socks[TCP_MAX_SOCKETS];
@@ -845,4 +850,105 @@ int tcp_get_connections(tcp_conn_info_t *out, int max)
         n++;
     }
     return n;
+}
+
+/* -- Non-blocking use (Linux sockets, kernel/net/lsock.c) ----------------------------------
+ * Nothing waits here: the caller asks again later, and tcp_pump() moves the network along
+ * in between (epoll and poll call it while they wait). */
+
+void tcp_pump(void)
+{
+    for (int i = 0; i < 32; i++) net_poll();
+    tcp_tick_poll();
+}
+
+int tcp_connect_begin(int fd, uint32_t dst_ip, uint16_t dst_port)
+{
+    tcp_sock_t *s = get_sock(fd);
+    if (!s || s->state != TCP_CLOSED) return TCP_ERR_NOSOCK;
+    s->dst_ip   = dst_ip;
+    s->dst_port = dst_port;
+    s->src_port = alloc_port();
+    s->seq      = csprng_u32();
+    s->ack      = 0;
+    s->got_rst  = 0;
+    s->state    = TCP_SYN_SENT;
+    s->syn_seq  = s->seq;
+    int r = send_seg(s, TCP_FLAG_SYN, 0, 0);
+    if (r != 0) { s->state = TCP_CLOSED; return r; }
+    s->syn_next_ms = debugmon_uptime_ms() + 1000;
+    s->syn_deadline_ms = debugmon_uptime_ms() + 20000;
+    return 0;
+}
+
+/* 1 connected, 0 still connecting (the SYN is resent every second), or TCP_ERR_* */
+int tcp_connect_poll(int fd)
+{
+    tcp_sock_t *s = get_sock(fd);
+    if (!s) return TCP_ERR_NOSOCK;
+    if (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT) return 1;
+    if (s->got_rst) { s->state = TCP_CLOSED; return TCP_ERR_REFUSED; }
+    if (s->state != TCP_SYN_SENT) return TCP_ERR_REFUSED;
+    uint32_t now = debugmon_uptime_ms();
+    if (now >= s->syn_deadline_ms) { s->state = TCP_CLOSED; return TCP_ERR_TIMEOUT; }
+    if (now >= s->syn_next_ms) {
+        s->seq = s->syn_seq;
+        send_seg(s, TCP_FLAG_SYN, 0, 0);
+        s->syn_next_ms = now + 1000;
+    }
+    return 0;
+}
+
+/* bytes waiting to be read, or -1 when the peer has finished (or the connection is gone) */
+int tcp_rx_ready(int fd)
+{
+    tcp_sock_t *s = get_sock(fd);
+    if (!s) return -1;
+    if (s->rx_len > 0) return s->rx_len;
+    if (s->rx_closed || s->state == TCP_CLOSED || s->got_rst) return -1;
+    return 0;
+}
+
+/* what is there now: >0 bytes, 0 the end, TCP_ERR_RECV_TIMEOUT nothing yet */
+int tcp_recv_nb(int fd, uint8_t *buf, int max_len)
+{
+    tcp_sock_t *s = get_sock(fd);
+    if (!s) return 0;
+    if (s->rx_len > 0) {
+        int n = s->rx_len < max_len ? s->rx_len : max_len;
+        memcpy(buf, s->rx_buf, (size_t)n);
+        s->rx_len -= n;
+        if (s->rx_len > 0) memmove(s->rx_buf, s->rx_buf + n, (size_t)s->rx_len);
+        else { free(s->rx_buf); s->rx_buf = 0; s->rx_cap = 0; }
+        return n;
+    }
+    if (s->rx_closed || s->state == TCP_CLOSED || s->got_rst) return 0;
+    return TCP_ERR_RECV_TIMEOUT;
+}
+
+int tcp_is_established(int fd)
+{
+    tcp_sock_t *s = get_sock(fd);
+    return s && (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT);
+}
+
+void tcp_local(int fd, uint16_t *port)
+{
+    tcp_sock_t *s = get_sock(fd);
+    *port = s ? s->src_port : 0;
+}
+
+/* gone at once, without waiting for the peer's FIN: what an RST-less close of a socket the
+ * program has finished with needs (tcp_close2() waits up to seconds for the goodbye) */
+void tcp_release(int fd)
+{
+    tcp_sock_t *s = get_sock(fd);
+    if (!s) return;
+    if (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT) {
+        send_seg(s, TCP_FLAG_FIN | TCP_FLAG_ACK, 0, 0);
+        tcp_pump();
+    }
+    if (s->rx_buf) free(s->rx_buf);
+    if (s->retx_data) free(s->retx_data);
+    memset(s, 0, sizeof(*s));
 }

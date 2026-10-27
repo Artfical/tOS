@@ -5,7 +5,8 @@
 #include "serial.h"
 #include "terminal.h"
 
-static ramfs_inode_t inodes[RAMFS_MAX_INODES];
+/* on the heap, not in the kernel image: Software Update cannot start a kernel that grows */
+static ramfs_inode_t *inodes;
 typedef struct {
     uint32_t ino;
     uint32_t offset;
@@ -178,7 +179,9 @@ static int resolve_path(const char *path, int follow_final)
 
 void ramfs_init(void)
 {
-    memset(inodes, 0, sizeof(inodes));
+    if (!inodes) inodes = malloc(sizeof(ramfs_inode_t) * RAMFS_MAX_INODES);
+    if (!inodes) { serial_write("ramfs: no memory for the inode table\n"); return; }
+    memset(inodes, 0, sizeof(ramfs_inode_t) * RAMFS_MAX_INODES);
     memset(fds, 0, sizeof(fds));
     ramfs_next_fd = 3;
 
@@ -202,6 +205,7 @@ int ramfs_mkdir_mode(const char *path, uint32_t mode);
 int ramfs_vfs_unlink(const char *path);
 int ramfs_vfs_stat(const char *path, vfs_entry_t *entry);
 int ramfs_vfs_symlink(const char *target, const char *path);
+int ramfs_vfs_readlink(const char *path, char *buf, uint32_t size);
 static int ramfs_setattr(void *ctx, const char *path, uint32_t mode, uint32_t uid, uint32_t gid);
 
 static int ramfs_open_stub(void *ctx, const char *path, int flags) { (void)ctx; return ramfs_vfs_open(path, flags); }
@@ -215,6 +219,7 @@ static int ramfs_unlink_stub(void *ctx, const char *path) { (void)ctx; return ra
 static int ramfs_stat_stub(void *ctx, const char *path, vfs_entry_t *entry) { (void)ctx; return ramfs_vfs_stat(path, entry); }
 static int ramfs_rename_stub(void *ctx, const char *old, const char *new_path) { (void)ctx; return ramfs_rename(old, new_path); }
 static int ramfs_symlink_stub(void *ctx, const char *target, const char *path) { (void)ctx; return ramfs_vfs_symlink(target, path); }
+static int ramfs_readlink_stub(void *ctx, const char *path, char *buf, uint32_t size) { (void)ctx; return ramfs_vfs_readlink(path, buf, size); }
 
 void ramfs_mount_vfs(void)
 {
@@ -231,6 +236,7 @@ void ramfs_mount_vfs(void)
     ops.rename  = ramfs_rename_stub;
     ops.symlink = ramfs_symlink_stub;
     ops.setattr = ramfs_setattr;
+    ops.readlink = ramfs_readlink_stub;
     vfs_mount("/", &ops, 0);
 }
 
@@ -674,6 +680,36 @@ int ramfs_vfs_symlink(const char *target, const char *path)
     return 0;
 }
 
+int ramfs_vfs_readlink(const char *path, char *buf, uint32_t size)
+{
+    if (!path || (!buf && size)) return -1;
+    uint32_t ino = (uint32_t)resolve_path(path, 0);
+    ramfs_inode_t *n = iget(ino);
+    if (!n || (n->mode & S_IFMT) != S_IFLNK) return -1;
+    uint32_t target_size = n->size ? n->size - 1u : 0;
+    uint32_t count = target_size < size ? target_size : size;
+    if (count) memcpy(buf, n->data, count);
+    return (int)count;
+}
+
+/* every folder on the way to `path` (relative to /), made if missing */
+static void import_parents(const char *path, int including_last)
+{
+    char dir_path[VFS_NAME_LEN];
+    int k = 0;
+    while (path[k] && k < VFS_NAME_LEN - 1) { dir_path[k] = path[k]; k++; }
+    dir_path[k] = 0;
+    for (int j = 0; j <= k; j++) {
+        if (dir_path[j] != '/' && !(including_last && j == k)) continue;
+        char c = dir_path[j];
+        dir_path[j] = 0;
+        if (dir_path[0] && !resolve_path(dir_path, 0)) ramfs_mkdir_mode(dir_path, 0755);
+        dir_path[j] = c;
+    }
+}
+
+/* The initrd is a ustar archive: files, folders and symbolic links (npm has some), with long
+ * paths split between the prefix field and the name. */
 void ramfs_import_initrd(uint32_t addr, uint32_t size)
 {
     uint8_t *p = (uint8_t *)addr;
@@ -681,39 +717,55 @@ void ramfs_import_initrd(uint32_t addr, uint32_t size)
     serial_write("ramfs: importing initrd\n");
 
     while (p + 512 <= end) {
-        char name[100];
-        for (int i = 0; i < 100; i++) name[i] = p[i];
-        name[99] = 0;
-        if (name[0] == 0) break;
+        if (p[0] == 0) break;
+        char name[VFS_NAME_LEN];
+        int n = 0;
+        if (p[257] == 'u' && p[258] == 's' && p[259] == 't' && p[260] == 'a' && p[261] == 'r' && p[345]) {
+            for (int i = 0; i < 155 && p[345 + i] && n < VFS_NAME_LEN - 2; i++) name[n++] = (char)p[345 + i];
+            name[n++] = '/';
+        }
+        for (int i = 0; i < 100 && p[i] && n < VFS_NAME_LEN - 1; i++) name[n++] = (char)p[i];
+        name[n] = 0;
+        char *nm = name;
+        while (nm[0] == '.' && nm[1] == '/') nm += 2;
+        int len = (int)strlen(nm);
+        while (len > 0 && nm[len - 1] == '/') nm[--len] = 0;          /* "dir/" */
 
         uint32_t fsize = 0;
         for (int i = 0; i < 12; i++) {
-            char c = p[124 + i];
-            if (c >= '0' && c <= '7') fsize = (fsize << 3) | (c - '0');
+            char c = (char)p[124 + i];
+            if (c >= '0' && c <= '7') fsize = (fsize << 3) | (uint32_t)(c - '0');
         }
+        char type = (char)p[156];
 
-        uint32_t ino = resolve_path(name, 0);
-        if (!ino) {
+        if (!len) {
+            /* "./" itself */
+        } else if (type == '5') {
+            import_parents(nm, 1);
+        } else if (type == '2') {
+            char target[101];
+            int t = 0;
+            for (; t < 100 && p[157 + t]; t++) target[t] = (char)p[157 + t];
+            target[t] = 0;
+            import_parents(nm, 0);
+            char abs[VFS_NAME_LEN];
+            abs[0] = '/';
+            strncpy(abs + 1, nm, VFS_NAME_LEN - 2);
+            abs[VFS_NAME_LEN - 1] = 0;
+            if (!resolve_path(nm, 0)) ramfs_vfs_symlink(target, abs);
+        } else if ((type == '0' || type == 0) && !resolve_path(nm, 0)) {
+            import_parents(nm, 0);
+            const char *slash = 0;
+            for (const char *c = nm; *c; c++) if (*c == '/') slash = c;
             char dir_path[VFS_NAME_LEN];
-            int k = 0;
-            int last_slash = -1;
-            while (name[k] && k < VFS_NAME_LEN - 1) {
-                dir_path[k] = name[k];
-                if (name[k] == '/') last_slash = k;
-                k++;
+            const char *base = nm;
+            dir_path[0] = 0;
+            if (slash) {
+                int d = (int)(slash - nm);
+                memcpy(dir_path, nm, (size_t)d);
+                dir_path[d] = 0;
+                base = slash + 1;
             }
-            dir_path[k] = 0;
-            for (int j = 0; j < k; j++) {
-                if (dir_path[j] == '/') {
-                    dir_path[j] = 0;
-                    if (!resolve_path(dir_path, 0))
-                        ramfs_mkdir_mode(dir_path, 0755);
-                    dir_path[j] = '/';
-                }
-            }
-            const char *base = (last_slash >= 0) ? name + last_slash + 1 : name;
-            if (last_slash >= 0) dir_path[last_slash] = 0;
-            else dir_path[0] = 0;
             uint32_t f_ino = make_inode(base, S_IFREG | 0644, resolve_path(dir_path, 1));
             if (f_ino && fsize > 0) {
                 ramfs_inode_t *fn = iget(f_ino);

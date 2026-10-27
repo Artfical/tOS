@@ -76,11 +76,16 @@ void debugmon_calibrate_tsc(void)
     calib_tsc0 = rdtsc();
 }
 
-uint32_t debugmon_uptime_ms(void)
+uint64_t debugmon_uptime_ms64(void)
 {
     if (tsc_per_ms == 0)
-        return tick_count * MS_PER_TICK; /* pre-calibration fallback */
-    return (uint32_t)((rdtsc() - calib_tsc0) / tsc_per_ms);
+        return (uint64_t)tick_count * MS_PER_TICK; /* pre-calibration fallback */
+    return (rdtsc() - calib_tsc0) / tsc_per_ms;
+}
+
+uint32_t debugmon_uptime_ms(void)
+{
+    return (uint32_t)debugmon_uptime_ms64();
 }
 
 uint32_t debugmon_get_tsc_per_ms(void)
