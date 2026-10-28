@@ -151,7 +151,7 @@ static void protect_level(uint64_t *t, int level, uint64_t base, uint64_t start,
         if (level == 1) {
             /* no access at all: not present, the page kept (PTE_SAVED) for when access comes back */
             uint64_t phys = t[i] & 0x000FFFFFFFFFF000ull;
-            t[i] = (flags & PTE_PRESENT) ? phys | flags : phys | PTE_SAVED;
+            t[i] = (flags & PTE_PRESENT) ? phys | paging_cow_flags(phys, flags) : phys | PTE_SAVED;
             asm volatile("invlpg (%0)" : : "r"(lo) : "memory");
             continue;
         }
@@ -278,7 +278,10 @@ static int fault_in(proc_t *p, uint64_t addr, int write)
     if (!(prot & (PROT_READ | PROT_WRITE | PROT_EXEC))) return 0;
     if (write && !(prot & PROT_WRITE)) return 0;
     uint64_t page = addr & ~0xFFFull;
-    if (paging_virt_to_phys(p->pgdir, page)) return 1;
+    if (paging_virt_to_phys(p->pgdir, page)) {
+        if (write && paging_cow_break(p->pgdir, page) < 0) return 0;     /* shared since a fork */
+        return 1;
+    }
     if (paging_saved_page(p->pgdir, page)) {          /* kept while it was PROT_NONE */
         protect_level(p->pgdir, 4, 0, page, page + PAGE_SIZE, pte_flags(prot));
         return 1;
@@ -450,6 +453,24 @@ static uint64_t sys_mremap(uint64_t old, uint64_t old_len, uint64_t new_len, uin
     }
     vma_remove(p, old, old + old_len);
     return dst;
+}
+
+int linux64_mm_clone(proc_t *child, proc_t *parent)
+{
+    mm64_t *src = mm_of(parent);
+    child->mm64 = 0;
+    if (!src) return 0;
+    mm64_t *mm = malloc(sizeof(mm64_t));
+    if (!mm) return -1;
+    *mm = *src;
+    mm->v = 0;
+    if (src->cap) {
+        mm->v = malloc(sizeof(vma_t) * (uint32_t)src->cap);
+        if (!mm->v) { free(mm); return -1; }
+        memcpy(mm->v, src->v, sizeof(vma_t) * (uint32_t)src->n);
+    }
+    child->mm64 = mm;
+    return 0;
 }
 
 void linux64_mm_free(proc_t *p)
@@ -796,6 +817,176 @@ static uint64_t sys_arch_prctl(uint32_t code, uint64_t addr)
     }
 }
 
+/* ------------------------------------------------------------------ signals */
+
+#define SA_SIGINFO   0x4u
+#define SA_ONSTACK   0x08000000u
+#define SA_RESTORER  0x04000000u
+#define SA_NODEFER   0x40000000u
+#define SA_RESETHAND 0x80000000u
+#define SIGBIT(n) (1ull << ((n) - 1))
+
+static uint64_t sys_rt_sigaction(int sig, uint64_t act, uint64_t oact, uint64_t size)
+{
+    proc_t *p = proc_current();
+    if (!p || sig < 1 || sig > 64 || size != 8) return (uint64_t)-EINVAL;
+    if (act && (sig == 9 || sig == 19)) return (uint64_t)-EINVAL;
+    uint64_t in[4];
+    if (act) {
+        if (!lx_user_range_ok(act, 32)) return (uint64_t)-EFAULT;
+        memcpy(in, (const void *)(uintptr_t)act, 32);           /* handler, flags, restorer, mask */
+    }
+    if (oact) {
+        if (!lx_user_wr_ok(oact, 32)) return (uint64_t)-EFAULT;
+        uint64_t out[4] = { p->sig_handler[sig], p->sig_flags[sig], p->sig_restorer[sig], p->sig_mask[sig] };
+        memcpy((void *)(uintptr_t)oact, out, 32);
+    }
+    if (act) {
+        p->sig_handler[sig] = in[0];
+        p->sig_flags[sig] = in[1];
+        p->sig_restorer[sig] = in[2];
+        p->sig_mask[sig] = in[3] & ~(SIGBIT(9) | SIGBIT(19));
+        if (in[0] <= 1) p->sig_pending &= ~SIGBIT(sig);         /* default or ignored: nothing to run */
+    }
+    return 0;
+}
+
+static uint64_t sys_rt_sigprocmask(int how, uint64_t set, uint64_t oset, uint64_t size)
+{
+    task_t *t = task_current();
+    if (size != 8 || !t) return (uint64_t)-EINVAL;
+    uint64_t in = 0;
+    if (set) {
+        if (!lx_user_range_ok(set, 8)) return (uint64_t)-EFAULT;
+        memcpy(&in, (const void *)(uintptr_t)set, 8);
+    }
+    if (oset) {
+        if (!lx_user_wr_ok(oset, 8)) return (uint64_t)-EFAULT;
+        memcpy((void *)(uintptr_t)oset, &t->sig_blocked, 8);
+    }
+    if (set) {
+        if (how == 0) t->sig_blocked |= in;                     /* SIG_BLOCK */
+        else if (how == 1) t->sig_blocked &= ~in;               /* SIG_UNBLOCK */
+        else if (how == 2) t->sig_blocked = in;                 /* SIG_SETMASK */
+        else return (uint64_t)-EINVAL;
+        t->sig_blocked &= ~(SIGBIT(9) | SIGBIT(19));
+    }
+    return 0;
+}
+
+/* the FPU/SSE state the program had at the system call: syscall_entry64 saved it below the frame */
+static uint8_t *saved_fpu(registers_t *r) { return (uint8_t *)r - 520; }
+
+/* the kernel's struct sigcontext (glibc's mcontext_t has the same layout) */
+typedef struct {
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15, rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp, rip, eflags;
+    uint16_t cs, gs, fs, ss;
+    uint64_t err, trapno, oldmask, cr2, fpstate, reserved[8];
+} sigcontext64_t;
+
+typedef struct {
+    uint64_t flags, link;
+    uint64_t ss_sp; int32_t ss_flags, pad; uint64_t ss_size;
+    sigcontext64_t mc;
+    uint64_t sigmask;
+} ucontext64_t;
+
+/* runs the handler of a signal that is waiting, when returning to the program: the frame Linux
+ * builds (rt_sigframe: the restorer's address, ucontext, siginfo, FPU state) on its stack */
+static void deliver_signal(registers_t *r)
+{
+    proc_t *p = proc_current();
+    task_t *t = task_current();
+    if (!p || !t || p->linux_abi != 2) return;
+    uint64_t ready = p->sig_pending & ~t->sig_blocked;
+    if (!ready) return;
+    int sig = 1;
+    while (!(ready & SIGBIT(sig))) sig++;
+    p->sig_pending &= ~SIGBIT(sig);
+    uint64_t handler = p->sig_handler[sig];
+    if (handler <= 1) return;                                   /* changed meanwhile */
+
+    uint64_t sp = (r->rsp - 128) & ~63ull;                      /* past the red zone */
+    sp -= 512;
+    uint64_t fp = sp;                                           /* fxsave image, 64-byte aligned */
+    uint64_t frame = ((fp - (8 + sizeof(ucontext64_t) + 128)) & ~15ull) - 8;
+    uint64_t uc_va = frame + 8, si_va = uc_va + sizeof(ucontext64_t);
+
+    ucontext64_t uc;
+    memset(&uc, 0, sizeof(uc));
+    sigcontext64_t *m = &uc.mc;
+    m->r8 = r->r8; m->r9 = r->r9; m->r10 = r->r10; m->r11 = r->r11;
+    m->r12 = r->r12; m->r13 = r->r13; m->r14 = r->r14; m->r15 = r->r15;
+    m->rdi = r->rdi; m->rsi = r->rsi; m->rbp = r->rbp; m->rbx = r->rbx;
+    m->rdx = r->rdx; m->rax = r->rax; m->rcx = r->rcx; m->rsp = r->rsp;
+    m->rip = r->rip; m->eflags = r->rflags;
+    m->cs = 0x2B; m->ss = 0x23;
+    m->fpstate = fp;
+    uc.sigmask = t->sig_blocked;
+    uint8_t info[128];
+    memset(info, 0, sizeof(info));
+    int32_t code = sig == 17 ? 1 : 0;                           /* CLD_EXITED, SI_USER */
+    memcpy(info, &sig, 4);
+    memcpy(info + 8, &code, 4);
+    uint64_t ret = p->sig_restorer[sig];
+    if (put_user(p, fp, saved_fpu(r), 512) || put_user(p, si_va, info, sizeof(info)) ||
+        put_user(p, uc_va, &uc, sizeof(uc)) || put_user(p, frame, &ret, 8)) {
+        p->term_sig = 11;                                       /* no stack for it: as Linux, SIGSEGV */
+        proc_exit(128 + 11);
+    }
+    t->sig_blocked |= p->sig_mask[sig];
+    if (!(p->sig_flags[sig] & SA_NODEFER)) t->sig_blocked |= SIGBIT(sig);
+    if (p->sig_flags[sig] & SA_RESETHAND) { p->sig_handler[sig] = 0; p->sig_flags[sig] = 0; }
+    t->sig_blocked &= ~(SIGBIT(9) | SIGBIT(19));
+    r->rsp = frame;
+    r->rip = handler;
+    r->rdi = (uint64_t)sig;
+    r->rsi = si_va;
+    r->rdx = uc_va;
+    r->rax = 0;
+    r->rflags &= ~(0x400ull | 0x100ull | 0x40000ull);           /* DF, TF, AC */
+}
+
+/* back from a handler: the registers, FPU state and mask the frame holds */
+static uint64_t sys_rt_sigreturn(registers_t *r)
+{
+    proc_t *p = proc_current();
+    task_t *t = task_current();
+    uint64_t uc_va = r->rsp;                                    /* the handler's ret took the restorer */
+    ucontext64_t uc;
+    if (!lx_user_range_ok(uc_va, sizeof(uc))) { p->term_sig = 11; proc_exit(128 + 11); }
+    memcpy(&uc, (const void *)(uintptr_t)uc_va, sizeof(uc));
+    sigcontext64_t *m = &uc.mc;
+    if (m->rip >= PAGING_USER_END || m->rsp >= PAGING_USER_END) { p->term_sig = 11; proc_exit(128 + 11); }
+    r->r8 = m->r8; r->r9 = m->r9; r->r10 = m->r10; r->r11 = m->r11;
+    r->r12 = m->r12; r->r13 = m->r13; r->r14 = m->r14; r->r15 = m->r15;
+    r->rdi = m->rdi; r->rsi = m->rsi; r->rbp = m->rbp; r->rbx = m->rbx;
+    r->rdx = m->rdx; r->rcx = m->rcx; r->rsp = m->rsp; r->rip = m->rip;
+    /* the flags a program may change (CF PF AF ZF SF TF DF OF AC), interrupts stay on */
+    r->rflags = (r->rflags & ~0x40DD5ull) | (m->eflags & 0x40DD5ull) | 0x200ull;
+    if (m->fpstate && lx_user_range_ok(m->fpstate, 512)) {
+        uint8_t *dst = saved_fpu(r);
+        memcpy(dst, (const void *)(uintptr_t)m->fpstate, 512);
+        uint32_t mxcsr;
+        memcpy(&mxcsr, dst + 24, 4);
+        mxcsr &= 0xFFFFu;                                       /* reserved bits would fault fxrstor */
+        memcpy(dst + 24, &mxcsr, 4);
+    }
+    t->sig_blocked = uc.sigmask & ~(SIGBIT(9) | SIGBIT(19));
+    return m->rax;
+}
+
+/* tkill/tgkill: a handler if the program has one, else what the shared code does (abort...) */
+static uint64_t sys_tgkill(int sig, uint32_t nr, uint64_t a, uint64_t b, uint64_t c, registers_t *r)
+{
+    proc_t *p = proc_current();
+    if (p && sig > 0 && sig <= 64 && p->sig_handler[sig] > 1) {
+        p->sig_pending |= SIGBIT(sig);
+        return 0;
+    }
+    return call32(nr, a, b, c, 0, 0, 0, r);
+}
+
 int linux64_trace;
 
 void linux64_syscall(registers_t *r)
@@ -821,8 +1012,9 @@ void linux64_syscall(registers_t *r)
         case 10:  ret = sys_mprotect(a, b, (uint32_t)c); break;
         case 11:  ret = sys_munmap(a, b); break;
         case 12:  ret = sys_brk(a); break;
-        case 13:  ret = call32(174, a, b, c, d, 0, 0, r); break;               /* rt_sigaction */
-        case 14:  ret = call32(175, a, b, c, d, 0, 0, r); break;               /* rt_sigprocmask */
+        case 13:  ret = sys_rt_sigaction((int)a, b, c, d); break;
+        case 14:  ret = sys_rt_sigprocmask((int)a, b, c, d); break;
+        case 15:  ret = sys_rt_sigreturn(r); break;
         case 16:  ret = call32(54, a, b, c, 0, 0, 0, r); break;                /* ioctl */
         case 17:  ret = call32(180, a, b, c, d & 0xFFFFFFFFu, d >> 32, 0, r); break;  /* pread64 */
         case 18:  ret = call32(181, a, b, c, d & 0xFFFFFFFFu, d >> 32, 0, r); break;  /* pwrite64 */
@@ -848,9 +1040,20 @@ void linux64_syscall(registers_t *r)
         case 50:  ret = call32(363, a, b, 0, 0, 0, 0, r); break;               /* listen */
         case 51:  ret = call32(367, a, b, c, 0, 0, 0, r); break;               /* getsockname */
         case 52:  ret = call32(368, a, b, c, 0, 0, 0, r); break;               /* getpeername */
+        case 53:  ret = call32(360, a, b, c, d, 0, 0, r); break;               /* socketpair */
+        case 34: {                                                             /* pause */
+            proc_t *pp = proc_current();
+            while (!(pp->sig_pending & ~task_current()->sig_blocked)) task_sleep(20);
+            ret = (uint64_t)-EINTR;
+            break;
+        }
         case 54:  ret = call32(366, a, b, c, d, e, 0, r); break;               /* setsockopt */
         case 55:  ret = call32(365, a, b, c, d, e, 0, r); break;               /* getsockopt */
         case 56:  ret = sx(lx_clone(r, (uint32_t)a, b, c, e, d)); break;       /* clone: flags, stack, ptid, ctid, tls */
+        case 57:  ret = call32(2, 0, 0, 0, 0, 0, 0, r); break;                 /* fork */
+        case 58:  ret = call32(190, 0, 0, 0, 0, 0, 0, r); break;               /* vfork */
+        case 59:  ret = (uint64_t)(int64_t)lx_execve(a, b, c); break;          /* execve: only on failure */
+        case 61:  ret = sx(lx_wait4((int)a, b, (uint32_t)c, d)); break;        /* wait4 */
         case 60:  ret = call32(1, a, 0, 0, 0, 0, 0, r); break;                 /* exit */
         case 62:  ret = call32(37, a, b, 0, 0, 0, 0, r); break;                /* kill */
         case 63:  ret = call32(122, a, 0, 0, 0, 0, 0, r); break;               /* uname */
@@ -888,7 +1091,7 @@ void linux64_syscall(registers_t *r)
         case 158: ret = sys_arch_prctl((uint32_t)a, b); break;
         case 160: ret = 0; break;                                              /* setrlimit */
         case 186: ret = call32(224, 0, 0, 0, 0, 0, 0, r); break;               /* gettid */
-        case 200: ret = call32(238, a, b, 0, 0, 0, 0, r); break;               /* tkill */
+        case 200: ret = sx(sys_tgkill((int)b, 238, a, b, 0, r)); break;        /* tkill */
         case 201: {                                                            /* time */
             int64_t sec = 0;
             int32_t nsec = 0;
@@ -909,7 +1112,7 @@ void linux64_syscall(registers_t *r)
         case 231: ret = call32(252, a, 0, 0, 0, 0, 0, r); break;               /* exit_group */
         case 232: ret = call32(256, a, b, c, d, 0, 0, r); break;               /* epoll_wait */
         case 233: ret = call32(255, a, b, c, d, 0, 0, r); break;               /* epoll_ctl */
-        case 234: ret = call32(270, a, b, c, 0, 0, 0, r); break;               /* tgkill */
+        case 234: ret = sx(sys_tgkill((int)c, 270, a, b, c, r)); break;        /* tgkill */
         case 257: ret = call32(295, a, b, c, d, 0, 0, r); break;               /* openat */
         case 258: ret = call32(39, b, c, 0, 0, 0, 0, r); break;                /* mkdirat (AT_FDCWD paths) */
         case 262: ret = sys_stat_at((int)a, b, c, (uint32_t)d); break;         /* newfstatat */
@@ -924,7 +1127,7 @@ void linux64_syscall(registers_t *r)
         case 281: ret = call32(319, a, b, c, d, e, f, r); break;               /* epoll_pwait */
         case 290: ret = call32(328, a, b, 0, 0, 0, 0, r); break;               /* eventfd2 */
         case 291: ret = call32(329, a, 0, 0, 0, 0, 0, r); break;               /* epoll_create1 */
-        case 292: ret = call32(63, a, b, 0, 0, 0, 0, r); break;                /* dup3 */
+        case 292: ret = call32(330, a, b, c, 0, 0, 0, r); break;               /* dup3 */
         case 293: ret = call32(331, a, b, 0, 0, 0, 0, r); break;               /* pipe2 */
         case 295: case 296: {                                                  /* preadv, pwritev */
             if (c > 1024 || !lx_user_range_ok(b, c * 16)) { ret = (uint64_t)-EFAULT; break; }
@@ -947,6 +1150,7 @@ void linux64_syscall(registers_t *r)
         case 332: ret = (uint64_t)-ENOSYS; break;                              /* statx: glibc and libuv fall back */
         case 425: case 426: case 427: ret = (uint64_t)-ENOSYS; break;          /* io_uring */
         case 435: ret = (uint64_t)-ENOSYS; break;                              /* clone3: glibc uses clone */
+        case 434: ret = (uint64_t)-ENOSYS; break;                              /* pidfd_open: wait4 instead */
         default: {
             static uint8_t seen[512];
             if (nr < 512 && seen[nr]++ < 3) {
@@ -977,4 +1181,5 @@ done:
         serial_write(line);
     }
     r->rax = ret;
+    deliver_signal(r);
 }

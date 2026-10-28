@@ -37,6 +37,9 @@ uint32_t lx_clone(registers_t *regs, uint32_t flags, uint64_t child_stack,
 int lx_user_range_ok(uint64_t p, uint64_t len);
 int lx_user_wr_ok(uint64_t p, uint64_t len);
 int lx_user_cstr_ok(uint64_t p);
+int lx_execve(uint64_t path, uint64_t argv, uint64_t envp);
+uint32_t lx_wait4(int pid, uint64_t status, uint32_t options, uint64_t rusage);
+int lx_tls_clone(uint32_t base, uint32_t limit, uint32_t flags);
 int lx_clock_now(uint32_t clock_id, int64_t *sec, int32_t *nsec);
 void linux64_prefault(uint64_t addr, uint64_t len, int write);
 int linux64_is_elf64(const char *path);
@@ -44,6 +47,7 @@ struct proc;
 int linux64_load(struct proc *p, const char *path, int argc, const char *const argv[],
                  int envc, const char *const envp[], uint64_t *entry_out, uint64_t *sp_out);
 void linux64_mm_free(struct proc *p);
+int  linux64_mm_clone(struct proc *child, struct proc *parent);   /* fork: a copy of the map */
 
 void linux64_init(void);                      /* the syscall instruction's MSRs */
 void linux64_syscall(registers_t *regs);      /* from syscall_entry64 */

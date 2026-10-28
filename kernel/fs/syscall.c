@@ -197,18 +197,20 @@ static int user_cstr_ok(uint64_t ptr)
 
 #define EXEC_VECTOR_BYTES_MAX  4096
 
-/* Copy a user argv/envp vector into bounded kernel-owned scratch storage. */
-static int copy_user_vector(uint64_t vector, const char **out, int max,
-                            char *storage, uint32_t capacity, uint32_t *used)
+/* Copy a user argv/envp vector into bounded kernel-owned scratch storage; its pointers are
+ * 4 bytes (32-bit programs) or 8 (`wide`, 64-bit ones). */
+static int copy_user_vector_w(uint64_t vector, const char **out, int max,
+                              char *storage, uint32_t capacity, uint32_t *used, int wide)
 {
     if (!vector) {
         out[0] = 0;
         return 0;
     }
+    uint32_t w = wide ? 8u : 4u;
     for (int i = 0; i <= max; i++) {
-        uint64_t slot = vector + (uint64_t)i * sizeof(uint32_t);
-        if (slot < vector || !user_range_ok(slot, sizeof(uint32_t))) return -EFAULT;
-        uint32_t src = ((const uint32_t *)(uintptr_t)slot)[0];
+        uint64_t slot = vector + (uint64_t)i * w;
+        if (slot < vector || !user_range_ok(slot, w)) return -EFAULT;
+        uint64_t src = wide ? ((const uint64_t *)(uintptr_t)slot)[0] : ((const uint32_t *)(uintptr_t)slot)[0];
         if (!src) {
             out[i] = 0;
             return i;
@@ -218,7 +220,7 @@ static int copy_user_vector(uint64_t vector, const char **out, int max,
         uint32_t start = *used;
         int terminated = 0;
         for (uint32_t n = 0; n < PROC_EXEC_ARG_MAX; n++) {
-            uint32_t at = src + n;
+            uint64_t at = src + n;
             if (at < src || !user_range_ok(at, 1)) return -EFAULT;
             if (*used >= capacity) return -E2BIG;
             char c = ((const char *)(uintptr_t)src)[n];
@@ -229,6 +231,12 @@ static int copy_user_vector(uint64_t vector, const char **out, int max,
         out[i] = storage + start;
     }
     return -E2BIG;
+}
+
+static int copy_user_vector(uint64_t vector, const char **out, int max,
+                            char *storage, uint32_t capacity, uint32_t *used)
+{
+    return copy_user_vector_w(vector, out, max, storage, capacity, used, 0);
 }
 
 static int syscall_spawn_user(uint64_t path_ptr, uint64_t argv_ptr, uint64_t envp_ptr)
@@ -253,24 +261,52 @@ static int syscall_spawn_user(uint64_t path_ptr, uint64_t argv_ptr, uint64_t env
     return proc_spawn_argv(path, argv, envp);
 }
 
+/* execve: path, argv and envp are copied out of the program first (its memory goes) */
+static int syscall_exec_user_w(uint64_t path_ptr, uint64_t argv_ptr, uint64_t envp_ptr, int wide)
+{
+    if (!user_cstr_ok(path_ptr)) return cstr_too_long ? -ENAMETOOLONG : -EFAULT;
+    uint32_t vec_bytes = sizeof(const char *) * (PROC_EXEC_MAX_ARGS + PROC_EXEC_MAX_ENV + 2);
+    uint8_t *scratch = malloc(FS_NAME_LEN + PROC_EXEC_BYTES + vec_bytes);
+    if (!scratch) return -ENOMEM;
+    char *path = (char *)scratch;
+    const char **argv = (const char **)(scratch + FS_NAME_LEN);
+    const char **envp = argv + PROC_EXEC_MAX_ARGS + 1;
+    char *storage = (char *)(scratch + FS_NAME_LEN + vec_bytes);
+    strncpy(path, (const char *)(uintptr_t)path_ptr, FS_NAME_LEN - 1);
+    path[FS_NAME_LEN - 1] = 0;
+    uint32_t used = 0;
+    int rc = copy_user_vector_w(argv_ptr, argv, PROC_EXEC_MAX_ARGS, storage, PROC_EXEC_BYTES, &used, wide);
+    if (rc >= 0)
+        rc = copy_user_vector_w(envp_ptr, envp, PROC_EXEC_MAX_ENV, storage, PROC_EXEC_BYTES, &used, wide);
+    if (rc >= 0) rc = proc_execve_argv(path, argv, envp, scratch);   /* returns only on failure */
+    free(scratch);
+    return rc;
+}
+
 static int syscall_exec_user(uint64_t path_ptr, uint64_t argv_ptr, uint64_t envp_ptr)
 {
-    if (!user_cstr_ok(path_ptr)) return -EFAULT;
-    char path[FS_NAME_LEN];
-    strncpy(path, (const char *)(uintptr_t)path_ptr, sizeof(path) - 1);
-    path[sizeof(path) - 1] = 0;
-    char arg_storage[EXEC_VECTOR_BYTES_MAX];
-    char env_storage[EXEC_VECTOR_BYTES_MAX];
-    const char *argv[PROC_EXEC_MAX_ARGS + 1];
-    const char *envp[PROC_EXEC_MAX_ENV + 1];
-    uint32_t arg_used = 0, env_used = 0;
-    int rc = copy_user_vector(argv_ptr, argv, PROC_EXEC_MAX_ARGS,
-                              arg_storage, sizeof(arg_storage), &arg_used);
-    if (rc < 0) return rc;
-    rc = copy_user_vector(envp_ptr, envp, PROC_EXEC_MAX_ENV,
-                          env_storage, sizeof(env_storage), &env_used);
-    if (rc < 0) return rc;
-    return proc_execve_argv(path, argv, envp);
+    return syscall_exec_user_w(path_ptr, argv_ptr, envp_ptr, 0);
+}
+
+/* Descriptors 0..2 are the console until dup2/dup3 puts something else there (a child's pipes):
+ * then std_fd[n] names a hidden descriptor (from the top of the table) the number stands for. */
+static int fd_xlate(proc_t *p, int fd)
+{
+    if (p && fd >= 0 && fd <= 2 && p->std_fd[fd] > 2) return p->std_fd[fd];
+    return fd;
+}
+
+/* a signal the calling thread will take is waiting: blocking calls give up (EINTR) */
+static int linux_signal_waiting(void)
+{
+    proc_t *p = proc_current();
+    task_t *t = task_current();
+    return p && t && (p->sig_pending & ~t->sig_blocked);
+}
+
+static int is_std_target(proc_t *p, int fd)
+{
+    return p && fd > 2 && (p->std_fd[0] == fd || p->std_fd[1] == fd || p->std_fd[2] == fd);
 }
 
 /* user descriptors 3.. map to slots of the process's own table, which hold VFS descriptors */
@@ -286,11 +322,36 @@ static int proc_pipe_endpoint(proc_t *p, int fd, int *is_write)
 {
     if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS) return -1;
     int v = p->fd[fd - 3];
-    for (int i = 0; i < PROC_MAX_PIPES; i++) {
-        if (v == PROC_FD_PIPE_READ_BASE - i) { if (is_write) *is_write = 0; return i; }
-        if (v == PROC_FD_PIPE_WRITE_BASE - i) { if (is_write) *is_write = 1; return i; }
+    if (v <= PROC_FD_PIPE_READ_BASE && v > PROC_FD_PIPE_READ_BASE - PROC_MAX_PIPES) {
+        if (is_write) *is_write = 0;
+        return proc_pipe(PROC_FD_PIPE_READ_BASE - v) ? PROC_FD_PIPE_READ_BASE - v : -1;
+    }
+    if (v <= PROC_FD_PIPE_WRITE_BASE && v > PROC_FD_PIPE_WRITE_BASE - PROC_MAX_PIPES) {
+        if (is_write) *is_write = 1;
+        return proc_pipe(PROC_FD_PIPE_WRITE_BASE - v) ? PROC_FD_PIPE_WRITE_BASE - v : -1;
+    }
+    if (PROC_FD_IS_SPAIR(v)) {                   /* a socketpair end: as a pipe, the side it reads */
+        if (is_write) *is_write = 0;
+        return proc_pipe(PROC_FD_SPAIR_R(v)) ? PROC_FD_SPAIR_R(v) : -1;
     }
     return -1;
+}
+
+/* a socketpair end's value, or 0 */
+static int spair_of(proc_t *p, int fd)
+{
+    if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS) return 0;
+    int v = p->fd[fd - 3];
+    return PROC_FD_IS_SPAIR(v) ? v : 0;
+}
+
+/* the pipe a write to fd goes into */
+static int pipe_write_end(proc_t *p, int fd)
+{
+    int v = spair_of(p, fd);
+    if (v) return proc_pipe(PROC_FD_SPAIR_W(v)) ? PROC_FD_SPAIR_W(v) : -1;
+    int is_write = 0, pi = proc_pipe_endpoint(p, fd, &is_write);
+    return pi >= 0 && is_write ? pi : -1;
 }
 
 static uint32_t linux_pipe_read(proc_t *p, int fd, uint64_t user_buf, uint32_t count)
@@ -300,7 +361,7 @@ static uint32_t linux_pipe_read(proc_t *p, int fd, uint64_t user_buf, uint32_t c
     if (pi < 0 || is_write) return (uint32_t)-EBADF;
     if (count == 0) return 0;
     if (!user_wr_ok(user_buf, count)) return (uint32_t)-EFAULT;
-    proc_pipe_t *pipe = &p->pipes[pi];
+    proc_pipe_t *pipe = proc_pipe(pi);
     if (!pipe->count) return pipe->write_refs ? (uint32_t)-EAGAIN : 0;
     uint32_t n = count < pipe->count ? count : pipe->count;
     uint8_t *dst = (uint8_t *)(uintptr_t)user_buf;
@@ -308,18 +369,17 @@ static uint32_t linux_pipe_read(proc_t *p, int fd, uint64_t user_buf, uint32_t c
         dst[i] = pipe->data[pipe->head];
         pipe->head = (pipe->head + 1u) % PROC_PIPE_CAPACITY;
     }
-    pipe->count -= (uint16_t)n;
+    pipe->count -= n;
     return n;
 }
 
 static uint32_t linux_pipe_write(proc_t *p, int fd, uint64_t user_buf, uint32_t count)
 {
-    int is_write = 0;
-    int pi = proc_pipe_endpoint(p, fd, &is_write);
-    if (pi < 0 || !is_write) return (uint32_t)-EBADF;
+    int pi = pipe_write_end(p, fd);
+    if (pi < 0) return (uint32_t)-EBADF;
     if (count == 0) return 0;
     if (!user_range_ok(user_buf, count)) return (uint32_t)-EFAULT;
-    proc_pipe_t *pipe = &p->pipes[pi];
+    proc_pipe_t *pipe = proc_pipe(pi);
     if (!pipe->read_refs) return (uint32_t)-EPIPE;
     uint32_t available = PROC_PIPE_CAPACITY - pipe->count;
     if (!available) return (uint32_t)-EAGAIN;
@@ -329,7 +389,7 @@ static uint32_t linux_pipe_write(proc_t *p, int fd, uint64_t user_buf, uint32_t 
         pipe->data[pipe->tail] = src[i];
         pipe->tail = (pipe->tail + 1u) % PROC_PIPE_CAPACITY;
     }
-    pipe->count += (uint16_t)n;
+    pipe->count += n;
     return n;
 }
 
@@ -346,14 +406,8 @@ static uint32_t linux_pipe_create(uint64_t user_fds, uint32_t flags)
         else slots[1] = i;
     }
     if (slots[1] < 0) return (uint32_t)-EMFILE;
-    for (int i = 0; i < PROC_MAX_PIPES; i++)
-        if (!p->pipes[i].used) { pipe_index = i; break; }
+    pipe_index = proc_pipe_alloc();
     if (pipe_index < 0) return (uint32_t)-ENFILE;
-
-    proc_pipe_t *pipe = &p->pipes[pipe_index];
-    memset(pipe, 0, sizeof(*pipe));
-    pipe->used = 1;
-    pipe->read_refs = pipe->write_refs = 1;
     p->fd[slots[0]] = PROC_FD_PIPE_READ_BASE - pipe_index;
     p->fd[slots[1]] = PROC_FD_PIPE_WRITE_BASE - pipe_index;
     p->fd_flags[slots[0]] = p->fd_flags[slots[1]] =
@@ -369,6 +423,51 @@ static uint32_t linux_pipe_create(uint64_t user_fds, uint32_t flags)
 
 
 
+
+/* socketpair(AF_UNIX, SOCK_STREAM): two pipes, each end reads one and writes the other */
+static uint32_t linux_socketpair(int domain, uint32_t type, uint64_t user_fds)
+{
+    proc_t *p = proc_current();
+    if (!p || !user_wr_ok(user_fds, 8)) return (uint32_t)-EFAULT;
+    if (domain != 1) return (uint32_t)-97;                       /* EAFNOSUPPORT */
+    if ((type & 0xF) != 1 && (type & 0xF) != 5) return (uint32_t)-94;   /* stream, seqpacket */
+    int slots[2] = { -1, -1 };
+    for (int i = 0; i < PROC_MAX_FDS && slots[1] < 0; i++) {
+        if (p->fd[i] != -1) continue;
+        if (slots[0] < 0) slots[0] = i; else slots[1] = i;
+    }
+    if (slots[1] < 0) return (uint32_t)-EMFILE;
+    int a = proc_pipe_alloc();
+    if (a < 0) return (uint32_t)-ENFILE;
+    int b = proc_pipe_alloc();
+    if (b < 0) { proc_pipe_unref(a, 0); proc_pipe_unref(a, 1); return (uint32_t)-ENFILE; }
+    p->fd[slots[0]] = PROC_FD_SPAIR(a, b);
+    p->fd[slots[1]] = PROC_FD_SPAIR(b, a);
+    for (int k = 0; k < 2; k++) {
+        p->fd_flags[slots[k]] = (type & LINUX_O_CLOEXEC) ? LINUX_FD_CLOEXEC : 0;
+        p->fd_open_flags[slots[k]] = 2u | (type & 0x800u);
+        p->fdpath[slots[k]][0] = 0;
+        p->fd_dir_offset[slots[k]] = 0;
+    }
+    uint32_t fds[2] = { (uint32_t)slots[0] + 3u, (uint32_t)slots[1] + 3u };
+    memcpy((void *)(uintptr_t)user_fds, fds, sizeof(fds));
+    return 0;
+}
+
+/* shutdown of a socketpair end: SHUT_WR (1) / SHUT_RDWR (2) let the other end see the end */
+static uint32_t spair_shutdown(proc_t *p, int fd, int how)
+{
+    int v = spair_of(p, fd);
+    if (how < 0 || how > 2) return (uint32_t)-EINVAL;
+    if (how >= 1) {
+        proc_pipe_unref(PROC_FD_SPAIR_W(v), 1);
+        int r = PROC_FD_SPAIR_R(v);
+        proc_pipe_ref(r, 0);                     /* the slot becomes a plain read end */
+        proc_pipe_unref(r, 0);
+        p->fd[fd - 3] = PROC_FD_PIPE_READ_BASE - r;
+    }
+    return 0;
+}
 
 /* ---- sockets: the fd side of kernel/net/lsock.c ---- */
 #define LINUX_SOCK_NONBLOCK 0x800u
@@ -639,6 +738,7 @@ static uint32_t eventfd_write(proc_eventfd_t *e, uint64_t buf, uint32_t count)
 #define LINUX_EPOLLOUT     0x004u
 #define LINUX_EPOLLERR     0x008u
 #define LINUX_EPOLLHUP     0x010u
+#define LINUX_EPOLLRDHUP 0x2000u
 #define LINUX_EPOLLONESHOT (1u << 30)
 
 static int is_epoll_fd(proc_t *p, int fd)
@@ -649,12 +749,23 @@ static int is_epoll_fd(proc_t *p, int fd)
 /* what a descriptor is ready for right now */
 static uint32_t fd_ready(proc_t *p, int fd)
 {
+    fd = fd_xlate(p, fd);
     if (fd == 1 || fd == 2) return LINUX_EPOLLOUT;
     if (fd == 0) return 0;                       /* the console is read by blocking only */
     int is_write = 0;
     int pi = proc_pipe_endpoint(p, fd, &is_write);
+    if (pi >= 0 && spair_of(p, fd)) {
+        proc_pipe_t *in = proc_pipe(pi);
+        int wi = pipe_write_end(p, fd);
+        proc_pipe_t *out = wi >= 0 ? proc_pipe(wi) : 0;
+        uint32_t r = in->count ? LINUX_EPOLLIN : 0;
+        if (!in->write_refs) r |= LINUX_EPOLLIN | LINUX_EPOLLRDHUP;
+        if (out && out->read_refs && out->count < PROC_PIPE_CAPACITY) r |= LINUX_EPOLLOUT;
+        if ((!out || !out->read_refs) && !in->write_refs) r |= LINUX_EPOLLHUP;
+        return r;
+    }
     if (pi >= 0) {
-        proc_pipe_t *pipe = &p->pipes[pi];
+        proc_pipe_t *pipe = proc_pipe(pi);
         if (!is_write) {
             uint32_t r = pipe->count ? LINUX_EPOLLIN : 0;
             if (!pipe->write_refs) r |= LINUX_EPOLLIN | LINUX_EPOLLHUP;
@@ -728,6 +839,7 @@ static uint32_t linux_poll(uint64_t user_fds, uint32_t nfds, int timeout_ms)
         }
         if (n || timeout_ms == 0) return n;
         if (timeout_ms > 0 && debugmon_uptime_ms64() >= deadline) return 0;
+        if (linux_signal_waiting()) return (uint32_t)-EINTR;
         task_yield();
     }
 }
@@ -754,6 +866,7 @@ static uint32_t linux_epoll_wait(int epfd, uint64_t user_events, int maxevents, 
         }
         if (n || timeout_ms == 0) return (uint32_t)n;
         if (timeout_ms > 0 && debugmon_uptime_ms64() >= deadline) return 0;
+        if (linux_signal_waiting()) return (uint32_t)-EINTR;
         task_yield();                            /* a thread that writes the pipe gets to run */
     }
 }
@@ -779,7 +892,7 @@ static uint32_t linux_ioctl(int fd, uint32_t req, uint64_t arg)
         int n = sk >= 0 ? lsock_pending(sk) : 0;
         if (sk < 0 && fd > 2) {
             int is_write = 0, pi = proc_pipe_endpoint(p, fd, &is_write);
-            if (pi >= 0 && !is_write) n = p->pipes[pi].count;
+            if (pi >= 0 && !is_write) n = proc_pipe(pi)->count;
         }
         memcpy((void *)(uintptr_t)arg, &n, 4);
         return 0;
@@ -1127,6 +1240,7 @@ static void linux_stat64_fill(linux_stat64_t *st, const vfs_entry_t *entry)
 /* fstat of a descriptor, whatever it is: the console, a device, a pipe, an epoll, or a file */
 static int linux_fd_stat(int fd, linux_stat64_t *st)
 {
+    fd = fd_xlate(proc_current(), fd);
     if (fd >= 0 && fd <= 2) { linux_stat64_fill(st, 0); return 0; }
     proc_t *p = proc_current();
     if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1) return -EBADF;
@@ -1208,6 +1322,90 @@ static uint32_t linux_getdents64(uint32_t fd, uint64_t user_buf, uint32_t count)
     return written;
 }
 
+int syscall_fd_inherit(proc_t *src, int ss, proc_t *dst, int ds)
+{
+    int v = src->fd[ss];
+    if (v == -1) return -EBADF;
+    if (v >= 0) {
+        /* a file: opened again at the same place (the offset is not shared afterwards) */
+        uint32_t fl = src->fd_open_flags[ss];
+        int vflags = (fl & 3u) == 2 ? VFS_RDWR : (fl & 3u) == 1 ? VFS_WRONLY : VFS_RDONLY;
+        if (fl & 0x400u) vflags |= VFS_APPEND;
+        int nv = vfs_open(src->fdpath[ss], vflags);
+        if (nv < 0) return -ENFILE;
+        int at = vfs_lseek(v, 0, 1);
+        if (at > 0) vfs_lseek(nv, (uint32_t)at, 0);
+        v = nv;
+    } else if (v <= PROC_FD_PIPE_READ_BASE && v > PROC_FD_PIPE_READ_BASE - PROC_MAX_PIPES) {
+        proc_pipe_ref(PROC_FD_PIPE_READ_BASE - v, 0);
+    } else if (v <= PROC_FD_PIPE_WRITE_BASE && v > PROC_FD_PIPE_WRITE_BASE - PROC_MAX_PIPES) {
+        proc_pipe_ref(PROC_FD_PIPE_WRITE_BASE - v, 1);
+    } else if (PROC_FD_IS_SPAIR(v)) {
+        proc_pipe_ref(PROC_FD_SPAIR_R(v), 0);
+        proc_pipe_ref(PROC_FD_SPAIR_W(v), 1);
+    } else if (v <= PROC_FD_SOCK_BASE && v > PROC_FD_SOCK_BASE - LSOCK_MAX) {
+        lsock_ref(PROC_FD_SOCK_BASE - v);
+    } else if (v <= PROC_FD_EVENTFD_BASE && v > PROC_FD_EVENTFD_BASE - PROC_MAX_EVENTFDS) {
+        if (src == dst) dst->eventfds[PROC_FD_EVENTFD_BASE - v].used++;   /* a fork copies the table */
+    }
+    dst->fd[ds] = v;
+    dst->fd_flags[ds] = src->fd_flags[ss];
+    dst->fd_open_flags[ds] = src->fd_open_flags[ss];
+    dst->fd_dir_offset[ds] = src->fd_dir_offset[ss];
+    if (dst != src || ds != ss) {
+        memcpy(dst->fdpath[ds], src->fdpath[ss], VFS_NAME_LEN);
+        dst->fdpath[ds][VFS_NAME_LEN - 1] = 0;
+    }
+    return 0;
+}
+
+/* dup, dup2, dup3: newfd -1 = the lowest free one */
+static uint32_t linux_dup(int oldfd, int newfd, int cloexec)
+{
+    proc_t *p = proc_current();
+    if (!p) return (uint32_t)-EBADF;
+    oldfd = fd_xlate(p, oldfd);
+    int old_console = oldfd >= 0 && oldfd <= 2;
+    if (!old_console && (oldfd < 3 || oldfd - 3 >= PROC_MAX_FDS || p->fd[oldfd - 3] == -1))
+        return (uint32_t)-EBADF;
+    if (newfd >= 3 + PROC_MAX_FDS) return (uint32_t)-EBADF;
+    if (newfd >= 0 && newfd <= 2) {
+        /* the console's numbers: they stand for a hidden copy from now on, or the console again */
+        int had = p->std_fd[newfd];
+        if (old_console) {
+            p->std_fd[newfd] = 0;
+        } else {
+            if (had == oldfd) return (uint32_t)newfd;
+            int slot = -1;
+            for (int i = PROC_MAX_FDS - 1; i >= 0; i--)
+                if (p->fd[i] == -1) { slot = i; break; }
+            if (slot < 0) return (uint32_t)-EMFILE;
+            int r = syscall_fd_inherit(p, oldfd - 3, p, slot);
+            if (r < 0) return (uint32_t)r;
+            p->fd_flags[slot] = 0;
+            p->std_fd[newfd] = slot + 3;
+        }
+        if (had > 2 && !is_std_target(p, had)) proc_fd_close(p, had - 3);
+        return (uint32_t)newfd;
+    }
+    if (old_console) return (uint32_t)-EBADF;          /* the console itself has no slot */
+    if (newfd == oldfd) return (uint32_t)newfd;
+    int slot = newfd - 3;
+    if (newfd < 0) {
+        slot = -1;
+        for (int i = 0; i < PROC_MAX_FDS; i++)
+            if (p->fd[i] == -1) { slot = i; break; }
+        if (slot < 0) return (uint32_t)-EMFILE;
+    } else if (p->fd[slot] != -1) {
+        if (is_std_target(p, newfd)) return (uint32_t)-EBUSY;
+        proc_fd_close(p, slot);
+    }
+    int r = syscall_fd_inherit(p, oldfd - 3, p, slot);
+    if (r < 0) return (uint32_t)r;
+    p->fd_flags[slot] = cloexec ? LINUX_FD_CLOEXEC : 0;
+    return (uint32_t)(slot + 3);
+}
+
 static uint32_t linux_reopen_proc_fd(proc_t *p, int source_fd, uint32_t flags)
 {
     if (!p || source_fd < 3 || source_fd - 3 >= PROC_MAX_FDS) return (uint32_t)-EBADF;
@@ -1221,14 +1419,12 @@ static uint32_t linux_reopen_proc_fd(proc_t *p, int source_fd, uint32_t flags)
 
     int is_write = 0;
     int pipe_index = proc_pipe_endpoint(p, source_fd, &is_write);
-    if (pipe_index >= 0) {
-        if (is_write) {
-            if (p->pipes[pipe_index].write_refs == UINT16_MAX) return (uint32_t)-EMFILE;
-            p->pipes[pipe_index].write_refs++;
-        } else {
-            if (p->pipes[pipe_index].read_refs == UINT16_MAX) return (uint32_t)-EMFILE;
-            p->pipes[pipe_index].read_refs++;
-        }
+    if (pipe_index >= 0 && spair_of(p, source_fd)) {
+        proc_pipe_ref(PROC_FD_SPAIR_R(kind), 0);
+        proc_pipe_ref(PROC_FD_SPAIR_W(kind), 1);
+        p->fd[dst] = kind;
+    } else if (pipe_index >= 0) {
+        proc_pipe_ref(pipe_index, is_write);
         p->fd[dst] = kind;
     } else if (kind == PROC_FD_EPOLL || kind == PROC_FD_DIRECTORY) {
         p->fd[dst] = kind;
@@ -1453,6 +1649,31 @@ typedef struct {
     uint32_t flags;
 } linux_user_desc_t;
 
+/* a Linux user_desc's flags as a GDT descriptor's access and granularity bytes */
+static void tls_desc_bits(uint32_t flags, uint8_t *access, uint8_t *gran)
+{
+    uint32_t contents = (flags >> 1) & 3u;
+    uint32_t read_only = (flags >> 3) & 1u;
+    uint32_t not_present = (flags >> 5) & 1u;
+    uint32_t useable = (flags >> 6) & 1u;
+    uint32_t limit_pages = (flags >> 4) & 1u;
+    uint32_t seg32 = flags & 1u;
+    *access = (uint8_t)(0x70u | (contents << 2) | (read_only ? 0u : 2u));
+    *gran = (uint8_t)((seg32 ? 0x40u : 0u) | (limit_pages ? 0x80u : 0u) | (useable ? 0x10u : 0u));
+    if (!not_present) *access |= 0x80u;
+}
+
+/* fork: the same TLS segment in a GDT entry of the child's own; the entry or -1 */
+int lx_tls_clone(uint32_t base, uint32_t limit, uint32_t flags)
+{
+    int entry = gdt_tls_alloc(-1);
+    if (entry < 0) return -1;
+    uint8_t access, gran;
+    tls_desc_bits(flags, &access, &gran);
+    if (gdt_tls_set(entry, base, limit, access, gran) != 0) { gdt_tls_release(entry); return -1; }
+    return entry;
+}
+
 static uint32_t linux_set_thread_area(uint64_t user_desc_ptr)
 {
     task_t *t = task_current();
@@ -1475,18 +1696,8 @@ static uint32_t linux_set_thread_area(uint64_t user_desc_ptr)
     }
     if (entry < 0) return (uint32_t)-ESRCH;
 
-    uint32_t contents = (desc.flags >> 1) & 3u;
-    uint32_t read_only = (desc.flags >> 3) & 1u;
-    uint32_t not_present = (desc.flags >> 5) & 1u;
-    uint32_t useable = (desc.flags >> 6) & 1u;
-    uint32_t limit_pages = (desc.flags >> 4) & 1u;
-    uint32_t seg32 = desc.flags & 1u;
-    uint8_t access = (uint8_t)(0x70u | (contents << 2) | (read_only ? 0u : 2u));
-    uint8_t gran = (uint8_t)((seg32 ? 0x40u : 0u) |
-                             (limit_pages ? 0x80u : 0u) |
-                             (useable ? 0x10u : 0u));
-    if (!not_present) access |= 0x80u;
-
+    uint8_t access, gran;
+    tls_desc_bits(desc.flags, &access, &gran);
     if (gdt_tls_set(entry, desc.base_addr, desc.limit, access, gran) != 0) {
         if (entry != t->tls_gdt_entry) gdt_tls_release(entry);
         return (uint32_t)-EINVAL;
@@ -1561,6 +1772,22 @@ static int linux_clone_tls(uint64_t user_desc_ptr, int *entry_out,
 #define LINUX_CLONE_DETACHED        0x00400000u
 #define LINUX_CLONE_CHILD_SETTID    0x01000000u
 
+/* wait4/waitpid; rusage of rusage_size bytes comes back zero */
+static uint32_t linux_wait4(int pid, uint64_t status_ptr, uint32_t options, uint64_t rusage, uint32_t rusage_size)
+{
+    if (options & ~(1u | 2u | 8u | 0x40000000u | 0x80000000u)) return (uint32_t)-EINVAL;
+    if (status_ptr && !user_wr_ok(status_ptr, 4)) return (uint32_t)-EFAULT;
+    if (rusage && rusage_size && !user_wr_ok(rusage, rusage_size)) return (uint32_t)-EFAULT;
+    if (pid == 0 || pid < -1) pid = -1;                  /* process groups: tOS has one */
+    int status = 0;
+    int r = proc_wait_child(pid, options & 1u, &status);   /* WNOHANG */
+    if (r > 0) {
+        if (status_ptr) *(uint32_t *)(uintptr_t)status_ptr = (uint32_t)status;
+        if (rusage && rusage_size) memset((void *)(uintptr_t)rusage, 0, rusage_size);
+    }
+    return (uint32_t)r;
+}
+
 static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint64_t child_stack,
                             uint64_t parent_tid, uint64_t tls_ptr, uint64_t child_tid)
 {
@@ -1571,6 +1798,29 @@ static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint64_t child_st
         LINUX_CLONE_SYSVSEM | LINUX_CLONE_SETTLS | LINUX_CLONE_PARENT_SETTID |
         LINUX_CLONE_CHILD_CLEARTID | LINUX_CLONE_DETACHED | LINUX_CLONE_CHILD_SETTID;
     if (!p || !parent || !regs) return (uint32_t)-ESRCH;
+    if (!(flags & LINUX_CLONE_THREAD)) {
+        /* a new process: fork (glibc's fork is clone(SIGCHLD | CHILD_SETTID | CHILD_CLEARTID)),
+         * or vfork (CLONE_VM | CLONE_VFORK, posix_spawn) */
+        if ((flags & 0xFFu) != 17 && (flags & 0xFFu) != 0) return (uint32_t)-EINVAL;
+        int share = (flags & LINUX_CLONE_VM) != 0;
+        if (share && !(flags & 0x4000u)) return (uint32_t)-ENOSYS;          /* CLONE_VFORK */
+        int pid = proc_fork(regs, share, share ? child_stack : 0);
+        if (pid < 0) return (uint32_t)pid;
+        proc_t *cp = proc_by_pid((uint32_t)pid);
+        task_t *ct = task_by_pid((uint32_t)pid);
+        if (cp && ct && child_tid && (flags & (LINUX_CLONE_CHILD_SETTID | LINUX_CLONE_CHILD_CLEARTID))) {
+            if (flags & LINUX_CLONE_CHILD_CLEARTID) ct->clear_tid = child_tid;
+            if (flags & LINUX_CLONE_CHILD_SETTID) {
+                /* in the child's memory (its own copy of the page) */
+                if (cp->pgdir != p->pgdir) paging_cow_break(cp->pgdir, child_tid);
+                uint64_t phys = paging_virt_to_phys(cp->pgdir, child_tid);
+                if (phys) *(uint32_t *)P2V(phys) = (uint32_t)pid;
+            }
+        }
+        if ((flags & LINUX_CLONE_PARENT_SETTID) && parent_tid && user_wr_ok(parent_tid, 4))
+            *(uint32_t *)(uintptr_t)parent_tid = (uint32_t)pid;
+        return (uint32_t)pid;
+    }
     if (flags & ~supported) return (uint32_t)-EINVAL;
     if (!(flags & LINUX_CLONE_VM)) return (uint32_t)-ENOSYS;
     if (!(flags & LINUX_CLONE_THREAD) || !(flags & LINUX_CLONE_SIGHAND))
@@ -1663,6 +1913,32 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
                                       uint64_t c, uint64_t d, uint64_t e, uint64_t f,
                                       registers_t *regs)
 {
+    {
+        proc_t *xp = proc_current();
+        if (xp && (xp->std_fd[0] | xp->std_fd[1] | xp->std_fd[2])) {
+            switch (number) {
+                case 3: case 4: case 19: case 54: case 55: case 221: case 197: case 108:
+                case 180: case 181: case 145: case 146: case 140: case 93: case 118: case 148:
+                case 220: case 141: case 300: case SYS_ISATTY: case 369: case 371:
+                    a = (uint64_t)(int64_t)fd_xlate(xp, (int)a);
+                    break;
+                case 255:                                /* epoll_ctl(epfd, op, fd) */
+                    c = (uint64_t)(int64_t)fd_xlate(xp, (int)c);
+                    break;
+            }
+        }
+    }
+    if (number == 360)                           /* socketpair(domain, type, protocol, fds) */
+        return linux_socketpair((int)a, (uint32_t)b, d);
+    if ((number == 369 || number == 371 || number == 373 || number == 365 || number == 366) &&
+        spair_of(proc_current(), (int)a)) {
+        if (number == 373) return spair_shutdown(proc_current(), (int)a, (int)b);
+        if (number == 365 || number == 366) {   /* getsockopt/setsockopt: SO_ERROR 0 and the like */
+            if (number == 365 && d && e && user_wr_ok(d, 4)) *(uint32_t *)(uintptr_t)d = 0;
+            return 0;
+        }
+        number = number == 369 ? 4 : 3;          /* sendto/recvfrom: write/read */
+    }
     switch (number) {
         case SYS_EXIT:
             if (task_current() && task_current()->user_thread)
@@ -1735,10 +2011,15 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
             return (uint32_t)-EINVAL;
 
         case SYS_FORK:
-            return (uint32_t)-ENOSYS;
+            return (uint32_t)proc_fork(regs, 0, 0);
+        case 190:                                /* vfork */
+            return (uint32_t)proc_fork(regs, 1, 0);
 
         case LINUX_SYS_CLONE:
             return linux_clone(regs, a, b, c, d, e);
+
+        case 114:                                /* wait4(pid, status, options, rusage) */
+            return linux_wait4((int)a, b, (uint32_t)c, d, 72);
 
         case SYS_READ: {
             int fd = (int)a, count = (int)c;
@@ -1766,8 +2047,15 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
                 int sk = sock_of(p, fd);
                 if (sk >= 0) return sock_recv_on(p, fd, sk, b, (uint32_t)count, 0, 0, 0);
             }
-            if (proc_pipe_endpoint(p, fd, 0) >= 0)
-                return linux_pipe_read(p, fd, b, (uint32_t)count);
+            if (proc_pipe_endpoint(p, fd, 0) >= 0) {
+                /* a blocking end waits for data (or for the last writer to go) */
+                for (;;) {
+                    uint32_t r = linux_pipe_read(p, fd, b, (uint32_t)count);
+                    if (r != (uint32_t)-EAGAIN || (p->fd_open_flags[fd - 3] & 0x800u)) return r;
+                    if (linux_signal_waiting()) return (uint32_t)-EINTR;
+                    task_yield();
+                }
+            }
             int vfd = proc_vfd(proc_current(), fd);
             if (vfd < 0) return (uint32_t)-EBADF;
             int n = vfs_read(vfd, buf, (uint32_t)count);
@@ -1795,8 +2083,14 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
                 int sk = sock_of(p, fd);
                 if (sk >= 0) return sock_send_on(p, fd, sk, b, (uint32_t)count, 0, 0, 0);
             }
-            if (proc_pipe_endpoint(p, fd, 0) >= 0)
-                return linux_pipe_write(p, fd, b, (uint32_t)count);
+            if (proc_pipe_endpoint(p, fd, 0) >= 0) {
+                for (;;) {
+                    uint32_t r = linux_pipe_write(p, fd, b, (uint32_t)count);
+                    if (r != (uint32_t)-EAGAIN || (p->fd_open_flags[fd - 3] & 0x800u)) return r;
+                    if (linux_signal_waiting()) return (uint32_t)-EINTR;
+                    task_yield();
+                }
+            }
             int vfd = proc_vfd(proc_current(), fd);
             if (vfd < 0) return (uint32_t)-EBADF;
             int n = vfs_write(vfd, buf, (uint32_t)count);
@@ -1884,6 +2178,14 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
         case SYS_CLOSE: {
             proc_t *p = proc_current();
             int fd = (int)a;
+            if (p && fd >= 0 && fd <= 2) {
+                /* the console's numbers: closing a redirected one gives the console back */
+                int had = p->std_fd[fd];
+                p->std_fd[fd] = 0;
+                if (had > 2 && !is_std_target(p, had)) proc_fd_close(p, had - 3);
+                return 0;
+            }
+            if (is_std_target(p, fd)) return 0;             /* the hidden copy behind 0..2 stays */
             if (p && fd >= 3 && fd - 3 < PROC_MAX_FDS && p->fd[fd - 3] != -1) {
                 proc_fd_close(p, fd - 3);
                 return 0;
@@ -1891,14 +2193,8 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
             return (uint32_t)-EBADF;
         }
 
-        case SYS_WAITPID: {
-            proc_t *child = proc_by_pid(a);
-            if (!child || child->ppid != task_get_pid()) return (uint32_t)-ECHILD;
-            if (b && !user_wr_ok(b, sizeof(uint32_t))) return (uint32_t)-EFAULT;
-            int code = proc_wait(a);
-            if (b) *(uint32_t *)(uintptr_t)b = ((uint32_t)(code & 0xFF)) << 8;
-            return a;
-        }
+        case SYS_WAITPID:
+            return linux_wait4((int)a, b, (uint32_t)c, 0, 0);
 
         case SYS_SPAWN: /* TOS extension, useful to bootstrap a child before fork/exec */
             return (uint32_t)syscall_spawn_user(a, b, c);
@@ -2074,8 +2370,14 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-EPERM;
 
         case LINUX_SYS_DUP:
+            return linux_dup((int)a, -1, 0);
         case LINUX_SYS_DUP2:
-            return (uint32_t)-ENOSYS;
+            if ((int)b < 0) return (uint32_t)-EBADF;
+            return linux_dup((int)a, (int)b, 0);
+        case 330:                                /* dup3 */
+            if ((int)b < 0 || (c & ~LINUX_O_CLOEXEC)) return (uint32_t)-EINVAL;
+            if (fd_xlate(proc_current(), (int)a) == fd_xlate(proc_current(), (int)b)) return (uint32_t)-EINVAL;
+            return linux_dup((int)a, (int)b, (c & LINUX_O_CLOEXEC) != 0);
         case SYS_GETUID:
         case LINUX_SYS_GETUID32: {
             uint32_t uid = 0, gid = 0;
@@ -2121,9 +2423,13 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
 
         case 422:                               /* futex_time64 */
             return linux_futex(a, b, c, d, e, f, 1);
-        case SYS_KILL:
-            if (b != 9 && b != 15) return (uint32_t)-EINVAL;
-            return proc_kill(a, 128 + (int)b) == 0 ? 0 : (uint32_t)-ESRCH;
+        case SYS_KILL: {
+            int pid = (int)a;
+            if (pid == -1) return (uint32_t)-EPERM;
+            proc_t *target = pid == 0 ? proc_current() : proc_by_pid((uint32_t)(pid < 0 ? -pid : pid));
+            if (!target || target->done) return (uint32_t)-ESRCH;
+            return (uint32_t)proc_signal(target, (int)b);
+        }
         case SYS_ISATTY:
             return a <= 2 ? 1 : 0;
 
@@ -3024,3 +3330,9 @@ int lx_user_wr_ok(uint64_t p, uint64_t len) { return user_wr_ok(p, len); }
 int lx_user_cstr_ok(uint64_t p) { return user_cstr_ok(p); }
 
 int lx_clock_now(uint32_t clock_id, int64_t *sec, int32_t *nsec) { return linux_clock_now(clock_id, sec, nsec); }
+
+int lx_execve(uint64_t path, uint64_t argv, uint64_t envp) { return syscall_exec_user_w(path, argv, envp, 1); }
+uint32_t lx_wait4(int pid, uint64_t status, uint32_t options, uint64_t rusage)
+{
+    return linux_wait4(pid, status, options, rusage, 144);
+}

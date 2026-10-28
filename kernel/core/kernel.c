@@ -558,6 +558,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             { "/node24/bin/node", "-v", 0 },
             { "/node24/bin/node", "-e", "console.log('node64', process.arch, process.version, 6*7)", 0 },
             { "/node24/bin/node", "/programs/js/t2.js", 0 },
+            { "/programs/forktest", 0 },
+            { "/node24/bin/node", "/programs/js/cp.js", 0 },
             { 0 } };
         for (int i = 0; runs[i][0]; i++) {
             const char *const *av = runs[i];
@@ -595,12 +597,11 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         {
             /* tpkg end to end: Node comes from update.artfical.com, not from the initrd */
             static const char *const steps[] = {
-                "python /tmp/t.py", "run /programs/hello.t", "run /programs/bsstest.t",
-                "run /programs/filetest.t", "run /programs/cryptotest.t",
-                "run /programs/nettest.t", "wget https://update.artfical.com/api/check",
-                "!tpkg install node",
-                "!npm install is-number@7.0.0 --prefix /tmp/p2 --no-audit --no-progress",
-                "!node -e console.log(require('/tmp/p2/node_modules/is-number')(42))",
+                "tpkg install node24", "node -v", "npm -v",
+                "npm install is-number@7.0.0 --prefix /tmp/p3 --no-audit --no-fund --no-progress",
+                "node -e console.log(require('/tmp/p3/node_modules/is-number')(42),process.version)",
+                "tpkg install node22", "node -v", "npm -v", "tpkg list",
+                "tpkg remove node22", "node -v", "tpkg list",
                 0 };
             static char out[16384];
             {
@@ -609,7 +610,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
                 fsbridge_create("/tmp/t.py");
                 fsbridge_write("/tmp/t.py", py, sizeof(py) - 1, 0);
             }
-            for (int i = 0; steps[i]; i++) {
+            /* the fork/exec test initrd skips these (they download 90 MB) */
+            for (int i = 0; steps[i] && !fsbridge_exists("/programs/forktest"); i++) {
                 const char *step = steps[i];
                 if (step[0] == '!') {                   /* not on an installed system's disk */
                     if (installer_check_installed()) continue;

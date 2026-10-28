@@ -181,6 +181,8 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
 
 struct proc;
 void syscall_proc_cleanup(struct proc *p);   /* closes a finished process's files and display mode */
+/* descriptor slot `ss` of `src` copied to slot `ds` of `dst` (dup, fork); 0 = done */
+int  syscall_fd_inherit(struct proc *src, int ss, struct proc *dst, int ds);
 
 void syscall_dump_recent(void);   /* the last Linux syscalls, to the serial port */
 

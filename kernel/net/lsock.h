@@ -10,7 +10,8 @@
 #define LSOCK_MAX 32
 
 int      lsock_create(int domain, int type, int protocol);
-void     lsock_close(int s);
+void     lsock_close(int s);             /* one descriptor fewer: the last one closes it */
+void     lsock_ref(int s);               /* one more (dup, fork) */
 int      lsock_bind(int s, const uint8_t *addr, uint32_t len);
 int      lsock_connect_start(int s, const uint8_t *addr, uint32_t len);
 int      lsock_connect_check(int s);          /* 0 connected, -EINPROGRESS still going, or an error */

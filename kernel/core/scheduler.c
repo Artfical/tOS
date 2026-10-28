@@ -191,6 +191,8 @@ int task_spawn_user_thread(const registers_t *regs, uint64_t child_stack,
     t->tls_base = tls_base;
     t->tls_limit = tls_limit;
     t->tls_flags = tls_flags;
+    t->sig_blocked = current ? current->sig_blocked : 0;
+    t->fs_base = current ? current->fs_base : 0;
     t->user_thread = 1;
     t->in_use = 1;
     t->state = TASK_STATE_READY;
@@ -216,6 +218,53 @@ int task_spawn_user_thread(const registers_t *regs, uint64_t child_stack,
     f->rflags = (regs->rflags | 0x202u) & ~(0x3000ull | 0x4000ull | 0x20000ull);
     f->gs = gs;
     strncpy(t->name, "elf-thread", sizeof(t->name) - 1);
+
+    task_t *last = current;
+    while (last->next != current) last = last->next;
+    t->next = current;
+    last->next = t;
+    task_count_val++;
+    return (int)t->pid;
+}
+
+int task_spawn_fork(const registers_t *regs, const uint8_t *fpu, void *proc, uint64_t *pgdir,
+                    uint64_t child_stack, int tls_gdt_entry)
+{
+    if (!regs || !proc || !pgdir || !current) return -1;
+    int slot = find_free_slot();
+    if (slot < 0) return -1;
+    task_t *t = &tasks[slot];
+    memset(t, 0, sizeof(*t));
+    t->proc = proc;
+    t->pgdir = pgdir;
+    t->user_data = current->user_data;
+    t->uid = current->uid;
+    t->gid = current->gid;
+    t->pid = next_pid++;
+    t->thread_group = t->pid;
+    t->fs_base = current->fs_base;
+    t->sig_blocked = current->sig_blocked;
+    t->tls_gdt_entry = tls_gdt_entry;
+    t->tls_base = current->tls_base;
+    t->tls_limit = current->tls_limit;
+    t->tls_flags = current->tls_flags;
+    t->in_use = 1;
+    t->state = TASK_STATE_READY;
+    t->kernel_stack = malloc(KERNEL_STACK_SZ);
+    if (!t->kernel_stack) {
+        t->in_use = 0;
+        return -1;
+    }
+    memset(t->kernel_stack, 0, KERNEL_STACK_SZ);
+    memcpy(t->fpu_state, fpu, sizeof(t->fpu_state));
+
+    registers_t *f = initial_frame(t);
+    *f = *regs;
+    f->rax = 0;
+    if (child_stack) f->rsp = child_stack;
+    f->rflags = (regs->rflags | 0x202u) & ~(0x3000ull | 0x4000ull | 0x20000ull);
+    if (tls_gdt_entry >= 0) f->gs = (uint16_t)((tls_gdt_entry << 3) | 3);
+    strncpy(t->name, current->name, sizeof(t->name) - 1);
 
     task_t *last = current;
     while (last->next != current) last = last->next;

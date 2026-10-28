@@ -109,6 +109,9 @@ void isr_handler(registers_t *regs)
     if (regs->int_no == 14) {
         uint64_t addr;
         asm volatile("mov %%cr2, %0" : "=r"(addr));
+        /* a write to a page shared since a fork */
+        if (addr < PAGING_USER_END && (regs->err_code & 3u) == 3u &&
+            paging_cow_break(paging_current_dir(), addr) == 1) return;
         if (addr < PAGING_USER_END && linux64_page_fault(addr, regs->err_code)) return;
     }
     if (interrupt_handlers[regs->int_no]) {
@@ -154,6 +157,11 @@ void isr_handler(registers_t *regs)
                 }
             }
             syscall_dump_recent();
+        }
+        {
+            /* what wait() says ended it */
+            proc_t *fp = proc_current();
+            if (fp) fp->term_sig = regs->int_no == 0 ? 8 : regs->int_no == 6 ? 4 : regs->int_no == 3 ? 5 : 11;
         }
         if (task_current() && task_current()->user_thread)
             proc_thread_exit(-(int)regs->int_no - 128);

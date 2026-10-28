@@ -149,11 +149,19 @@ int paging_unmap_in(uint64_t *dir, uint64_t virt, uint64_t *phys_out)
     return 1;
 }
 
+uint64_t paging_cow_flags(uint64_t phys, uint64_t flags)
+{
+    if ((flags & PTE_WRITABLE) && page_is_shared((uint32_t)phys))
+        flags = (flags & ~(uint64_t)PTE_WRITABLE) | PTE_COW;
+    return flags;
+}
+
 int paging_protect_in(uint64_t *dir, uint64_t virt, uint64_t flags)
 {
     if (!dir || (virt & (PAGE_SIZE - 1u)) || virt < PAGING_USER_START || virt >= PAGING_USER_END) return -1;
     uint64_t *pte = pte_of(dir, virt, 0);
     if (!pte || !(*pte & PTE_PRESENT)) return -1;
+    flags = paging_cow_flags(*pte & ADDR_MASK, flags & ~(uint64_t)PTE_COW);
     *pte = (*pte & ADDR_MASK) | PTE_PRESENT | (flags & (0xFFFull | PTE_NX));
     flush(dir, virt);
     return 0;
@@ -174,7 +182,7 @@ int paging_user_range_ok(uint64_t virt, uint64_t len, int write)
         }
         uint64_t pte = t[(page >> 12) & 511];
         if (!(pte & PTE_PRESENT) || !(pte & PTE_USER)) return 0;
-        if (write && !(pte & PTE_WRITABLE)) return 0;
+        if (write && !(pte & PTE_WRITABLE) && (!(pte & PTE_COW) || paging_cow_break(dir, page) != 1)) return 0;
     }
     return 1;
 }
@@ -193,4 +201,63 @@ int paging_saved_page(uint64_t *dir, uint64_t virt)
 {
     uint64_t *pte = pte_of(dir, virt, 0);
     return pte && !(*pte & PTE_PRESENT) && (*pte & PTE_SAVED);
+}
+
+static int fork_level(uint64_t *src, uint64_t *dst, int level)
+{
+    for (int i = 0; i < 512; i++) {
+        uint64_t e = src[i];
+        if (level == 1) {
+            if (!(e & (PTE_PRESENT | PTE_SAVED))) continue;
+            if (page_ref_inc((uint32_t)(e & ADDR_MASK)) != 0) return -1;
+            if (e & PTE_WRITABLE) {
+                e = (e & ~(uint64_t)PTE_WRITABLE) | PTE_COW;
+                src[i] = e;
+            }
+            dst[i] = e;
+            continue;
+        }
+        if (!(e & PTE_PRESENT) || (e & PTE_HUGE)) continue;
+        uint64_t *n = new_table();
+        if (!n) return -1;
+        dst[i] = V2P(n) | (e & ~ADDR_MASK);
+        if (fork_level(table(e), n, level - 1) != 0) return -1;
+    }
+    return 0;
+}
+
+uint64_t *paging_fork_dir(uint64_t *src)
+{
+    uint64_t *dir = paging_create_dir();
+    if (!dir) return 0;
+    int rc = 0;
+    for (int i = 0; i < 256 && !rc; i++) {
+        if (!(src[i] & PTE_PRESENT)) continue;
+        uint64_t *n = new_table();
+        if (!n) { rc = -1; break; }
+        dir[i] = V2P(n) | (src[i] & ~ADDR_MASK);
+        rc = fork_level(table(src[i]), n, 3);
+    }
+    if (src == paging_current_dir()) paging_switch(src);     /* the parent's pages are read-only now */
+    if (rc) { paging_destroy_dir(dir); return 0; }
+    return dir;
+}
+
+int paging_cow_break(uint64_t *dir, uint64_t virt)
+{
+    uint64_t *pte = pte_of(dir, virt, 0);
+    if (!pte || !(*pte & PTE_PRESENT) || !(*pte & PTE_COW)) return 0;
+    uint32_t phys = (uint32_t)(*pte & ADDR_MASK);
+    uint64_t flags = (*pte & ~ADDR_MASK & ~(uint64_t)PTE_COW) | PTE_WRITABLE;
+    if (page_is_shared(phys)) {
+        uint32_t copy = alloc_physical_page();
+        if (!copy) return -1;
+        memcpy(P2V(copy), P2V(phys), PAGE_SIZE);
+        *pte = copy | flags;
+        free_physical_page(phys);                         /* one owner fewer */
+    } else {
+        *pte = phys | flags;
+    }
+    flush(dir, virt & ~0xFFFull);
+    return 1;
 }

@@ -203,11 +203,43 @@ uint32_t alloc_physical_page(void)
     return addr;
 }
 
+/* pages that more than one address space has (fork shares them until one writes): how many
+ * owners each has besides the first; made at the first fork */
+static uint8_t *page_extra_refs;
+
+int page_ref_inc(uint32_t addr)
+{
+    uint32_t page = addr / PAGE_SIZE;
+    if (page >= total_pages) return -1;
+    if (!page_extra_refs) {
+        uint8_t *r = malloc(total_pages);
+        if (!r) return -1;
+        memset(r, 0, total_pages);
+        page_extra_refs = r;
+    }
+    uint64_t flags = heap_irq_save();
+    int ok = page_extra_refs[page] < 255;
+    if (ok) page_extra_refs[page]++;
+    heap_irq_restore(flags);
+    return ok ? 0 : -1;
+}
+
+int page_is_shared(uint32_t addr)
+{
+    uint32_t page = addr / PAGE_SIZE;
+    return page_extra_refs && page < total_pages && page_extra_refs[page];
+}
+
 void free_physical_page(uint32_t addr)
 {
     uint32_t page = addr / PAGE_SIZE;
     if (page >= total_pages) return;
     uint64_t flags = heap_irq_save();
+    if (page_extra_refs && page_extra_refs[page]) {          /* another owner keeps it */
+        page_extra_refs[page]--;
+        heap_irq_restore(flags);
+        return;
+    }
     page_bitmap[page / 32] &= ~(1 << (page % 32));
     used_pages--;
     heap_irq_restore(flags);

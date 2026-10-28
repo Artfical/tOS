@@ -11,6 +11,7 @@
 #define PTE_PCD      0x010
 #define PTE_HUGE     0x080
 #define PTE_SAVED    0x200          /* software: a page kept while its program allows no access */
+#define PTE_COW      0x400          /* software: writable, but shared since a fork: copied on write */
 #define PTE_NX       (1ull << 63)
 #define PDE_PRESENT  PTE_PRESENT
 #define PDE_WRITABLE PTE_WRITABLE
@@ -51,5 +52,12 @@ int  paging_protect_in(uint64_t *dir, uint64_t virt, uint64_t flags);
 /* Is [virt, virt+len) mapped user-accessible (and writable when `write`) in the loaded tables? */
 int  paging_user_range_ok(uint64_t virt, uint64_t len, int write);
 int  paging_saved_page(uint64_t *dir, uint64_t virt);     /* a PTE_SAVED page is there */
+/* fork: a copy of the user half sharing every page; writable ones become copy-on-write in both */
+uint64_t *paging_fork_dir(uint64_t *src);
+/* a write to a copy-on-write page: it gets a page of its own (or keeps it, if no one else has it
+ * now); 1 = done, 0 = not such a page, -1 = out of memory */
+int  paging_cow_break(uint64_t *dir, uint64_t virt);
+/* the flags a page may have: write access to a page still shared becomes PTE_COW */
+uint64_t paging_cow_flags(uint64_t phys, uint64_t flags);
 
 #endif

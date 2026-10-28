@@ -10,6 +10,7 @@
 #include "https.h"
 #include "sha256.h"
 #include "png.h"
+#include "build.h"
 
 /* tpkg: tOS's package manager. Packages live on update.artfical.com:
  *   GET https://update.artfical.com/pkg/api/list
@@ -41,6 +42,16 @@ static void print_uint(uint32_t n)
     if (!n) { terminal_writestring("0"); return; }
     while (n && i) { b[--i] = (char)('0' + n % 10); n /= 10; }
     terminal_writestring(b + i);
+}
+
+static void print_uint_to(char *out, uint32_t n)
+{
+    char b[12];
+    int i = 11;
+    b[11] = 0;
+    if (!n) b[--i] = '0';
+    while (n && i) { b[--i] = (char)('0' + n % 10); n /= 10; }
+    strcpy(out, b + i);
 }
 
 static void print_mb(uint32_t bytes)
@@ -250,7 +261,11 @@ static char *fetch_list(uint32_t ip, int quiet)
 {
     uint8_t *resp = malloc(TPKG_LIST_CAP);
     if (!resp) return 0;
-    int n = https_get(ip, TPKG_HOST, 443, "/pkg/api/list", resp, TPKG_LIST_CAP - 1);
+    /* the build: packages that need a newer tOS (64-bit programs...) are listed only for one */
+    char path[48] = "/pkg/api/list?build=", num[12];
+    print_uint_to(num, tos_build);
+    strcat(path, num);
+    int n = https_get(ip, TPKG_HOST, 443, path, resp, TPKG_LIST_CAP - 1);
     int he = n > 12 ? header_end(resp, n) : -1;
     if (n <= 12 || strncmp((char *)resp + 9, "200", 3) || he < 0) {
         if (!quiet) terminal_writestring("tpkg: the package server did not answer\n");
@@ -423,15 +438,41 @@ static int path_entry(const char *cmd, char *out)
 /* tpkg.commands in the package: "cmd=path inside it" -> path.tmbl. A command tOS already has
  * (its own, or another package's) is replaced, and the user is told which and how to undo it;
  * the ones that run the shell itself (cd, sudo, tpkg...) stay tOS's. */
-static int register_commands(const char *name, const char *destdir)
+/* the package an entry of path.tmbl points into ("/system/pkg/<name>/..."), or 0 */
+static const char *owner_of(const char *path, char *out, uint32_t cap)
+{
+    static const char root[] = TPKG_PKG_ROOT "/";
+    if (strncmp(path, root, sizeof(root) - 1)) return 0;
+    const char *n = path + sizeof(root) - 1;
+    uint32_t k = 0;
+    while (n[k] && n[k] != '/' && k + 1 < cap) { out[k] = n[k]; k++; }
+    out[k] = 0;
+    return k ? out : 0;
+}
+
+static void list_add(char *list, uint32_t cap, const char *word)
+{
+    if (strlen(list) + strlen(word) + 3 >= cap) return;
+    if (list[0]) strcat(list, ", ");
+    strcat(list, word);
+}
+
+/* tpkg.commands in the package: "cmd=path inside it" -> path.tmbl. A command tOS already has
+ * (its own, or another package's) is replaced, and the user is told which and how to undo it;
+ * the ones that run the shell itself (cd, sudo, tpkg...) stay tOS's. With only_missing, only the
+ * commands nobody has are added, quietly (another package was removed); returns how many. */
+static int register_commands_ex(const char *name, const char *destdir, int only_missing)
 {
     char f[VFS_NAME_LEN];
     strcpy(f, destdir);
     strcat(f, "/tpkg.commands");
     char *c = read_whole(f, 0);
     int n = 0, shown = 0;
-    static char replaced[1024], kept[256];
-    replaced[0] = kept[0] = 0;
+    static char replaced[1024], kept[256], restored[512];
+    /* commands taken from other packages, per package (node, npm and npx from another Node) */
+    static char owner[4][40], took[4][256];
+    int owners = 0;
+    replaced[0] = kept[0] = restored[0] = 0;
     for (char *p = c; p && *p;) {
         char *line = p;
         while (*p && *p != '\n') p++;
@@ -440,13 +481,25 @@ static int register_commands(const char *name, const char *destdir)
         if (!eq || eq == line) continue;
         *eq = 0;
         if (shell_keeps_builtin(line)) {
-            if (strlen(kept) + strlen(line) + 3 < sizeof(kept)) { if (kept[0]) strcat(kept, ", "); strcat(kept, line); }
+            if (!only_missing) list_add(kept, sizeof(kept), line);
             continue;
         }
-        char old[VFS_NAME_LEN];
-        int had = path_entry(line, old) && strncmp(old, destdir, strlen(destdir));
-        if (had || shell_is_builtin(line)) {
-            if (strlen(replaced) + strlen(line) + 3 < sizeof(replaced)) { if (replaced[0]) strcat(replaced, ", "); strcat(replaced, line); }
+        char old[VFS_NAME_LEN], who[40];
+        int had = path_entry(line, old);
+        if (only_missing) {
+            if (had) continue;
+            list_add(restored, sizeof(restored), line);
+        } else if (had && strncmp(old, destdir, strlen(destdir))) {
+            if (owner_of(old, who, sizeof(who)) && strcmp(who, name)) {
+                int k = 0;
+                while (k < owners && strcmp(owner[k], who)) k++;
+                if (k == owners && owners < 4) { strcpy(owner[owners], who); took[owners][0] = 0; owners++; }
+                if (k < owners) list_add(took[k], sizeof(took[k]), line);
+            } else {
+                list_add(replaced, sizeof(replaced), line);
+            }
+        } else if (!had && shell_is_builtin(line)) {
+            list_add(replaced, sizeof(replaced), line);
         }
         char add[VFS_NAME_LEN + 64];
         strcpy(add, line);
@@ -455,12 +508,37 @@ static int register_commands(const char *name, const char *destdir)
         strcat(add, "/");
         strcat(add, eq + 1);
         edit_lines(TPKG_PATH_FILE, '=', line, 0, add);
-        if (shown < 12) { terminal_writestring("  "); terminal_writestring(line); shown++; }
+        if (!only_missing && shown < 12) { terminal_writestring("  "); terminal_writestring(line); shown++; }
         n++;
     }
     if (c) free(c);
+    if (only_missing) {
+        if (restored[0]) {
+            terminal_writestring("  ");
+            terminal_writestring(restored);
+            terminal_writestring(" come from ");
+            terminal_writestring(name);
+            terminal_writestring(" again\n");
+        }
+        return n;
+    }
     if (n > shown) { terminal_writestring("  ... "); print_uint((uint32_t)n); terminal_writestring(" commands"); }
     if (n) terminal_writestring("  (on the PATH)\n");
+    for (int k = 0; k < owners; k++) {
+        terminal_writestring("\nNote: ");
+        terminal_writestring(took[k]);
+        terminal_writestring(" came from the package ");
+        terminal_writestring(owner[k]);
+        terminal_writestring(", which is installed too;\nfrom now on they belong to ");
+        terminal_writestring(name);
+        terminal_writestring(". To have ");
+        terminal_writestring(owner[k]);
+        terminal_writestring("'s back: sudo tpkg remove ");
+        terminal_writestring(name);
+        terminal_writestring(" (or install ");
+        terminal_writestring(owner[k]);
+        terminal_writestring(" again)\n");
+    }
     if (replaced[0]) {
         terminal_writestring("\nWarning: this package changes commands that already existed:\n  ");
         terminal_writestring(replaced);
@@ -474,6 +552,29 @@ static int register_commands(const char *name, const char *destdir)
         terminal_writestring(" (the shell needs them).\n");
     }
     return n;
+}
+
+static int register_commands(const char *name, const char *destdir)
+{
+    return register_commands_ex(name, destdir, 0);
+}
+
+/* after a removal: the other installed packages get back the commands nobody has now */
+static void restore_commands(void)
+{
+    char *db = read_whole(TPKG_DB_FILE, 0);
+    for (char *p = db; p && *p;) {
+        char *line = p;
+        while (*p && *p != '\n') p++;
+        if (*p) *p++ = 0;
+        char *a = strchr(line, '|');
+        if (!a) continue;
+        *a = 0;
+        char *b = strchr(a + 1, '|');
+        if (!b) continue;
+        register_commands_ex(line, b + 1, 1);
+    }
+    if (db) free(db);
 }
 
 /* ---- the subcommands ---- */
@@ -588,6 +689,7 @@ static void tpkg_remove(const char *name)
     terminal_writestring("Removed ");
     terminal_writestring(name);
     terminal_putchar('\n');
+    restore_commands();
 }
 
 static void tpkg_upgrade(uint32_t ip)

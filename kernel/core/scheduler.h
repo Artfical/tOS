@@ -11,7 +11,7 @@
 
 #define TASK_NAME_MAX   32
 #define KERNEL_STACK_SZ 65536
-#define MAX_TASKS       32
+#define MAX_TASKS       96
 
 typedef struct task {
     uint64_t esp;           /* the kernel stack pointer of a task that is not running: its registers_t frame */
@@ -25,6 +25,7 @@ typedef struct task {
     uint32_t thread_group;
     uint64_t clear_tid;
     uint64_t fs_base;       /* a 64-bit program's thread pointer (arch_prctl, clone) */
+    uint64_t sig_blocked;   /* signals this thread does not take now (bit n-1 = signal n) */
     uint64_t futex_addr;
     uint64_t futex_deadline_ms;
     uint32_t futex_waiting;
@@ -50,6 +51,10 @@ int  task_spawn_user_thread(const registers_t *parent_regs, uint64_t child_stack
                             void *proc, uint64_t *pgdir, uint32_t thread_group,
                             int tls_gdt_entry, uint32_t tls_base, uint32_t tls_limit,
                             uint32_t tls_flags, uint64_t clear_tid);
+/* fork: a new process's first thread, returning from the same system call with 0 in its own
+ * address space; `fpu` is the caller's FPU/SSE state at the call */
+int  task_spawn_fork(const registers_t *parent_regs, const uint8_t *fpu, void *proc, uint64_t *pgdir,
+                     uint64_t child_stack, int tls_gdt_entry);
 int  task_kill_group(uint32_t thread_group, task_t *except);
 int  task_futex_wait(uint64_t user_addr, uint32_t expected, uint64_t deadline_ms);
 int  task_futex_wake(uint64_t user_addr, uint32_t count);

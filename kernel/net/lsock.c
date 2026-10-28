@@ -44,6 +44,7 @@ typedef struct {
     uint32_t peer_ip;
     uint16_t peer_port;
     int      peer_set;
+    int      refs;              /* descriptors on it (dup, fork) */
 } lsock_t;
 
 static lsock_t socks[LSOCK_MAX];
@@ -109,6 +110,7 @@ int lsock_create(int domain, int type, int protocol)
         if (socks[i].used) continue;
         memset(&socks[i], 0, sizeof(socks[i]));
         socks[i].used = 1;
+        socks[i].refs = 1;
         socks[i].stream = kind == 1;
         socks[i].tcp = -1;
         open_count++;
@@ -117,10 +119,17 @@ int lsock_create(int domain, int type, int protocol)
     return -E_MFILE;
 }
 
+void lsock_ref(int s)
+{
+    lsock_t *k = get(s);
+    if (k) k->refs++;
+}
+
 void lsock_close(int s)
 {
     lsock_t *k = get(s);
     if (!k) return;
+    if (--k->refs > 0) return;                  /* another descriptor still has it */
     if (k->tcp >= 0) tcp_release(k->tcp);
     if (!k->stream && k->lport) udp_close(k->lport);
     memset(k, 0, sizeof(*k));
