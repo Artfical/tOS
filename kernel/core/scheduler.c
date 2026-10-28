@@ -168,7 +168,7 @@ int task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint64_t 
 int task_spawn_user_thread(const registers_t *regs, uint64_t child_stack,
                            void *proc, uint64_t *pgdir, uint32_t thread_group,
                            int tls_gdt_entry, uint32_t tls_base, uint32_t tls_limit,
-                           uint32_t tls_flags, uint32_t clear_tid)
+                           uint32_t tls_flags, uint64_t clear_tid)
 {
     if (!regs || !proc || !pgdir || !thread_group) return -1;
     if (!child_stack) child_stack = regs->useresp;
@@ -395,6 +395,11 @@ uint64_t timer_handler(uint64_t esp)
         if (current->kernel_stack) tss_set_kernel_stack(((uint64_t)(uintptr_t)current->kernel_stack + KERNEL_STACK_SZ) & ~15ull);
     }
     fpu_restore_state(current->fpu_state);
+    /* FS base: a 64-bit program's thread pointer */
+    {
+        uint64_t fs = current->fs_base;
+        asm volatile("wrmsr" : : "c"(0xC0000100u), "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
+    }
     return current->esp;
 }
 

@@ -180,6 +180,30 @@ timer_irq_stub:
     RESTORE_REGS
     iretq
 
+/* The syscall instruction (64-bit programs): rcx = return rip, r11 = rflags, interrupts are off
+ * (SFMASK) and rsp is still the program's. Switch to the task's kernel stack (TSS rsp0), build
+ * the same frame an interrupt would (vector 0x81), run linux64_syscall and go back with iretq,
+ * which restores rip, rflags and rsp from that frame. One processor: a global holds the user rsp
+ * for the few instructions until it is on the stack. */
+.global syscall_entry64
+syscall_entry64:
+    movq %rsp, syscall_user_rsp(%rip)
+    movq tss+4(%rip), %rsp
+    pushq $0x23
+    pushq syscall_user_rsp(%rip)
+    pushq %r11
+    pushq $0x2B
+    pushq %rcx
+    pushq $0
+    pushq $0x81
+    SAVE_REGS
+    CALL_C_SAVING_FPU linux64_syscall
+    RESTORE_REGS
+    iretq
+
+.section .bss
+syscall_user_rsp: .quad 0
+
 .section .rodata
 .global isr_stub_table
 isr_stub_table:

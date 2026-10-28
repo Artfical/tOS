@@ -163,6 +163,7 @@ KERNEL_OBJS = \
     kernel/fs/volumes.o \
     kernel/fs/fsbridge.o \
     kernel/fs/syscall.o \
+    kernel/fs/linux64.o \
     kernel/core/serial.o \
     kernel/core/debugmon.o \
     kernel/core/sound.o \

@@ -14,6 +14,7 @@ typedef struct {
     uint16_t iomap;
 } __attribute__((packed)) tss_t;
 
+extern tss_t tss;
 void tss_init(void);
 void tss_set_kernel_stack(uint64_t rsp);
 

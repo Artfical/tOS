@@ -1,4 +1,6 @@
 #include "isr.h"
+#include "linux_abi.h"
+#include "paging.h"
 #include "terminal.h"
 #include "io.h"
 #include "debugmon.h"
@@ -102,6 +104,13 @@ void crash_screen_trigger(const char *exception_name, int exception_code,
 
 void isr_handler(registers_t *regs)
 {
+    /* a 64-bit program's page that is not there yet (from the program, or the kernel on its
+     * behalf): it comes now if the program may have it */
+    if (regs->int_no == 14) {
+        uint64_t addr;
+        asm volatile("mov %%cr2, %0" : "=r"(addr));
+        if (addr < PAGING_USER_END && linux64_page_fault(addr, regs->err_code)) return;
+    }
     if (interrupt_handlers[regs->int_no]) {
         interrupt_handlers[regs->int_no](regs);
         return;

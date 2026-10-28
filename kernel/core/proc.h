@@ -68,9 +68,10 @@ typedef struct proc {
     uint64_t *pgdir;
     uint32_t brk;
     uint32_t brk_base;
-    uint32_t entry;
-    uint32_t user_stack;
-    int linux_abi;                     /* ELF32 processes use the Linux i386 syscall ABI */
+    uint64_t entry;
+    uint64_t user_stack;
+    int linux_abi;                     /* 1: a 32-bit Linux program (int 0x80, i386); 2: a 64-bit one (syscall) */
+    void *mm64;                        /* a 64-bit program's memory map (linux64.c) */
     int exit_code;
     int gfx;                            /* switched the display into graphics mode */
     void *win, *win_prev;               /* a window of its own (SYS_WIN_OPEN), and the one it drew to before */

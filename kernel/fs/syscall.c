@@ -28,6 +28,7 @@
 #include "scheduler.h"
 #include "auth.h"
 #include "errno.h"
+#include "linux_abi.h"
 #include "cmos.h"
 #include "csprng.h"
 #include "gdt.h"
@@ -149,8 +150,10 @@ static int gfx_ready = 0;
 /* The kernel runs with the calling process's page directory loaded, so a user pointer can simply be followed
  * once every page it covers is known to be mapped for the process: these walk the page tables (a pointer into
  * kernel memory, or into a hole, is refused). */
-static int user_range_ok(uint32_t ptr, uint32_t len) { return paging_user_range_ok(ptr, len, 0); }
-static int user_wr_ok(uint32_t ptr, uint32_t len)    { return paging_user_range_ok(ptr, len, 1); }
+/* user addresses are 64-bit: a 32-bit program's are below 4 GB, a 64-bit one's anywhere in the lower half */
+/* a 64-bit program's pages come when touched: those the kernel is about to use are brought in first */
+static int user_range_ok(uint64_t ptr, uint64_t len) { linux64_prefault(ptr, len, 0); return paging_user_range_ok(ptr, len, 0); }
+static int user_wr_ok(uint64_t ptr, uint64_t len)    { linux64_prefault(ptr, len, 1); return paging_user_range_ok(ptr, len, 1); }
 
 /* Same restore sequence cmd_vgatest() uses. Shared by SYS_GFX_EXIT
  * (explicit) and SYS_EXIT's safety net (implicit, for a program that
@@ -182,7 +185,7 @@ static void gfx_leave_if_active(void)
  * not EFAULT (npm's cache tells "not there" from "something is wrong" by the code) */
 static int cstr_too_long;
 
-static int user_cstr_ok(uint32_t ptr)
+static int user_cstr_ok(uint64_t ptr)
 {
     for (uint32_t i = 0; i < FS_NAME_LEN; i++) {
         if (!user_range_ok(ptr + i, 1)) return 0;
@@ -195,7 +198,7 @@ static int user_cstr_ok(uint32_t ptr)
 #define EXEC_VECTOR_BYTES_MAX  4096
 
 /* Copy a user argv/envp vector into bounded kernel-owned scratch storage. */
-static int copy_user_vector(uint32_t vector, const char **out, int max,
+static int copy_user_vector(uint64_t vector, const char **out, int max,
                             char *storage, uint32_t capacity, uint32_t *used)
 {
     if (!vector) {
@@ -203,7 +206,7 @@ static int copy_user_vector(uint32_t vector, const char **out, int max,
         return 0;
     }
     for (int i = 0; i <= max; i++) {
-        uint32_t slot = vector + (uint32_t)i * sizeof(uint32_t);
+        uint64_t slot = vector + (uint64_t)i * sizeof(uint32_t);
         if (slot < vector || !user_range_ok(slot, sizeof(uint32_t))) return -EFAULT;
         uint32_t src = ((const uint32_t *)(uintptr_t)slot)[0];
         if (!src) {
@@ -228,7 +231,7 @@ static int copy_user_vector(uint32_t vector, const char **out, int max,
     return -E2BIG;
 }
 
-static int syscall_spawn_user(uint32_t path_ptr, uint32_t argv_ptr, uint32_t envp_ptr)
+static int syscall_spawn_user(uint64_t path_ptr, uint64_t argv_ptr, uint64_t envp_ptr)
 {
     if (!user_cstr_ok(path_ptr)) return -EFAULT;
     char path[FS_NAME_LEN];
@@ -250,7 +253,7 @@ static int syscall_spawn_user(uint32_t path_ptr, uint32_t argv_ptr, uint32_t env
     return proc_spawn_argv(path, argv, envp);
 }
 
-static int syscall_exec_user(uint32_t path_ptr, uint32_t argv_ptr, uint32_t envp_ptr)
+static int syscall_exec_user(uint64_t path_ptr, uint64_t argv_ptr, uint64_t envp_ptr)
 {
     if (!user_cstr_ok(path_ptr)) return -EFAULT;
     char path[FS_NAME_LEN];
@@ -290,7 +293,7 @@ static int proc_pipe_endpoint(proc_t *p, int fd, int *is_write)
     return -1;
 }
 
-static uint32_t linux_pipe_read(proc_t *p, int fd, uint32_t user_buf, uint32_t count)
+static uint32_t linux_pipe_read(proc_t *p, int fd, uint64_t user_buf, uint32_t count)
 {
     int is_write = 0;
     int pi = proc_pipe_endpoint(p, fd, &is_write);
@@ -309,7 +312,7 @@ static uint32_t linux_pipe_read(proc_t *p, int fd, uint32_t user_buf, uint32_t c
     return n;
 }
 
-static uint32_t linux_pipe_write(proc_t *p, int fd, uint32_t user_buf, uint32_t count)
+static uint32_t linux_pipe_write(proc_t *p, int fd, uint64_t user_buf, uint32_t count)
 {
     int is_write = 0;
     int pi = proc_pipe_endpoint(p, fd, &is_write);
@@ -330,7 +333,7 @@ static uint32_t linux_pipe_write(proc_t *p, int fd, uint32_t user_buf, uint32_t 
     return n;
 }
 
-static uint32_t linux_pipe_create(uint32_t user_fds, uint32_t flags)
+static uint32_t linux_pipe_create(uint64_t user_fds, uint32_t flags)
 {
     proc_t *p = proc_current();
     int slots[2] = { -1, -1 };
@@ -427,7 +430,7 @@ static uint32_t linux_socket(int domain, int type, int protocol)
 
 /* the data goes to / comes from a kernel buffer (readv/writev gather into one) */
 static uint32_t sock_recv_k(proc_t *p, int fd, int s, uint8_t *buf, uint32_t len, uint32_t flags,
-                            uint32_t from, uint32_t fromlen_ptr)
+                            uint64_t from, uint64_t fromlen_ptr)
 {
     uint8_t addr[16];
     uint32_t alen = sizeof(addr);
@@ -447,15 +450,15 @@ static uint32_t sock_recv_k(proc_t *p, int fd, int s, uint8_t *buf, uint32_t len
     }
 }
 
-static uint32_t sock_recv_on(proc_t *p, int fd, int s, uint32_t buf, uint32_t len, uint32_t flags,
-                             uint32_t from, uint32_t fromlen_ptr)
+static uint32_t sock_recv_on(proc_t *p, int fd, int s, uint64_t buf, uint32_t len, uint32_t flags,
+                             uint64_t from, uint64_t fromlen_ptr)
 {
     if (len && !user_wr_ok(buf, len)) return (uint32_t)-EFAULT;
     return sock_recv_k(p, fd, s, (uint8_t *)(uintptr_t)buf, len, flags, from, fromlen_ptr);
 }
 
 static uint32_t sock_send_k(proc_t *p, int fd, int s, const uint8_t *buf, uint32_t len, uint32_t flags,
-                            uint32_t to, uint32_t tolen)
+                            uint64_t to, uint32_t tolen)
 {
     if (to && tolen && !user_range_ok(to, tolen)) return (uint32_t)-EFAULT;
     int nb = sock_nonblock(p, fd, flags);
@@ -467,15 +470,15 @@ static uint32_t sock_send_k(proc_t *p, int fd, int s, const uint8_t *buf, uint32
     }
 }
 
-static uint32_t sock_send_on(proc_t *p, int fd, int s, uint32_t buf, uint32_t len, uint32_t flags,
-                             uint32_t to, uint32_t tolen)
+static uint32_t sock_send_on(proc_t *p, int fd, int s, uint64_t buf, uint32_t len, uint32_t flags,
+                             uint64_t to, uint32_t tolen)
 {
     if (len && !user_range_ok(buf, len)) return (uint32_t)-EFAULT;
     return sock_send_k(p, fd, s, (const uint8_t *)(uintptr_t)buf, len, flags, to, tolen);
 }
 
 /* one socket call, as socketcall() numbers them; args are the call's own arguments */
-static uint32_t linux_sockcall(int call, const uint32_t *v)
+static uint32_t linux_sockcall(int call, const uint64_t *v)
 {
     proc_t *p = proc_current();
     if (call == 1) return linux_socket((int)v[0], (int)v[1], (int)v[2]);
@@ -526,7 +529,8 @@ static uint32_t linux_sockcall(int call, const uint32_t *v)
         return 0;
     }
     case 16: case 17: case 20: {                                 /* sendmsg, recvmsg, sendmmsg */
-        uint32_t mp = v[1], count = call == 20 ? v[2] : 1, flags = call == 20 ? v[3] : v[2];
+        uint64_t mp = v[1];
+        uint32_t count = call == 20 ? (uint32_t)v[2] : 1, flags = call == 20 ? (uint32_t)v[3] : (uint32_t)v[2];
         uint32_t stride = call == 20 ? 32u : 28u, done = 0;
         for (; done < count; done++) {
             uint32_t m = mp + done * stride;
@@ -604,7 +608,7 @@ static uint32_t linux_eventfd(uint32_t initval, uint32_t flags)
     return (uint32_t)slot + 3u;
 }
 
-static uint32_t eventfd_read(proc_t *p, int fd, proc_eventfd_t *e, uint32_t buf, uint32_t count)
+static uint32_t eventfd_read(proc_t *p, int fd, proc_eventfd_t *e, uint64_t buf, uint32_t count)
 {
     if (count < 8) return (uint32_t)-EINVAL;
     if (!user_wr_ok(buf, 8)) return (uint32_t)-EFAULT;
@@ -618,7 +622,7 @@ static uint32_t eventfd_read(proc_t *p, int fd, proc_eventfd_t *e, uint32_t buf,
     return 8;
 }
 
-static uint32_t eventfd_write(proc_eventfd_t *e, uint32_t buf, uint32_t count)
+static uint32_t eventfd_write(proc_eventfd_t *e, uint64_t buf, uint32_t count)
 {
     if (count < 8) return (uint32_t)-EINVAL;
     if (!user_range_ok(buf, 8)) return (uint32_t)-EFAULT;
@@ -669,7 +673,7 @@ static uint32_t fd_ready(proc_t *p, int fd)
     return 0;
 }
 
-static uint32_t linux_epoll_ctl(int epfd, int op, int fd, uint32_t user_event)
+static uint32_t linux_epoll_ctl(int epfd, int op, int fd, uint64_t user_event)
 {
     proc_t *p = proc_current();
     if (!is_epoll_fd(p, epfd)) return (uint32_t)-EBADF;
@@ -700,7 +704,7 @@ static uint32_t linux_epoll_ctl(int epfd, int op, int fd, uint32_t user_event)
 }
 
 /* poll(): the same readiness as epoll, for an array of struct pollfd (fd, events, revents) */
-static uint32_t linux_poll(uint32_t user_fds, uint32_t nfds, int timeout_ms)
+static uint32_t linux_poll(uint64_t user_fds, uint32_t nfds, int timeout_ms)
 {
     proc_t *p = proc_current();
     if (nfds > 1024) return (uint32_t)-EINVAL;
@@ -728,7 +732,7 @@ static uint32_t linux_poll(uint32_t user_fds, uint32_t nfds, int timeout_ms)
     }
 }
 
-static uint32_t linux_epoll_wait(int epfd, uint32_t user_events, int maxevents, int timeout_ms)
+static uint32_t linux_epoll_wait(int epfd, uint64_t user_events, int maxevents, int timeout_ms)
 {
     proc_t *p = proc_current();
     if (!is_epoll_fd(p, epfd)) return (uint32_t)-EBADF;
@@ -756,7 +760,7 @@ static uint32_t linux_epoll_wait(int epfd, uint32_t user_events, int maxevents, 
 
 
 /* ---- ioctl and resource limits: what glibc, libuv and V8 ask at start-up ---- */
-static uint32_t linux_ioctl(int fd, uint32_t req, uint32_t arg)
+static uint32_t linux_ioctl(int fd, uint32_t req, uint64_t arg)
 {
     proc_t *p = proc_current();
     int slot = fd - 3;
@@ -793,7 +797,7 @@ static uint32_t linux_ioctl(int fd, uint32_t req, uint32_t arg)
 
 /* getrlimit/prlimit64: an 8 MB stack and the descriptor table's size; the rest unlimited.
  * New limits are accepted and not enforced. */
-static uint32_t linux_rlimit(int resource, uint32_t new_ptr, uint32_t old_ptr, int wide)
+static uint32_t linux_rlimit(int resource, uint64_t new_ptr, uint64_t old_ptr, int wide)
 {
     if (resource < 0 || resource >= 16) return (uint32_t)-EINVAL;
     uint32_t size = wide ? 16u : 8u;
@@ -1039,7 +1043,7 @@ static uint32_t syscall_mprotect(uint32_t addr, uint32_t len, uint32_t prot)
     return 0;
 }
 
-static uint32_t linux_sys_brk(uint32_t requested)
+static uint32_t linux_sys_brk(uint64_t requested)
 {
     proc_t *p = proc_current();
     if (!p || !p->pgdir) return 0;
@@ -1094,27 +1098,7 @@ typedef struct {
     uint32_t restorer;
     uint64_t mask;
 } linux_sigaction32_t;
-typedef struct __attribute__((packed)) {
-    uint64_t st_dev;
-    uint32_t pad1;
-    uint32_t ino32;
-    uint32_t st_mode;
-    uint32_t st_nlink;
-    uint32_t st_uid;
-    uint32_t st_gid;
-    uint64_t st_rdev;
-    uint32_t pad2;
-    int64_t st_size;
-    int32_t st_blksize;
-    int64_t st_blocks;
-    int32_t atime_sec;
-    uint32_t atime_nsec;
-    int32_t mtime_sec;
-    uint32_t mtime_nsec;
-    int32_t ctime_sec;
-    uint32_t ctime_nsec;
-    uint64_t st_ino;
-} linux_stat64_t;
+
 
 static void linux_stat64_fill(linux_stat64_t *st, const vfs_entry_t *entry)
 {
@@ -1176,7 +1160,7 @@ static int linux_fd_stat(int fd, linux_stat64_t *st)
     return 0;
 }
 
-static uint32_t linux_getdents64(uint32_t fd, uint32_t user_buf, uint32_t count)
+static uint32_t linux_getdents64(uint32_t fd, uint64_t user_buf, uint32_t count)
 {
     proc_t *p = proc_current();
     if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS) return (uint32_t)-EBADF;
@@ -1269,7 +1253,7 @@ static uint32_t linux_reopen_proc_fd(proc_t *p, int source_fd, uint32_t flags)
     return (uint32_t)(dst + 3);
 }
 
-static uint32_t linux_open_path(uint32_t path_ptr, uint32_t flags, uint32_t mode,
+static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode,
                                 int32_t dirfd)
 {
     proc_t *p = proc_current();
@@ -1415,15 +1399,15 @@ static int linux_clock_cmos(int64_t *sec)
     return 0;
 }
 
-static uint32_t linux_nanosleep_on(uint32_t clock_id, int absolute, uint32_t req_ptr, uint32_t rem_ptr, int time64);
+static uint32_t linux_nanosleep_on(uint32_t clock_id, int absolute, uint64_t req_ptr, uint64_t rem_ptr, int time64);
 
-static uint32_t linux_nanosleep(uint32_t req_ptr, uint32_t rem_ptr, int time64)
+static uint32_t linux_nanosleep(uint64_t req_ptr, uint64_t rem_ptr, int time64)
 {
     return linux_nanosleep_on(1, 0, req_ptr, rem_ptr, time64);
 }
 
 /* clock_nanosleep: relative, or until the clock reads the given time (TIMER_ABSTIME) */
-static uint32_t linux_nanosleep_on(uint32_t clock_id, int absolute, uint32_t req_ptr, uint32_t rem_ptr, int time64)
+static uint32_t linux_nanosleep_on(uint32_t clock_id, int absolute, uint64_t req_ptr, uint64_t rem_ptr, int time64)
 {
     int64_t sec;
     int64_t nsec;
@@ -1469,7 +1453,7 @@ typedef struct {
     uint32_t flags;
 } linux_user_desc_t;
 
-static uint32_t linux_set_thread_area(uint32_t user_desc_ptr)
+static uint32_t linux_set_thread_area(uint64_t user_desc_ptr)
 {
     task_t *t = task_current();
     linux_user_desc_t desc;
@@ -1516,7 +1500,7 @@ static uint32_t linux_set_thread_area(uint32_t user_desc_ptr)
     return 0;
 }
 
-static uint32_t linux_get_thread_area(uint32_t user_desc_ptr)
+static uint32_t linux_get_thread_area(uint64_t user_desc_ptr)
 {
     task_t *t = task_current();
     linux_user_desc_t desc;
@@ -1531,7 +1515,7 @@ static uint32_t linux_get_thread_area(uint32_t user_desc_ptr)
     return 0;
 }
 
-static int linux_clone_tls(uint32_t user_desc_ptr, int *entry_out,
+static int linux_clone_tls(uint64_t user_desc_ptr, int *entry_out,
                            uint32_t *base_out, uint32_t *limit_out, uint32_t *flags_out)
 {
     linux_user_desc_t desc;
@@ -1577,8 +1561,8 @@ static int linux_clone_tls(uint32_t user_desc_ptr, int *entry_out,
 #define LINUX_CLONE_DETACHED        0x00400000u
 #define LINUX_CLONE_CHILD_SETTID    0x01000000u
 
-static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint32_t child_stack,
-                            uint32_t parent_tid, uint32_t tls_ptr, uint32_t child_tid)
+static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint64_t child_stack,
+                            uint64_t parent_tid, uint64_t tls_ptr, uint64_t child_tid)
 {
     proc_t *p = proc_current();
     task_t *parent = task_current();
@@ -1598,7 +1582,9 @@ static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint32_t child_st
 
     int tls_entry = -1;
     uint32_t tls_base = 0, tls_limit = 0, tls_flags = 0;
-    if (flags & LINUX_CLONE_SETTLS) {
+    if ((flags & LINUX_CLONE_SETTLS) && p->linux_abi == 2) {
+        /* a 64-bit thread's TLS is its FS base, set below */
+    } else if (flags & LINUX_CLONE_SETTLS) {
         int rc = linux_clone_tls(tls_ptr, &tls_entry, &tls_base, &tls_limit, &tls_flags);
         if (rc < 0) return (uint32_t)rc;
     }
@@ -1613,6 +1599,11 @@ static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint32_t child_st
         if (tls_entry >= 0) gdt_tls_release(tls_entry);
         return (uint32_t)-EAGAIN;
     }
+    {
+        task_t *child = task_by_pid((uint32_t)tid);
+        if (child && p->linux_abi == 2)
+            child->fs_base = (flags & LINUX_CLONE_SETTLS) ? tls_ptr : parent->fs_base;
+    }
     if ((flags & LINUX_CLONE_CHILD_SETTID) && child_tid)
         *(uint32_t *)(uintptr_t)child_tid = (uint32_t)tid;
     if ((flags & LINUX_CLONE_PARENT_SETTID) && parent_tid)
@@ -1621,8 +1612,8 @@ static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint32_t child_st
     return (uint32_t)tid;
 }
 
-static uint32_t linux_futex(uint32_t uaddr, uint32_t op, uint32_t value,
-                            uint32_t timeout_or_val2, uint32_t uaddr2, uint32_t val3)
+static uint32_t linux_futex(uint64_t uaddr, uint32_t op, uint32_t value,
+                            uint64_t timeout_or_val2, uint64_t uaddr2, uint32_t val3, int time64)
 {
     (void)uaddr2;
     uint32_t command = op & ~(0x80u | 0x100u); /* private and realtime flags */
@@ -1637,13 +1628,22 @@ static uint32_t linux_futex(uint32_t uaddr, uint32_t op, uint32_t value,
             uint64_t deadline = 0;
             if (command == 9 && val3 == 0) return (uint32_t)-EINVAL;
             if (timeout_or_val2) {
-                linux_timespec32_t ts;
-                if (!user_range_ok(timeout_or_val2, sizeof(ts))) return (uint32_t)-EFAULT;
-                memcpy(&ts, (const void *)(uintptr_t)timeout_or_val2, sizeof(ts));
-                if (ts.sec < 0 || ts.nsec < 0 || ts.nsec >= 1000000000)
+                /* struct timespec: 32-bit fields, or 64-bit ones (futex_time64, x86-64) */
+                int64_t sec, nsec;
+                if (time64) {
+                    int64_t ts[2];
+                    if (!user_range_ok(timeout_or_val2, sizeof(ts))) return (uint32_t)-EFAULT;
+                    memcpy(ts, (const void *)(uintptr_t)timeout_or_val2, sizeof(ts));
+                    sec = ts[0]; nsec = ts[1];
+                } else {
+                    linux_timespec32_t ts;
+                    if (!user_range_ok(timeout_or_val2, sizeof(ts))) return (uint32_t)-EFAULT;
+                    memcpy(&ts, (const void *)(uintptr_t)timeout_or_val2, sizeof(ts));
+                    sec = ts.sec; nsec = ts.nsec;
+                }
+                if (sec < 0 || nsec < 0 || nsec >= 1000000000)
                     return (uint32_t)-EINVAL;
-                uint64_t ms = (uint64_t)(uint32_t)ts.sec * 1000u +
-                              ((uint32_t)ts.nsec + 999999u) / 1000000u;
+                uint64_t ms = (uint64_t)sec * 1000u + ((uint64_t)nsec + 999999u) / 1000000u;
                 if (command == 0) deadline = debugmon_uptime_ms64() + ms;
                 else deadline = ms; /* absolute CLOCK_MONOTONIC deadline */
             }
@@ -1659,8 +1659,8 @@ static uint32_t linux_futex(uint32_t uaddr, uint32_t op, uint32_t value,
 
 /* Linux i386 syscall namespace for ELF processes; the existing .t ABI keeps
  * its tOS extension numbers and behaviour in syscall_handler() below. */
-static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
-                                      uint32_t c, uint32_t d, uint32_t e, uint32_t f,
+static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
+                                      uint64_t c, uint64_t d, uint64_t e, uint64_t f,
                                       registers_t *regs)
 {
     switch (number) {
@@ -1975,8 +1975,8 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
 
         case LINUX_SYS_READLINK:
         case LINUX_SYS_READLINKAT: {
-            uint32_t path_ptr = number == LINUX_SYS_READLINK ? a : b;
-            uint32_t buf_ptr = number == LINUX_SYS_READLINK ? b : c;
+            uint64_t path_ptr = number == LINUX_SYS_READLINK ? a : b;
+            uint64_t buf_ptr = number == LINUX_SYS_READLINK ? b : c;
             uint32_t size = number == LINUX_SYS_READLINK ? c : d;
             if (number == LINUX_SYS_READLINKAT && (int32_t)a != -100)
                 return (uint32_t)-EBADF;
@@ -2038,7 +2038,7 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
         /* times: accepted; the files keep the times tOS gave them. The file has to be there,
          * though (touch creates it only when this says it isn't). */
         case 30: case 271: case 299: case 320: case 412: {
-            uint32_t path = (number == 30 || number == 271) ? a : b;
+            uint64_t path = (number == 30 || number == 271) ? a : b;
             vfs_entry_t entry;
             if (!path) return 0;                         /* utimensat on an open fd */
             if (!user_cstr_ok(path)) return (uint32_t)-EFAULT;
@@ -2117,7 +2117,10 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
         case LINUX_SYS_GET_THREAD_AREA:
             return linux_get_thread_area(a);
         case LINUX_SYS_FUTEX:
-            return linux_futex(a, b, c, d, e, f);
+            return linux_futex(a, b, c, d, e, f, 0);
+
+        case 422:                               /* futex_time64 */
+            return linux_futex(a, b, c, d, e, f, 1);
         case SYS_KILL:
             if (b != 9 && b != 15) return (uint32_t)-EINVAL;
             return proc_kill(a, 128 + (int)b) == 0 ? 0 : (uint32_t)-ESRCH;
@@ -2227,15 +2230,17 @@ static uint32_t linux_syscall_handler(uint32_t number, uint32_t a, uint32_t b,
         case 102: { /* socketcall(call, args) */
             if (a < 1 || a > 20) return (uint32_t)-EINVAL;
             if (!user_range_ok(b, 24)) return (uint32_t)-EFAULT;
-            uint32_t v[6];
-            memcpy(v, (const void *)(uintptr_t)b, sizeof(v));
+            uint32_t v32[6];
+            memcpy(v32, (const void *)(uintptr_t)b, sizeof(v32));
+            uint64_t v[6];
+            for (int k = 0; k < 6; k++) v[k] = v32[k];
             return linux_sockcall((int)a, v);
         }
         /* the same calls, one syscall each (Linux 4.3 and later) */
         case 359: case 360: case 361: case 362: case 363: case 364: case 365: case 366:
         case 367: case 368: case 369: case 370: case 371: case 372: case 373: case 345: {
             static const uint8_t call_of[15] = { 1, 8, 2, 3, 4, 18, 15, 14, 6, 7, 11, 16, 12, 17, 13 };
-            uint32_t v[6] = { a, b, c, d, e, f };
+            uint64_t v[6] = { a, b, c, d, e, f };
             return linux_sockcall(number == 345 ? 20 : call_of[number - 359], v);
         }
 
@@ -2406,6 +2411,7 @@ void syscall_dump_recent(void)
 
 void syscall_proc_cleanup(struct proc *p)
 {
+    linux64_mm_free(p);
     for (int i = 0; i < PROC_MAX_FDS; i++) {
         proc_fd_close(p, i);
     }
@@ -2970,3 +2976,40 @@ void syscall_init(void)
 {
     isr_register_handler(0x80, syscall_stub);
 }
+
+
+/* ---- for the x86-64 ABI (linux64.c): the shared implementation ---- */
+
+uint64_t lx_dispatch32(uint32_t number, uint64_t a, uint64_t b, uint64_t c, uint64_t d,
+                       uint64_t e, uint64_t f, registers_t *regs)
+{
+    return linux_syscall_handler(number, a, b, c, d, e, f, regs);
+}
+
+/* stat of a path (relative to AT_FDCWD) or, with AT_EMPTY_PATH and "", of dirfd */
+int lx_stat_at(int dirfd, uint64_t path_ptr, uint32_t flags, linux_stat64_t *st)
+{
+    vfs_entry_t entry;
+    if (!user_cstr_ok(path_ptr)) return cstr_too_long ? -ENAMETOOLONG : -EFAULT;
+    const char *path = (const char *)(uintptr_t)path_ptr;
+    if (path[0] == 0 && (flags & 0x1000u)) return linux_fd_stat(dirfd, st);
+    if (path[0] != '/' && dirfd != -100) return -EBADF;
+    if (!strcmp(path, "/etc/resolv.conf") || !strcmp(path, "/etc/hosts")) write_net_files();
+    if (vfs_stat(path, &entry) != 0) return vfs_denied() ? -EACCES : -ENOENT;
+    linux_stat64_fill(st, &entry);
+    return 0;
+}
+
+int lx_fd_stat(int fd, linux_stat64_t *st) { return linux_fd_stat(fd, st); }
+
+uint32_t lx_clone(registers_t *regs, uint32_t flags, uint64_t child_stack,
+                  uint64_t parent_tid, uint64_t tls, uint64_t child_tid)
+{
+    return linux_clone(regs, flags, child_stack, parent_tid, tls, child_tid);
+}
+
+int lx_user_range_ok(uint64_t p, uint64_t len) { return user_range_ok(p, len); }
+int lx_user_wr_ok(uint64_t p, uint64_t len) { return user_wr_ok(p, len); }
+int lx_user_cstr_ok(uint64_t p) { return user_cstr_ok(p); }
+
+int lx_clock_now(uint32_t clock_id, int64_t *sec, int32_t *nsec) { return linux_clock_now(clock_id, sec, nsec); }

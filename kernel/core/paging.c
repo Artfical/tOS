@@ -84,7 +84,7 @@ uint64_t *paging_create_dir(void)
 static void free_level(uint64_t *t, int level)
 {
     for (int i = 0; i < 512; i++) {
-        if (!(t[i] & PTE_PRESENT)) continue;
+        if (!(t[i] & PTE_PRESENT) && !(level == 1 && (t[i] & PTE_SAVED))) continue;
         if (level == 1 || (t[i] & PTE_HUGE)) {
             if (level == 1) free_physical_page((uint32_t)(t[i] & ADDR_MASK));
             continue;
@@ -187,4 +187,10 @@ uint64_t paging_virt_to_phys(uint64_t *dir, uint64_t virt)
     uint64_t *pte = pte_of(dir, virt, 0);
     if (!pte || !(*pte & PTE_PRESENT)) return 0;
     return (*pte & ADDR_MASK) | (virt & 0xFFF);
+}
+
+int paging_saved_page(uint64_t *dir, uint64_t virt)
+{
+    uint64_t *pte = pte_of(dir, virt, 0);
+    return pte && !(*pte & PTE_PRESENT) && (*pte & PTE_SAVED);
 }

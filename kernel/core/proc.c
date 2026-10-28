@@ -1,4 +1,5 @@
 #include "proc.h"
+#include "linux_abi.h"
 #include "scheduler.h"
 #include "paging.h"
 #include "usermode.h"
@@ -83,8 +84,8 @@ static void proc_entry(void)
 {
     proc_t *p = proc_current();
     if (p) p->pid = task_get_pid();
-    enter_user_mode(p ? p->entry : USER_CODE_BASE,
-                    p ? p->user_stack : USER_STACK_TOP);
+    enter_user_mode_as(p ? p->entry : USER_CODE_BASE,
+                       p ? p->user_stack : USER_STACK_TOP, p && p->linux_abi == 2);
 }
 
 static int proc_map_stack(uint64_t *dir)
@@ -213,12 +214,14 @@ static int proc_build_elf_stack(uint64_t *dir, const char *path, uint32_t entry,
 }
 
 static int proc_start(proc_t *p, const char *path, uint64_t *dir,
-                      uint32_t entry, uint32_t user_stack, uint32_t brk_base,
+                      uint64_t entry, uint64_t user_stack, uint32_t brk_base,
                       int linux_abi)
 {
     if (!p || !dir) return -4;
 
+    void *mm64 = linux_abi == 2 ? p->mm64 : 0;        /* made by linux64_load before this */
     memset(p, 0, sizeof(*p));
+    p->mm64 = mm64;
     p->used = 1;
     p->pgdir = dir;
     p->entry = entry;
@@ -279,6 +282,22 @@ int proc_spawn_argv(const char *path, const char *const argv[], const char *cons
 
     uint8_t magic[4];
     if (fsbridge_read(path, magic, sizeof(magic), 0) != (int)sizeof(magic)) return -5;
+    if (linux64_is_elf64(path)) {
+        /* a 64-bit Linux program: its address space is built in the slot, then it starts */
+        uint64_t *dir = paging_create_dir();
+        if (!dir) return -3;
+        memset(p, 0, sizeof(*p));
+        p->pgdir = dir;
+        uint64_t entry = 0, sp = 0;
+        int rc = linux64_load(p, path, argc, argv, envc, envp, &entry, &sp);
+        if (rc != 0) {
+            linux64_mm_free(p);
+            paging_destroy_dir(dir);
+            p->pgdir = 0;
+            return -2;
+        }
+        return proc_start(p, path, dir, entry, sp, 0, 2);
+    }
     if (magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
         uint64_t *dir = paging_create_dir();
         if (!dir) return -3;

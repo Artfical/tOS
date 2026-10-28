@@ -23,7 +23,8 @@ typedef struct task {
     uint32_t no_preempt;
     int user_thread;
     uint32_t thread_group;
-    uint32_t clear_tid;
+    uint64_t clear_tid;
+    uint64_t fs_base;       /* a 64-bit program's thread pointer (arch_prctl, clone) */
     uint64_t futex_addr;
     uint64_t futex_deadline_ms;
     uint32_t futex_waiting;
@@ -48,7 +49,7 @@ int  task_spawn_proc(void (*entry)(void), const char *name, void *proc, uint64_t
 int  task_spawn_user_thread(const registers_t *parent_regs, uint64_t child_stack,
                             void *proc, uint64_t *pgdir, uint32_t thread_group,
                             int tls_gdt_entry, uint32_t tls_base, uint32_t tls_limit,
-                            uint32_t tls_flags, uint32_t clear_tid);
+                            uint32_t tls_flags, uint64_t clear_tid);
 int  task_kill_group(uint32_t thread_group, task_t *except);
 int  task_futex_wait(uint64_t user_addr, uint32_t expected, uint64_t deadline_ms);
 int  task_futex_wake(uint64_t user_addr, uint32_t count);

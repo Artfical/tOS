@@ -2,7 +2,7 @@
 #include "gdt.h"
 #include "string.h"
 
-static tss_t tss;
+tss_t tss;          /* syscall_entry64 reads rsp0 from here */
 
 void tss_init(void)
 {

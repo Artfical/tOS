@@ -2,6 +2,7 @@
 #include "terminal.h"
 #include "serial.h"
 #include "gdt.h"
+#include "linux_abi.h"
 #include "idt.h"
 #include "isr.h"
 #include "irq.h"
@@ -268,6 +269,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     bootsplash_paging_ready();
     bootsplash_progress(8);
     tss_init();
+    linux64_init();
     usermode_init();
 
     ramfs_init();
@@ -548,6 +550,35 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     }
 #endif
 #ifdef TOS_NODE_STATIC_SELFTEST
+    {
+        /* 64-bit Linux programs: static, then dynamic (glibc's ld.so from /lib64) */
+        static const char *const runs[][6] = {
+            { "/programs/hello64s", "arg1", 0 },
+            { "/programs/hello64d", "arg1", 0 },
+            { "/node24/bin/node", "-v", 0 },
+            { "/node24/bin/node", "-e", "console.log('node64', process.arch, process.version, 6*7)", 0 },
+            { "/node24/bin/node", "/programs/js/t2.js", 0 },
+            { 0 } };
+        for (int i = 0; runs[i][0]; i++) {
+            const char *const *av = runs[i];
+            const char *const progs[] = { av[0] };
+            if (!fsbridge_exists(av[0])) continue;
+            const char *ev[] = { "HOME=/root", "PATH=/programs", 0 };
+            serial_write("[X64-TEST] start ");
+            for (int k = 0; av[k]; k++) { serial_write(av[k]); serial_write(" "); }
+            serial_write("\n");
+            extern int linux64_trace;
+            linux64_trace = 0;
+            int pid = proc_spawn_argv(progs[0], av, ev);
+            int code = pid < 0 ? pid : proc_wait((uint32_t)pid);
+            char b[16];
+            serial_write("[X64-TEST] exit=");
+            if (code < 0) { serial_write("-"); code = -code; }
+            sprintf_u32(b, (uint32_t)code);
+            serial_write(b);
+            serial_write("\n");
+        }
+    }
     {
         {
             /* glibc piece by piece: printf, getrlimit, atexit, threads, a big malloc, returning from main */
