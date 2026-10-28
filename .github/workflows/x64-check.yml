@@ -35,6 +35,15 @@ jobs:
           make tOS.iso
           ls -la tOS.iso kernel/tOS.elf
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x64-build
+          path: |
+            tOS.iso
+            kernel/tOS.elf
+            kernel/tOS64.elf
+            initrd.tar
+
       - name: Boot it in QEMU
         # A release that cannot boot is worse than no release: the ISO is published only after
         # the kernel has come up through memory, the file systems and the drivers, shown its boot
