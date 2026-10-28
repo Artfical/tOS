@@ -28,9 +28,13 @@ for flags, paddr, data, memsz in segs:
     phs += struct.pack('<IIIIIIII', 1, o, paddr, paddr, len(data), memsz, flags, 4096)
     body += data
 ident = b'\x7fELF\x01\x01\x01' + b'\0' * 9
-struct.pack_into('<16sHHIIIIIHHHHHH', out, 0, ident, 2, 3, 1, entry, hdr, 0, 0, 52, 32, len(segs), 0, 0, 0)
 out[hdr:hdr + ph] = phs
 out += b'\0' * (off - len(out))
 out += body
+# one section header, the null one: GRUB 2.12 refuses an ELF without a section header table
+out += b'\0' * (-len(out) % 4)
+shoff = len(out)
+out += b'\0' * 40
+struct.pack_into('<16sHHIIIIIHHHHHH', out, 0, ident, 2, 3, 1, entry, hdr, shoff, 0, 52, 32, len(segs), 40, 1, 0)
 open(dst, 'wb').write(out)
 print('%d segments, entry %#x, %d bytes' % (len(segs), entry, len(out)))
