@@ -16,6 +16,7 @@ extern "C" {
 #include "keyboard.h"
 #include "terminal.h"
 #include "vfs.h"
+#include "gui.h"
 }
 #include "wolf_compat.h"
 
@@ -55,6 +56,9 @@ extern "C" void cmd_wolf3d(int argc, char **args)
     /* Quit()/SDL_PollEvent() longjmp() back here on both a normal
      * in-game Quit and Ctrl+C -- wolf_setjmp()'s nonzero return path
      * below is that landing spot, not a real second call. */
+    /* on the desktop, the window manager keeps out of the display while the game has it */
+    int on_desktop = gui_is_active();
+    if (on_desktop) bochs_set_graphics_active(1);
     if (wolf_setjmp(&g_wolf_quit_jmp) == 0) {
         main(1, wolf_argv);
     }
@@ -63,6 +67,10 @@ extern "C" void cmd_wolf3d(int argc, char **args)
     interrupt_char = old_interrupt_char;
     interrupt_callback = old_interrupt_callback;
 
+    if (on_desktop) {
+        bochs_set_graphics_active(0);           /* the desktop takes its mode back and repaints */
+        return;
+    }
     bochs_disable();
     vga_set_mode(VGA_MODE_TEXT);
     terminal_set_force_direct(0);

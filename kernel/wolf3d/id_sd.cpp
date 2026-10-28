@@ -316,7 +316,7 @@ void SD_PrepareSound(int which)
     SDL_AudioCVT cvt;
 
     if(DigiList == NULL)
-        Quit("SD_PrepareSound(%i): DigiList not initialized!\n", which);
+        return;                         /* no sound card (tOS): the game runs silently */
 
     int page = DigiList[which].startpage;
     int size = DigiList[which].length;

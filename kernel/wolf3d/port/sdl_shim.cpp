@@ -26,6 +26,7 @@
  *   active playback buffer at a time, nowhere near enough for a
  *   real-time synthesized music mixer.
  */
+#include "paging.h"
 #include "SDL.h"
 #include "SDL_mixer.h"
 #include "wolf_compat.h"
@@ -137,7 +138,7 @@ int SDL_UpdateTexture(SDL_Texture *texture, const void *rect, const void *pixels
     if (!g_have_video || !pixels) return -1;
     int w = texture ? texture->w : WOLF_W;
     int h = texture ? texture->h : WOLF_H;
-    volatile uint32_t *fb = (volatile uint32_t *)g_bochs.lfb;
+    volatile uint32_t *fb = (volatile uint32_t *)P2V(g_bochs.lfb);
     const uint8_t *src = (const uint8_t *)pixels;
     for (int y = 0; y < h; y++) {
         const uint32_t *row = (const uint32_t *)(src + (size_t)y * pitch);

@@ -6,6 +6,7 @@
  * bochs.c VBE framebuffer and keyboard.c raw event queue instead of
  * Linux's /dev/fb0 and evdev.
  */
+#include "paging.h"
 #include "doomgeneric.h"
 #include "doomkeys.h"
 #include "bochs.h"
@@ -117,7 +118,7 @@ void DG_DrawFrame(void)
      * in DG_Init(), so this is a single flat copy -- no stride/offset
      * math needed the way a host OS's framebuffer (which can be wider
      * than our render target) would require. */
-    volatile uint32_t *fb = (volatile uint32_t *)g_bochs.lfb;
+    volatile uint32_t *fb = (volatile uint32_t *)P2V(g_bochs.lfb);
     uint32_t *src = (uint32_t *)DG_ScreenBuffer;
     for (int i = 0; i < DOOMGENERIC_RESX * DOOMGENERIC_RESY; i++) fb[i] = src[i];
     bochs_update_rect(&g_bochs, 0, 0, DOOMGENERIC_RESX, DOOMGENERIC_RESY);

@@ -17,8 +17,9 @@
 
 boolean fullscreen = false;
 boolean aspect = true; // [FG] aspect ratio correction
-unsigned screenWidth = 640;
-unsigned screenHeight = 400;
+/* tOS: the mode sdl_shim.cpp opens (WOLF_W x WOLF_H), which every frame is copied into */
+unsigned screenWidth = 320;
+unsigned screenHeight = 200;
 int screenBits = -1;      // use "best" color depth according to libSDL
 
 SDL_Window *window;

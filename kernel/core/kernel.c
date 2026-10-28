@@ -564,17 +564,20 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         {
             /* tpkg end to end: Node comes from update.artfical.com, not from the initrd */
             static const char *const steps[] = {
+                "python /tmp/t.py", "run /programs/hello.t", "run /programs/bsstest.t",
+                "run /programs/filetest.t", "run /programs/cryptotest.t",
+                "run /programs/nettest.t", "wget https://update.artfical.com/api/check",
                 "!tpkg install node",
                 "!npm install is-number@7.0.0 --prefix /tmp/p2 --no-audit --no-progress",
                 "!node -e console.log(require('/tmp/p2/node_modules/is-number')(42))",
-                "!node -e d='/root/.npm/_logs/',f=require('fs');f.readdirSync(d).forEach(function(n){console.log(f.readFileSync(d+n,'utf8').split('\\n').slice(-30).join('\\n'))})",
-                "tpkg install busybox", "mkdir /system/rt", "mkdir /system/rt/a", "mkdir /system/rt/b",
-                "touch /system/rt/a/f1", "mv /system/rt/a/f1 /system/rt/b/f2",
-                "touch /system/rt/a/f3", "mv /system/rt/a/f3 /system/rt/b/f2",
-                "mkdir /system/rt/a/d", "touch /system/rt/a/d/x", "mv /system/rt/a/d /system/rt/b/d",
-                "mv /system/rt/b /system/rt/b/d/z", "tree /system/rt", "ls -la /system/rt/b/d/..",
                 0 };
             static char out[16384];
+            {
+                static const char py[] = "import math\nprint('mpy', 6*7, math.sqrt(2.0), [x*x for x in range(5)], {'a': 1})\n"
+                                         "s = 0\nfor i in range(100000): s += i\nprint('sum', s, 2**70)\n";
+                fsbridge_create("/tmp/t.py");
+                fsbridge_write("/tmp/t.py", py, sizeof(py) - 1, 0);
+            }
             for (int i = 0; steps[i]; i++) {
                 const char *step = steps[i];
                 if (step[0] == '!') {                   /* not on an installed system's disk */
