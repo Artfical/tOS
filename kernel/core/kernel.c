@@ -611,7 +611,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
                 fsbridge_write("/tmp/t.py", py, sizeof(py) - 1, 0);
             }
             /* the fork/exec test initrd skips these (they download 90 MB) */
-            for (int i = 0; steps[i] && !fsbridge_exists("/programs/forktest"); i++) {
+            for (int i = 0; steps[i] && !fsbridge_exists("/programs/forktest") && !fsbridge_exists("/programs/skip-tpkg"); i++) {
                 const char *step = steps[i];
                 if (step[0] == '!') {                   /* not on an installed system's disk */
                     if (installer_check_installed()) continue;

@@ -1,10 +1,8 @@
-# tOS is 64-bit
+# Node.js 24 and 22, and programs that start programs
 
-## settings | 64-bit tOS
-- tOS now runs as a 64-bit (x86-64) system. It needs a 64-bit processor; on a 32-bit one it says this version is not compatible, and after Software Update the computer goes back to the tOS it had.
-- 32-bit programs keep working: tOS's own .t programs and 32-bit Linux programs, such as Node.js 8 and BusyBox from tpkg.
-- Software Update installs it on systems from build 583 on, the same way as any other update.
-
-## terminal | Terminal
-- Wolfenstein 3D starts without a sound card, and on the desktop it takes the screen and gives it back when it ends.
-- A dropped network request no longer stops tpkg and other programs after Node has used the network for a while.
+## terminal | Node.js 24 and 22
+- tOS now runs 64-bit Linux programs, such as the official Node.js builds. Install one with sudo tpkg install node24 or sudo tpkg install node22; each comes with its own npm (11 and 10).
+- If another Node is installed already, tpkg tells you that node, npm and npx now belong to the new package, and gives them back when you remove it.
+- Programs can start other programs: fork, exec, wait, pipes, signals and sockets between processes work, so Node's child_process does too.
+- Paths and file names can be up to 255 characters long, which npm 11 needs.
+- The base system carries the GNU C Library and the GCC runtime (licences in /lib/x86_64-linux-gnu) for these programs.
