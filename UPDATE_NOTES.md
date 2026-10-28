@@ -1,12 +1,10 @@
-# npm install works; BusyBox from tpkg
+# tOS is 64-bit
 
-## terminal | Terminal and tpkg
-- `npm install` now works: npm downloads, checks and installs packages from the npm registry (update Node with `sudo tpkg upgrade`).
-- `sudo tpkg install busybox` adds 92 Unix tools: grep, sed, awk, vi, tar, gzip, diff, find, wget, xxd and more.
-- When a package replaces commands tOS already has (BusyBox's ls, cat, mkdir...), tpkg lists them and says how to undo it: `sudo tpkg remove busybox` brings tOS's own back. cd, sudo, su and tpkg always stay tOS's.
-- Programs installed on the disk start in seconds instead of minutes.
-- `tpkg` says why it can't reach the server when the network is down.
+## settings | 64-bit tOS
+- tOS now runs as a 64-bit (x86-64) system. It needs a 64-bit processor; on a 32-bit one it says this version is not compatible, and after Software Update the computer goes back to the tOS it had.
+- 32-bit programs keep working: tOS's own .t programs and 32-bit Linux programs, such as Node.js 8 and BusyBox from tpkg.
+- Software Update installs it on systems from build 583 on, the same way as any other update.
 
-## files | Files and folders
-- Moving and renaming between folders works on the startup disk, and renaming over an existing file replaces it, the way Linux programs expect.
-- `touch` creates the file when it isn't there.
+## terminal | Terminal
+- Wolfenstein 3D starts without a sound card, and on the desktop it takes the screen and gives it back when it ends.
+- A dropped network request no longer stops tpkg and other programs after Node has used the network for a while.
