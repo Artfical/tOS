@@ -2388,6 +2388,7 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
 }
 
 /* the last Linux syscalls and what they returned, written out when a program crashes */
+int linux32_trace;
 #define RECENT 48
 static uint32_t recent_nr[RECENT], recent_ret[RECENT];
 static uint32_t recent_n;
@@ -2434,6 +2435,16 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
         cstr_too_long = 0;
         uint32_t r = linux_syscall_handler(syscall, a, b, c, d, e, f, regs);
         if (r == (uint32_t)-EFAULT && cstr_too_long) r = (uint32_t)-ENAMETOOLONG;
+        if (linux32_trace) {
+            char tl[96], th[12];
+            strcpy(tl, "S32 "); sprintf_u32(th, task_current() ? task_current()->pid : 0); strcat(tl, th);
+            strcat(tl, " "); sprintf_u32(th, syscall); strcat(tl, th);
+            strcat(tl, " "); sprintf_u32(th, a); strcat(tl, th);
+            strcat(tl, " "); sprintf_u32(th, b); strcat(tl, th);
+            strcat(tl, " ="); sprintf_u32(th, r); strcat(tl, th);
+            strcat(tl, "\n");
+            serial_write(tl);
+        }
         recent_nr[recent_n % RECENT] = syscall;
         recent_ret[recent_n % RECENT] = r;
         recent_n++;

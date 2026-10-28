@@ -10,7 +10,7 @@
 #define TASK_STATE_ZOMBIE   3
 
 #define TASK_NAME_MAX   32
-#define KERNEL_STACK_SZ 32768
+#define KERNEL_STACK_SZ 65536
 #define MAX_TASKS       32
 
 typedef struct task {

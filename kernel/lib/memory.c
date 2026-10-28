@@ -67,11 +67,11 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
     total_pages = (mem_upper * 1024) / PAGE_SIZE;
     if (total_pages > 0x100000) total_pages = 0x100000;
     {
+        /* The heap grows up from the kernel and page allocations come down from the top of
+         * memory, so they share it without reserving anything: the heap may grow until it meets
+         * pages in use (it checks, see heap_alloc). 64 MB stay for page tables and programs. */
         uint32_t mem = total_pages * PAGE_SIZE;
-        if (mem >= 0x20000000) {                                      /* 512 MB or more */
-            heap_max_size = mem - 0xC000000;
-            if (heap_max_size > 0x10000000) heap_max_size = 0x10000000;      /* 256 MB */
-        }
+        if (mem >= 0x8000000) heap_max_size = mem - 0x4000000;
     }
 
     uint32_t bitmap_size = total_pages / 8 + 1;
@@ -132,22 +132,14 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
         used_pages++;
     }
 
-    /* Reserve the heap's entire *maximum* possible range up front, not
-     * just its small initial region -- alloc_physical_page() has no
-     * idea heap_alloc() can grow heap_end well past its starting point
-     * at any later malloc() call (see heap_alloc()'s grow path), so if
-     * only the initial region were marked used here, a page anywhere
-     * between that and KERNEL_HEAP_MAX_SIZE could get handed out to a
-     * completely unrelated caller (a page table, a user stack page --
-     * this is exactly what usermode_init() does, right before ramfs
-     * import's first multi-MB malloc() for doom1.wad/Wolf3D assets
-     * grows the heap into memory usermode_init() had already claimed)
-     * and then get silently overwritten once heap growth reaches it. */
-    uint32_t heap_max_page = (uint32_t)((V2P((void *)heap_start) + heap_max_size + PAGE_SIZE - 1) / PAGE_SIZE);
-    if (heap_max_page > total_pages) heap_max_page = total_pages;
-    for (uint32_t i = bitmap_end / PAGE_SIZE; i < heap_max_page; i++) {
-        page_bitmap[i / 32] |= (1 << (i % 32));
-        used_pages++;
+    /* the heap's initial region is the heap's; what it grows into later it claims page by page */
+    {
+        uint32_t init_end = (uint32_t)((V2P((void *)heap_end) + PAGE_SIZE - 1) / PAGE_SIZE);
+        if (init_end > total_pages) init_end = total_pages;
+        for (uint32_t i = bitmap_end / PAGE_SIZE; i < init_end; i++) {
+            page_bitmap[i / 32] |= (1 << (i % 32));
+            used_pages++;
+        }
     }
 
     terminal_writestring("Memory init: ");
@@ -184,16 +176,23 @@ void memory_init(uint32_t mem_upper, uint32_t reserved_end)
  * Disabling interrupts for this one bitmap read-modify-write is cheap
  * (a handful of instructions) and makes it atomic against exactly
  * this class of cross-task race. */
+/* from the top of memory down (the heap grows up from the bottom), continuing where the last
+ * search stopped */
+static uint32_t alloc_cursor;
+
 uint32_t alloc_physical_page(void)
 {
     uint64_t flags = heap_irq_save();
     int found = 0;
     uint32_t addr = 0;
-    for (uint32_t i = 0; i < total_pages; i++) {
+    if (!alloc_cursor || alloc_cursor > total_pages) alloc_cursor = total_pages;
+    for (uint32_t n = 0; n < total_pages; n++) {
+        uint32_t i = (alloc_cursor + total_pages - 1 - n) % total_pages;
         if (!(page_bitmap[i / 32] & (1 << (i % 32)))) {
             page_bitmap[i / 32] |= (1 << (i % 32));
             used_pages++;
             addr = i * PAGE_SIZE;
+            alloc_cursor = i ? i : total_pages;
             found = 1;
             break;
         }
@@ -312,13 +311,21 @@ static void *heap_alloc(uint32_t size)
      * they alone own it. Mark every newly claimed page used here so
      * that can't happen. */
     if (page_bitmap) {
-        uint32_t first_page = (uint32_t)(V2P((void *)old_heap_end) / PAGE_SIZE);
+        /* the pages the heap grows into must be free (allocations come from the top of memory;
+         * when the two meet, memory is full): claim them, or give up */
+        uint32_t first_page = (uint32_t)((V2P((void *)old_heap_end) + PAGE_SIZE - 1) / PAGE_SIZE);
         uint32_t last_page = (uint32_t)((V2P((void *)heap_end) + PAGE_SIZE - 1) / PAGE_SIZE);
-        for (uint32_t pg = first_page; pg < last_page && pg < total_pages; pg++) {
-            if (!(page_bitmap[pg / 32] & (1u << (pg % 32)))) {
-                page_bitmap[pg / 32] |= (1u << (pg % 32));
-                used_pages++;
-            }
+        int clear = last_page <= total_pages;
+        for (uint32_t pg = first_page; clear && pg < last_page; pg++)
+            if (page_bitmap[pg / 32] & (1u << (pg % 32))) clear = 0;
+        if (!clear) {
+            heap_end = old_heap_end;
+            heap_irq_restore(flags);
+            return NULL;
+        }
+        for (uint32_t pg = first_page; pg < last_page; pg++) {
+            page_bitmap[pg / 32] |= (1u << (pg % 32));
+            used_pages++;
         }
     }
 

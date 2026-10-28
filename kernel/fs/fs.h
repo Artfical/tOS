@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 #define FS_MAX_FILES 64
-#define FS_NAME_LEN 128
+#define FS_NAME_LEN 256
 
 typedef struct {
     char name[FS_NAME_LEN];

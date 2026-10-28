@@ -319,7 +319,9 @@ static int tab_complete(char *buf, int *pos, int max)
         }
     }
 
-    vfs_entry_t entries[128];
+    /* on the heap: kernel stacks are 32 KB, and a name is 256 bytes */
+    vfs_entry_t *entries = malloc(sizeof(vfs_entry_t) * 128);
+    if (!entries) return 0;
     int n = ramfs_list(dir, entries, 128);
     for (int ei = 0; ei < n && match_count < 64; ei++) {
         if (word_len == 0 || strncmp(entries[ei].name, word, word_len) == 0) {
@@ -341,7 +343,7 @@ static int tab_complete(char *buf, int *pos, int max)
         *pos = i + k + 1;
         terminal_writestring(matches[0]);
         terminal_putchar(' ');
-        return 1;
+        { free(entries); return 1; }
     }
 
     terminal_putchar('\n');
@@ -354,7 +356,8 @@ static int tab_complete(char *buf, int *pos, int max)
     terminal_writestring(ramfs_getcwd());
     terminal_writestring("> ");
     for (int j = 0; j < *pos; j++) terminal_putchar(buf[j]);
-    return 1;
+    { free(entries); return 1; }
+    free(entries);
 }
 
 static void shell_readline(char *buf, int max)

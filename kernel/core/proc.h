@@ -14,7 +14,7 @@
  */
 
 #define PROC_MAX     16
-#define PROC_MAX_FDS 24
+#define PROC_MAX_FDS 64
 #define PROC_EXEC_MAX_ARGS 32
 #define PROC_EXEC_MAX_ENV  32
 #define PROC_EXEC_ARG_MAX  1024

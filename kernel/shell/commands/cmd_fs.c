@@ -155,7 +155,9 @@ void cmd_cp(int argc, char **args)
 
 static void find_recursive(const char *path, const char *pattern)
 {
-    vfs_entry_t entries[256];
+    /* on the heap: kernel stacks are 32 KB, and a name is 256 bytes */
+    vfs_entry_t *entries = malloc(sizeof(vfs_entry_t) * 256);
+    if (!entries) return;
     int count = fsbridge_list(path, entries, 256);
     if (count <= 0) return;
     for (int i = 0; i < count; i++) {
@@ -173,6 +175,7 @@ static void find_recursive(const char *path, const char *pattern)
                 find_recursive(full, pattern);
         }
     }
+    free(entries);
 }
 
 void cmd_find(int argc, char **args)

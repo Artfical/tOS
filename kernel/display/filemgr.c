@@ -177,7 +177,9 @@ static void fix_scroll(void)
 
 static void refresh_list(void)
 {
-    vfs_entry_t raw[MAX_ENTRIES];
+    /* on the heap: kernel stacks are 32 KB, and a name is 256 bytes */
+    vfs_entry_t *raw = malloc(sizeof(vfs_entry_t) * MAX_ENTRIES);
+    if (!raw) return;
     int n = fsbridge_list(cur_path, raw, MAX_ENTRIES);
     entry_count = 0;
     if (n > 0) {
@@ -199,6 +201,7 @@ static void refresh_list(void)
     clear_multi_select();
     if (entry_count > 0) multi_selected[selected] = 1;
     select_anchor = selected;
+    free(raw);
 }
 
 static void prompt_line(const char *prompt, char *buf, int max)

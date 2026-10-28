@@ -5,7 +5,7 @@
 
 #define VFS_MAX_FDS      128
 #define VFS_MAX_MOUNTS   16
-#define VFS_NAME_LEN     128
+#define VFS_NAME_LEN     256
 
 #define VFS_SEEK_SET 0
 #define VFS_SEEK_CUR 1

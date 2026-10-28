@@ -681,6 +681,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         static const char *const quick_name[5] = { "--version", "sync -e", "npm --version", "network t2.js", "npm install" };
         for (int q = 0; q < 5; q++) {
             static const char *const quick_env[] = { "HOME=/root", "PATH=/programs", "TMPDIR=/tmp", 0 };
+            { extern int linux32_trace; linux32_trace = 0; }
             int qp = proc_spawn_argv(node_path, (const char **)quick[q], (const char **)quick_env);
             int qs = qp < 0 ? qp : proc_wait((uint32_t)qp);
             serial_write("[NODE-QUICK] ");

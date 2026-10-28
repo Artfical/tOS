@@ -57,7 +57,9 @@ int tos_list(const char *path, char *out, int out_max)
     if (out_max <= 0) return -1;
     out[0] = 0;
 
-    vfs_entry_t entries[128];
+    /* on the heap: kernel stacks are 32 KB, and a name is 256 bytes */
+    vfs_entry_t *entries = malloc(sizeof(vfs_entry_t) * 128);
+    if (!entries) return -1;
     int n = fsbridge_list(path, entries, 128);
     if (n < 0) return -1;
 
@@ -69,7 +71,8 @@ int tos_list(const char *path, char *out, int out_max)
         if (k < out_max - 1) out[k++] = '\n';
     }
     out[k < out_max ? k : out_max - 1] = 0;
-    return n;
+    { free(entries); return n; }
+    free(entries);
 }
 
 int tos_open_app(const char *name)

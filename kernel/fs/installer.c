@@ -187,7 +187,9 @@ int installer_run(void)
     terminal_setpos(0, y++);
     terminal_writestring("Copying files...");
 
-    vfs_entry_t entries[64];
+    /* on the heap: kernel stacks are 32 KB, and a name is 256 bytes */
+    vfs_entry_t *entries = malloc(sizeof(vfs_entry_t) * 64);
+    if (!entries) return -1;
     int copied = 0;
     const char *src_dirs[] = { "/programs", "/bin", 0 };
 
@@ -253,7 +255,8 @@ int installer_run(void)
     terminal_writestring("Press any key to continue...");
     keyboard_getchar();
 
-    return 0;
+    { free(entries); return 0; }
+    free(entries);
 }
 
 /* A valid computer name: letters, digits and '-' only. */

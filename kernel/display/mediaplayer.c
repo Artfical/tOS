@@ -248,7 +248,9 @@ static int is_audio_ext(const char *name)
 
 static void playlist_scan(const char *dir)
 {
-    vfs_entry_t entries[64];
+    /* on the heap: kernel stacks are 32 KB, and a name is 256 bytes */
+    vfs_entry_t *entries = malloc(sizeof(vfs_entry_t) * 64);
+    if (!entries) return;
     int n = fsbridge_list(dir, entries, 64);
     for (int i = 0; i < n && g_plist_n < MAX_PLIST; i++) {
         if (entries[i].is_dir || !is_audio_ext(entries[i].name)) continue;
@@ -261,6 +263,7 @@ static void playlist_scan(const char *dir)
             p[j]=0; g_plist_n++;
         }
     }
+    free(entries);
 }
 
 static void playlist_add(const char *path)

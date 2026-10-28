@@ -526,8 +526,23 @@ kernel/tOS.elf: $(KERNEL_OBJS) tools/elf32wrap.py
 	$(LD) $(LDFLAGS) -o kernel/tOS64.elf $(KERNEL_OBJS)
 	python3 tools/elf32wrap.py kernel/tOS64.elf $@
 
-initrd.tar: $(PROGRAMS)
+# What 64-bit Linux programs (Node.js, opencode...) are linked against, from the build machine:
+# the dynamic linker, glibc and the GCC runtime. LICENSES.txt says which packages they are and
+# where their sources are (glibc: LGPL-2.1+; libstdc++ and libgcc_s: GPL-3 with the GCC Runtime
+# Library Exception).
+LINUX_RUNTIME_LIBS = libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libstdc++.so.6 libgcc_s.so.1
+linux-runtime/.stamp:
+	rm -rf linux-runtime && mkdir -p linux-runtime/lib64 linux-runtime/lib/x86_64-linux-gnu
+	cp -L /lib64/ld-linux-x86-64.so.2 linux-runtime/lib64/
+	for l in $(LINUX_RUNTIME_LIBS); do cp -L /lib/x86_64-linux-gnu/$$l linux-runtime/lib/x86_64-linux-gnu/; done
+	python3 tools/runtime_licenses.py linux-runtime/lib/x86_64-linux-gnu/LICENSES.txt
+	cp /usr/share/common-licenses/LGPL-2.1 linux-runtime/lib/x86_64-linux-gnu/LICENSE.LGPL-2.1
+	cp /usr/share/common-licenses/GPL-3 linux-runtime/lib/x86_64-linux-gnu/LICENSE.GPL-3
+	touch $@
+
+initrd.tar: $(PROGRAMS) linux-runtime/.stamp
 	tar cf $@ --format=ustar $(PROGRAMS)
+	tar rf $@ --format=ustar -C linux-runtime lib64 lib
 
 tOS.iso: kernel/tOS.elf initrd.tar
 	mkdir -p iso/boot/grub
@@ -573,6 +588,7 @@ FORCE:
 
 clean:
 	rm -f $(KERNEL_OBJS) $(TFIRE_PARTS) programs/elf32_hello.o programs/elf32_hello.elf kernel/tOS.elf initrd.tar tOS.iso
+	rm -rf linux-runtime
 	rm -rf iso
 	find kernel -name '*.d' -delete
 
