@@ -619,7 +619,11 @@ static void print_list(const char *list)
         terminal_writestring(e.version);
         terminal_writestring("  ");
         print_mb(e.size);
-        if (have) { terminal_writestring("  [installed "); terminal_writestring(ver); terminal_writestring("]"); }
+        if (have) {
+            terminal_writestring("  [installed "); terminal_writestring(ver);
+            if (strcmp(ver, e.version)) terminal_writestring(" - older: sudo tpkg upgrade");
+            terminal_writestring("]");
+        }
         terminal_writestring("\n    ");
         terminal_writestring(e.desc);
         if (e.license[0]) { terminal_writestring(" ("); terminal_writestring(e.license); terminal_writestring(")"); }
@@ -771,6 +775,33 @@ static void tpkg_remove(const char *name, int force)
     terminal_writestring(name);
     terminal_putchar('\n');
     restore_commands();
+}
+
+/* the installed packages the server has a different version of: "git 2.56.0 -> 2.56.0-2" */
+static void print_outdated(const char *list)
+{
+    char *db = read_whole(TPKG_DB_FILE, 0);
+    int any = 0;
+    for (char *p = db; p && *p;) {
+        char *line = p;
+        while (*p && *p != '\n') p++;
+        if (*p) *p++ = 0;
+        char *a = strchr(line, '|');
+        if (!a) continue;
+        *a = 0;
+        char *b = strchr(a + 1, '|');
+        if (b) *b = 0;
+        tpkg_entry_t e;
+        if (!find_entry(list, line, &e) || !strcmp(e.version, a + 1)) continue;
+        if (!any) terminal_writestring("\nNewer versions of what is installed:\n");
+        any = 1;
+        terminal_writestring("  "); terminal_writestring(line);
+        terminal_writestring("  "); terminal_writestring(a + 1);
+        terminal_writestring(" -> "); terminal_writestring(e.version);
+        terminal_putchar('\n');
+    }
+    if (any) terminal_writestring("Install them with: sudo tpkg upgrade\n");
+    if (db) free(db);
 }
 
 static void tpkg_upgrade(uint32_t ip)
@@ -996,7 +1027,11 @@ void cmd_tpkg(int argc, char **args)
     if (resolve(&ip) != 0) return;
     if (!strcmp(args[1], "look") || !strcmp(args[1], "update")) {
         char *list = !strcmp(args[1], "look") ? cached_or_fetched(ip) : fetch_list(ip, 0);
-        if (list) { print_list(list); free(list); }
+        if (list) {
+            print_list(list);
+            if (!strcmp(args[1], "update")) print_outdated(list);
+            free(list);
+        }
     } else if (!strcmp(args[1], "install")) {
         if (argc < 3) { terminal_writestring("usage: tpkg install <name>\n"); return; }
         char *list = fetch_list(ip, 0);

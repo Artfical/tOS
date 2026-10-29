@@ -608,11 +608,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
         {
             /* tpkg end to end: Node comes from update.artfical.com, not from the initrd */
             static const char *const steps[] = {
-                "tpkg install node24", "node -v", "npm -v",
-                "npm install is-number@7.0.0 --prefix /tmp/p3 --no-audit --no-fund --no-progress",
-                "node -e console.log(require('/tmp/p3/node_modules/is-number')(42),process.version)",
-                "tpkg install node22", "node -v", "npm -v", "tpkg list",
-                "tpkg remove node22", "node -v", "tpkg list",
+                "tpkg info git", "tpkg install git", "tpkg list", "tpkg remove curl", "tpkg info curl",
+                "git --version", "tpkg which git", "tpkg which curl", "curl --version", "tpkg search http", "tpkg remove git", "tpkg remove curl", "tpkg list",
                 0 };
             static char out[16384];
             {
