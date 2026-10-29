@@ -786,7 +786,11 @@ void ramfs_import_initrd(uint32_t addr, uint32_t size)
                 dir_path[d] = 0;
                 base = slash + 1;
             }
-            uint32_t f_ino = make_inode(base, S_IFREG | 0644, resolve_path(dir_path, 1));
+            /* the mode the archive gives it (a program has its execute bits: git checks them) */
+            uint32_t hm = 0;
+            for (int m = 100; m < 107; m++) if (p[m] >= '0' && p[m] <= '7') hm = hm * 8 + (uint32_t)(p[m] - '0');
+            hm &= 0777u;
+            uint32_t f_ino = make_inode(base, S_IFREG | (hm ? hm : 0644u), resolve_path(dir_path, 1));
             if (f_ino && fsize > 0) {
                 ramfs_inode_t *fn = iget(f_ino);
                 fn->data = malloc(fsize);

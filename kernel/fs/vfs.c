@@ -38,6 +38,7 @@ static int denied_flag;                /* the last refusal was a permission refu
 int vfs_denied(void) { return denied_flag; }
 
 static void abspath_into(const char *path, char *out);
+static char *vfs_abspath_raw(const char *path, char *buf);
 
 int vfs_init(void)
 {
@@ -582,9 +583,33 @@ void vfs_chdir(const char *path)
     abspath_into(path, cwd);
 }
 
+/* "//", "/./" and a trailing "/" mean nothing (git asks for "dir/", "a//b", "./x"); ".." stays */
+static void squeeze_slashes(char *b)
+{
+    int o = 0;
+    for (int i = 0; b[i];) {
+        while (b[i] == '/') i++;
+        int st = i;
+        while (b[i] && b[i] != '/') i++;
+        int len = i - st;
+        if (!len || (len == 1 && b[st] == '.')) continue;
+        b[o++] = '/';
+        for (int k = 0; k < len; k++) b[o++] = b[st + k];
+    }
+    if (!o) b[o++] = '/';
+    b[o] = 0;
+}
+
 char *vfs_abspath(const char *path)
 {
     static char buf[VFS_NAME_LEN];
+    char *res = vfs_abspath_raw(path, buf);
+    squeeze_slashes(res);
+    return res;
+}
+
+static char *vfs_abspath_raw(const char *path, char *buf)
+{
     if (path[0] == '/') {
         int i = 0;
         while (path[i] && i < VFS_NAME_LEN - 1) { buf[i] = path[i]; i++; }

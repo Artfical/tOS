@@ -4,7 +4,7 @@ were copied from (dpkg), their versions, licences and where their sources are.""
 import subprocess, sys
 out = sys.argv[1]
 pkgs = [('libc6', 'glibc', 'GNU Lesser General Public License 2.1 or later',
-         'ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1'),
+         'ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1\n                   libresolv.so.2 libnss_dns.so.2 libnss_files.so.2 (name lookups: getaddrinfo loads the last two)'),
         ('libstdc++6', 'gcc', 'GNU General Public License 3 with the GCC Runtime Library Exception 3.1',
          'libstdc++.so.6'),
         ('libgcc-s1', 'gcc', 'GNU General Public License 3 with the GCC Runtime Library Exception 3.1',

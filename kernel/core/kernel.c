@@ -552,13 +552,24 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
 #ifdef TOS_NODE_STATIC_SELFTEST
     {
         /* 64-bit Linux programs: static, then dynamic (glibc's ld.so from /lib64) */
-        static const char *const runs[][6] = {
+        static const char *const runs[][14] = {
             { "/programs/hello64s", "arg1", 0 },
             { "/programs/hello64d", "arg1", 0 },
             { "/node24/bin/node", "-v", 0 },
             { "/node24/bin/node", "-e", "console.log('node64', process.arch, process.version, 6*7)", 0 },
             { "/node24/bin/node", "/programs/js/t2.js", 0 },
             { "/programs/forktest", 0 },
+            { "/programs/st", "/system/pkg/git/libexec/git-core/git", "/system/pkg/git/libexec/git-core:/programs", 0 },
+            { "/system/pkg/git/bin/git", "--version", 0 },
+            { "/system/pkg/git/bin/git", "init", "/tmp/g", 0 },
+            { "/system/pkg/git/bin/git", "-C", "/tmp/g", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "first", 0 },
+            { "/system/pkg/git/bin/git", "-C", "/tmp/g", "log", "--oneline", 0 },
+            { "/system/pkg/git/bin/git", "clone", "--depth", "1", "https://github.com/octocat/Hello-World.git", "/tmp/c", 0 },
+            { "/system/pkg/git/bin/git", "-C", "/tmp/c", "log", "--oneline", "-1", 0 },
+            { "/system/pkg/git/bin/git", "-C", "/tmp/c", "mv", "README", "README2", 0 },
+            { "/system/pkg/git/bin/git", "-C", "/tmp/c", "status", "--short", 0 },
+            { "/system/pkg/git/bin/git", "-C", "/tmp/c", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "rename", 0 },
+            { "/system/pkg/git/bin/git", "-C", "/tmp/c", "log", "--oneline", 0 },
             { "/node24/bin/node", "/programs/js/cp.js", 0 },
             { 0 } };
         for (int i = 0; runs[i][0]; i++) {

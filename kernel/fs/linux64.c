@@ -1041,6 +1041,7 @@ void linux64_syscall(registers_t *r)
         case 51:  ret = call32(367, a, b, c, 0, 0, 0, r); break;               /* getsockname */
         case 52:  ret = call32(368, a, b, c, 0, 0, 0, r); break;               /* getpeername */
         case 53:  ret = call32(360, a, b, c, d, 0, 0, r); break;               /* socketpair */
+        case 36: case 37: case 38: ret = 0; break;                             /* getitimer, alarm, setitimer: no timers yet (git's progress asks) */
         case 34: {                                                             /* pause */
             proc_t *pp = proc_current();
             while (!(pp->sig_pending & ~task_current()->sig_blocked)) task_sleep(20);

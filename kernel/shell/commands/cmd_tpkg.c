@@ -30,7 +30,7 @@
 #define TPKG_LIST_CAP   (64 * 1024)
 
 typedef struct {
-    char name[40], version[32], license[32], desc[120], sha[65], path[128];
+    char name[40], version[32], license[32], desc[120], sha[65], path[128], deps[96];   /* deps: comma-separated names */
     uint32_t size;
 } tpkg_entry_t;
 
@@ -228,6 +228,7 @@ static int list_entry(const char *list, int n, tpkg_entry_t *e)
         field_copy(&c, size, sizeof(size));
         field_copy(&c, e->sha, sizeof(e->sha));
         field_copy(&c, e->path, sizeof(e->path));
+        field_copy(&c, e->deps, sizeof(e->deps));
         for (char *s = size; *s >= '0' && *s <= '9'; s++) e->size = e->size * 10 + (uint32_t)(*s - '0');
         return 1;
     }
@@ -409,6 +410,10 @@ static int untar(const uint8_t *t, uint32_t n, const char *dest)
             mkdir_p(full, 0);
             if (write_whole(full, t + at + 512, size) != 0) { terminal_writestring("tpkg: could not write "); terminal_writestring(full); terminal_putchar('\n'); return -1; }
             files++;
+            /* a program keeps its execute bits (git looks for them before it runs a helper) */
+            uint32_t mode = 0;
+            for (int i = 100; i < 107; i++) if (h[i] >= '0' && h[i] <= '7') mode = mode * 8 + (uint32_t)(h[i] - '0');
+            if ((mode & 0111) && vfs_chmod_supported(full)) vfs_chmod(full, mode & 0777);
         }
         at += 512 + ((size + 511) & ~511u);
     }
@@ -623,16 +628,51 @@ static void print_list(const char *list)
     if (!any) terminal_writestring("The server has no packages.\n");
 }
 
-static void tpkg_install(uint32_t ip, const char *name, const char *list)
+static int install_depth;
+
+/* installs a package after what it depends on; 1 = installed */
+static int tpkg_install(uint32_t ip, const char *name, const char *list)
 {
     tpkg_entry_t e;
     if (!find_entry(list, name, &e)) {
         terminal_writestring("tpkg: no package called ");
         terminal_writestring(name);
         terminal_writestring(" (see: tpkg look)\n");
-        return;
+        return 0;
     }
-    if (strlen(e.sha) != 64 || !e.size || e.path[0] != '/') { terminal_writestring("tpkg: the server's entry for it is incomplete\n"); return; }
+    if (e.deps[0]) {
+        char deps[96];
+        strcpy(deps, e.deps);
+        for (char *t = deps; *t;) {
+            char *end = t;
+            while (*end && *end != ',') end++;
+            char more = *end;
+            *end = 0;
+            if (*t && !db_find(t, 0, 0)) {
+                tpkg_entry_t d;
+                if (!find_entry(list, t, &d) || install_depth > 6) {
+                    terminal_writestring("tpkg: "); terminal_writestring(e.name);
+                    terminal_writestring(" needs "); terminal_writestring(t);
+                    terminal_writestring(", which the server does not have\n");
+                    return 0;
+                }
+                terminal_writestring(e.name); terminal_writestring(" needs "); terminal_writestring(t);
+                terminal_writestring(": installing it first\n");
+                install_depth++;
+                int ok = tpkg_install(ip, t, list);
+                install_depth--;
+                if (!ok) {
+                    terminal_writestring("tpkg: "); terminal_writestring(t);
+                    terminal_writestring(" could not be installed, so "); terminal_writestring(e.name);
+                    terminal_writestring(" was not\n");
+                    return 0;
+                }
+            }
+            if (!more) break;
+            t = end + 1;
+        }
+    }
+    if (strlen(e.sha) != 64 || !e.size || e.path[0] != '/') { terminal_writestring("tpkg: the server's entry for it is incomplete\n"); return 0; }
     terminal_writestring("Downloading ");
     terminal_writestring(e.name);
     terminal_writestring(" ");
@@ -641,14 +681,14 @@ static void tpkg_install(uint32_t ip, const char *name, const char *list)
     print_mb(e.size);
     terminal_writestring(")");
     uint8_t *buf, *data;
-    if (download(ip, e.path, e.size, &buf, &data) != 0) return;
-    if (!sha_ok(data, e.size, e.sha)) { free(buf); terminal_writestring("tpkg: the download is damaged (checksum); nothing was installed\n"); return; }
+    if (download(ip, e.path, e.size, &buf, &data) != 0) return 0;
+    if (!sha_ok(data, e.size, e.sha)) { free(buf); terminal_writestring("tpkg: the download is damaged (checksum); nothing was installed\n"); return 0; }
 
     terminal_writestring("Unpacking...\n");
     uint32_t tlen = 0;
     uint8_t *tar = gunzip(data, e.size, &tlen);
     free(buf);
-    if (!tar) { terminal_writestring("tpkg: the package could not be unpacked (not enough memory, or not a .tar.gz)\n"); return; }
+    if (!tar) { terminal_writestring("tpkg: the package could not be unpacked (not enough memory, or not a .tar.gz)\n"); return 0; }
 
     char dest[VFS_NAME_LEN];
     strcpy(dest, TPKG_PKG_ROOT "/");
@@ -662,7 +702,7 @@ static void tpkg_install(uint32_t ip, const char *name, const char *list)
     mkdir_p(dest, 1);
     int files = untar(tar, tlen, dest);
     free(tar);
-    if (files < 0) { remove_tree(dest); terminal_writestring("tpkg: installing failed; nothing was kept\n"); return; }
+    if (files < 0) { remove_tree(dest); terminal_writestring("tpkg: installing failed; nothing was kept\n"); return 0; }
 
     char line[VFS_NAME_LEN + 80];
     strcpy(line, e.name); strcat(line, "|"); strcat(line, e.version); strcat(line, "|"); strcat(line, dest);
@@ -677,12 +717,53 @@ static void tpkg_install(uint32_t ip, const char *name, const char *list)
     print_uint((uint32_t)files);
     terminal_writestring(" files)\n");
     register_commands(e.name, dest);
+    return 1;
 }
 
-static void tpkg_remove(const char *name)
+/* the installed packages that need `name` (their tpkg.depends lists it), comma-separated into out */
+static void needed_by(const char *name, char *out, uint32_t cap)
+{
+    out[0] = 0;
+    char *db = read_whole(TPKG_DB_FILE, 0);
+    for (char *p = db; p && *p;) {
+        char *line = p;
+        while (*p && *p != '\n') p++;
+        if (*p) *p++ = 0;
+        char *a = strchr(line, '|');
+        if (!a) continue;
+        *a = 0;
+        char *b = strchr(a + 1, '|');
+        if (!b || !strcmp(line, name)) continue;
+        char f[VFS_NAME_LEN];
+        strcpy(f, b + 1);
+        strcat(f, "/tpkg.depends");
+        char *d = read_whole(f, 0);
+        for (char *q = d; q && *q;) {
+            char *w = q;
+            while (*q && *q != '\n') q++;
+            if (*q) *q++ = 0;
+            if (!strcmp(w, name)) { list_add(out, cap, line); break; }
+        }
+        if (d) free(d);
+    }
+    if (db) free(db);
+}
+
+static void tpkg_remove(const char *name, int force)
 {
     char ver[32], dir[VFS_NAME_LEN];
     if (!db_find(name, ver, dir)) { terminal_writestring("tpkg: "); terminal_writestring(name); terminal_writestring(" is not installed\n"); return; }
+    char users[160];
+    needed_by(name, users, sizeof(users));
+    if (users[0] && !force) {
+        terminal_writestring("tpkg: "); terminal_writestring(name);
+        terminal_writestring(" is needed by ");
+        terminal_writestring(users);
+        terminal_writestring("; remove that first (or: sudo tpkg remove ");
+        terminal_writestring(name);
+        terminal_writestring(" --force)\n");
+        return;
+    }
     edit_lines(TPKG_PATH_FILE, '=', 0, dir, 0);
     remove_tree(dir);
     edit_lines(TPKG_DB_FILE, '|', name, 0, 0);
@@ -772,6 +853,12 @@ static void tpkg_info(const char *name)
         terminal_writestring("Download:    ");
         print_mb(e.size);
         terminal_putchar('\n');
+        if (e.deps[0]) print_field("Needs:       ", e.deps);
+    }
+    if (have) {
+        char users[160];
+        needed_by(name, users, sizeof(users));
+        if (users[0]) print_field("Needed by:   ", users);
     }
     if (have) {
         terminal_writestring("Installed:   ");
@@ -872,7 +959,7 @@ void cmd_tpkg(int argc, char **args)
             "  which <command>  the package a command comes from\n"
             "  update           refresh that list\n"
             "  install <name>   install a package (its commands go on the PATH)\n"
-            "  remove <name>    uninstall a package\n"
+            "  remove <name>    uninstall a package (not while another needs it)\n"
             "  upgrade          install newer versions of what is installed\n");
         return;
     }
@@ -901,8 +988,8 @@ void cmd_tpkg(int argc, char **args)
         return;
     }
     if (!strcmp(args[1], "remove")) {
-        if (argc < 3) { terminal_writestring("usage: tpkg remove <name>\n"); return; }
-        tpkg_remove(args[2]);
+        if (argc < 3) { terminal_writestring("usage: tpkg remove <name> [--force]\n"); return; }
+        tpkg_remove(args[2], argc > 3 && !strcmp(args[3], "--force"));
         return;
     }
     uint32_t ip;

@@ -279,6 +279,11 @@ static int syscall_exec_user_w(uint64_t path_ptr, uint64_t argv_ptr, uint64_t en
     if (rc >= 0)
         rc = copy_user_vector_w(envp_ptr, envp, PROC_EXEC_MAX_ENV, storage, PROC_EXEC_BYTES, &used, wide);
     if (rc >= 0) rc = proc_execve_argv(path, argv, envp, scratch);   /* returns only on failure */
+    {
+        char h[12];
+        serial_write("execve: "); serial_write(path); serial_write(" failed: -");
+        sprintf_u32(h, (uint32_t)-rc); serial_write(h); serial_write("\n");
+    }
     free(scratch);
     return rc;
 }
@@ -1522,7 +1527,10 @@ static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode
         p->fdpath[slot][VFS_NAME_LEN - 1] = 0;
         p->fd_dir_offset[slot] = 0;
     } else {
-        if (flags & 0x10000u) return (uint32_t)-ENOTDIR; /* O_DIRECTORY */
+        if (flags & 0x10000u) {                          /* O_DIRECTORY: there, but not a directory; or not there */
+            if (vfs_stat(path, &path_stat) == 0) return (uint32_t)-ENOTDIR;
+            return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
+        }
         int vflags = (flags & 3u) == 2 ? VFS_RDWR :
                      (flags & 3u) == 1 ? VFS_WRONLY : VFS_RDONLY;
         if (flags & 0x40u) vflags |= VFS_CREAT;

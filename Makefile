@@ -530,7 +530,8 @@ kernel/tOS.elf: $(KERNEL_OBJS) tools/elf32wrap.py
 # the dynamic linker, glibc and the GCC runtime. LICENSES.txt says which packages they are and
 # where their sources are (glibc: LGPL-2.1+; libstdc++ and libgcc_s: GPL-3 with the GCC Runtime
 # Library Exception).
-LINUX_RUNTIME_LIBS = libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libstdc++.so.6 libgcc_s.so.1
+LINUX_RUNTIME_LIBS = libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libstdc++.so.6 libgcc_s.so.1 \
+                     libresolv.so.2 libnss_dns.so.2 libnss_files.so.2
 linux-runtime/.stamp:
 	rm -rf linux-runtime && mkdir -p linux-runtime/lib64 linux-runtime/lib/x86_64-linux-gnu
 	cp -L /lib64/ld-linux-x86-64.so.2 linux-runtime/lib64/
