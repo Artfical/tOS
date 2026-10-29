@@ -717,6 +717,149 @@ static void tpkg_upgrade(uint32_t ip)
     free(list);
 }
 
+/* ---- looking things up (no root): info, search, which ---- */
+
+/* the last server list, or one fetched when there is none yet; a malloc'd string, or 0 */
+static char *list_for_query(void)
+{
+    char *list = read_whole(TPKG_CACHE_FILE, 0);
+    if (list) return list;
+    uint32_t ip;
+    if (resolve(&ip) != 0) return 0;
+    return fetch_list(ip, 0);
+}
+
+static void print_field(const char *label, const char *value)
+{
+    terminal_writestring(label);
+    terminal_writestring(value);
+    terminal_putchar('\n');
+}
+
+static char lower_c(char c) { return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c; }
+
+/* does `hay` contain `needle`, ignoring case */
+static int contains_i(const char *hay, const char *needle)
+{
+    uint32_t nl = (uint32_t)strlen(needle);
+    for (; *hay; hay++) {
+        uint32_t k = 0;
+        while (k < nl && hay[k] && lower_c(hay[k]) == lower_c(needle[k])) k++;
+        if (k == nl) return 1;
+    }
+    return 0;
+}
+
+static void tpkg_info(const char *name)
+{
+    tpkg_entry_t e;
+    char ver[32], dir[VFS_NAME_LEN];
+    int have = db_find(name, ver, dir);
+    char *list = list_for_query();
+    int on_server = list && find_entry(list, name, &e);
+    if (!have && !on_server) {
+        terminal_writestring("tpkg: no package named ");
+        terminal_writestring(name);
+        terminal_writestring(list ? " (tpkg look lists them)\n" : "\n");
+        if (list) free(list);
+        return;
+    }
+    print_field("Package:     ", name);
+    if (on_server) {
+        print_field("Version:     ", e.version);
+        if (e.license[0]) print_field("License:     ", e.license);
+        print_field("About:       ", e.desc);
+        terminal_writestring("Download:    ");
+        print_mb(e.size);
+        terminal_putchar('\n');
+    }
+    if (have) {
+        terminal_writestring("Installed:   ");
+        terminal_writestring(ver);
+        terminal_writestring(" in ");
+        terminal_writestring(dir);
+        if (on_server && strcmp(ver, e.version)) {
+            terminal_writestring("  (newer on the server: ");
+            terminal_writestring(e.version);
+            terminal_writestring("; sudo tpkg upgrade)");
+        }
+        terminal_putchar('\n');
+    } else {
+        terminal_writestring("Installed:   no (sudo tpkg install ");
+        terminal_writestring(name);
+        terminal_writestring(")\n");
+    }
+    if (have) {
+        char f[VFS_NAME_LEN];
+        strcpy(f, dir);
+        strcat(f, "/tpkg.commands");
+        char *c = read_whole(f, 0);
+        int first = 1;
+        for (char *p = c; p && *p;) {
+            char *line = p;
+            while (*p && *p != '\n') p++;
+            if (*p) *p++ = 0;
+            char *eq = strchr(line, '=');
+            if (!eq || eq == line) continue;
+            *eq = 0;
+            char cur[VFS_NAME_LEN], who[40];
+            terminal_writestring(first ? "Commands:    " : "             ");
+            first = 0;
+            terminal_writestring(line);
+            if (path_entry(line, cur) && owner_of(cur, who, sizeof(who)) && strcmp(who, name)) {
+                terminal_writestring("  (now runs ");
+                terminal_writestring(who);
+                terminal_writestring("'s)");
+            } else if (!path_entry(line, cur)) {
+                terminal_writestring("  (not on the PATH: tOS's own command wins)");
+            }
+            terminal_putchar('\n');
+        }
+        if (c) free(c);
+    }
+    if (list) free(list);
+}
+
+static void tpkg_search(const char *text)
+{
+    char *list = list_for_query();
+    if (!list) return;
+    tpkg_entry_t e;
+    int found = 0;
+    for (int i = 0; list_entry(list, i, &e); i++) {
+        if (!contains_i(e.name, text) && !contains_i(e.desc, text)) continue;
+        found++;
+        terminal_writestring(e.name);
+        terminal_writestring("  ");
+        terminal_writestring(e.version);
+        terminal_writestring("\n    ");
+        terminal_writestring(e.desc);
+        terminal_putchar('\n');
+    }
+    if (!found) terminal_writestring("Nothing matches.\n");
+    free(list);
+}
+
+/* which package a command comes from */
+static void tpkg_which(const char *cmd)
+{
+    char path[VFS_NAME_LEN], who[40];
+    if (!path_entry(cmd, path)) {
+        terminal_writestring(cmd);
+        terminal_writestring(": not a command from a package\n");
+        return;
+    }
+    terminal_writestring(cmd);
+    terminal_writestring(" -> ");
+    terminal_writestring(path);
+    if (owner_of(path, who, sizeof(who))) {
+        terminal_writestring("  (package ");
+        terminal_writestring(who);
+        terminal_writestring(")");
+    }
+    terminal_putchar('\n');
+}
+
 void cmd_tpkg(int argc, char **args)
 {
     if (argc < 2) {
@@ -724,6 +867,9 @@ void cmd_tpkg(int argc, char **args)
             "usage: tpkg <subcommand>\n"
             "  list             installed packages\n"
             "  look             the packages on " TPKG_HOST "\n"
+            "  info <name>      what a package is, its version, and the commands it brings\n"
+            "  search <text>    packages whose name or description has the text\n"
+            "  which <command>  the package a command comes from\n"
             "  update           refresh that list\n"
             "  install <name>   install a package (its commands go on the PATH)\n"
             "  remove <name>    uninstall a package\n"
@@ -731,13 +877,29 @@ void cmd_tpkg(int argc, char **args)
         return;
     }
     /* everything that changes the system is for root */
-    if (strcmp(args[1], "list") && strcmp(args[1], "look") && !auth_is_root()) {
+    if (strcmp(args[1], "list") && strcmp(args[1], "look") && strcmp(args[1], "info") &&
+        strcmp(args[1], "search") && strcmp(args[1], "which") && !auth_is_root()) {
         terminal_writestring("tpkg: permission denied: package management needs root (try: sudo tpkg ");
         terminal_writestring(args[1]);
         terminal_writestring(" ...)\n");
         return;
     }
     if (!strcmp(args[1], "list")) { tpkg_list_installed(); return; }
+    if (!strcmp(args[1], "info")) {
+        if (argc < 3) { terminal_writestring("usage: tpkg info <name>\n"); return; }
+        tpkg_info(args[2]);
+        return;
+    }
+    if (!strcmp(args[1], "search")) {
+        if (argc < 3) { terminal_writestring("usage: tpkg search <text>\n"); return; }
+        tpkg_search(args[2]);
+        return;
+    }
+    if (!strcmp(args[1], "which")) {
+        if (argc < 3) { terminal_writestring("usage: tpkg which <command>\n"); return; }
+        tpkg_which(args[2]);
+        return;
+    }
     if (!strcmp(args[1], "remove")) {
         if (argc < 3) { terminal_writestring("usage: tpkg remove <name>\n"); return; }
         tpkg_remove(args[2]);
@@ -757,6 +919,6 @@ void cmd_tpkg(int argc, char **args)
     } else if (!strcmp(args[1], "upgrade")) {
         tpkg_upgrade(ip);
     } else {
-        terminal_writestring("tpkg: unknown subcommand (try: list, look, update, install, remove, upgrade)\n");
+        terminal_writestring("tpkg: unknown subcommand (try: list, look, info, search, which, update, install, remove, upgrade)\n");
     }
 }
