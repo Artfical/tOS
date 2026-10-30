@@ -360,10 +360,23 @@ int ramfs_vfs_write(int fd, const void *buf, uint32_t size)
     if (!n || (n->mode & S_IFDIR)) return -1;
     uint32_t new_size = fds[fd].offset + size;
     if (new_size > n->size) {
-        uint8_t *new_data = malloc(new_size);
-        if (!new_data) return -1;
-        if (n->data) { memcpy(new_data, n->data, n->size); free(n->data); }
-        n->data = new_data;
+        /* `blocks` is how many bytes the data has room for. Big files grow by doubling (a 15 MB pack
+         * written in 64 KB pieces was copied whole 230 times, and a copy needs the room twice);
+         * small ones by exactly what they need, as there are tens of thousands of them. */
+        uint32_t cap = n->data ? (n->blocks > n->size ? n->blocks : n->size) : 0;
+        if (new_size > cap) {
+            uint32_t newcap = new_size;
+            if (new_size >= 65536 && cap * 2 > newcap) newcap = cap * 2;
+            uint8_t *new_data = malloc(newcap);
+            if (!new_data && newcap > new_size) { newcap = new_size; new_data = malloc(newcap); }
+            if (!new_data) {
+                serial_write("ramfs: no memory for a file of that size\n");
+                return -1;
+            }
+            if (n->data) { memcpy(new_data, n->data, n->size); free(n->data); }
+            n->data = new_data;
+            n->blocks = newcap;
+        }
         n->size = new_size;
     }
     memcpy(n->data + fds[fd].offset, buf, size);

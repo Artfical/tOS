@@ -509,7 +509,13 @@ void *krealloc(void *ptr, size_t size)
     if (size == 0) { free(ptr); return NULL; }
     heap_header_t *hdr = (heap_header_t *)((uintptr_t)ptr - sizeof(heap_header_t));
     if (!heap_ptr_ok(hdr) || hdr->magic != HEAP_MAGIC) return NULL;
-    if (hdr->size >= size + HEAP_CANARY_SLOT) return ptr;
+    if (hdr->size >= size + HEAP_CANARY_SLOT) {
+        /* it fits where it is: the block now holds `size` bytes of data (a later move copies that many;
+         * left at the old request, bytes appended into the spare room were lost when it moved, and a
+         * TCP receive buffer that grew this way came out damaged: TLS "bad record mac") */
+        hdr->req_size = size;
+        return ptr;
+    }
     void *new_ptr = malloc(size);
     if (new_ptr) {
         uint32_t old_data = hdr->req_size;

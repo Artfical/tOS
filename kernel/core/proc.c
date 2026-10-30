@@ -1,6 +1,7 @@
 #include "proc.h"
 #include "io.h"
 #include "linux_abi.h"
+#include "tty.h"
 #include "scheduler.h"
 #include "paging.h"
 #include "usermode.h"
@@ -420,6 +421,64 @@ int proc_spawn(const char *path)
     return proc_spawn_argv(path, 0, 0);
 }
 
+/* where a command is: its path.tmbl entry (tpkg's), else the bin folder of an installed package (npm install -g
+ * puts the commands it installs there). Used for "#!/usr/bin/env node" when a program runs a script. */
+static int proc_command_lookup(const char *name, char *out, int cap)
+{
+    if (!name[0] || strchr(name, '/')) return 0;
+    uint32_t nl = (uint32_t)strlen(name);
+    int found = 0;
+    uint32_t size = fsbridge_exists("/system/path.tmbl") ? fsbridge_size("/system/path.tmbl") : 0;
+    char *buf = size ? malloc(size + 1) : 0;
+    if (buf) {
+        int n = fsbridge_read("/system/path.tmbl", buf, size, 0);
+        if (n > 0) {
+            buf[n] = 0;
+            for (char *q = buf; *q && !found;) {
+                char *line = q;
+                while (*q && *q != '\n') q++;
+                if (*q) *q++ = 0;
+                if (!strncmp(line, name, nl) && line[nl] == '=') {
+                    strncpy(out, line + nl + 1, (size_t)cap - 1);
+                    out[cap - 1] = 0;
+                    char *sp = strchr(out, ' ');             /* "program first-argument" entries: the program */
+                    if (sp) *sp = 0;
+                    found = 1;
+                }
+            }
+        }
+        free(buf);
+    }
+    if (found) return 1;
+    size = fsbridge_exists("/system/tpkg_db.tmbl") ? fsbridge_size("/system/tpkg_db.tmbl") : 0;
+    buf = size ? malloc(size + 1) : 0;
+    if (!buf) return 0;
+    int n = fsbridge_read("/system/tpkg_db.tmbl", buf, size, 0);
+    if (n > 0) {
+        buf[n] = 0;
+        for (char *q = buf; *q && !found;) {
+            char *line = q;
+            while (*q && *q != '\n') q++;
+            if (*q) *q++ = 0;
+            char *a = strchr(line, '|');
+            char *b = a ? strchr(a + 1, '|') : 0;
+            if (!b) continue;
+            char cand[VFS_NAME_LEN];
+            if (strlen(b + 1) + nl + 6 >= sizeof(cand)) continue;
+            strcpy(cand, b + 1);
+            strcat(cand, "/bin/");
+            strcat(cand, name);
+            if (fsbridge_exists(cand) && !fsbridge_is_dir(cand)) {
+                strncpy(out, cand, (size_t)cap - 1);
+                out[cap - 1] = 0;
+                found = 1;
+            }
+        }
+    }
+    free(buf);
+    return found;
+}
+
 /* "#!interpreter [one argument]" at the start of a file: 1 and the two parts (malloc'd) */
 static int proc_shebang(const char *path, char **interp, char **arg)
 {
@@ -477,6 +536,13 @@ int proc_execve_argv(const char *path_in, const char *const argv[], const char *
         char *interp = 0, *arg = 0;
         int sb = proc_shebang(path, &interp, &arg);
         if (sb == 0) break;
+        if (sb == 1 && interp && arg && !strcmp(interp, "/usr/bin/env")) {      /* env name: where name is */
+            char r[VFS_NAME_LEN];
+            if (proc_command_lookup(arg, r, sizeof(r))) {
+                char *ni = malloc((uint32_t)strlen(r) + 1);
+                if (ni) { strcpy(ni, r); free(interp); free(arg); interp = ni; arg = 0; }
+            }
+        }
         if (interp) owned[owned_n++] = interp;
         if (arg) owned[owned_n++] = arg;
         if (sb < 0) { rc = -ENOEXEC; goto fail; }
@@ -694,6 +760,26 @@ int proc_signal(proc_t *q, int sig)
     return proc_kill(q->pid, 128 + sig) == 0 ? 0 : -ESRCH;
 }
 
+void proc_signal_surface(void *surface, int sig)
+{
+    proc_t *self = proc_current();
+    for (int i = 0; i < PROC_MAX; i++) {
+        proc_t *q = &procs[i];
+        if (!q->used || q->done || q == self) continue;
+        task_t *t = task_by_pid(q->pid);
+        if (t && t->user_data == surface) proc_signal(q, sig);
+    }
+    if (self && task_current() && task_current()->user_data == surface) proc_signal(self, sig);   /* last: it may not return */
+}
+
+/* a program that was started from the shell has ended: the shell's terminal is cooked again (a program that
+ * died inside a full-screen mode, in raw mode, with the mouse on...) */
+static void proc_tty_release(proc_t *p, void *surface)
+{
+    proc_t *parent = proc_by_pid(p->ppid);
+    if (surface && !(parent && !parent->done && parent != p)) tty_detach(surface);
+}
+
 /* a process has ended: its parent hears of it (SIGCHLD), a vfork parent goes on */
 static void proc_tell_parent(proc_t *p)
 {
@@ -729,6 +815,10 @@ int proc_wait_child(int pid, int nohang, int *status)
 /* releases everything a process holds except its slot (kept until someone waits) */
 static void proc_release(proc_t *p)
 {
+    {
+        task_t *tt = task_by_pid(p->pid);
+        proc_tty_release(p, tt ? tt->user_data : 0);
+    }
     if (p->vfork_parent) { p->mm64 = 0; p->pgdir = 0; }      /* the parent's memory */
     syscall_proc_cleanup(p);
     uint64_t *dir = p->pgdir;
@@ -743,6 +833,14 @@ void proc_exit(int code)
     proc_t *p = proc_current();
     if (p) {
         p->exit_code = code;
+        if (code != 0) {                                   /* a program that did not end well: say so on the serial line */
+            char h[12];
+            serial_write("proc: "); serial_write(p->name); serial_write(" (pid ");
+            sprintf_u32(h, p->pid); serial_write(h); serial_write(") ended with code ");
+            sprintf_u32(h, (uint32_t)code); serial_write(h);
+            serial_write(p->term_sig ? " (killed by a signal)\n" : "\n");
+        }
+        proc_tty_release(p, task_current() ? task_current()->user_data : 0);
         asm volatile("cli");
         task_t *t = task_current();
         task_kill_group(p->pid, t);

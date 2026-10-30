@@ -161,6 +161,25 @@ static int path_lookup(const char *cmd, char *out, int cap)
 static int path_fallback_exec(const char *cmd, int argc, char **args)
 {
     char full[VFS_NAME_LEN];
+    if (strchr(cmd, '/')) {                    /* a path ("./prog", "/programs/x"): that file */
+        strncpy(full, vfs_abspath(cmd), sizeof(full) - 1);
+        full[sizeof(full) - 1] = 0;
+        if (!fsbridge_exists(full)) {
+            terminal_writestring(cmd);
+            terminal_writestring(": No such file or directory\n");
+            return 1;
+        }
+        if (fsbridge_is_dir(full)) {
+            terminal_writestring(cmd);
+            terminal_writestring(": Is a directory\n");
+            return 1;
+        }
+        if (!path_run_file(full, argc, args)) {
+            terminal_writestring(cmd);
+            terminal_writestring(": not a program tOS can run\n");
+        }
+        return 1;
+    }
     if (path_lookup(cmd, full, sizeof(full))) {
         if (!path_run_file(full, argc, args)) {
             terminal_writestring(cmd);
@@ -169,6 +188,40 @@ static int path_fallback_exec(const char *cmd, int argc, char **args)
             terminal_writestring(" is not a program tOS can run\n");
         }
         return 1;
+    }
+
+    /* a command an installed package keeps in its bin folder (npm install -g puts its commands there) */
+    {
+        char *db = fsbridge_exists("/system/tpkg_db.tmbl") ? (char *)malloc(fsbridge_size("/system/tpkg_db.tmbl") + 1) : 0;
+        int ran = 0;
+        if (db) {
+            int n = fsbridge_read("/system/tpkg_db.tmbl", db, fsbridge_size("/system/tpkg_db.tmbl"), 0);
+            if (n > 0) {
+                db[n] = 0;
+                for (char *q = db; *q && !ran;) {
+                    char *line = q;
+                    while (*q && *q != '\n') q++;
+                    if (*q) *q++ = 0;
+                    char *a = strchr(line, '|');
+                    char *b = a ? strchr(a + 1, '|') : 0;
+                    if (!b || strlen(b + 1) + strlen(cmd) + 6 >= sizeof(full)) continue;
+                    strcpy(full, b + 1);
+                    strcat(full, "/bin/");
+                    strcat(full, cmd);
+                    if (fsbridge_exists(full) && !fsbridge_is_dir(full)) {
+                        if (!path_run_file(full, argc, args)) {
+                            terminal_writestring(cmd);
+                            terminal_writestring(": ");
+                            terminal_writestring(full);
+                            terminal_writestring(" is not a program tOS can run\n");
+                        }
+                        ran = 1;
+                    }
+                }
+            }
+            free(db);
+        }
+        if (ran) return 1;
     }
 
     /* the applications in /system/apps, the system's own programs, then the legacy initrd location */

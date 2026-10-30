@@ -29,6 +29,7 @@
 #include "auth.h"
 #include "errno.h"
 #include "linux_abi.h"
+#include "tty.h"
 #include "cmos.h"
 #include "csprng.h"
 #include "gdt.h"
@@ -756,7 +757,7 @@ static uint32_t fd_ready(proc_t *p, int fd)
 {
     fd = fd_xlate(p, fd);
     if (fd == 1 || fd == 2) return LINUX_EPOLLOUT;
-    if (fd == 0) return 0;                       /* the console is read by blocking only */
+    if (fd == 0) return tty_ready() ? LINUX_EPOLLIN : 0;       /* the terminal has input */
     int is_write = 0;
     int pi = proc_pipe_endpoint(p, fd, &is_write);
     if (pi >= 0 && spair_of(p, fd)) {
@@ -883,12 +884,19 @@ static uint32_t linux_ioctl(int fd, uint32_t req, uint64_t arg)
     proc_t *p = proc_current();
     int slot = fd - 3;
     if (fd < 0 || (fd > 2 && (!p || slot >= PROC_MAX_FDS || p->fd[slot] == -1))) return (uint32_t)-EBADF;
+    if (fd <= 2 && req != 0x5421) {              /* the terminal: termios, window size, process group */
+        int r = tty_ioctl(req, arg, user_wr_ok, user_range_ok);
+        if (r != 1) return (uint32_t)r;
+    }
     switch (req) {
     case 0x5421:                                 /* FIONBIO */
         if (!user_range_ok(arg, 4)) return (uint32_t)-EFAULT;
         if (fd > 2) {
             if (*(const int *)(uintptr_t)arg) p->fd_open_flags[slot] |= 0x800u;
             else p->fd_open_flags[slot] &= ~0x800u;
+        } else if (p) {
+            if (*(const int *)(uintptr_t)arg) p->std_flags[fd] |= 0x800u;
+            else p->std_flags[fd] &= ~0x800u;
         }
         return 0;
     case 0x541B: {                               /* FIONREAD */
@@ -1536,10 +1544,14 @@ static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode
         if (flags & 0x40u) vflags |= VFS_CREAT;
         if (flags & 0x200u) vflags |= VFS_TRUNC;
         if (flags & 0x400u) vflags |= VFS_APPEND;
-        (void)mode;
+        int existed = vfs_stat(path, &path_stat) == 0;
         int vfd = vfs_open(path, vflags);
         if (vfd < 0)
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
+        /* a file this open made has the mode the program asked for, less its umask (git creates the
+         * executables of a checkout with 0777 and reads the bit back to see whether they changed) */
+        if (!existed && (flags & 0x40u) && (mode & 07777u) && vfs_chmod_supported(path))
+            vfs_chmod(path, (mode & ~(p->umask_set ? p->umask : 022u)) & 07777u);
         p->fd[slot] = vfd;
         if (vfs_fd_get_path(vfd, p->fdpath[slot], VFS_NAME_LEN) < 0)
             strncpy(p->fdpath[slot], absolute_path, VFS_NAME_LEN - 1);
@@ -2035,13 +2047,9 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
             if (count <= 0) return 0;
             if (!user_wr_ok(b, (uint32_t)count)) return (uint32_t)-EFAULT;
             if (fd == 0) {
-                for (int i = 0; i < count; i++) {
-                    char ch = keyboard_getchar_ring3();
-                    terminal_putchar(ch);
-                    buf[i] = ch;
-                    if (ch == '\n') return (uint32_t)(i + 1);
-                }
-                return (uint32_t)count;
+                /* the terminal: cooked lines or raw bytes, whatever its program set with termios */
+                proc_t *rp = proc_current();
+                return (uint32_t)tty_read((uint8_t *)buf, (uint32_t)count, rp && (rp->std_flags[0] & 0x800u));
             }
             proc_t *p = proc_current();
             if (p && fd >= 3 && fd - 3 < PROC_MAX_FDS && p->fd[fd - 3] == PROC_FD_URANDOM) {
@@ -2076,6 +2084,7 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
             if (count <= 0) return 0;
             if (!user_range_ok(b, (uint32_t)count)) return (uint32_t)-EFAULT;
             if (fd == 1 || fd == 2) {
+                tty_note_output();
                 for (int i = 0; i < count; i++) {
                     terminal_putchar(buf[i]);
                 }
@@ -2146,6 +2155,7 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
             for (int i = 0; i < iovcnt; i++) {
                 if (fd == 1 || fd == 2) {
                     const char *buf = (const char *)(uintptr_t)iov[i].base;
+                    tty_note_output();
                     for (uint32_t j = 0; j < iov[i].len; j++) {
                         terminal_putchar(buf[j]);
                     }
@@ -2254,8 +2264,8 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
             if (fd >= 0 && fd <= 2) {
                 if (cmd == LINUX_F_GETFD) return 0;
                 if (cmd == LINUX_F_SETFD) return c & ~LINUX_FD_CLOEXEC ? (uint32_t)-EINVAL : 0;
-                if (cmd == LINUX_F_GETFL) return fd == 0 ? 0 : 1;
-                if (cmd == LINUX_F_SETFL) return 0;
+                if (cmd == LINUX_F_GETFL) return (fd == 0 ? 0u : 1u) | (p ? p->std_flags[fd] : 0u);
+                if (cmd == LINUX_F_SETFL) { if (p) p->std_flags[fd] = (uint32_t)c & 0x800u; return 0; }
                 return (uint32_t)-EINVAL;
             }
             if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1)

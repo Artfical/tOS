@@ -61,6 +61,7 @@ static int shift_seen = 0;             /* Shift went down at some point since th
 static int ctrl_pressed = 0;
 static int alt_pressed = 0;
 static int extended = 0;
+static int xterm_keys = 0;             /* a Linux program owns the terminal: keys come as xterm sequences */
 volatile int interrupt_char = -1;
 void (*interrupt_callback)(void) = NULL;
 static int keyboard_layout = KBD_LAYOUT_US;
@@ -130,6 +131,16 @@ void keyboard_push_char(char c)
     }
 }
 
+void keyboard_set_xterm(int on) { xterm_keys = on; }
+
+static void push_xkey(uint8_t code)
+{
+    uint8_t mod = (uint8_t)((shift_pressed ? 1 : 0) | (alt_pressed ? 2 : 0) | (ctrl_pressed ? 4 : 0));
+    keyboard_push_char((char)0xFF);
+    keyboard_push_char((char)code);
+    keyboard_push_char((char)mod);
+}
+
 static void push_special(uint8_t scancode)
 {
     int next = (special_head + 1) % 16;
@@ -158,9 +169,23 @@ static void process_scancode(uint8_t scancode)
         extended = 0;
         if (scancode == 0x38) { alt_pressed = 1; return; }       /* right Alt / Option */
         if (scancode == 0xB8) { alt_pressed = 0; return; }
-        if (scancode == 0x53) { keyboard_push_char(127); return; }
         uint8_t base = scancode & 0x7F;
         int is_release = (scancode & 0x80) != 0;
+        if (scancode == 0x1D) { ctrl_pressed = 1; return; }       /* right Ctrl */
+        if (scancode == 0x9D) { ctrl_pressed = 0; return; }
+        if (xterm_keys && !is_release) {
+            uint8_t xk = 0;
+            switch (base) {
+                case 0x48: xk = XKEY_UP; break;    case 0x50: xk = XKEY_DOWN; break;
+                case 0x4D: xk = XKEY_RIGHT; break; case 0x4B: xk = XKEY_LEFT; break;
+                case 0x47: xk = XKEY_HOME; break;  case 0x4F: xk = XKEY_END; break;
+                case 0x49: xk = XKEY_PGUP; break;  case 0x51: xk = XKEY_PGDN; break;
+                case 0x52: xk = XKEY_INS; break;   case 0x53: xk = XKEY_DEL; break;
+                default: break;
+            }
+            if (xk) { push_xkey(xk); return; }
+        }
+        if (scancode == 0x53) { keyboard_push_char(127); return; }
         int rawkey = 0;
         if (base == 0x4B) rawkey = RAWKEY_LEFT;
         else if (base == 0x4D) rawkey = RAWKEY_RIGHT;
@@ -197,6 +222,15 @@ static void process_scancode(uint8_t scancode)
 
     if (scancode & 0x80) return;
 
+    if (xterm_keys) {
+        if (scancode == 0x01) { keyboard_push_char(27); return; }                    /* Escape */
+        uint8_t xk = 0;
+        if (scancode >= 0x3B && scancode <= 0x44) xk = (uint8_t)(XKEY_F1 + scancode - 0x3B);   /* F1..F10 */
+        else if (scancode == 0x57) xk = XKEY_F1 + 10;
+        else if (scancode == 0x58) xk = XKEY_F1 + 11;
+        if (xk) { push_xkey(xk); return; }
+    }
+
     if (scancode == 0x48 || scancode == 0x50 || scancode == 0x4B || scancode == 0x4D) {
         push_special(scancode);
         return;
@@ -215,6 +249,7 @@ static void process_scancode(uint8_t scancode)
         else if (ctrl_pressed && key >= 'A' && key <= 'Z') key -= 0x40;
     }
     if (key) {
+        if (xterm_keys && alt_pressed) keyboard_push_char(27);                        /* Alt+key is ESC key */
         keyboard_push_char(key);
         if (interrupt_char >= 0 && key == (char)interrupt_char && interrupt_callback)
             interrupt_callback();
@@ -361,6 +396,19 @@ char keyboard_getchar(void)
  * the same mechanism the kernel's own shell readline has always used
  * successfully, just with the one specific interrupt that caused
  * trouble kept out of the picture instead of all of them. */
+int keyboard_tty_poll(uint8_t *out)
+{
+    if (!wm_current_task_has_focus()) return 0;
+    if (key_buffer_head == key_buffer_tail) {
+        char usb_c;
+        if (usb_keyboard_read(&usb_c)) keyboard_push_char(usb_c);
+    }
+    if (key_buffer_head == key_buffer_tail) return 0;
+    *out = (uint8_t)key_buffer[key_buffer_tail];
+    key_buffer_tail = (key_buffer_tail + 1) % 256;
+    return 1;
+}
+
 char keyboard_getchar_ring3(void)
 {
     if (wm_current_task_has_focus() && key_buffer_head != key_buffer_tail) {

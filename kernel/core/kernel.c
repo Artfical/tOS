@@ -559,6 +559,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             { "/node24/bin/node", "-e", "console.log('node64', process.arch, process.version, 6*7)", 0 },
             { "/node24/bin/node", "/programs/js/t2.js", 0 },
             { "/programs/forktest", 0 },
+            { "/programs/ttytest", 0 },
             { "/programs/st", "/system/pkg/git/libexec/git-core/git", "/system/pkg/git/libexec/git-core:/programs", 0 },
             { "/system/pkg/git/bin/git", "--version", 0 },
             { "/system/pkg/git/bin/git", "init", "/tmp/g", 0 },
@@ -570,6 +571,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             { "/system/pkg/git/bin/git", "-C", "/tmp/c", "status", "--short", 0 },
             { "/system/pkg/git/bin/git", "-C", "/tmp/c", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "rename", 0 },
             { "/system/pkg/git/bin/git", "-C", "/tmp/c", "log", "--oneline", 0 },
+            { "/system/pkg/git/bin/git", "clone", "--depth", "1", "--filter=blob:none", "--sparse", "https://github.com/Artfical/tOS.git", "/tmp/t", 0 },
+            { "/system/pkg/git/bin/git", "-C", "/tmp/t", "sparse-checkout", "set", "boot", 0 },
+            { "/system/pkg/git/bin/git", "-C", "/tmp/t", "status", "--short", 0 },
+            { "/system/pkg/git/bin/git", "-C", "/tmp/t", "log", "--oneline", "-3", 0 },
             { "/node24/bin/node", "/programs/js/cp.js", 0 },
             { 0 } };
         for (int i = 0; runs[i][0]; i++) {

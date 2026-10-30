@@ -15,6 +15,22 @@
  * calls made by that task read/write this surface instead of the real
  * VGA buffer. Must remain the first member of any struct passed as
  * userdata so window_t (wm.c) and term_surface_t are interchangeable. */
+/* What the terminal is told by its program (termios) and what its keyboard has produced for it */
+#define TTY_NCC 19
+#define TTY_INQ 512
+typedef struct {
+    uint32_t c_iflag, c_oflag, c_cflag, c_lflag;
+    uint8_t c_cc[TTY_NCC];
+    uint16_t ws_row, ws_col;
+    uint8_t inq[TTY_INQ];               /* bytes waiting for the program (after the line discipline) */
+    uint16_t inq_head, inq_tail;
+    uint8_t line[256];                  /* a line being edited (canonical mode) */
+    uint16_t line_len;
+    uint8_t line_done;                  /* the line is complete: inq has it */
+    uint8_t eof_pending;
+    uint32_t fg_pid;                    /* the foreground process (^C goes to it) */
+} tty_t;
+
 typedef struct {
     uint16_t cells[TERM_SURFACE_W * TERM_SURFACE_H];
     int cur_row;
@@ -28,9 +44,31 @@ typedef struct {
     int scrollback_head;
     int scrollback_count;
     int view_offset;
+    /* an xterm-style terminal (vt.c): escape sequences, colours, the alternate screen... */
+    uint8_t vt_state, vt_nparams, vt_prefix, vt_inter, vt_gfx, vt_utf8_left, vt_osc_len;
+    uint32_t vt_cp, vt_last;
+    int vt_param[16];
+    uint8_t fg, bg, sgr;                /* sgr: 1 bold, 2 reverse; color is derived from these */
+    int saved_row, saved_col;
+    uint8_t saved_fg, saved_bg, saved_sgr, saved_gfx;
+    int top, bottom;                    /* scroll region, rows */
+    uint8_t wrap_pending, autowrap, cursor_visible, alt_screen, app_cursor, bracketed_paste;
+    uint8_t mouse_mode, mouse_sgr, insert_mode, origin, utf8, xterm_keys;
+    int alt_saved_row, alt_saved_col;
+    uint16_t alt_cells[TERM_SURFACE_W * TERM_SURFACE_H];
+    char title[48];
+    uint8_t reply[48];                  /* answers to the program's queries (cursor position...): its input */
+    uint8_t reply_len;
+    tty_t tty;
 } term_surface_t;
 
 void terminal_surface_init(term_surface_t *s);
+/* vt.c: one byte of a program's output into a surface */
+void vt_init(term_surface_t *s);
+void vt_putbyte(term_surface_t *s, uint8_t c);
+void vt_reset_modes(term_surface_t *s);          /* the program is gone: main screen, cursor, colours, no mouse */
+void vt_set_color(term_surface_t *s, uint8_t attr);   /* legacy callers that set a VGA attribute byte */
+term_surface_t *terminal_current_surface(void);  /* the surface the current task writes to, or 0 (the VGA screen) */
 const uint16_t *terminal_scrollback_row(const term_surface_t *s, int lines_back);
 
 enum vga_color {

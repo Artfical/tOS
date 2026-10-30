@@ -41,6 +41,7 @@ typedef struct {
     int      rx_len;
     int      rx_cap;
     int      rx_closed;
+    int      adv_wnd;           /* the window our last segment told the peer */
 
     uint8_t *retx_data;
     int      retx_len;
@@ -180,6 +181,7 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
         /* advertise the real remaining receive space */
         int w = rx_free(s);
         if (w > 65535) w = 65535;
+        s->adv_wnd = w;
         *(uint16_t *)(tcp + 14) = htons((uint16_t)w);
     }
     if (plen > 0) memcpy(tcp + 20, payload, plen);
@@ -394,7 +396,7 @@ int tcp_send2(int fd, void *data, int len)
                         ip_handle(pkt + sizeof(eth_hdr_t), plen - sizeof(eth_hdr_t));
                 }
             }
-            if (s->retx_len > 0) return -1;   /* peer never acknowledged the segment */
+            if (s->retx_len > 0) { klog_write("tcp: send gave up, the segment was not acknowledged"); return -1; }   /* peer never acknowledged the segment */
         }
     } while (off < len);
     return 0;
@@ -410,6 +412,17 @@ static void tcp_tick_poll(void)
     if (now - tcp_last_tick_ms < 100) return;
     tcp_last_tick_ms = now;
     tcp_tick();
+}
+
+/* The application has taken data out of the buffer: when that opens the window the peer last saw
+ * as closed (or nearly), say so. Without it the peer waits on its zero-window probe timer, which
+ * backs off for seconds, and a server that sees a stalled client gives up on the connection. */
+static void rx_window_update(tcp_sock_t *s)
+{
+    if (s->state != TCP_ESTABLISHED && s->state != TCP_FIN_WAIT_1 && s->state != TCP_FIN_WAIT_2) return;
+    int w = rx_free(s);
+    if (w - s->adv_wnd >= TCP_MSS || (s->adv_wnd < TCP_MSS && w >= TCP_MSS))
+        send_seg(s, TCP_FLAG_ACK, 0, 0);
 }
 
 int tcp_recv2(int fd, uint8_t *buf, int max_len)
@@ -435,12 +448,13 @@ int tcp_recv2(int fd, uint8_t *buf, int max_len)
                 s->rx_buf = 0;
                 s->rx_cap = 0;
             }
+            rx_window_update(s);
             return n;
         }
         if (s->rx_closed)           return 0;
         if (s->state == TCP_CLOSED) return -1;
         tcp_tick_poll();
-        if (debugmon_uptime_ms() >= deadline) return TCP_ERR_RECV_TIMEOUT;
+        if (debugmon_uptime_ms() >= deadline) { klog_write("tcp: nothing received for 10 s"); return TCP_ERR_RECV_TIMEOUT; }
         uint8_t pkt[1536];
         int plen = nic_poll(pkt, sizeof(pkt));
         if (plen > 0) {
@@ -458,6 +472,7 @@ void tcp_close2(int fd)
 {
     tcp_sock_t *s = get_sock(fd);
     if (!s) return;
+    klog_write("tcp: closed by the program (close2)");
 
     if (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT) {
         s->state = TCP_FIN_WAIT_1;
@@ -539,6 +554,7 @@ void tcp_tick(void)
         s->retx_count++;
 
         if (s->retx_count > TCP_RETX_MAX) {
+            klog_write("tcp: the peer stopped acknowledging; connection reset");
             send_seg(s, TCP_FLAG_RST | TCP_FLAG_ACK, 0, 0);
             retx_clear(s);
             s->state = TCP_CLOSED;
@@ -681,6 +697,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
         } else if (pkt_seq != s->ack) {
             return;
         }
+        klog_write("tcp: reset received from the peer");
         retx_clear(s);
         if (s->rx_buf) { free(s->rx_buf); s->rx_buf = 0; }
         s->got_rst = 1;
@@ -781,6 +798,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
      * data+FIN segment (HTTP/1.0 servers send the last bytes and the FIN
      * together) look out of order and the close was never seen. */
     if ((flags & TCP_FLAG_FIN) && pkt_seq + (uint32_t)data_len == s->ack) {
+        klog_write("tcp: the peer closed the connection (FIN)");
         s->ack++;
         s->rx_closed = 1;
         send_seg(s, TCP_FLAG_ACK, 0, 0);
@@ -913,16 +931,20 @@ int tcp_rx_ready(int fd)
 int tcp_recv_nb(int fd, uint8_t *buf, int max_len)
 {
     tcp_sock_t *s = get_sock(fd);
-    if (!s) return 0;
+    if (!s) { klog_write("tcp: recv on a socket that is gone (end of file)"); return 0; }
     if (s->rx_len > 0) {
         int n = s->rx_len < max_len ? s->rx_len : max_len;
         memcpy(buf, s->rx_buf, (size_t)n);
         s->rx_len -= n;
         if (s->rx_len > 0) memmove(s->rx_buf, s->rx_buf + n, (size_t)s->rx_len);
         else { free(s->rx_buf); s->rx_buf = 0; s->rx_cap = 0; }
+        rx_window_update(s);
         return n;
     }
-    if (s->rx_closed || s->state == TCP_CLOSED || s->got_rst) return 0;
+    if (s->rx_closed || s->state == TCP_CLOSED || s->got_rst) {
+        klog_write(s->got_rst ? "tcp: end of file: reset" : s->rx_closed ? "tcp: end of file: peer FIN" : "tcp: end of file: socket closed");
+        return 0;
+    }
     return TCP_ERR_RECV_TIMEOUT;
 }
 
@@ -944,6 +966,7 @@ void tcp_release(int fd)
 {
     tcp_sock_t *s = get_sock(fd);
     if (!s) return;
+    klog_write("tcp: closed by the program (release)");
     if (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT) {
         send_seg(s, TCP_FLAG_FIN | TCP_FLAG_ACK, 0, 0);
         tcp_pump();

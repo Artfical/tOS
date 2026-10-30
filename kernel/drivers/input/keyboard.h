@@ -33,6 +33,25 @@ int keyboard_get_raw_event(uint8_t *key, int *pressed);
 #define RAWKEY_UP    3
 #define RAWKEY_DOWN  4
 
+/* In xterm mode (a Linux program owns the terminal) a key that is not a character reaches the queue as
+ * 0xFF, one of these codes, a modifier mask (1 shift, 2 alt, 4 ctrl): kernel/fs/tty.c makes the sequence. */
+#define XKEY_UP    1
+#define XKEY_DOWN  2
+#define XKEY_RIGHT 3
+#define XKEY_LEFT  4
+#define XKEY_HOME  5
+#define XKEY_END   6
+#define XKEY_PGUP  7
+#define XKEY_PGDN  8
+#define XKEY_INS   9
+#define XKEY_DEL   10
+#define XKEY_F1    11    /* F1..F12 are 11..22 */
+#define XKEY_F5    15
+#define XKEY_F12   22
+#define XKEY_F4    14
+void keyboard_set_xterm(int on);
+int  keyboard_tty_poll(uint8_t *out);          /* the next byte for the focused window's program, without waiting */
+
 extern volatile int interrupt_char;
 extern void (*interrupt_callback)(void);
 

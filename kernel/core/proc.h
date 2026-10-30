@@ -91,6 +91,7 @@ typedef struct proc {
     uint32_t fd_dir_offset[PROC_MAX_FDS];
     proc_epoll_watch_t epoll_watch[PROC_MAX_EPOLL_WATCH];
     proc_eventfd_t eventfds[PROC_MAX_EVENTFDS];
+    uint32_t std_flags[3];              /* O_NONBLOCK and the like of the console's descriptors 0..2 */
     int std_fd[3];                      /* 0: fd 0..2 is the console; else the descriptor it stands for (dup2) */
     /* signals (64-bit programs run handlers): what each does, which are waiting */
     uint64_t sig_handler[65], sig_flags[65], sig_restorer[65], sig_mask[65];
@@ -115,6 +116,7 @@ int  proc_execve_argv(const char *path, const char *const argv[], const char *co
 int  proc_fork(void *regs, int share_vm, uint64_t child_stack);
 /* a signal for a process: its handler (pending), or what the signal does by default */
 int  proc_signal(proc_t *p, int sig);
+void proc_signal_surface(void *surface, int sig);   /* every program on one terminal window (^C) */
 /* wait4: a child that has ended (pid -1 = any); 0 with nohang when none has yet, -ECHILD */
 int  proc_wait_child(int pid, int nohang, int *status);
 proc_t *proc_current(void);

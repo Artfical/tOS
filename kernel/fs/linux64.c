@@ -1083,6 +1083,7 @@ void linux64_syscall(registers_t *r)
         case 110: ret = call32(64, 0, 0, 0, 0, 0, 0, r); break;                /* getppid */
         case 111: case 112: ret = call32(20, 0, 0, 0, 0, 0, 0, r); break;      /* getpgrp, setsid */
         case 109: ret = 0; break;                                              /* setpgid */
+        case 121: case 124: ret = call32(20, 0, 0, 0, 0, 0, 0, r); break;      /* getpgid, getsid: one group per program */
         case 115: ret = 0; break;                                              /* getgroups: none */
         case 125: ret = (uint64_t)-EINVAL; break;                              /* capget */
         case 131: ret = call32(186, a, b, 0, 0, 0, 0, r); break;               /* sigaltstack */

@@ -100,6 +100,19 @@ void terminal_surface_init(term_surface_t *s)
     s->scrollback_head = 0;
     s->scrollback_count = 0;
     s->view_offset = 0;
+    /* a terminal in cooked mode, as Linux starts one (what a program's termios calls change) */
+    tty_t *t = &s->tty;
+    t->c_iflag = 0x0502;                /* ICRNL IXON BRKINT */
+    t->c_oflag = 0x0005;                /* OPOST ONLCR */
+    t->c_cflag = 0x04BF;                /* CS8 CREAD HUPCL B38400 */
+    t->c_lflag = 0x8A3B;                /* ISIG ICANON ECHO ECHOE ECHOK ECHOCTL ECHOKE IEXTEN */
+    for (int i = 0; i < TTY_NCC; i++) t->c_cc[i] = 0;
+    t->c_cc[0] = 3; t->c_cc[1] = 0x1C; t->c_cc[2] = 0x7F; t->c_cc[3] = 0x15; t->c_cc[4] = 4;
+    t->c_cc[6] = 1; t->c_cc[8] = 0x11; t->c_cc[9] = 0x13; t->c_cc[10] = 0x1A; t->c_cc[12] = 0x12;
+    t->c_cc[13] = 0x0F; t->c_cc[14] = 0x17; t->c_cc[15] = 0x16;
+    t->ws_row = TERM_SURFACE_H; t->ws_col = TERM_SURFACE_W;
+    t->inq_head = t->inq_tail = 0; t->line_len = 0; t->line_done = 0; t->eof_pending = 0; t->fg_pid = 0;
+    vt_init(s);
 }
 
 const uint16_t *terminal_scrollback_row(const term_surface_t *s, int lines_back)
@@ -162,7 +175,7 @@ void terminal_clear(void)
 void terminal_setcolor(uint8_t color)
 {
     term_surface_t *s = current_surface();
-    if (s) { s->color = color; return; }
+    if (s) { vt_set_color(s, color); return; }
     terminal_color = color;
 }
 
@@ -193,30 +206,7 @@ void terminal_scroll(void)
     terminal_row = VGA_HEIGHT - 1 - terminal_y_offset;
 }
 
-static void surface_putchar(term_surface_t *s, char c)
-{
-    s->view_offset = 0;
-    if (c == '\n') {
-        s->cur_col = 0;
-        s->cur_row++;
-    } else if (c == '\t') {
-        s->cur_col = (s->cur_col + 8) & ~7;
-    } else if (c == '\r') {
-        s->cur_col = 0;
-    } else if (c == '\b') {
-        if (s->cur_col > 0) s->cur_col--;
-    } else {
-        s->cells[s->cur_row * TERM_SURFACE_W + s->cur_col] = make_vgaentry(c, s->color);
-        s->cur_col++;
-    }
-    if (s->cur_col >= TERM_SURFACE_W) {
-        s->cur_col = 0;
-        s->cur_row++;
-    }
-    if (s->cur_row >= TERM_SURFACE_H) {
-        surface_scroll(s);
-    }
-}
+term_surface_t *terminal_current_surface(void) { return current_surface(); }
 
 void terminal_putchar(char c)
 {
@@ -229,7 +219,7 @@ void terminal_putchar(char c)
     if (terminal_quiet) return;
 
     term_surface_t *s = current_surface();
-    if (s) { surface_putchar(s, c); return; }
+    if (s) { vt_putbyte(s, (uint8_t)c); return; }
 
     if (c == '\n') {
         terminal_column = 0;
@@ -271,6 +261,7 @@ void terminal_setpos(size_t x, size_t y)
     if (s) {
         if ((int)x < TERM_SURFACE_W) s->cur_col = (int)x;
         if ((int)y < TERM_SURFACE_H) s->cur_row = (int)y;
+        s->wrap_pending = 0;
         return;
     }
     if (x < VGA_WIDTH) terminal_column = x;

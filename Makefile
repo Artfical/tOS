@@ -146,6 +146,7 @@ KERNEL_OBJS = \
     kernel/boot/isr_stubs.o \
     kernel/core/kernel.o \
     kernel/display/terminal.o \
+    kernel/display/vt.o \
     kernel/lib/string.o \
     kernel/core/gdt.o \
     kernel/core/idt.o \
@@ -164,6 +165,7 @@ KERNEL_OBJS = \
     kernel/fs/fsbridge.o \
     kernel/fs/syscall.o \
     kernel/fs/linux64.o \
+    kernel/fs/tty.o \
     kernel/core/serial.o \
     kernel/core/debugmon.o \
     kernel/core/sound.o \
