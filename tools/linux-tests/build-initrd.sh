@@ -14,6 +14,8 @@ mkdir -p "$w/programs/js" "$w/n8" "$w/n24/node24" "$w/sys/system/pkg"
 gcc -O2 "$here/forktest.c" -o "$w/programs/forktest" 2>/dev/null
 gcc -O2 -static "$here/ttytest.c" -o "$w/programs/ttytest" 2>/dev/null
 gcc -O2 -static "$here/vtdemo.c" -o "$w/programs/vtdemo" 2>/dev/null
+gcc -O2 -static "$here/dupt.c" -o "$w/programs/dupt" 2>/dev/null
+gcc -O2 -static "$here/srvtest.c" -o "$w/programs/srvtest" 2>/dev/null
 cp "$here/t2.js" "$here/cp.js" "$w/programs/js/"
 printf '#!/programs/forktest arg\n' > "$w/programs/ft.sh"; chmod +x "$w/programs/ft.sh"
 # "#!/usr/bin/env name" scripts: one name in path.tmbl, one in an installed package's bin folder
@@ -27,10 +29,13 @@ tar xzf "$pkgs"/node/node-8.17.0-2.tpkg -C "$w/n8"          # bin/node, npm/
 cp "$w/n8/bin/node" "$w/programs/node"
 mkdir -p "$w/n24/x"; tar xzf "$pkgs/node24/$(sed -n 's/.*"file": "\(.*\)".*/\1/p' "$pkgs/node24/meta.json")" -C "$w/n24/x"
 cp -a "$w/n24/x/bin" "$w/n24/node24/"
-for p in git curl openssl zlib ca-certificates; do
+for p in git curl openssl zlib ca-certificates busybox openssh; do
     mkdir -p "$w/sys/system/pkg/$p"
     f=$(sed -n 's/.*"file": "\(.*\)".*/\1/p' "$pkgs/$p/meta.json")     # the version the server serves now
     tar xzf "$pkgs/$p/$f" -C "$w/sys/system/pkg/$p"
+    [ -f "$w/sys/system/pkg/$p/tpkg.commands" ] && while IFS='=' read -r name target; do      # what tpkg install puts in path.tmbl
+        [ -n "$name" ] && printf '%s=/system/pkg/%s/%s\n' "$name" "$p" "$target" >> "$w/sys/system/path.tmbl"
+    done < "$w/sys/system/pkg/$p/tpkg.commands"
 done
 cp "$base" "$out"
 tar --append --format=ustar -f "$out" -C "$w" programs

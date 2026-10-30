@@ -38,6 +38,7 @@ typedef struct {
     int      stream;            /* 1 TCP, 0 UDP */
     int      tcp;               /* the TCP socket, -1 until connect */
     int      connecting;
+    int      listening;         /* TCP: accepting connections on lport */
     int      err;               /* SO_ERROR, positive, until read */
     int      shut_wr;
     uint16_t lport;             /* UDP: the local port (0 until it sends or binds) */
@@ -143,12 +144,58 @@ int lsock_bind(int s, const uint8_t *addr, uint32_t len)
     uint32_t ip; uint16_t port;
     int r = parse_addr(addr, len, &ip, &port);
     if (r < 0) return r;
-    if (k->stream) return 0;              /* the port is chosen at connect (servers are not supported) */
+    if (k->stream) {                      /* TCP: the port a listen() will use (0: a free one) */
+        if (k->lport) return -E_INVAL;
+        static uint16_t next_port = 40000;
+        k->lport = port ? port : next_port++;
+        return 0;
+    }
     if (k->lport) return -E_INVAL;
     if (!port) return udp_port(k);
     if (udp_open(port) < 0) return -E_NOBUFS;
     k->lport = port;
     return 0;
+}
+
+int lsock_listen(int s, int backlog)
+{
+    (void)backlog;
+    lsock_t *k = get(s);
+    if (!k || !k->stream) return -E_OPNOTSUPP;
+    if (k->listening) return 0;
+    if (k->tcp >= 0) return -E_ISCONN;
+    if (!k->lport) { static uint16_t next_port = 41000; k->lport = next_port++; }
+    int t = tcp_socket();
+    if (t < 0) return -E_NOBUFS;
+    if (tcp_listen(t, k->lport) != 0) { tcp_release(t); return -E_INVAL; }
+    k->tcp = t;
+    k->listening = 1;
+    return 0;
+}
+
+/* a waiting connection becomes a socket of its own */
+int lsock_accept(int s, uint8_t *addr, uint32_t *len)
+{
+    lsock_t *k = get(s);
+    if (!k || !k->listening) return -E_INVAL;
+    int t = tcp_accept_nb(k->tcp);
+    if (t < 0) return -E_AGAIN;
+    for (int i = 0; i < LSOCK_MAX; i++) {
+        if (socks[i].used) continue;
+        memset(&socks[i], 0, sizeof(socks[i]));
+        socks[i].used = 1;
+        socks[i].refs = 1;
+        socks[i].stream = 1;
+        socks[i].tcp = t;
+        socks[i].lport = k->lport;
+        tcp_peer(t, &socks[i].peer_ip, &socks[i].peer_port);
+        socks[i].peer_set = 1;
+        open_count++;
+        if (addr && len) put_addr(addr, len, socks[i].peer_ip, socks[i].peer_port);
+        return i;
+    }
+    tcp_release(t);
+    return -E_MFILE;
 }
 
 int lsock_connect_start(int s, const uint8_t *addr, uint32_t len)
@@ -254,6 +301,7 @@ uint32_t lsock_ready(int s)
             if (c == -E_INPROGRESS) return 0;
             if (c < 0) { k->err = -c; return 0x004 | 0x008; }    /* OUT | ERR: connect failed */
         }
+        if (k->listening) return tcp_accept_ready(k->tcp) ? 0x001 : 0;
         if (k->err) r |= 0x008;
         if (k->tcp < 0) return r | 0x004 | 0x010;                 /* not connected: OUT | HUP */
         int n = tcp_rx_ready(k->tcp);

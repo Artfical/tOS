@@ -298,6 +298,7 @@ static int syscall_exec_user(uint64_t path_ptr, uint64_t argv_ptr, uint64_t envp
  * then std_fd[n] names a hidden descriptor (from the top of the table) the number stands for. */
 static int fd_xlate(proc_t *p, int fd)
 {
+    if (p && fd >= 3 && fd - 3 < PROC_MAX_FDS && PROC_FD_IS_CONSOLE(p->fd[fd - 3])) fd = -7 - p->fd[fd - 3];   /* a dup of the console */
     if (p && fd >= 0 && fd <= 2 && p->std_fd[fd] > 2) return p->std_fd[fd];
     return fd;
 }
@@ -516,6 +517,25 @@ static void write_net_files(void)
     }
 }
 
+/* accounts: /etc/passwd and /etc/group exist on an installed system; a live one has only root, which
+ * programs that ask who they run as (ssh, git) still need to find */
+static void write_account_files(void)
+{
+    static const char pw[] = "root:x:0:0:root:/root:/system/pkg/busybox/bin/sh\n";
+    static const char gr[] = "root:x:0:\n";
+    if (!fsbridge_exists("/etc")) fsbridge_mkdir("/etc");
+    if (!fsbridge_exists("/etc/passwd") && fsbridge_create("/etc/passwd") == 0) fsbridge_write("/etc/passwd", pw, sizeof(pw) - 1, 0);
+    if (!fsbridge_exists("/etc/group") && fsbridge_create("/etc/group") == 0) fsbridge_write("/etc/group", gr, sizeof(gr) - 1, 0);
+}
+
+/* the files tOS makes up when a program looks for them */
+static int etc_special(const char *path)
+{
+    if (!strcmp(path, "/etc/resolv.conf") || !strcmp(path, "/etc/hosts")) return write_net_files(), 1;
+    if (!strcmp(path, "/etc/passwd") || !strcmp(path, "/etc/group")) return write_account_files(), 1;
+    return 0;
+}
+
 static uint32_t linux_socket(int domain, int type, int protocol)
 {
     proc_t *p = proc_current();
@@ -606,7 +626,36 @@ static uint32_t linux_sockcall(int call, const uint64_t *v)
             task_yield();
         }
     }
-    case 4: case 5: case 18: return (uint32_t)-95;              /* listen, accept: not yet */
+    case 4: return (uint32_t)lsock_listen(s, (int)v[1]);         /* listen */
+    case 5: case 18: {                                           /* accept, accept4 */
+        uint8_t addr[16];
+        uint32_t alen = sizeof(addr);
+        int nb = sock_nonblock(p, fd, 0);
+        int slot = -1;
+        for (int i = 0; i < PROC_MAX_FDS; i++) if (p->fd[i] == -1) { slot = i; break; }
+        if (slot < 0) return (uint32_t)-EMFILE;
+        int ns;
+        for (;;) {
+            lsock_pump();
+            ns = lsock_accept(s, addr, &alen);
+            if (ns != -LINUX_E_AGAIN || nb) break;
+            if (linux_signal_waiting()) return (uint32_t)-EINTR;
+            task_yield();
+        }
+        if (ns < 0) return (uint32_t)ns;
+        uint32_t flags = call == 18 ? (uint32_t)v[3] : 0;
+        p->fd[slot] = PROC_FD_SOCK_BASE - ns;
+        p->fd_flags[slot] = (flags & LINUX_O_CLOEXEC) ? LINUX_FD_CLOEXEC : 0;
+        p->fd_open_flags[slot] = 2u | (flags & LINUX_SOCK_NONBLOCK);
+        p->fdpath[slot][0] = 0;
+        p->fd_dir_offset[slot] = 0;
+        if (v[1] && v[2] && user_wr_ok(v[2], 4)) {
+            uint32_t cap = *(uint32_t *)(uintptr_t)v[2];
+            if (cap && user_wr_ok(v[1], cap)) memcpy((void *)(uintptr_t)v[1], addr, cap < alen ? cap : alen);
+            *(uint32_t *)(uintptr_t)v[2] = alen;
+        }
+        return (uint32_t)slot + 3u;
+    }
     case 6: case 7: {                                            /* getsockname, getpeername */
         if (!user_wr_ok(v[2], 4)) return (uint32_t)-EFAULT;
         uint32_t cap = *(uint32_t *)(uintptr_t)v[2], alen = 16;
@@ -845,6 +894,46 @@ static uint32_t linux_poll(uint64_t user_fds, uint32_t nfds, int timeout_ms)
         }
         if (n || timeout_ms == 0) return n;
         if (timeout_ms > 0 && debugmon_uptime_ms64() >= deadline) return 0;
+        if (linux_signal_waiting()) return (uint32_t)-EINTR;
+        task_yield();
+    }
+}
+
+/* select(): the bit sets of readable, writable and exceptional descriptors, in the same bits as poll.
+ * A negative timeout waits for good. */
+static uint32_t linux_select(uint32_t nfds, uint64_t rd, uint64_t wr, uint64_t ex, int timeout_ms)
+{
+    proc_t *p = proc_current();
+    if (nfds > 1024) return (uint32_t)-EINVAL;
+    uint32_t bytes = (nfds + 7) / 8;
+    uint64_t sets[3] = { rd, wr, ex };
+    uint8_t in[3][128], out[3][128];
+    for (int k = 0; k < 3; k++) {
+        memset(in[k], 0, sizeof(in[k]));
+        if (!sets[k]) continue;
+        if (!user_wr_ok(sets[k], bytes)) return (uint32_t)-EFAULT;
+        memcpy(in[k], (const void *)(uintptr_t)sets[k], bytes);
+    }
+    for (uint32_t fd = 0; fd < nfds; fd++) {
+        int wanted = (in[0][fd / 8] | in[1][fd / 8] | in[2][fd / 8]) >> (fd % 8) & 1;
+        if (wanted && fd > 2 && (fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1)) return (uint32_t)-EBADF;
+    }
+    uint64_t deadline = debugmon_uptime_ms64() + (timeout_ms > 0 ? (uint64_t)timeout_ms : 0);
+    for (;;) {
+        lsock_pump();
+        uint32_t n = 0;
+        memset(out, 0, sizeof(out));
+        for (uint32_t fd = 0; fd < nfds; fd++) {
+            uint8_t bit = (uint8_t)(1u << (fd % 8));
+            if (!((in[0][fd / 8] | in[1][fd / 8]) & bit)) continue;
+            uint32_t r = fd_ready(p, (int)fd);
+            if ((in[0][fd / 8] & bit) && (r & (LINUX_EPOLLIN | LINUX_EPOLLHUP | LINUX_EPOLLERR))) { out[0][fd / 8] |= bit; n++; }
+            if ((in[1][fd / 8] & bit) && (r & (LINUX_EPOLLOUT | LINUX_EPOLLERR))) { out[1][fd / 8] |= bit; n++; }
+        }
+        if (n || timeout_ms == 0 || (timeout_ms > 0 && debugmon_uptime_ms64() >= deadline)) {
+            for (int k = 0; k < 3; k++) if (sets[k]) memcpy((void *)(uintptr_t)sets[k], out[k], bytes);
+            return n;
+        }
         if (linux_signal_waiting()) return (uint32_t)-EINTR;
         task_yield();
     }
@@ -1401,7 +1490,6 @@ static uint32_t linux_dup(int oldfd, int newfd, int cloexec)
         if (had > 2 && !is_std_target(p, had)) proc_fd_close(p, had - 3);
         return (uint32_t)newfd;
     }
-    if (old_console) return (uint32_t)-EBADF;          /* the console itself has no slot */
     if (newfd == oldfd) return (uint32_t)newfd;
     int slot = newfd - 3;
     if (newfd < 0) {
@@ -1412,6 +1500,14 @@ static uint32_t linux_dup(int oldfd, int newfd, int cloexec)
     } else if (p->fd[slot] != -1) {
         if (is_std_target(p, newfd)) return (uint32_t)-EBUSY;
         proc_fd_close(p, slot);
+    }
+    if (old_console) {                                  /* the console has no slot: the copy is an alias of it */
+        p->fd[slot] = PROC_FD_CONSOLE(oldfd);
+        p->fd_flags[slot] = cloexec ? LINUX_FD_CLOEXEC : 0;
+        p->fd_open_flags[slot] = 2u;
+        p->fdpath[slot][0] = 0;
+        p->fd_dir_offset[slot] = 0;
+        return (uint32_t)(slot + 3);
     }
     int r = syscall_fd_inherit(p, oldfd - 3, p, slot);
     if (r < 0) return (uint32_t)r;
@@ -1486,7 +1582,7 @@ static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode
         return linux_reopen_proc_fd(p, (int)fd, flags);
     }
     /* glibc reads these before it opens any socket: written from the DHCP lease when asked for */
-    if (!strcmp(path, "/etc/resolv.conf") || !strcmp(path, "/etc/hosts")) write_net_files();
+    etc_special(path);
 
     /* the few devices programs expect: OpenSSL waits for /dev/urandom before it will start */
     if (!strcmp(path, "/dev/urandom") || !strcmp(path, "/dev/random") || !strcmp(path, "/dev/null")) {
@@ -1929,13 +2025,38 @@ static uint32_t linux_futex(uint64_t uaddr, uint32_t op, uint32_t value,
 
 /* Linux i386 syscall namespace for ELF processes; the existing .t ABI keeps
  * its tOS extension numbers and behaviour in syscall_handler() below. */
+static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_t b,
+                                            uint64_t c, uint64_t d, uint64_t e, uint64_t f,
+                                            registers_t *regs);
+
+/* A dup() of the console stands for the console itself, even after dup2() has put something else on
+ * 0, 1 or 2 (ssh points its own stdout at /dev/null and writes through the copy): for the call, the
+ * number the copy stands for goes back to the console. */
 static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
                                       uint64_t c, uint64_t d, uint64_t e, uint64_t f,
                                       registers_t *regs)
 {
+    proc_t *xp = proc_current();
+    if (xp && a >= 3 && a - 3 < PROC_MAX_FDS && PROC_FD_IS_CONSOLE(xp->fd[a - 3])) {
+        int k = -7 - xp->fd[a - 3];
+        int saved = xp->std_fd[k];
+        if (saved > 2) {
+            xp->std_fd[k] = 0;
+            uint64_t r = linux_syscall_handler_inner(number, a, b, c, d, e, f, regs);
+            xp->std_fd[k] = saved;
+            return r;
+        }
+    }
+    return linux_syscall_handler_inner(number, a, b, c, d, e, f, regs);
+}
+
+static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_t b,
+                                            uint64_t c, uint64_t d, uint64_t e, uint64_t f,
+                                            registers_t *regs)
+{
     {
         proc_t *xp = proc_current();
-        if (xp && (xp->std_fd[0] | xp->std_fd[1] | xp->std_fd[2])) {
+        if (xp) {
             switch (number) {
                 case 3: case 4: case 19: case 54: case 55: case 221: case 197: case 108:
                 case 180: case 181: case 145: case 146: case 140: case 93: case 118: case 148:
@@ -2482,6 +2603,9 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
         case 168: /* poll */
             return linux_poll(a, b, (int)c);
 
+        case 142: /* select (the 64-bit layer converts the timeout to milliseconds in e, -1 = none) */
+            return linux_select(a, b, c, d, (int)e);
+
         case LINUX_SYS_EPOLL_CTL:
             return linux_epoll_ctl((int)a, (int)b, (int)c, d);
 
@@ -2512,7 +2636,7 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
             linux_stat64_t st;
             vfs_entry_t entry;
             if (!user_cstr_ok(a) || !user_wr_ok(b, sizeof(st))) return (uint32_t)-EFAULT;
-            if (!strcmp((const char *)(uintptr_t)a, "/etc/resolv.conf") || !strcmp((const char *)(uintptr_t)a, "/etc/hosts")) write_net_files();
+            etc_special((const char *)(uintptr_t)a);
             if (vfs_stat((const char *)(uintptr_t)a, &entry) != 0) return (uint32_t)-ENOENT;
             linux_stat64_fill(&st, &entry);
             memcpy((void *)(uintptr_t)b, &st, sizeof(st));
@@ -2530,7 +2654,7 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
                 if (r < 0) return (uint32_t)r;
             } else {
                 if (path[0] != '/' && dirfd != -100) return (uint32_t)-EBADF;
-                if (!strcmp(path, "/etc/resolv.conf") || !strcmp(path, "/etc/hosts")) write_net_files();
+                etc_special(path);
                 if (vfs_stat(path, &entry) != 0)
                     return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
                 linux_stat64_fill(&st, &entry);
@@ -3329,7 +3453,7 @@ int lx_stat_at(int dirfd, uint64_t path_ptr, uint32_t flags, linux_stat64_t *st)
     const char *path = (const char *)(uintptr_t)path_ptr;
     if (path[0] == 0 && (flags & 0x1000u)) return linux_fd_stat(dirfd, st);
     if (path[0] != '/' && dirfd != -100) return -EBADF;
-    if (!strcmp(path, "/etc/resolv.conf") || !strcmp(path, "/etc/hosts")) write_net_files();
+    etc_special(path);
     if (vfs_stat(path, &entry) != 0) return vfs_denied() ? -EACCES : -ENOENT;
     linux_stat64_fill(st, &entry);
     return 0;

@@ -35,6 +35,7 @@ __attribute__((noreturn)) void enter_user_mode_as(uint64_t entry, uint64_t user_
         "pushq %2\n"
         "pushq %0\n"
         "xorl %%eax, %%eax\n"
+        "mov %%ax, %%gs\n"              /* a 32-bit program's TLS selector must not outlive it: its GDT entry is gone */
         "xorl %%ebx, %%ebx\n"
         "xorl %%ecx, %%ecx\n"
         "xorl %%edx, %%edx\n"

@@ -324,7 +324,19 @@ static int proc_vector_count(const char *const vector[], int max)
     return -1;
 }
 
+static int proc_spawn_argv_locked(const char *path, const char *const argv[], const char *const envp[]);
+
+/* A kernel task that starts a program can be switched out anywhere, and the programs running meanwhile change
+ * the same tables (memory, files, processes) as the loader does: loading goes on without a switch. */
 int proc_spawn_argv(const char *path, const char *const argv[], const char *const envp[])
+{
+    task_preempt_disable();
+    int r = proc_spawn_argv_locked(path, argv, envp);
+    task_preempt_enable();
+    return r;
+}
+
+static int proc_spawn_argv_locked(const char *path, const char *const argv[], const char *const envp[])
 {
     proc_t *p = proc_slot();
     if (!p) return -4;
@@ -423,8 +435,9 @@ int proc_spawn(const char *path)
 
 /* where a command is: its path.tmbl entry (tpkg's), else the bin folder of an installed package (npm install -g
  * puts the commands it installs there). Used for "#!/usr/bin/env node" when a program runs a script. */
-static int proc_command_lookup(const char *name, char *out, int cap)
+static int proc_command_lookup_arg(const char *name, char *out, int cap, char *farg, int farg_cap)
 {
+    if (farg) farg[0] = 0;
     if (!name[0] || strchr(name, '/')) return 0;
     uint32_t nl = (uint32_t)strlen(name);
     int found = 0;
@@ -442,7 +455,10 @@ static int proc_command_lookup(const char *name, char *out, int cap)
                     strncpy(out, line + nl + 1, (size_t)cap - 1);
                     out[cap - 1] = 0;
                     char *sp = strchr(out, ' ');             /* "program first-argument" entries: the program */
-                    if (sp) *sp = 0;
+                    if (sp) {
+                        *sp = 0;
+                        if (farg) { strncpy(farg, sp + 1, (size_t)farg_cap - 1); farg[farg_cap - 1] = 0; }
+                    }
                     found = 1;
                 }
             }
@@ -477,6 +493,29 @@ static int proc_command_lookup(const char *name, char *out, int cap)
     }
     free(buf);
     return found;
+}
+
+static int proc_command_lookup(const char *name, char *out, int cap)
+{
+    return proc_command_lookup_arg(name, out, cap, 0, 0);
+}
+
+/* "/bin/ls", "/usr/bin/git"...: a command in one of the folders a Linux program expects them in; the name */
+static const char *proc_std_bin_name(const char *path)
+{
+    static const char *const dirs[] = { "/bin/", "/usr/bin/", "/sbin/", "/usr/sbin/", "/usr/local/bin/", 0 };
+    for (int i = 0; dirs[i]; i++) {
+        size_t n = strlen(dirs[i]);
+        if (!strncmp(path, dirs[i], n) && path[n] && !strchr(path + n, '/')) return path + n;
+    }
+    return 0;
+}
+
+/* the program a command in /bin, /usr/bin... stands for (stat and access of a file that is not there) */
+int proc_std_bin_alias(const char *abs, char *out, int cap)
+{
+    const char *base = proc_std_bin_name(abs);
+    return base && proc_command_lookup(base, out, cap);
 }
 
 /* "#!interpreter [one argument]" at the start of a file: 1 and the two parts (malloc'd) */
@@ -524,12 +563,39 @@ int proc_execve_argv(const char *path_in, const char *const argv[], const char *
     if (argc < 0 || envc < 0) return -E2BIG;
 
     /* scripts: "#!/bin/sh -e" makes argv { "/bin/sh", "-e", path, argv[1]... }, up to 4 deep */
-    char *owned[8];
+    char *owned[12];
     int owned_n = 0;
     const char **vec = 0;
     const char *path = path_in;
     int rc = 0;
     for (int depth = 0;; depth++) {
+        if (depth == 0 && !vfs_exists_raw(path)) {
+            /* /bin/ls is not a file here: tOS keeps its commands where tpkg registered them (path.tmbl) */
+            const char *base = proc_std_bin_name(path);
+            char prog[VFS_NAME_LEN], farg[48];
+            if (base && proc_command_lookup_arg(base, prog, sizeof(prog), farg, sizeof(farg)) && fsbridge_exists(prog)) {
+                char *np = malloc((uint32_t)strlen(prog) + 1);
+                int extra = farg[0] ? 1 : 0;
+                char *fa = 0;
+                if (extra) { fa = malloc((uint32_t)strlen(farg) + 1); if (fa) strcpy(fa, farg); else extra = 0; }
+                const char **nv = np ? malloc(sizeof(char *) * (uint32_t)(argc + extra + 1)) : 0;
+                if (np && nv && argc + extra <= PROC_EXEC_MAX_ARGS) {
+                    int k = 0;
+                    strcpy(np, prog);
+                    nv[k++] = extra ? np : use_argv[0];      /* an applet runner is called by its own name, the rest keep theirs */
+                    if (extra) nv[k++] = fa;
+                    for (int i = 1; i < argc; i++) nv[k++] = use_argv[i];
+                    nv[k] = 0;
+                    owned[owned_n++] = np;
+                    if (fa) owned[owned_n++] = fa;
+                    if (vec) free(vec);
+                    vec = nv;
+                    use_argv = nv;
+                    argc = k;
+                    path = np;
+                } else { if (np) free(np); if (fa) free(fa); if (nv) free(nv); }
+            }
+        }
         if (!fsbridge_exists(path)) { rc = -ENOENT; goto fail; }
         if (fsbridge_is_dir(path)) { rc = -EACCES; goto fail; }
         if (vfs_access(path, VFS_ACC_X) != 0) { rc = -EACCES; goto fail; }
@@ -546,7 +612,7 @@ int proc_execve_argv(const char *path_in, const char *const argv[], const char *
         if (interp) owned[owned_n++] = interp;
         if (arg) owned[owned_n++] = arg;
         if (sb < 0) { rc = -ENOEXEC; goto fail; }
-        if (depth == 3 || owned_n > 6) { rc = -ELOOP; goto fail; }
+        if (depth == 3 || owned_n > 8) { rc = -ELOOP; goto fail; }
         int extra = arg ? 2 : 1;
         if (argc + extra > PROC_EXEC_MAX_ARGS) { rc = -E2BIG; goto fail; }
         const char **nv = malloc(sizeof(char *) * (uint32_t)(argc + extra + 1));

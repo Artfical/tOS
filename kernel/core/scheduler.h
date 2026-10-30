@@ -59,6 +59,7 @@ int  task_kill_group(uint32_t thread_group, task_t *except);
 int  task_futex_wait(uint64_t user_addr, uint32_t expected, uint64_t deadline_ms);
 int  task_futex_wake(uint64_t user_addr, uint32_t count);
 task_t *task_by_pid(uint32_t pid);
+void scheduler_debug_dump(void);
 void task_yield(void);
 void task_exit(void);
 void task_sleep(uint32_t ms);

@@ -627,6 +627,33 @@ int tcp_accept(int fd)
     }
 }
 
+/* the next connection that has finished its handshake, or -1 when none has (does not wait) */
+int tcp_accept_nb(int fd)
+{
+    tcp_sock_t *s = get_sock(fd);
+    if (!s || s->state != TCP_LISTEN) return -1;
+    while (s->accept_head != s->accept_tail) {
+        int new_fd = s->accept_queue[s->accept_head % 4];
+        tcp_sock_t *c = get_sock(new_fd);
+        if (c && c->state == TCP_SYN_RECEIVED) return -1;       /* the handshake is still going: it stays queued */
+        s->accept_head++;
+        if (c && (c->state == TCP_ESTABLISHED || c->state == TCP_CLOSE_WAIT) && c->src_port == s->src_port) return new_fd;
+    }
+    return -1;
+}
+
+/* a connection is waiting to be accepted */
+int tcp_accept_ready(int fd)
+{
+    tcp_sock_t *s = get_sock(fd);
+    if (!s || s->state != TCP_LISTEN) return 0;
+    for (unsigned i = (unsigned)s->accept_head; i != (unsigned)s->accept_tail; i++) {
+        tcp_sock_t *c = get_sock(s->accept_queue[i % 4]);
+        if (c && (c->state == TCP_ESTABLISHED || c->state == TCP_CLOSE_WAIT)) return 1;
+    }
+    return 0;
+}
+
 /* -- Retransmission tick (call every ~100 ms) ------------------------------ */
 void tcp_tick(void)
 {
@@ -1085,6 +1112,13 @@ int tcp_is_established(int fd)
 {
     tcp_sock_t *s = get_sock(fd);
     return s && (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT);
+}
+
+void tcp_peer(int fd, uint32_t *ip, uint16_t *port)
+{
+    tcp_sock_t *s = get_sock(fd);
+    *ip = s ? s->dst_ip : 0;
+    *port = s ? s->dst_port : 0;
 }
 
 void tcp_local(int fd, uint16_t *port)

@@ -13,6 +13,8 @@ int      lsock_create(int domain, int type, int protocol);
 void     lsock_close(int s);             /* one descriptor fewer: the last one closes it */
 void     lsock_ref(int s);               /* one more (dup, fork) */
 int      lsock_bind(int s, const uint8_t *addr, uint32_t len);
+int      lsock_listen(int s, int backlog);
+int      lsock_accept(int s, uint8_t *addr, uint32_t *len);   /* a new socket, or -EAGAIN */
 int      lsock_connect_start(int s, const uint8_t *addr, uint32_t len);
 int      lsock_connect_check(int s);          /* 0 connected, -EINPROGRESS still going, or an error */
 int      lsock_send(int s, const uint8_t *data, uint32_t len, const uint8_t *to, uint32_t tolen);

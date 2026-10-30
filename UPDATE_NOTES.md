@@ -1,14 +1,20 @@
-# Faster downloads, and services you can switch on and off
+# SSH, an SSH server, and git over SSH
+
+## terminal | SSH
+- New openssh package (sudo tpkg install openssh): ssh, scp, sftp, ssh-keygen, ssh-agent and ssh-keyscan. ssh user@host connects, ssh host command runs one command, a new host's key is remembered the first time and a changed key is refused.
+- Git talks ssh: git clone git@github.com:user/repo.git works with a key from ssh-keygen (sudo tpkg upgrade brings the new Git).
+- scp copies files to and from another computer; checked with a file sent there and back.
 
 ## settings | Services
-- New Settings > Services pane: every service a package installed, with a switch. On starts it now and whenever tOS starts, off stops it and keeps it from starting. It asks for your password.
-- New service command: service list, status, log, and (with sudo) start, stop, restart, enable, disable.
-- Packages bring their own services (tpkg.services) and can print a message when they are installed (tpkg.message). Removing a package stops and removes its services.
+- The same package brings sshd, an SSH server, as a service: sudo service start sshd (or sudo service enable sshd, or Settings > Services). People log in with an account of this tOS and its password; root with a key only.
+- When a package is installed it can now tell you what to do next (how to connect to the server, how to change a password).
+- A login is a plain shell (BusyBox) for now: no full-screen programs over SSH yet.
 
-## settings | Network
-- Downloads are much faster: tOS now accepts up to 4 MB in flight (it was 64 KB), tells the server so with window scaling, receives out-of-order data instead of throwing it away, acknowledges every second segment, and sums packets eight bytes at a time.
-- The network card gets as many receive buffers as there is memory for (up to 4096), so a fast server's burst is not dropped.
-- A download of any size can be streamed to disk or /dev/null; checked with file contents compared byte for byte, also with packets lost on purpose.
+## terminal | Programs
+- BusyBox gets sh (ash), env, xargs, ln, test and more; commands in /bin and /usr/bin (ls, git, ssh...) are found when a program looks for them there.
+- Programs can listen for connections and accept them, wait on many descriptors with select and ppoll, copy the terminal with dup, and change user when they run as root (what a login server does).
+- /etc/passwd and /etc/group always have a root entry.
 
-## terminal | Terminal
-- A background service's output goes to its own log (service log <name>) and never touches the keyboard.
+## settings | Stability
+- A background service starting a program no longer breaks a program that is starting at the same time (the loader is no longer interrupted halfway).
+- A 32-bit program starting a 64-bit one (a shell running scp) no longer stops the whole system.

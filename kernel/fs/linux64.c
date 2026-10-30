@@ -1038,6 +1038,8 @@ void linux64_syscall(registers_t *r)
         case 48:  ret = call32(373, a, b, 0, 0, 0, 0, r); break;               /* shutdown */
         case 49:  ret = call32(361, a, b, c, 0, 0, 0, r); break;               /* bind */
         case 50:  ret = call32(363, a, b, 0, 0, 0, 0, r); break;               /* listen */
+        case 43:  ret = call32(364, a, b, c, 0, 0, 0, r); break;               /* accept */
+        case 288: ret = call32(364, a, b, c, d, 0, 0, r); break;               /* accept4 */
         case 51:  ret = call32(367, a, b, c, 0, 0, 0, r); break;               /* getsockname */
         case 52:  ret = call32(368, a, b, c, 0, 0, 0, r); break;               /* getpeername */
         case 53:  ret = call32(360, a, b, c, d, 0, 0, r); break;               /* socketpair */
@@ -1085,6 +1087,54 @@ void linux64_syscall(registers_t *r)
         case 109: ret = 0; break;                                              /* setpgid */
         case 121: case 124: ret = call32(20, 0, 0, 0, 0, 0, 0, r); break;      /* getpgid, getsid: one group per program */
         case 115: ret = 0; break;                                              /* getgroups: none */
+        case 1000: {                                                           /* tOS: is this the account's password? (root only: sshd's monitor) */
+            uint32_t u, g;
+            task_get_cred(&u, &g);
+            char user[AUTH_NAME_MAX], pw[128];
+            int ok = u == 0;
+            for (int k = 0; ok && k < 2; k++) {
+                uint64_t ptr = k == 0 ? a : b;
+                char *dst = k == 0 ? user : pw;
+                int cap = k == 0 ? (int)sizeof(user) : (int)sizeof(pw), i = 0;
+                for (; i < cap; i++) {
+                    if (!lx_user_range_ok(ptr + (uint64_t)i, 1)) { ok = 0; break; }
+                    dst[i] = ((const char *)(uintptr_t)ptr)[i];
+                    if (!dst[i]) break;
+                }
+                if (i == cap) ok = 0;
+            }
+            ret = !ok ? (uint64_t)-EPERM : auth_check_password(user, pw) == 0 ? 0 : (uint64_t)-EACCES;
+            memset(pw, 0, sizeof(pw));
+            break;
+        }
+        case 105: case 106: case 113: case 114: case 117: case 119: {          /* setuid, setgid, setreuid, setregid, setresuid, setresgid */
+            uint32_t uid, gid;
+            task_get_cred(&uid, &gid);
+            int is_gid = nr == 106 || nr == 114 || nr == 119;
+            uint64_t want = (nr == 113 || nr == 114) ? b : (nr == 117 || nr == 119) ? b : a;   /* the effective one */
+            if (want == (uint64_t)-1) want = a;
+            if (want == (uint64_t)-1 || want > 0xFFFFFFFEull) { ret = 0; break; }
+            uint32_t cur = is_gid ? gid : uid;
+            if (uid != 0 && (uint32_t)want != cur) { ret = (uint64_t)-EPERM; break; }   /* only root becomes someone else */
+            if (is_gid) task_set_cred(uid, (uint32_t)want); else task_set_cred((uint32_t)want, gid);
+            ret = 0;
+            break;
+        }
+        case 116: { uint32_t u, g; task_get_cred(&u, &g); ret = u == 0 ? 0 : (uint64_t)-EPERM; break; }   /* setgroups */
+        case 118: case 120: {                                                  /* getresuid, getresgid */
+            uint32_t u, g;
+            task_get_cred(&u, &g);
+            uint32_t v = nr == 118 ? u : g;
+            ret = 0;
+            for (int k = 0; k < 3; k++) {
+                uint64_t ptr = k == 0 ? a : k == 1 ? b : c;
+                if (!lx_user_range_ok(ptr, 4)) { ret = (uint64_t)-EFAULT; break; }
+                memcpy((void *)(uintptr_t)ptr, &v, 4);
+            }
+            break;
+        }
+        case 122: case 123: { uint32_t u, g; task_get_cred(&u, &g); ret = nr == 122 ? u : g; break; }   /* setfsuid, setfsgid: the old value */
+        case 161: { uint32_t u, g; task_get_cred(&u, &g); ret = u == 0 ? 0 : (uint64_t)-EPERM; break; }  /* chroot: tOS has one root */
         case 125: ret = (uint64_t)-EINVAL; break;                              /* capget */
         case 131: ret = call32(186, a, b, 0, 0, 0, 0, r); break;               /* sigaltstack */
         case 137: case 138: ret = (uint64_t)-ENOSYS; break;                    /* statfs, fstatfs */
@@ -1122,8 +1172,31 @@ void linux64_syscall(registers_t *r)
         case 264: case 316: ret = call32(38, b, d, 0, 0, 0, 0, r); break;      /* renameat, renameat2 */
         case 267: ret = call32(305, a, b, c, d, 0, 0, r); break;               /* readlinkat */
         case 269: case 439: ret = call32(33, b, c, 0, 0, 0, 0, r); break;      /* faccessat, faccessat2 */
-        case 270: ret = (uint64_t)-ENOSYS; break;                              /* pselect6 */
-        case 271: ret = (uint64_t)-ENOSYS; break;                              /* ppoll */
+        case 23: case 270: {                                                   /* select, pselect6 */
+            int64_t ms = -1;
+            if (e) {
+                int64_t tv[2];
+                if (!lx_user_range_ok(e, 16)) { ret = (uint64_t)-EFAULT; break; }
+                memcpy(tv, (const void *)(uintptr_t)e, 16);
+                if (tv[0] < 0 || tv[1] < 0) { ret = (uint64_t)-EINVAL; break; }
+                int64_t frac = nr == 23 ? (tv[1] + 999) / 1000 : (tv[1] + 999999) / 1000000;   /* microseconds / nanoseconds -> ms */
+                ms = tv[0] > 2000000 ? 2000000000 : tv[0] * 1000 + frac;
+            }
+            ret = sx(call32(142, a, b, c, d, (uint64_t)(int64_t)(ms > 2000000000 ? 2000000000 : ms), 0, r));
+            break;
+        }
+        case 271: {                                                            /* ppoll */
+            int64_t ms = -1;
+            if (c) {
+                int64_t ts[2];
+                if (!lx_user_range_ok(c, 16)) { ret = (uint64_t)-EFAULT; break; }
+                memcpy(ts, (const void *)(uintptr_t)c, 16);
+                if (ts[0] < 0 || ts[1] < 0) { ret = (uint64_t)-EINVAL; break; }
+                ms = ts[0] > 2000000 ? 2000000000 : ts[0] * 1000 + (ts[1] + 999999) / 1000000;
+            }
+            ret = call32(168, a, b, (uint64_t)(int64_t)(ms > 2000000000 ? 2000000000 : ms), 0, 0, 0, r);
+            break;
+        }
         case 273: ret = 0; break;                                              /* set_robust_list */
         case 280: ret = call32(412, a, b, c, d, 0, 0, r); break;               /* utimensat */
         case 281: ret = call32(319, a, b, c, d, e, f, r); break;               /* epoll_pwait */

@@ -54,9 +54,12 @@ int  tcp_rx_ready(int fd);
 int  tcp_recv_nb(int fd, uint8_t *buf, int max_len);
 int  tcp_is_established(int fd);
 void tcp_local(int fd, uint16_t *port);
+void tcp_peer(int fd, uint32_t *ip, uint16_t *port);
 void tcp_release(int fd);
 int  tcp_listen(int fd, uint16_t port);
 int  tcp_accept(int fd);
+int  tcp_accept_nb(int fd);       /* -1 when none is ready */
+int  tcp_accept_ready(int fd);
 
 /* Backward-compatible blocking API */
 int  tcp_connect(uint32_t dst_ip, uint16_t dst_port);

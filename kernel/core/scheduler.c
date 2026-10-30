@@ -1,4 +1,5 @@
 #include "scheduler.h"
+#include "auth.h"
 #include "idt.h"
 #include "io.h"
 #include "serial.h"
@@ -387,6 +388,21 @@ void scheduler_fpu_context_selftest(void)
 }
 #endif
 
+/* a panic's serial log: which tasks there are and what state they are in */
+void scheduler_debug_dump(void)
+{
+    char h[24];
+    serial_write("[PANIC] tasks (name pid state esp kernel_stack):\n");
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (!tasks[i].in_use) continue;
+        serial_write("  "); serial_write(tasks[i].name); serial_write(" pid "); sprintf_u32(h, tasks[i].pid); serial_write(h);
+        serial_write(" state "); sprintf_u32(h, (uint32_t)tasks[i].state); serial_write(h);
+        serial_write(tasks[i].esp >= (uint64_t)(uintptr_t)tasks[i].kernel_stack && tasks[i].esp < (uint64_t)(uintptr_t)tasks[i].kernel_stack + KERNEL_STACK_SZ ? " esp-in-stack" : " ESP-OUT-OF-STACK");
+        if (&tasks[i] == current) serial_write(" <- current");
+        serial_write("\n");
+    }
+}
+
 task_t *task_by_pid(uint32_t pid)
 {
     for (int i = 0; i < MAX_TASKS; i++)
@@ -466,6 +482,7 @@ static void unlink_task(task_t *t)
 
 void task_exit(void)
 {
+    asm volatile("cli");                 /* the task list and this task's state change together: the timer must not look in between */
     if (current && current->tls_gdt_entry >= 0) {
         gdt_tls_release(current->tls_gdt_entry);
         current->tls_gdt_entry = -1;

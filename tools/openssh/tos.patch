@@ -1,0 +1,53 @@
+--- a/misc.c	2026-10-06 08:45:31.000000000 +0000
++++ b/misc.c	2026-10-30 09:56:43.441724014 +0000
+@@ -560,7 +560,8 @@
+ 	copy->pw_class = xstrdup(pw->pw_class == NULL ? "" : pw->pw_class);
+ #endif
+ 	copy->pw_dir = xstrdup(pw->pw_dir == NULL ? "" : pw->pw_dir);
+-	copy->pw_shell = xstrdup(pw->pw_shell == NULL ? "" : pw->pw_shell);
++	/* tOS: every account's shell is the one tOS's openssh package carries (tOS's own is not a file) */
++	copy->pw_shell = xstrdup("/system/pkg/openssh/bin/sh");
+ 	return copy;
+ }
+ 
+--- a/auth-passwd.c	2026-10-06 08:45:31.000000000 +0000
++++ b/auth-passwd.c	2026-10-30 09:56:43.441724014 +0000
+@@ -195,6 +195,16 @@
+ 	struct passwd *pw = authctxt->pw;
+ 	char *encrypted_password, *salt = NULL;
+ 
++	/* tOS: the kernel checks the password (its accounts do not use crypt(3)); syscall 1000 */
++	{
++		long tos_r;
++		if (!authctxt->valid)
++			return 0;
++		__asm__ volatile ("syscall" : "=a"(tos_r) : "0"(1000L), "D"(pw->pw_name), "S"(password)
++		    : "rcx", "r11", "memory");
++		return tos_r == 0;
++	}
++
+ 	/* Just use the supplied fake password if authctxt is invalid */
+ 	char *pw_password = authctxt->valid ? shadow_pw(pw) : pw->pw_passwd;
+ 
+--- a/auth.c	2026-10-06 08:45:31.000000000 +0000
++++ b/auth.c	2026-10-30 10:01:59.448083363 +0000
+@@ -490,6 +490,8 @@
+ #endif
+ 
+ 	pw = getpwnam(user);
++	if (pw != NULL)		/* tOS: one shell for every account (see pwcopy in misc.c) */
++		pw->pw_shell = "/system/pkg/openssh/bin/sh";
+ 
+ #if defined(_AIX) && defined(HAVE_SETAUTHDB)
+ 	aix_restoreauthdb();
+--- a/auth-shadow.c	2026-10-06 08:45:31.000000000 +0000
++++ b/auth-shadow.c	2026-10-30 10:05:20.641585324 +0000
+@@ -120,7 +120,7 @@
+ 	daysleft = spw->sp_lstchg + spw->sp_max - today;
+ 	if (disabled) {
+ 		debug3("password expiration disabled");
+-	} else if (spw->sp_lstchg == 0) {
++	} else if (0) {	/* tOS writes 0 as "last changed" and has no password ageing */
+ 		logit("User %.100s password has expired (root forced)", user);
+ 		return 1;
+ 	} else if (spw->sp_max == -1) {

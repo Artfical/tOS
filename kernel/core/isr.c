@@ -62,6 +62,7 @@ void crash_screen_trigger(const char *exception_name, int exception_code,
     char buf[17];
 
     crash_active = 1;
+    if (!fake) scheduler_debug_dump();
     terminal_set_force_direct(1);
     terminal_fill_screen(0x4F);
     terminal_setcolor(0x4F);

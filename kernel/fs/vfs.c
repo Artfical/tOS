@@ -6,6 +6,8 @@
 #include "auth.h"
 #include "perm.h"
 
+int proc_std_bin_alias(const char *abs, char *out, int cap);   /* proc.c: /usr/bin/ls -> where the ls command is */
+
 typedef struct {
     int used;
     char path[VFS_NAME_LEN];
@@ -445,16 +447,33 @@ int vfs_unlink(const char *path)
     return m->ops->unlink(m->private_data, strip_mount(abs, m));
 }
 
-int vfs_stat(const char *path, vfs_entry_t *entry)
+static int vfs_stat_abs(char *abs, vfs_entry_t *entry)
 {
-    denied_flag = 0;
-    char abs[VFS_NAME_LEN];
-    abspath_into(path, abs);
     mount_t *m = resolve_mount(abs);
     if (!m || !m->ops || !m->ops->stat) return -1;
     if (has_perms(m) && !auth_is_root() && !walk_ok(m, abs)) return -1;
     int rc = m->ops->stat(m->private_data, strip_mount(abs, m), entry);
     if (rc == 0) synth_owner(m, entry);
+    return rc;
+}
+
+/* is there a file here itself (not a command a /usr/bin name stands for) */
+int vfs_exists_raw(const char *path)
+{
+    char abs[VFS_NAME_LEN];
+    vfs_entry_t e;
+    abspath_into(path, abs);
+    return vfs_stat_abs(abs, &e) == 0;
+}
+
+int vfs_stat(const char *path, vfs_entry_t *entry)
+{
+    denied_flag = 0;
+    char abs[VFS_NAME_LEN];
+    abspath_into(path, abs);
+    int rc = vfs_stat_abs(abs, entry);
+    char alias[VFS_NAME_LEN];
+    if (rc != 0 && !denied_flag && proc_std_bin_alias(abs, alias, sizeof(alias))) rc = vfs_stat_abs(alias, entry);   /* /usr/bin/ls: the ls command */
     return rc;
 }
 
@@ -543,6 +562,13 @@ int vfs_access(const char *path, int want)
 {
     char abs[VFS_NAME_LEN];
     abspath_into(path, abs);
+    {
+        vfs_entry_t probe;
+        char alias[VFS_NAME_LEN];
+        mount_t *m0 = resolve_mount(abs);
+        if (m0 && stat_abs(m0, abs, &probe) != 0 && proc_std_bin_alias(abs, alias, sizeof(alias)))
+            return vfs_access(alias, want);     /* /usr/bin/ls: the ls command */
+    }
     mount_t *m = resolve_mount(abs);
     if (!m) return -1;
     vfs_entry_t e;

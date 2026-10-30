@@ -66,6 +66,7 @@ int  vfs_readdir(const char *path, vfs_entry_t *entries, int max);
 int  vfs_mkdir(const char *path, uint32_t mode);
 int  vfs_unlink(const char *path);
 int  vfs_stat(const char *path, vfs_entry_t *entry);
+int  vfs_exists_raw(const char *path);    /* a real file, not a command standing in for a /usr/bin name */
 int  vfs_rename(const char *oldpath, const char *newpath);
 int  vfs_symlink(const char *target, const char *path);
 int  vfs_readlink(const char *path, char *buf, uint32_t size);

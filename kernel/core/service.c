@@ -167,9 +167,13 @@ int service_start(const char *name)
                            "PATH=/system/pkg/busybox/bin:/programs", "LANG=C.UTF-8", 0 };
 
     /* the program starts with the log as its terminal: it inherits the spawner's, so borrow it for a moment */
+    /* this task can be switched out anywhere, and the programs that run meanwhile change the same tables
+     * (memory, files) as the loader: loading goes on without a switch */
     void *saved = task_get_userdata();
     task_set_userdata(r->log);
+    task_preempt_disable();
     int pid = proc_spawn_argv(argv[0], argv, envp);
+    task_preempt_enable();
     task_set_userdata(saved);
     free(def);
     if (pid < 0) return -4;

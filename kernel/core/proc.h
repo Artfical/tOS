@@ -26,6 +26,8 @@
 #define PROC_FD_EPOLL     (-4)
 #define PROC_FD_URANDOM   (-5)          /* /dev/urandom and /dev/random */
 #define PROC_FD_NULL      (-6)          /* /dev/null */
+#define PROC_FD_CONSOLE(i) (-7 - (i))   /* a dup() of the console's 0, 1 or 2 (-7..-9) */
+#define PROC_FD_IS_CONSOLE(v) ((v) <= -7 && (v) >= -9)
 /* Pipes are shared between processes (fork, then the child's stdio): one table for the system,
  * a descriptor holds an end, PROC_FD_PIPE_*_BASE - index. */
 #define PROC_MAX_PIPES 128
