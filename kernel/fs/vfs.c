@@ -6,7 +6,24 @@
 #include "auth.h"
 #include "perm.h"
 
-int proc_std_bin_alias(const char *abs, char *out, int cap);   /* proc.c: /usr/bin/ls -> where the ls command is */
+int proc_std_bin_alias(const char *abs, char *out, int cap);
+int pty_exists(int n);                                        /* pty.c */
+
+/* /dev/ptmx and /dev/pts/N: device nodes that exist while the pair does (0 = not one) */
+static int pty_node(const char *abs, vfs_entry_t *e)
+{
+    int n = -1;
+    if (!strcmp(abs, "/dev/ptmx")) n = 0;
+    else if (!strncmp(abs, "/dev/pts/", 9) && abs[9]) {
+        n = 0;
+        const char *d = abs + 9;
+        for (; *d >= '0' && *d <= '9'; d++) n = n * 10 + (*d - '0');
+        if (*d || !pty_exists(n)) return 0;
+    }
+    if (n < 0) return 0;
+    if (e) { memset(e, 0, sizeof(*e)); strcpy(e->name, abs); e->mode = 0x2000u | 0620u; e->inode = 400u + (uint32_t)n; e->size = n ? ((136u << 8) | (uint32_t)n) : ((136u << 8)); if (!strcmp(abs, "/dev/ptmx")) { e->size = (5u << 8) | 2u; e->inode = 400u; } }
+    return 1;
+}   /* proc.c: /usr/bin/ls -> where the ls command is */
 
 typedef struct {
     int used;
@@ -372,6 +389,14 @@ int vfs_lseek(int fd, uint32_t offset, int whence)
     return m->ops->lseek(m->private_data, fd_table[fd].fd, offset, whence);
 }
 
+int vfs_ftruncate(int fd, uint32_t size)
+{
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].used) return -1;
+    mount_t *m = &mounts[fd_table[fd].mount_idx];
+    if (!m->ops || !m->ops->truncate) return -2;
+    return m->ops->truncate(m->private_data, fd_table[fd].fd, size);
+}
+
 int vfs_fd_get_path(int fd, char *buf, uint32_t size)
 {
     if (fd < 0 || fd >= VFS_MAX_FDS || !fd_table[fd].used || !buf || size == 0)
@@ -472,6 +497,7 @@ int vfs_stat(const char *path, vfs_entry_t *entry)
     char abs[VFS_NAME_LEN];
     abspath_into(path, abs);
     int rc = vfs_stat_abs(abs, entry);
+    if (rc != 0 && pty_node(abs, entry)) return 0;
     char alias[VFS_NAME_LEN];
     if (rc != 0 && !denied_flag && proc_std_bin_alias(abs, alias, sizeof(alias))) rc = vfs_stat_abs(alias, entry);   /* /usr/bin/ls: the ls command */
     return rc;
@@ -525,6 +551,7 @@ int vfs_chmod(const char *path, uint32_t mode)
     denied_flag = 0;
     char abs[VFS_NAME_LEN];
     abspath_into(path, abs);
+    if (pty_node(abs, 0)) return 0;                   /* a terminal's owner and mode: nothing to keep */
     mount_t *m = resolve_mount(abs);
     if (!m || !m->ops || !m->ops->setattr) return -1;
     vfs_entry_t e;
@@ -538,6 +565,7 @@ int vfs_chown(const char *path, uint32_t uid, uint32_t gid)
     denied_flag = 0;
     char abs[VFS_NAME_LEN];
     abspath_into(path, abs);
+    if (pty_node(abs, 0)) return 0;
     mount_t *m = resolve_mount(abs);
     if (!m || !m->ops || !m->ops->setattr) return -1;
     vfs_entry_t e;

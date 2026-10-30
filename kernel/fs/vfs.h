@@ -44,6 +44,7 @@ typedef struct vfs_ops {
      * stores no ownership leaves this NULL and is then not subject to permission checks */
     int   (*setattr)(void *ctx, const char *path, uint32_t mode, uint32_t uid, uint32_t gid);
     int   (*readlink)(void *ctx, const char *path, char *buf, uint32_t size);
+    int   (*truncate)(void *ctx, int fd, uint32_t size);      /* the file is exactly this long (zeros where it grows); NULL = not supported */
 } vfs_ops_t;
 
 #define VFS_KEEP 0xFFFFFFFFu
@@ -62,6 +63,7 @@ int  vfs_close(int fd);
 int  vfs_read(int fd, void *buf, uint32_t size);
 int  vfs_write(int fd, const void *buf, uint32_t size);
 int  vfs_lseek(int fd, uint32_t offset, int whence);
+int  vfs_ftruncate(int fd, uint32_t size);
 int  vfs_readdir(const char *path, vfs_entry_t *entries, int max);
 int  vfs_mkdir(const char *path, uint32_t mode);
 int  vfs_unlink(const char *path);

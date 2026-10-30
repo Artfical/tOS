@@ -166,6 +166,7 @@ KERNEL_OBJS = \
     kernel/fs/syscall.o \
     kernel/fs/linux64.o \
     kernel/fs/tty.o \
+    kernel/fs/pty.o \
     kernel/core/service.o \
     kernel/core/serial.o \
     kernel/core/debugmon.o \

@@ -30,6 +30,7 @@
 #include "errno.h"
 #include "linux_abi.h"
 #include "tty.h"
+#include "pty.h"
 #include "cmos.h"
 #include "csprng.h"
 #include "gdt.h"
@@ -294,6 +295,62 @@ static int syscall_exec_user(uint64_t path_ptr, uint64_t argv_ptr, uint64_t envp
     return syscall_exec_user_w(path_ptr, argv_ptr, envp_ptr, 0);
 }
 
+static int spair_of_fwd(proc_t *p, int fd);
+int syscall_fd_inherit(proc_t *src, int ss, proc_t *dst, int ds);
+
+/* Descriptors passed over a socketpair (SCM_RIGHTS): sendmsg parks a copy of each in a table of its own and
+ * queues it for the pipe the other end reads; the next recvmsg there installs them in the receiver. */
+static proc_t scm_holder;
+static int scm_ready;
+static struct { int used, key, hslot; uint32_t grp; } scm_q[16];   /* grp: the sendmsg it came with */
+static uint32_t scm_group;
+
+int scm_send_fds(int sock_fd, const int *fds, int n)
+{
+    proc_t *p = proc_current();
+    int v = spair_of_fwd(p, sock_fd);
+    if (!v) return -EBADF;
+    int key = PROC_FD_SPAIR_W(v);
+    uint32_t grp = ++scm_group;
+    if (!scm_ready) { for (int i = 0; i < PROC_MAX_FDS; i++) scm_holder.fd[i] = -1; scm_ready = 1; }
+    for (int k = 0; k < n; k++) {
+        int fd = fds[k];
+        if (fd < 3 || fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1) return -EBADF;
+        int q = -1, hs = -1;
+        for (int i = 0; i < 16; i++) if (!scm_q[i].used) { q = i; break; }
+        for (int i = 0; i < PROC_MAX_FDS; i++) if (scm_holder.fd[i] == -1) { hs = i; break; }
+        if (q < 0 || hs < 0) return -ENFILE;
+        int r = syscall_fd_inherit(p, fd - 3, &scm_holder, hs);
+        if (r < 0) return r;
+        scm_q[q].used = 1; scm_q[q].key = key; scm_q[q].hslot = hs; scm_q[q].grp = grp;
+    }
+    return 0;
+}
+
+/* the descriptors that came with the data just read from this socketpair end: how many (at most max) */
+int scm_recv_fds(int sock_fd, int *out, int max)
+{
+    proc_t *p = proc_current();
+    int v = spair_of_fwd(p, sock_fd);
+    if (!v || !scm_ready) return 0;
+    int key = PROC_FD_SPAIR_R(v), got = 0;
+    uint32_t grp = 0;                                    /* the oldest message that has descriptors: only its own */
+    for (int i = 0; i < 16; i++)
+        if (scm_q[i].used && scm_q[i].key == key && (!grp || scm_q[i].grp < grp)) grp = scm_q[i].grp;
+    if (!grp) return 0;
+    for (int i = 0; i < 16 && got < max; i++) {
+        if (!scm_q[i].used || scm_q[i].key != key || scm_q[i].grp != grp) continue;
+        int ds = -1;
+        for (int k = 0; k < PROC_MAX_FDS; k++) if (p->fd[k] == -1) { ds = k; break; }
+        if (ds < 0) break;
+        if (syscall_fd_inherit(&scm_holder, scm_q[i].hslot, p, ds) < 0) break;
+        proc_fd_close(&scm_holder, scm_q[i].hslot);
+        scm_q[i].used = 0;
+        out[got++] = ds + 3;
+    }
+    return got;
+}
+
 /* Descriptors 0..2 are the console until dup2/dup3 puts something else there (a child's pipes):
  * then std_fd[n] names a hidden descriptor (from the top of the table) the number stands for. */
 static int fd_xlate(proc_t *p, int fd)
@@ -351,6 +408,7 @@ static int spair_of(proc_t *p, int fd)
     int v = p->fd[fd - 3];
     return PROC_FD_IS_SPAIR(v) ? v : 0;
 }
+static int spair_of_fwd(proc_t *p, int fd) { return spair_of(p, fd); }
 
 /* the pipe a write to fd goes into */
 static int pipe_write_end(proc_t *p, int fd)
@@ -482,6 +540,16 @@ static uint32_t spair_shutdown(proc_t *p, int fd, int how)
 #define LINUX_MSG_DONTWAIT  0x40u
 #define LINUX_E_INPROGRESS  115
 #define LINUX_E_AGAIN       11
+
+/* a pseudo-terminal end: its number (and *slave), or -1 */
+static int pty_of(proc_t *p, int fd, int *slave)
+{
+    if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS) return -1;
+    int v = p->fd[fd - 3];
+    if (PROC_FD_IS_PTM(v)) { *slave = 0; return -300 - v; }
+    if (PROC_FD_IS_PTS(v)) { *slave = 1; return -320 - v; }
+    return -1;
+}
 
 static int sock_of(proc_t *p, int fd)
 {
@@ -833,6 +901,7 @@ static uint32_t fd_ready(proc_t *p, int fd)
     if (ev) return (ev->count ? LINUX_EPOLLIN : 0) | LINUX_EPOLLOUT;
     int sk = sock_of(p, fd);
     if (sk >= 0) return lsock_ready(sk);
+    { int ps; int pn = pty_of(p, fd, &ps); if (pn >= 0) return pty_ready(pn, ps); }
     if (proc_vfd(p, fd) >= 0) return LINUX_EPOLLIN | LINUX_EPOLLOUT;   /* files never block */
     if (fd >= 3 && fd - 3 < PROC_MAX_FDS && (p->fd[fd - 3] == PROC_FD_URANDOM || p->fd[fd - 3] == PROC_FD_NULL))
         return LINUX_EPOLLIN | LINUX_EPOLLOUT;
@@ -973,6 +1042,14 @@ static uint32_t linux_ioctl(int fd, uint32_t req, uint64_t arg)
     proc_t *p = proc_current();
     int slot = fd - 3;
     if (fd < 0 || (fd > 2 && (!p || slot >= PROC_MAX_FDS || p->fd[slot] == -1))) return (uint32_t)-EBADF;
+    {
+        int ps;
+        int pn = pty_of(p, fd, &ps);
+        if (pn >= 0) {                           /* a pseudo-terminal's master or slave */
+            int r = pty_ioctl(pn, ps, req, arg, user_wr_ok, user_range_ok);
+            if (r != 1) return (uint32_t)r;
+        }
+    }
     if (fd <= 2 && req != 0x5421) {              /* the terminal: termios, window size, process group */
         int r = tty_ioctl(req, arg, user_wr_ok, user_range_ok);
         if (r != 1) return (uint32_t)r;
@@ -1337,6 +1414,7 @@ static void linux_stat64_fill(linux_stat64_t *st, const vfs_entry_t *entry)
     st->st_size = entry->size;
     st->st_blksize = 4096;
     st->st_blocks = (entry->size + 511u) / 512u;
+    if (type == 0x2000u) { st->st_rdev = entry->size; st->st_size = 0; st->st_blocks = 0; }   /* a device node: its number rides in size */
 }
 
 /* fstat of a descriptor, whatever it is: the console, a device, a pipe, an epoll, or a file */
@@ -1355,6 +1433,17 @@ static int linux_fd_stat(int fd, linux_stat64_t *st)
         st->st_rdev = (1u << 8) | minor;
         st->st_ino = st->ino32 = 100u + minor;
         return 0;
+    }
+    {
+        int ps;
+        int pn = pty_of(p, fd, &ps);
+        if (pn >= 0) {
+            linux_stat64_fill(st, 0);
+            st->st_mode = 0x2000u | 0620u;
+            st->st_rdev = ps ? ((136u << 8) | (uint32_t)pn) : ((5u << 8) | 2u);
+            st->st_ino = st->ino32 = 400u + (uint32_t)pn;
+            return 0;
+        }
     }
     if (sock_of(p, fd) >= 0) {
         linux_stat64_fill(st, 0);
@@ -1445,6 +1534,10 @@ int syscall_fd_inherit(proc_t *src, int ss, proc_t *dst, int ds)
     } else if (PROC_FD_IS_SPAIR(v)) {
         proc_pipe_ref(PROC_FD_SPAIR_R(v), 0);
         proc_pipe_ref(PROC_FD_SPAIR_W(v), 1);
+    } else if (PROC_FD_IS_PTM(v)) {
+        pty_ref(-300 - v, 0);
+    } else if (PROC_FD_IS_PTS(v)) {
+        pty_ref(-320 - v, 1);
     } else if (v <= PROC_FD_SOCK_BASE && v > PROC_FD_SOCK_BASE - LSOCK_MAX) {
         lsock_ref(PROC_FD_SOCK_BASE - v);
     } else if (v <= PROC_FD_EVENTFD_BASE && v > PROC_FD_EVENTFD_BASE - PROC_MAX_EVENTFDS) {
@@ -1583,6 +1676,35 @@ static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode
     }
     /* glibc reads these before it opens any socket: written from the DHCP lease when asked for */
     etc_special(path);
+
+    /* pseudo-terminals: /dev/ptmx makes a new pair, /dev/pts/N is the slave of pair N */
+    if (!strcmp(path, "/dev/ptmx") || !strncmp(path, "/dev/pts/", 9)) {
+        int dslot = -1;
+        for (int i = 0; i < PROC_MAX_FDS; i++)
+            if (p->fd[i] == -1) { dslot = i; break; }
+        if (dslot < 0) return (uint32_t)-EMFILE;
+        int value;
+        if (!strcmp(path, "/dev/ptmx")) {
+            int n = pty_new();
+            if (n < 0) return (uint32_t)n;
+            value = PROC_FD_PTM(n);
+        } else {
+            int n = 0;
+            const char *d = path + 9;
+            if (!*d) return (uint32_t)-ENOENT;
+            for (; *d >= '0' && *d <= '9'; d++) n = n * 10 + (*d - '0');
+            if (*d) return (uint32_t)-ENOENT;
+            int r = pty_slave_open(n);
+            if (r < 0) return (uint32_t)r;
+            value = PROC_FD_PTS(n);
+        }
+        p->fd[dslot] = value;
+        p->fd_flags[dslot] = (flags & LINUX_O_CLOEXEC) ? LINUX_FD_CLOEXEC : 0;
+        p->fd_open_flags[dslot] = (flags & ~LINUX_O_CLOEXEC) | 2u;
+        strcpy(p->fdpath[dslot], path);
+        p->fd_dir_offset[dslot] = 0;
+        return (uint32_t)dslot + 3u;
+    }
 
     /* the few devices programs expect: OpenSSL waits for /dev/urandom before it will start */
     if (!strcmp(path, "/dev/urandom") || !strcmp(path, "/dev/random") || !strcmp(path, "/dev/null")) {
@@ -2183,6 +2305,9 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
                 if (ev) return eventfd_read(p, fd, ev, b, (uint32_t)count);
                 int sk = sock_of(p, fd);
                 if (sk >= 0) return sock_recv_on(p, fd, sk, b, (uint32_t)count, 0, 0, 0);
+                int ps;
+                int pn = pty_of(p, fd, &ps);
+                if (pn >= 0) return (uint32_t)pty_read(pn, ps, (uint8_t *)buf, (uint32_t)count, (p->fd_open_flags[fd - 3] & 0x800u) != 0);
             }
             if (proc_pipe_endpoint(p, fd, 0) >= 0) {
                 /* a blocking end waits for data (or for the last writer to go) */
@@ -2220,6 +2345,9 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
                 if (ev) return eventfd_write(ev, b, (uint32_t)count);
                 int sk = sock_of(p, fd);
                 if (sk >= 0) return sock_send_on(p, fd, sk, b, (uint32_t)count, 0, 0, 0);
+                int ps;
+                int pn = pty_of(p, fd, &ps);
+                if (pn >= 0) return (uint32_t)pty_write(pn, ps, (const uint8_t *)buf, (uint32_t)count, (p->fd_open_flags[fd - 3] & 0x800u) != 0);
             }
             if (proc_pipe_endpoint(p, fd, 0) >= 0) {
                 for (;;) {
@@ -2418,6 +2546,22 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             if (!user_cstr_ok(path_ptr)) return (uint32_t)-EFAULT;
             if (size == 0) return 0;
             if (!user_wr_ok(buf_ptr, size)) return (uint32_t)-EFAULT;
+            {   /* /proc/self/fd/N: where the descriptor's file is (ttyname asks) */
+                const char *cp = (const char *)(uintptr_t)path_ptr;
+                if (!strncmp(cp, "/proc/self/fd/", 14) && cp[14]) {
+                    int nfd = 0;
+                    const char *dgt = cp + 14;
+                    for (; *dgt >= '0' && *dgt <= '9'; dgt++) nfd = nfd * 10 + (*dgt - '0');
+                    proc_t *rp = proc_current();
+                    if (!*dgt && rp && nfd >= 3 && nfd - 3 < PROC_MAX_FDS && rp->fd[nfd - 3] != -1 && rp->fdpath[nfd - 3][0] == '/') {
+                        uint32_t pl = (uint32_t)strlen(rp->fdpath[nfd - 3]);
+                        if (pl > size) pl = size;
+                        memcpy((void *)(uintptr_t)buf_ptr, rp->fdpath[nfd - 3], pl);
+                        return pl;
+                    }
+                    return (uint32_t)-ENOENT;
+                }
+            }
             int n = vfs_readlink((const char *)(uintptr_t)path_ptr, (char *)(uintptr_t)buf_ptr, size);
             if (n >= 0) return (uint32_t)n;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-EINVAL;
@@ -2727,6 +2871,23 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             int n = number == 180 ? vfs_read(vfd, (void *)(uintptr_t)b, c) : vfs_write(vfd, (const void *)(uintptr_t)b, c);
             vfs_lseek(vfd, (uint32_t)cur, 0);
             return n < 0 ? (uint32_t)-EIO : (uint32_t)n;
+        }
+
+        case 93: {                                  /* ftruncate(fd, length) */
+            int vfd = proc_vfd(proc_current(), (int)a);
+            if (vfd < 0) return (uint32_t)-EBADF;
+            if (b > 0x7FFFFFFFu) return (uint32_t)-EINVAL;
+            int r = vfs_ftruncate(vfd, (uint32_t)b);
+            return r == 0 ? 0 : r == -2 ? (uint32_t)-EINVAL : (uint32_t)-EIO;
+        }
+        case 92: {                                  /* truncate(path, length) */
+            if (!user_cstr_ok(a)) return (uint32_t)-EFAULT;
+            if (b > 0x7FFFFFFFu) return (uint32_t)-EINVAL;
+            int vfd = vfs_open((const char *)(uintptr_t)a, VFS_RDWR);
+            if (vfd < 0) return (uint32_t)-ENOENT;
+            int r = vfs_ftruncate(vfd, (uint32_t)b);
+            vfs_close(vfd);
+            return r == 0 ? 0 : r == -2 ? (uint32_t)-EINVAL : (uint32_t)-EIO;
         }
 
         case LINUX_SYS_LLSEEK: {

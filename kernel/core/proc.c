@@ -1,4 +1,5 @@
 #include "proc.h"
+#include "pty.h"
 #include "io.h"
 #include "linux_abi.h"
 #include "tty.h"
@@ -108,7 +109,11 @@ void proc_fd_close(proc_t *p, int slot)
 {
     if (!p || slot < 0 || slot >= PROC_MAX_FDS || p->fd[slot] == -1) return;
     int value = p->fd[slot];
-    if (value <= PROC_FD_SOCK_BASE && value > PROC_FD_SOCK_BASE - LSOCK_MAX) {
+    if (PROC_FD_IS_PTM(value)) {
+        pty_close(-300 - value, 0);
+    } else if (PROC_FD_IS_PTS(value)) {
+        pty_close(-320 - value, 1);
+    } else if (value <= PROC_FD_SOCK_BASE && value > PROC_FD_SOCK_BASE - LSOCK_MAX) {
         lsock_close(PROC_FD_SOCK_BASE - value);
     } else if (value <= PROC_FD_EVENTFD_BASE && value > PROC_FD_EVENTFD_BASE - PROC_MAX_EVENTFDS) {
         if (p->eventfds[PROC_FD_EVENTFD_BASE - value].used)
@@ -824,6 +829,23 @@ int proc_signal(proc_t *q, int sig)
     q->term_sig = sig;
     if (q == proc_current()) proc_exit(128 + sig);
     return proc_kill(q->pid, 128 + sig) == 0 ? 0 : -ESRCH;
+}
+
+/* every program that has the slave of pseudo-terminal n open: ^C, the line dropping, a new window size */
+void proc_signal_pty(int n, int sig)
+{
+    proc_t *self = proc_current();
+    int self_has = 0;
+    for (int i = 0; i < PROC_MAX; i++) {
+        proc_t *q = &procs[i];
+        if (!q->used || q->done) continue;
+        int has = 0;
+        for (int k = 0; k < PROC_MAX_FDS; k++) if (q->fd[k] == PROC_FD_PTS(n)) { has = 1; break; }
+        if (!has) continue;
+        if (q == self) { self_has = 1; continue; }
+        proc_signal(q, sig);
+    }
+    if (self_has) proc_signal(self, sig);              /* last: it may not return */
 }
 
 void proc_signal_surface(void *surface, int sig)

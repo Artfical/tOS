@@ -3,6 +3,7 @@
  * the same code 32-bit programs use (syscall.c, i386 numbering) when the structures they pass
  * look the same; the rest (stat, iovec, msghdr, timeval, sigaction, clone...) are here. */
 #include "linux_abi.h"
+#include "syscall.h"
 #include "proc.h"
 #include "scheduler.h"
 #include "paging.h"
@@ -743,6 +744,25 @@ static uint64_t sys_msg(int send, int fd, uint64_t msg, uint32_t flags, register
     if (iovlen > 64 || !lx_user_range_ok(iov, iovlen * 16)) return (uint64_t)-EFAULT;
     const uint64_t *v = (const uint64_t *)(uintptr_t)iov;
     uint64_t total = 0;
+    uint64_t control = m[4], controllen = m[5];
+    if (send && control && controllen >= 16 && lx_user_range_ok(control, controllen)) {      /* SCM_RIGHTS: descriptors travel with the data */
+        const uint8_t *c = (const uint8_t *)(uintptr_t)control;
+        uint64_t off = 0;
+        while (off + 16 <= controllen) {
+            uint64_t clen;
+            int32_t level, type;
+            memcpy(&clen, c + off, 8); memcpy(&level, c + off + 8, 4); memcpy(&type, c + off + 12, 4);
+            if (clen < 16 || off + clen > controllen) break;
+            if (level == 1 && type == 1) {
+                int fds[8], n = (int)((clen - 16) / 4);
+                if (n > 8) n = 8;
+                memcpy(fds, c + off + 16, (size_t)n * 4);
+                int rc = scm_send_fds(fd, fds, n);
+                if (rc < 0) return (uint64_t)(int64_t)rc;
+            }
+            off += (clen + 7) & ~7ull;
+        }
+    }
     for (uint64_t i = 0; i < iovlen; i++) {
         if (!v[2 * i + 1]) continue;
         uint64_t n;
@@ -753,7 +773,24 @@ static uint64_t sys_msg(int send, int fd, uint64_t msg, uint32_t flags, register
         total += n;
         if (n < v[2 * i + 1]) break;
     }
-    if (!send) { m[5] = 0; ((uint32_t *)m)[12] = 0; }                     /* no control data, no flags */
+    if (!send) {
+        int got = 0, fds[8];
+        if (control && controllen >= 20 && lx_user_range_ok(control, controllen)) {
+            int maxfds = (int)((controllen - 16) / 4);
+            if (maxfds > 8) maxfds = 8;
+            got = scm_recv_fds(fd, fds, maxfds);
+            if (got > 0) {
+                uint8_t *c = (uint8_t *)(uintptr_t)control;
+                uint64_t clen = 16 + (uint64_t)got * 4;
+                int32_t level = 1, type = 1;
+                memcpy(c, &clen, 8); memcpy(c + 8, &level, 4); memcpy(c + 12, &type, 4);
+                memcpy(c + 16, fds, (size_t)got * 4);
+                m[5] = (clen + 7) & ~7ull;
+            }
+        }
+        if (got <= 0) m[5] = 0;
+        ((uint32_t *)m)[12] = 0;                                              /* no flags */
+    }
     return total;
 }
 
@@ -1063,6 +1100,7 @@ void linux64_syscall(registers_t *r)
         case 72:  ret = call32(221, a, b, c, 0, 0, 0, r); break;               /* fcntl */
         case 74:  case 75: ret = 0; break;                                     /* fsync, fdatasync */
         case 77:  ret = call32(93, a, b, 0, 0, 0, 0, r); break;                /* ftruncate */
+        case 76:  ret = call32(92, a, b, 0, 0, 0, 0, r); break;                /* truncate */
         case 79:  ret = call32(183, a, b, 0, 0, 0, 0, r); break;               /* getcwd */
         case 80:  ret = call32(12, a, 0, 0, 0, 0, 0, r); break;                /* chdir */
         case 82:  ret = call32(38, a, b, 0, 0, 0, 0, r); break;                /* rename */

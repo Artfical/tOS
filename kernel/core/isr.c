@@ -142,6 +142,14 @@ void isr_handler(registers_t *regs)
             }
             strcat(line, "\n");
             serial_write(line);
+            {
+                char l2[200] = "user fault 64: rip=", h2[20];
+                uint64_t v2[8] = { regs->rip, cr2, regs->rax, regs->rdi, regs->rsi, regs->rdx, regs->rcx, regs->rsp };
+                static const char *const n2[8] = { "", " cr2=", " rax=", " rdi=", " rsi=", " rdx=", " rcx=", " rsp=" };
+                for (int k = 0; k < 8; k++) { if (k) strcat(l2, n2[k]); hex16(h2, v2[k]); strcat(l2, h2); }
+                strcat(l2, "\n");
+                serial_write(l2);
+            }
             /* the stack, to find the calls that led here */
             uint32_t sp = regs->useresp;
             if (sp >= 0x80000000u && sp < 0xC0000000u && !(sp & 3)) {

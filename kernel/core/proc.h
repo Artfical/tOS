@@ -28,6 +28,10 @@
 #define PROC_FD_NULL      (-6)          /* /dev/null */
 #define PROC_FD_CONSOLE(i) (-7 - (i))   /* a dup() of the console's 0, 1 or 2 (-7..-9) */
 #define PROC_FD_IS_CONSOLE(v) ((v) <= -7 && (v) >= -9)
+#define PROC_FD_PTM(i)  (-300 - (i))    /* the master of pseudo-terminal i (kernel/fs/pty.c), 8 of them */
+#define PROC_FD_PTS(i)  (-320 - (i))    /* its slave */
+#define PROC_FD_IS_PTM(v) ((v) <= -300 && (v) > -308)
+#define PROC_FD_IS_PTS(v) ((v) <= -320 && (v) > -328)
 /* Pipes are shared between processes (fork, then the child's stdio): one table for the system,
  * a descriptor holds an end, PROC_FD_PIPE_*_BASE - index. */
 #define PROC_MAX_PIPES 128
@@ -118,7 +122,8 @@ int  proc_execve_argv(const char *path, const char *const argv[], const char *co
 int  proc_fork(void *regs, int share_vm, uint64_t child_stack);
 /* a signal for a process: its handler (pending), or what the signal does by default */
 int  proc_signal(proc_t *p, int sig);
-void proc_signal_surface(void *surface, int sig);   /* every program on one terminal window (^C) */
+void proc_signal_surface(void *surface, int sig);
+void proc_signal_pty(int n, int sig);                /* every program that has pseudo-terminal n's slave open */   /* every program on one terminal window (^C) */
 /* wait4: a child that has ended (pid -1 = any); 0 with nohang when none has yet, -ECHILD */
 int  proc_wait_child(int pid, int nohang, int *status);
 proc_t *proc_current(void);

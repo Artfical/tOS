@@ -1,6 +1,33 @@
 --- a/misc.c	2026-10-06 08:45:31.000000000 +0000
-+++ b/misc.c	2026-10-30 09:56:43.441724014 +0000
-@@ -560,7 +560,8 @@
++++ b/misc.c	2026-10-30 12:21:14.042577891 +0000
+@@ -538,6 +538,26 @@
+ 	return strdelim_internal(s, 0);
+ }
+ 
++/* tOS: the privilege separation account (uid 74) is used even when /etc/passwd has no line for it */
++struct passwd *
++tos_privsep_pw(const char *name)
++{
++	static struct passwd fake;
++	struct passwd *pw = getpwnam(name);
++
++	if (pw != NULL)
++		return pw;
++	memset(&fake, 0, sizeof(fake));
++	fake.pw_name = (char *)name;
++	fake.pw_passwd = (char *)"*";
++	fake.pw_uid = 74;
++	fake.pw_gid = 74;
++	fake.pw_gecos = (char *)"sshd privilege separation";
++	fake.pw_dir = (char *)"/system/pkg/openssh/var/empty";
++	fake.pw_shell = (char *)"/bin/false";
++	return &fake;
++}
++
+ struct passwd *
+ pwcopy(struct passwd *pw)
+ {
+@@ -560,7 +580,8 @@
  	copy->pw_class = xstrdup(pw->pw_class == NULL ? "" : pw->pw_class);
  #endif
  	copy->pw_dir = xstrdup(pw->pw_dir == NULL ? "" : pw->pw_dir);
@@ -10,6 +37,16 @@
  	return copy;
  }
  
+--- a/misc.h	2026-10-06 08:45:31.000000000 +0000
++++ b/misc.h	2026-10-30 12:21:14.046577921 +0000
+@@ -119,6 +119,7 @@
+ void	 sock_set_v6only(int);
+ 
+ struct passwd *pwcopy(struct passwd *);
++struct passwd *tos_privsep_pw(const char *);
+ void	 pwfree(struct passwd *); /* NB. only use with pwcopy */
+ 
+ const char *ssh_gai_strerror(int);
 --- a/auth-passwd.c	2026-10-06 08:45:31.000000000 +0000
 +++ b/auth-passwd.c	2026-10-30 09:56:43.441724014 +0000
 @@ -195,6 +195,16 @@
@@ -51,3 +88,56 @@
  		logit("User %.100s password has expired (root forced)", user);
  		return 1;
  	} else if (spw->sp_max == -1) {
+--- a/sshd.c	2026-10-06 08:45:31.000000000 +0000
++++ b/sshd.c	2026-10-30 12:21:14.050577951 +0000
+@@ -1753,7 +1753,7 @@
+ 	/* Ensure privsep directory is correctly configured. */
+ 	need_chroot = ((getuid() == 0 || geteuid() == 0) ||
+ 	    options.kerberos_authentication);
+-	if ((getpwnam(SSH_PRIVSEP_USER)) == NULL && need_chroot) {
++	if ((tos_privsep_pw(SSH_PRIVSEP_USER)) == NULL && need_chroot) {
+ 		fatal("Privilege separation user %s does not exist",
+ 		    SSH_PRIVSEP_USER);
+ 	}
+--- a/sshd-auth.c	2026-10-06 08:45:31.000000000 +0000
++++ b/sshd-auth.c	2026-10-30 12:21:14.046577921 +0000
+@@ -627,7 +627,7 @@
+ 
+ 	/* Store privilege separation user for later use if required. */
+ 	privsep_chroot = (getuid() == 0 || geteuid() == 0);
+-	if ((privsep_pw = getpwnam(SSH_PRIVSEP_USER)) == NULL) {
++	if ((privsep_pw = tos_privsep_pw(SSH_PRIVSEP_USER)) == NULL) {
+ 		if (privsep_chroot || options.kerberos_authentication)
+ 			fatal("Privilege separation user %s does not exist",
+ 			    SSH_PRIVSEP_USER);
+--- a/sshd-session.c	2026-10-06 08:45:31.000000000 +0000
++++ b/sshd-session.c	2026-10-30 12:21:14.046577921 +0000
+@@ -988,7 +988,7 @@
+ 
+ 	/* Store privilege separation user for later use if required. */
+ 	privsep_chroot = (getuid() == 0 || geteuid() == 0);
+-	if ((privsep_pw = getpwnam(SSH_PRIVSEP_USER)) == NULL) {
++	if ((privsep_pw = tos_privsep_pw(SSH_PRIVSEP_USER)) == NULL) {
+ 		if (privsep_chroot || options.kerberos_authentication)
+ 			fatal("Privilege separation user %s does not exist",
+ 			    SSH_PRIVSEP_USER);
+--- a/sshpty.c	2026-10-06 08:45:31.000000000 +0000
++++ b/sshpty.c	2026-10-30 15:03:26.171556986 +0000
+@@ -53,6 +53,8 @@
+  * returned (the buffer must be able to hold at least 64 characters).
+  */
+ 
++extern char *ptsname(int);	/* tOS: no prototype in scope here (a 64-bit pointer returned as int) */
++
+ int
+ pty_allocate(int *ptyfd, int *ttyfd, char *namebuf, size_t namebuflen)
+ {
+@@ -66,6 +68,8 @@
+ 		return 0;
+ 	}
+ 	name = ttyname(*ttyfd);
++	if (name == NULL)	/* tOS: glibc finds no /proc/self/fd or /dev/pts listing; the master knows the slave's name */
++		name = ptsname(*ptyfd);
+ 	if (!name)
+ 		fatal("openpty returns device for which ttyname fails.");
+ 

@@ -213,6 +213,7 @@ static int ramfs_open_stub(void *ctx, const char *path, int flags) { (void)ctx; 
 static int ramfs_close_stub(void *ctx, int fd) { (void)ctx; return ramfs_vfs_close(fd); }
 static int ramfs_read_stub(void *ctx, int fd, void *buf, uint32_t size) { (void)ctx; return ramfs_vfs_read(fd, buf, size); }
 static int ramfs_write_stub(void *ctx, int fd, const void *buf, uint32_t size) { (void)ctx; return ramfs_vfs_write(fd, buf, size); }
+static int ramfs_truncate_stub(void *ctx, int fd, uint32_t size);
 static int ramfs_lseek_stub(void *ctx, int fd, uint32_t offset, int whence) { (void)ctx; return ramfs_vfs_lseek(fd, offset, whence); }
 static int ramfs_readdir_stub(void *ctx, const char *path, vfs_entry_t *entries, int max) { (void)ctx; return ramfs_vfs_readdir(path, entries, max); }
 static int ramfs_mkdir_stub(void *ctx, const char *path, uint32_t mode) { (void)ctx; return ramfs_mkdir_mode(path, mode); }
@@ -230,6 +231,7 @@ void ramfs_mount_vfs(void)
     ops.read    = ramfs_read_stub;
     ops.write   = ramfs_write_stub;
     ops.lseek   = ramfs_lseek_stub;
+    ops.truncate = ramfs_truncate_stub;
     ops.readdir = ramfs_readdir_stub;
     ops.mkdir   = ramfs_mkdir_stub;
     ops.unlink  = ramfs_unlink_stub;
@@ -359,6 +361,7 @@ int ramfs_vfs_write(int fd, const void *buf, uint32_t size)
     ramfs_inode_t *n = iget(fds[fd].ino);
     if (!n || (n->mode & S_IFDIR)) return -1;
     uint32_t new_size = fds[fd].offset + size;
+    uint32_t old_size = n->size;
     if (new_size > n->size) {
         /* `blocks` is how many bytes the data has room for. Big files grow by doubling (a 15 MB pack
          * written in 64 KB pieces was copied whole 230 times, and a copy needs the room twice);
@@ -379,9 +382,31 @@ int ramfs_vfs_write(int fd, const void *buf, uint32_t size)
         }
         n->size = new_size;
     }
+    if (fds[fd].offset > old_size) memset(n->data + old_size, 0, fds[fd].offset - old_size);   /* a seek past the end leaves zeros */
     memcpy(n->data + fds[fd].offset, buf, size);
     fds[fd].offset += size;
     return size;
+}
+
+static int ramfs_truncate_stub(void *ctx, int fd, uint32_t size)
+{
+    (void)ctx;
+    if (fd < 0 || fd >= VFS_MAX_FDS || !fds[fd].used) return -1;
+    ramfs_inode_t *n = iget(fds[fd].ino);
+    if (!n || (n->mode & S_IFDIR)) return -1;
+    if (size > n->size) {
+        uint32_t cap = n->data ? (n->blocks > n->size ? n->blocks : n->size) : 0;
+        if (size > cap) {
+            uint8_t *nd = malloc(size);
+            if (!nd) return -1;
+            if (n->data) { memcpy(nd, n->data, n->size); free(n->data); }
+            n->data = nd;
+            n->blocks = size;
+        }
+        memset(n->data + n->size, 0, size - n->size);
+    }
+    n->size = size;
+    return 0;
 }
 
 int ramfs_vfs_lseek(int fd, uint32_t offset, int whence)
@@ -392,7 +417,6 @@ int ramfs_vfs_lseek(int fd, uint32_t offset, int whence)
     if (whence == 0) fds[fd].offset = offset;
     else if (whence == 1) fds[fd].offset += offset;
     else if (whence == 2) fds[fd].offset = n->size + offset;
-    if (fds[fd].offset > n->size) fds[fd].offset = n->size;
     return fds[fd].offset;
 }
 

@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include "isr.h"
 
+/* descriptors passed over a socketpair with sendmsg/recvmsg (SCM_RIGHTS) */
+int scm_send_fds(int sock_fd, const int *fds, int n);
+int scm_recv_fds(int sock_fd, int *out, int max);
+
 #define SYS_EXIT    1
 #define SYS_FORK    2
 #define LINUX_SYS_CLONE 120
