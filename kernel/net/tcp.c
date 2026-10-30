@@ -37,11 +37,20 @@ typedef struct {
     uint32_t snd_una;
     uint32_t snd_wnd;   /* window the peer advertised in its latest valid ACK */
 
+    /* the receive buffer is a ring of rx_cap bytes: rx_len in-order bytes from rx_head wait for the
+     * program, and segments that arrived ahead of a gap sit beyond them (ooo) until it is filled */
     uint8_t *rx_buf;
+    int      rx_head;
     int      rx_len;
     int      rx_cap;
     int      rx_closed;
     int      adv_wnd;           /* the window our last segment told the peer */
+    int      ack_pending;       /* data segments taken in whose acknowledgement is still to be sent */
+    uint8_t  ws_ok;             /* window scaling was agreed in the handshake */
+    uint8_t  snd_shift;         /* the peer's scale: its window field counts in units of 1 << snd_shift */
+    uint16_t peer_mss;          /* the largest segment the peer takes */
+    int      ooo_n;
+    struct { uint32_t seq; int len; } ooo[8];
 
     uint8_t *retx_data;
     int      retx_len;
@@ -101,36 +110,117 @@ static uint16_t alloc_port(void)
     return (uint16_t)(49152 + csprng_u32() % 16384);
 }
 
-/* Per-socket receive buffer limit. Data beyond it is not acknowledged, so
- * the peer retransmits once the application has drained the buffer. */
-#define TCP_RX_MAX (64 * 1024)
+/* Receive buffer: 4 MB where there is memory for it (a 64 KB window caps a download at 64 KB per round
+ * trip; 1 Gbit/s over 30 ms needs about 4 MB), the window field scaled by 1 << TCP_RCV_SHIFT to say so. Data beyond what is free is
+ * not acknowledged, so the peer retransmits once the program has read some. */
+#define TCP_RX_MAX    (4 * 1024 * 1024)
+#define TCP_RX_MIN    (64 * 1024)
+#define TCP_RCV_SHIFT 7              /* 65535 << 7 reaches 8 MB */
 
 static int rx_free(const tcp_sock_t *s)
 {
-    return s->rx_len >= TCP_RX_MAX ? 0 : TCP_RX_MAX - s->rx_len;
+    int cap = s->rx_cap ? s->rx_cap : TCP_RX_MAX;
+    return s->rx_len >= cap ? 0 : cap - s->rx_len;
 }
 
-/* Returns 1 when all of the data was queued, 0 when it did not fit (or
- * memory ran out) and nothing was stored. */
+static int rx_ensure(tcp_sock_t *s)
+{
+    if (s->rx_buf) return 1;
+    /* as much as there is memory for: 4 MB, then a quarter of it each time that fails */
+    int cap = TCP_RX_MAX;
+    uint8_t *b = (uint8_t *)malloc((size_t)cap);
+    while (!b && cap > TCP_RX_MIN) { cap /= 4; if (cap < TCP_RX_MIN) cap = TCP_RX_MIN; b = (uint8_t *)malloc((size_t)cap); }
+    if (!b) return 0;
+    s->rx_buf = b; s->rx_cap = cap; s->rx_head = 0; s->rx_len = 0; s->ooo_n = 0;
+    return 1;
+}
+
+static void rx_release(tcp_sock_t *s)
+{
+    if (s->rx_buf) free(s->rx_buf);
+    s->rx_buf = 0; s->rx_cap = 0; s->rx_head = 0; s->rx_len = 0; s->ooo_n = 0;
+}
+
+/* bytes of the ring at `off` bytes past the end of the in-order data */
+static void rx_put(tcp_sock_t *s, int off, const uint8_t *data, int len)
+{
+    int at = (s->rx_head + s->rx_len + off) % s->rx_cap;
+    int first = s->rx_cap - at < len ? s->rx_cap - at : len;
+    memcpy(s->rx_buf + at, data, (size_t)first);
+    if (first < len) memcpy(s->rx_buf, data + first, (size_t)(len - first));
+}
+
+/* what the program takes out of the ring */
+static int rx_take(tcp_sock_t *s, uint8_t *dst, int max)
+{
+    int n = s->rx_len < max ? s->rx_len : max;
+    int first = s->rx_cap - s->rx_head < n ? s->rx_cap - s->rx_head : n;
+    memcpy(dst, s->rx_buf + s->rx_head, (size_t)first);
+    if (first < n) memcpy(dst + first, s->rx_buf, (size_t)(n - first));
+    s->rx_head = (s->rx_head + n) % s->rx_cap;
+    s->rx_len -= n;
+    if (s->rx_len == 0 && s->ooo_n == 0) s->rx_head = 0;
+    return n;
+}
+
+/* The segment that starts at s->ack: 1 when all of it fits (and the ooo ranges it reaches are joined
+ * on), 0 when there is no room. */
 static int rx_append(tcp_sock_t *s, const uint8_t *data, int len)
 {
     if (len <= 0) return 1;
-    if (len > rx_free(s)) return 0;
-    if (s->rx_buf == 0) {
-        s->rx_buf = (uint8_t *)malloc((size_t)len);
-        if (!s->rx_buf) return 0;
-        memcpy(s->rx_buf, data, (size_t)len);
-        s->rx_len = len;
-        s->rx_cap = len;
-    } else {
-        uint8_t *tmp = (uint8_t *)krealloc(s->rx_buf, (size_t)s->rx_len + (size_t)len);
-        if (!tmp) return 0;
-        memcpy(tmp + s->rx_len, data, (size_t)len);
-        s->rx_buf = tmp;
-        s->rx_len += len;
-        s->rx_cap  = s->rx_len;
+    if (!rx_ensure(s) || len > rx_free(s)) return 0;
+    rx_put(s, 0, data, len);
+    s->rx_len += len;
+    s->ack += (uint32_t)len;
+    for (int again = 1; again && s->ooo_n;) {                 /* ranges that now touch the data */
+        again = 0;
+        for (int i = 0; i < s->ooo_n; i++) {
+            if (!SEQ_LEQ(s->ooo[i].seq, s->ack)) continue;
+            uint32_t end = s->ooo[i].seq + (uint32_t)s->ooo[i].len;
+            if (SEQ_GT(end, s->ack)) {
+                int adv = (int)(end - s->ack);                /* the bytes were put in place on arrival */
+                s->rx_len += adv;
+                s->ack = end;
+            }
+            s->ooo[i] = s->ooo[--s->ooo_n];
+            again = 1;
+            break;
+        }
     }
     return 1;
+}
+
+/* A segment ahead of a gap (seq after s->ack): kept in its place in the ring, so the peer does not have
+ * to send it again once the hole is filled. */
+static void rx_hold(tcp_sock_t *s, uint32_t seq, const uint8_t *data, int len)
+{
+    uint32_t off = seq - s->ack;
+    if (!rx_ensure(s) || off >= (uint32_t)rx_free(s) || len > rx_free(s) - (int)off) return;
+    for (int i = 0; i < s->ooo_n; i++)                        /* already held (a retransmission) */
+        if (s->ooo[i].seq == seq && s->ooo[i].len >= len) return;
+    if (s->ooo_n >= (int)(sizeof(s->ooo) / sizeof(s->ooo[0]))) return;
+    rx_put(s, (int)off, data, len);
+    s->ooo[s->ooo_n].seq = seq;
+    s->ooo[s->ooo_n].len = len;
+    s->ooo_n++;
+}
+
+/* The one's complement sum of `len` bytes as 16-bit words in the byte order of memory, eight bytes at a
+ * time (every frame is summed: the plain loop was the stack's biggest cost per packet). The result is
+ * folded to 16 bits and byte-swapped into network order. */
+static uint32_t csum_net(const uint8_t *p, int len)
+{
+    uint64_t sum = 0;
+    while (len >= 8) {
+        uint64_t v;
+        memcpy(&v, p, 8);
+        sum += (v & 0xFFFFFFFFu) + (v >> 32);
+        p += 8; len -= 8;
+    }
+    while (len >= 2) { uint16_t w; memcpy(&w, p, 2); sum += w; p += 2; len -= 2; }
+    if (len) sum += *p;                                   /* a lone last byte is the low half of its word */
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    return (uint32_t)(((sum & 0xFF) << 8) | (sum >> 8));  /* memory order -> network order */
 }
 
 /* -- Packet builder -------------------------------------------------------- */
@@ -148,7 +238,9 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     int arc = arp_resolve(nh, mac);
     if (arc != 0) return arc;
 
-    int tcp_len = 20 + plen;
+    /* the opening SYN says what we take: segments of 1460 bytes, and a window counted in 32s */
+    int optlen  = flags == TCP_FLAG_SYN ? 8 : 0;
+    int tcp_len = 20 + optlen + plen;
     int total   = 14 + 20 + tcp_len;
     uint8_t *pkt = (uint8_t *)malloc(total);
     if (!pkt) return IP_ERR_NOMEM;
@@ -175,16 +267,23 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     *(uint16_t *)(tcp + 2)  = htons(s->dst_port);
     *(uint32_t *)(tcp + 4)  = htonl(s->seq);
     *(uint32_t *)(tcp + 8)  = htonl(s->ack);
-    *(tcp + 12) = 0x50;
+    *(tcp + 12) = (uint8_t)(((20 + optlen) / 4) << 4);
     *(tcp + 13) = flags;
     {
-        /* advertise the real remaining receive space */
+        /* advertise the real remaining receive space (counted in units of 1 << TCP_RCV_SHIFT once the peer
+         * has agreed to scaling; a SYN's own window is never scaled) */
         int w = rx_free(s);
-        if (w > 65535) w = 65535;
-        s->adv_wnd = w;
-        *(uint16_t *)(tcp + 14) = htons((uint16_t)w);
+        uint32_t field;
+        if (!(flags & TCP_FLAG_SYN) && s->ws_ok) { field = (uint32_t)w >> TCP_RCV_SHIFT; if (field > 65535) field = 65535; s->adv_wnd = (int)(field << TCP_RCV_SHIFT); }
+        else { field = w > 65535 ? 65535u : (uint32_t)w; s->adv_wnd = (int)field; }
+        *(uint16_t *)(tcp + 14) = htons((uint16_t)field);
     }
-    if (plen > 0) memcpy(tcp + 20, payload, plen);
+    if (optlen) {
+        tcp[20] = 2; tcp[21] = 4; tcp[22] = (uint8_t)(TCP_MSS >> 8); tcp[23] = (uint8_t)(TCP_MSS & 0xFF);   /* MSS */
+        tcp[24] = 1; tcp[25] = 3; tcp[26] = 3; tcp[27] = TCP_RCV_SHIFT;                                      /* NOP, window scale */
+    }
+    if (plen > 0) memcpy(tcp + 20 + optlen, payload, plen);
+    if (flags & TCP_FLAG_ACK) s->ack_pending = 0;               /* this segment carries the acknowledgement */
 
     /* Pseudo header + checksum: built and read as plain bytes, never
      * through a mismatched pointer-cast onto this buffer. Doing that
@@ -213,8 +312,7 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     uint32_t sum = 0;
     int j;
     for (j = 0; j < 12; j += 2) sum += ((uint16_t)pseudo[j] << 8) | pseudo[j + 1];
-    for (j = 0; j + 1 < tcp_len; j += 2) sum += ((uint16_t)tcp[j] << 8) | tcp[j + 1];
-    if (tcp_len & 1) sum += (uint32_t)tcp[tcp_len - 1] << 8;
+    sum += csum_net(tcp, tcp_len);
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     uint16_t tcp_cksum = (uint16_t)(~sum & 0xFFFF);
     tcp[16] = (uint8_t)(tcp_cksum >> 8);
@@ -270,6 +368,7 @@ int tcp_socket(void)
             socks[i].state    = TCP_CLOSED;
             socks[i].cwnd     = TCP_MSS;
             socks[i].ssthresh = 65535;
+            socks[i].peer_mss = TCP_MSS;
             return i;
         }
     }
@@ -345,6 +444,7 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
 }
 
 static void tcp_tick_poll(void);
+static void tcp_flush_acks(void);
 
 int tcp_send2(int fd, void *data, int len)
 {
@@ -357,7 +457,8 @@ int tcp_send2(int fd, void *data, int len)
     const uint8_t *p = (const uint8_t *)data;
     int off = 0;
     do {
-        int n = len - off < TCP_MSS ? len - off : TCP_MSS;
+        int mss = s->peer_mss < TCP_MSS ? s->peer_mss : TCP_MSS;
+        int n = len - off < mss ? len - off : mss;
         /* Flow control: never send more than the peer's advertised window leaves
          * after what is still unacknowledged. A zero window is waited out (the peer
          * sends a window update ACK when its application reads); the window used to
@@ -438,21 +539,13 @@ int tcp_recv2(int fd, uint8_t *buf, int max_len)
     uint32_t deadline = debugmon_uptime_ms() + 10000;
     for (;;) {
         if (s->rx_len > 0) {
-            int n = s->rx_len < max_len ? s->rx_len : max_len;
-            memcpy(buf, s->rx_buf, n);
-            s->rx_len -= n;
-            if (s->rx_len > 0)
-                memmove(s->rx_buf, s->rx_buf + n, s->rx_len);
-            else {
-                free(s->rx_buf);
-                s->rx_buf = 0;
-                s->rx_cap = 0;
-            }
+            int n = rx_take(s, buf, max_len);
             rx_window_update(s);
             return n;
         }
         if (s->rx_closed)           return 0;
         if (s->state == TCP_CLOSED) return -1;
+        tcp_flush_acks();
         tcp_tick_poll();
         if (debugmon_uptime_ms() >= deadline) { klog_write("tcp: nothing received for 10 s"); return TCP_ERR_RECV_TIMEOUT; }
         uint8_t pkt[1536];
@@ -492,7 +585,7 @@ void tcp_close2(int fd)
     }
 
     retx_clear(s);
-    if (s->rx_buf) { free(s->rx_buf); s->rx_buf = 0; }
+    rx_release(s);
     memset(s, 0, sizeof(tcp_sock_t));
 }
 
@@ -579,6 +672,24 @@ static void tcp_trace_hex32(char *dbg, int *di, uint32_t v) {
     for (int sh = 28; sh >= 0; sh -= 4) dbg[(*di)++] = hx[(v >> sh) & 0xF];
 }
 
+/* the options of the peer's SYN-ACK: the window scale it agrees to (ours is dropped if it has none) and its MSS */
+static void tcp_syn_options(tcp_sock_t *s, const uint8_t *tcp, int hdr_len)
+{
+    s->ws_ok = 0;
+    s->snd_shift = 0;
+    for (int i = 20; i < hdr_len;) {
+        uint8_t k = tcp[i];
+        if (k == 0) break;
+        if (k == 1) { i++; continue; }
+        if (i + 1 >= hdr_len) break;
+        uint8_t l = tcp[i + 1];
+        if (l < 2 || i + l > hdr_len) break;
+        if (k == 3 && l == 3) { s->ws_ok = 1; s->snd_shift = tcp[i + 2] > 14 ? 14 : tcp[i + 2]; }
+        if (k == 2 && l == 4) { uint16_t m = (uint16_t)((tcp[i + 2] << 8) | tcp[i + 3]); if (m >= 64) s->peer_mss = m; }
+        i += l;
+    }
+}
+
 /* True when the segment's checksum (over pseudo-header + segment) is valid. */
 static int tcp_checksum_ok(const ip_hdr_t *ip_hdr, const uint8_t *seg, int len)
 {
@@ -591,8 +702,7 @@ static int tcp_checksum_ok(const ip_hdr_t *ip_hdr, const uint8_t *seg, int len)
     }
     sum += IPPROTO_TCP;
     sum += (uint32_t)len;
-    for (int j = 0; j + 1 < len; j += 2) sum += (uint32_t)((seg[j] << 8) | seg[j + 1]);
-    if (len & 1) sum += (uint32_t)seg[len - 1] << 8;
+    sum += csum_net(seg, len);
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return sum == 0xFFFF;
 }
@@ -699,7 +809,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
         }
         klog_write("tcp: reset received from the peer");
         retx_clear(s);
-        if (s->rx_buf) { free(s->rx_buf); s->rx_buf = 0; }
+        rx_release(s);
         s->got_rst = 1;
         s->state = TCP_CLOSED;
         return;
@@ -721,7 +831,8 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
             s->ack     = pkt_seq + 1;
             s->seq     = pkt_ack;
             s->snd_una = s->seq;
-            s->snd_wnd = peer_win;
+            s->snd_wnd = peer_win;                 /* a SYN's window is never scaled */
+            tcp_syn_options(s, tcp, hdr_len);
             s->state   = TCP_ESTABLISHED;
             send_seg(s, TCP_FLAG_ACK, 0, 0);
         }
@@ -751,7 +862,17 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
         /* Only advance (and so acknowledge) what was actually queued: when
          * the buffer is full the segment is dropped unacknowledged and the
          * peer retransmits it after the application has read some. */
-        if (rx_append(s, data, data_len)) s->ack += (uint32_t)data_len;
+        /* acknowledged for every second segment (and by tcp_flush_acks() when the polling round ends), not
+         * for each one: an ACK is a frame built, checksummed and sent */
+        if (rx_append(s, data, data_len)) {
+            if (++s->ack_pending >= 2 || (flags & (TCP_FLAG_FIN | TCP_FLAG_PSH))) send_seg(s, TCP_FLAG_ACK, 0, 0);
+        } else {
+            send_seg(s, TCP_FLAG_ACK, 0, 0);       /* no room: say what is free */
+        }
+    } else if (data_len > 0 && SEQ_GT(pkt_seq, s->ack)) {
+        /* ahead of a gap: keep it where it belongs, and tell the peer at once what is still missing (its
+         * fast retransmit counts these duplicate acknowledgements) */
+        rx_hold(s, pkt_seq, data, data_len);
         send_seg(s, TCP_FLAG_ACK, 0, 0);
     } else if (data_len > 0) {
         /* Out-of-sequence data (usually the sender retransmitting a
@@ -768,7 +889,8 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
     /* ACK */
     if (flags & TCP_FLAG_ACK) {
         /* the peer's window travels with every valid ACK (also pure window updates) */
-        if (SEQ_LEQ(s->snd_una, pkt_ack) && SEQ_LEQ(pkt_ack, s->seq)) s->snd_wnd = peer_win;
+        if (SEQ_LEQ(s->snd_una, pkt_ack) && SEQ_LEQ(pkt_ack, s->seq))
+            s->snd_wnd = s->ws_ok ? (uint32_t)peer_win << s->snd_shift : peer_win;
         if (SEQ_GT(pkt_ack, s->snd_una) && SEQ_LEQ(pkt_ack, s->seq)) {
             s->snd_una = pkt_ack;
             if (s->cwnd < s->ssthresh)
@@ -874,9 +996,24 @@ int tcp_get_connections(tcp_conn_info_t *out, int max)
  * Nothing waits here: the caller asks again later, and tcp_pump() moves the network along
  * in between (epoll and poll call it while they wait). */
 
+/* the data taken in whose acknowledgement is still unsent goes out (the peer must not wait for a second segment) */
+static void tcp_flush_acks(void)
+{
+    for (int i = 0; i < TCP_MAX_SOCKETS; i++) {
+        tcp_sock_t *s = &socks[i];
+        if (s->used && s->ack_pending > 0 &&
+            (s->state == TCP_ESTABLISHED || s->state == TCP_FIN_WAIT_1 || s->state == TCP_FIN_WAIT_2 || s->state == TCP_CLOSE_WAIT))
+            send_seg(s, TCP_FLAG_ACK, 0, 0);
+    }
+}
+
 void tcp_pump(void)
 {
-    for (int i = 0; i < 32; i++) net_poll();
+    for (int i = 0; i < 1024; i++) {
+        if (!net_poll()) break;
+        if ((i & 63) == 63) tcp_flush_acks();            /* a long burst: not one acknowledgement at its end only */
+    }
+    tcp_flush_acks();
     tcp_tick_poll();
 }
 
@@ -933,11 +1070,7 @@ int tcp_recv_nb(int fd, uint8_t *buf, int max_len)
     tcp_sock_t *s = get_sock(fd);
     if (!s) { klog_write("tcp: recv on a socket that is gone (end of file)"); return 0; }
     if (s->rx_len > 0) {
-        int n = s->rx_len < max_len ? s->rx_len : max_len;
-        memcpy(buf, s->rx_buf, (size_t)n);
-        s->rx_len -= n;
-        if (s->rx_len > 0) memmove(s->rx_buf, s->rx_buf + n, (size_t)s->rx_len);
-        else { free(s->rx_buf); s->rx_buf = 0; s->rx_cap = 0; }
+        int n = rx_take(s, buf, max_len);
         rx_window_update(s);
         return n;
     }

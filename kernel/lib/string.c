@@ -142,3 +142,12 @@ char *strstr(const char *haystack, const char *needle)
     }
     return NULL;
 }
+
+char *strncat(char *dest, const char *src, size_t n)
+{
+    char *d = dest + strlen(dest);
+    size_t i = 0;
+    while (i < n && src[i]) { d[i] = src[i]; i++; }
+    d[i] = 0;
+    return dest;
+}

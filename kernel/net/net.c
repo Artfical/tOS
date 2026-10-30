@@ -51,15 +51,24 @@ void net_init(void)
     terminal_writestring("[OK] Network stack ready\n");
 }
 
-void net_poll(void)
+/* one received frame handled: 1, or 0 when none was waiting */
+/* self-tests only: this many received frames in a thousand are thrown away, to exercise TCP's recovery */
+volatile int net_test_loss_permille;
+static uint32_t net_test_rng = 12345;
+
+int net_poll(void)
 {
-    if (!nic_poll) return;
+    if (!nic_poll) return 0;
     uint8_t buf[1540]; /* 1536 + 4 bytes headroom for VLAN tag */
     int len = nic_poll(buf, 1536);
-    if (len <= 0) return;
+    if (len <= 0) return 0;
+    if (net_test_loss_permille) {
+        net_test_rng = net_test_rng * 1103515245u + 12345u;
+        if ((net_test_rng >> 16) % 1000u < (uint32_t)net_test_loss_permille) return 1;
+    }
 
     /* Pass through bridge ingress first */
-    if (bridge_rx("eth0", buf, len)) return;
+    if (bridge_rx("eth0", buf, len)) return 1;
 
     /* Strip 802.1Q VLAN tag if present */
     uint16_t vid = 0;
@@ -67,7 +76,7 @@ void net_poll(void)
         uint16_t etype = (uint16_t)((buf[12] << 8) | buf[13]);
         if (etype == ETHERTYPE_VLAN) {
             vlan_strip(buf, &len, &vid);
-            if (!vlan_allowed(vid)) return;
+            if (!vlan_allowed(vid)) return 1;
         }
     }
 
@@ -82,4 +91,5 @@ void net_poll(void)
         ip6_handle(buf + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
     else if (type == ETHERTYPE_IPX)
         ipx_handle(buf + sizeof(eth_hdr_t), len - sizeof(eth_hdr_t));
+    return 1;
 }

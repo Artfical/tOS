@@ -7,8 +7,9 @@
 #include "string.h"
 #include "terminal.h"
 
-#define E1000_NUM_RX_DESC 8
-#define E1000_NUM_TX_DESC 8
+#define E1000_MAX_RX_DESC 4096      /* a burst of a 4 MB window fits while the program is busy */
+#define E1000_MIN_RX_DESC 64
+#define E1000_NUM_TX_DESC 32
 #define E1000_BUF_SIZE    2048
 
 /* Extra slack allocated (but never advertised to the NIC) past every
@@ -110,7 +111,8 @@ static volatile uint8_t *mmio = 0;
 static e1000_tx_desc_t *tx_ring = 0;
 static e1000_rx_desc_t *rx_ring = 0;
 static uint8_t *tx_bufs[E1000_NUM_TX_DESC];
-static uint8_t *rx_bufs[E1000_NUM_RX_DESC];
+static uint8_t *rx_bufs[E1000_MAX_RX_DESC];
+static int rx_count = E1000_MIN_RX_DESC;
 static int tx_cur = 0;
 static int rx_cur = 0;
 static int initialized = 0;
@@ -176,18 +178,26 @@ int e1000_init(void)
         tx_bufs[i] = (uint8_t *)malloc(E1000_BUF_SIZE);
         if (!tx_bufs[i]) return -1;
     }
-    for (int i = 0; i < E1000_NUM_RX_DESC; i++) {
-        rx_bufs[i] = (uint8_t *)malloc(E1000_BUF_SIZE + E1000_RX_PAD);
-        if (!rx_bufs[i]) return -1;
+    /* receive buffers: up to 4096 of them, fewer where memory is short (a multiple of 8: RDLEN wants 128 bytes) */
+    rx_count = 0;
+    int rx_limit = (int)(((uint64_t)get_total_pages() * 4096u / 64u) / E1000_BUF_SIZE);   /* a 64th of memory at most */
+    if (rx_limit > E1000_MAX_RX_DESC) rx_limit = E1000_MAX_RX_DESC;
+    if (rx_limit < E1000_MIN_RX_DESC) rx_limit = E1000_MIN_RX_DESC;
+    while (rx_count < rx_limit) {
+        rx_bufs[rx_count] = (uint8_t *)malloc(E1000_BUF_SIZE + E1000_RX_PAD);
+        if (!rx_bufs[rx_count]) break;
+        rx_count++;
     }
+    rx_count &= ~7;
+    if (rx_count < 8) return -1;
 
     void *tx_mem = malloc(sizeof(e1000_tx_desc_t) * E1000_NUM_TX_DESC + 16);
-    void *rx_mem = malloc(sizeof(e1000_rx_desc_t) * E1000_NUM_RX_DESC + 16);
+    void *rx_mem = malloc(sizeof(e1000_rx_desc_t) * rx_count + 16);
     if (!tx_mem || !rx_mem) return -1;
     tx_ring = (e1000_tx_desc_t *)(((uintptr_t)tx_mem + 15) & ~15);
     rx_ring = (e1000_rx_desc_t *)(((uintptr_t)rx_mem + 15) & ~15);
     memset(tx_ring, 0, sizeof(e1000_tx_desc_t) * E1000_NUM_TX_DESC);
-    memset(rx_ring, 0, sizeof(e1000_rx_desc_t) * E1000_NUM_RX_DESC);
+    memset(rx_ring, 0, sizeof(e1000_rx_desc_t) * rx_count);
 
     e1000_write(E1000_TDBAL, (uint32_t)V2P(tx_ring));
     e1000_write(E1000_TDBAH, 0);
@@ -197,15 +207,15 @@ int e1000_init(void)
 
     e1000_write(E1000_RDBAL, (uint32_t)V2P(rx_ring));
     e1000_write(E1000_RDBAH, 0);
-    e1000_write(E1000_RDLEN, sizeof(e1000_rx_desc_t) * E1000_NUM_RX_DESC);
+    e1000_write(E1000_RDLEN, sizeof(e1000_rx_desc_t) * rx_count);
     e1000_write(E1000_RDH, 0);
     e1000_write(E1000_RDT, 0);
 
-    for (int i = 0; i < E1000_NUM_RX_DESC; i++) {
+    for (int i = 0; i < rx_count; i++) {
         rx_ring[i].addr = V2P(rx_bufs[i]);
         rx_ring[i].status = 0;
     }
-    e1000_write(E1000_RDT, E1000_NUM_RX_DESC - 1);
+    e1000_write(E1000_RDT, rx_count - 1);
 
     e1000_write(E1000_TCTL, E1000_TCTL_EN | E1000_TCTL_PSP |
                 (0x10 << 4) | (0x40 << 12));
@@ -272,7 +282,7 @@ int e1000_poll(uint8_t *buf, int max_len)
     }
 
     rx_ring[idx].status = 0;
-    rx_cur = (idx + 1) % E1000_NUM_RX_DESC;
+    rx_cur = (idx + 1) % rx_count;
     e1000_write(E1000_RDT, idx);
 
     return ret;

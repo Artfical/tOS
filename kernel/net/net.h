@@ -41,6 +41,7 @@ typedef struct {
 } __attribute__((packed)) eth_hdr_t;
 
 void net_init(void);
-void net_poll(void);
+int net_poll(void);
+extern volatile int net_test_loss_permille;      /* self-tests: drop this many frames per thousand */
 
 #endif

@@ -22,6 +22,7 @@
 #include "version.h"
 #include "klog.h"
 #include "net.h"
+#include "service.h"
 #include "micropython.h"
 #include "scheduler.h"
 #include "vga_font.h"
@@ -526,6 +527,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     micropython_init();
 
     scheduler_init();
+    task_spawn(service_boot_task, "services");           /* starts what is switched on once the network is up */
 #ifdef TOS_FPU_CONTEXT_SELFTEST
     extern void scheduler_fpu_context_selftest(void);
     scheduler_fpu_context_selftest();
@@ -579,6 +581,37 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             { 0 } };
         for (int i = 0; runs[i][0]; i++) {
             const char *const *av = runs[i];
+            if (!strcmp(av[0], "!sleep")) {                  /* "!sleep" ms */
+                int n = 0;
+                for (const char *c = av[1]; c && *c >= '0' && *c <= '9'; c++) n = n * 10 + (*c - '0');
+                task_sleep((uint32_t)n);
+                continue;
+            }
+            if (!strcmp(av[0], "!service")) {                /* "!service" start|stop|status|log name */
+                static char sb[2048];
+                service_info_t li[SERVICE_MAX];
+                serial_write("[SVC-TEST] "); serial_write(av[1]); serial_write(" "); serial_write(av[2]); serial_write(": ");
+                if (!strcmp(av[1], "start")) { int r = service_start(av[2]); serial_write(r ? service_strerror(r) : "ok"); }
+                else if (!strcmp(av[1], "stop")) { int r = service_stop(av[2]); serial_write(r ? service_strerror(r) : "ok"); }
+                else if (!strcmp(av[1], "enable")) { int r = service_enable(av[2], 1); serial_write(r ? service_strerror(r) : "ok"); }
+                else if (!strcmp(av[1], "disable")) { int r = service_enable(av[2], 0); serial_write(r ? service_strerror(r) : "ok"); }
+                else if (!strcmp(av[1], "status")) {
+                    int n = service_list(li, SERVICE_MAX);
+                    serial_write("not listed");
+                    for (int k = 0; k < n; k++) if (!strcmp(li[k].name, av[2])) {
+                        serial_write(li[k].running ? "running" : "stopped");
+                        serial_write(li[k].enabled ? ", enabled" : ", not enabled");
+                    }
+                } else if (!strcmp(av[1], "log")) { service_log(av[2], sb, sizeof(sb)); serial_write("\n"); serial_write(sb); }
+                serial_write("\n");
+                continue;
+            }
+            if (av[0][0] == '!') {                            /* "!loss" N: drop N frames per thousand from here on */
+                int n = 0;
+                for (const char *c = av[1]; c && *c >= '0' && *c <= '9'; c++) n = n * 10 + (*c - '0');
+                net_test_loss_permille = n;
+                continue;
+            }
             const char *const progs[] = { av[0] };
             if (!fsbridge_exists(av[0])) continue;
             const char *ev[] = { "HOME=/root", "PATH=/programs", 0 };

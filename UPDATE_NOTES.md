@@ -1,16 +1,14 @@
-# A real terminal for programs, and Git that works through
+# Faster downloads, and services you can switch on and off
 
-## terminal | Terminal
-- Programs that draw whole screens work in Terminal: colours (16, 256 and true colour, shown with the Terminal's 16), the cursor, a second screen they leave when they end, box drawing and UTF-8 text.
-- The keys reach them as a terminal sends them: arrows, Home, End, Page Up and Down, Insert, Delete, F1 to F12, Alt with a key, Esc.
-- Programs can put the Terminal in raw mode (termios), ask its size, read keys one at a time and get ^C. When a program ends, the shell's Terminal is as it was.
-- ./program and /path/to/program run from the shell, and so do the commands npm install -g adds (they live in the bin folder of the package that installed them).
-- Scripts that start with #!/usr/bin/env node (or any command tpkg knows) run when a program starts them.
-
-## terminal | Git
-- git clone, commit, log, status, mv and sparse checkouts work; Git no longer waits for a pager tOS does not have, and files it creates keep their executable bit.
-- tpkg update tells you that a newer Git is out: sudo tpkg upgrade installs it.
+## settings | Services
+- New Settings > Services pane: every service a package installed, with a switch. On starts it now and whenever tOS starts, off stops it and keeps it from starting. It asks for your password.
+- New service command: service list, status, log, and (with sudo) start, stop, restart, enable, disable.
+- Packages bring their own services (tpkg.services) and can print a message when they are installed (tpkg.message). Removing a package stops and removes its services.
 
 ## settings | Network
-- Big HTTPS downloads no longer break in the middle (a memory-resize bug damaged data waiting to be read), and the window update that tells a server to go on is sent when a program has read what was waiting.
-- Writing a big file (a 15 MB download in /tmp) no longer copies it over and over, and no longer fails when memory is tight.
+- Downloads are much faster: tOS now accepts up to 4 MB in flight (it was 64 KB), tells the server so with window scaling, receives out-of-order data instead of throwing it away, acknowledges every second segment, and sums packets eight bytes at a time.
+- The network card gets as many receive buffers as there is memory for (up to 4096), so a fast server's burst is not dropped.
+- A download of any size can be streamed to disk or /dev/null; checked with file contents compared byte for byte, also with packets lost on purpose.
+
+## terminal | Terminal
+- A background service's output goes to its own log (service log <name>) and never touches the keyboard.

@@ -216,10 +216,11 @@ void terminal_putchar(char c)
     }
 
     serial_putchar(c);
-    if (terminal_quiet) return;
 
+    /* a surface takes the text always; "quiet" (the boot screen is up) is about the VGA memory */
     term_surface_t *s = current_surface();
     if (s) { vt_putbyte(s, (uint8_t)c); return; }
+    if (terminal_quiet) return;
 
     if (c == '\n') {
         terminal_column = 0;

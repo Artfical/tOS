@@ -62,6 +62,9 @@ void uihost_set(const char *key, int value);
 /* accounts */
 typedef struct { char name[32]; char full[48]; uint32_t uid; int admin; int current; } uihost_user_t;
 int  uihost_users(uihost_user_t *out, int max);
+typedef struct { char name[24]; char desc[80]; int running; int enabled; } uihost_service_t;
+int  uihost_services(uihost_service_t *out, int max);
+int  uihost_service_set(const char *name, int on);   /* on: enable and start, off: stop and disable; needs authorisation */
 int  uihost_add_user(const char *name, const char *password, const char *full, int admin);   /* needs authorisation */
 int  uihost_set_password(const char *name, const char *password);                          /* needs authorisation */
 

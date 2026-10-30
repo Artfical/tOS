@@ -31,7 +31,7 @@
 #define VRING_ALIGN   4096
 #define RX_QUEUE      0
 #define TX_QUEUE      1
-#define NUM_RX_BUFS   8
+#define NUM_RX_BUFS   128
 #define NUM_TX_BUFS   8
 #define NET_HDR_LEN   10
 #define BUF_SIZE      (NET_HDR_LEN + 1514)

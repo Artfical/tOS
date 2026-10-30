@@ -40,6 +40,7 @@ static term_surface_t *surface(void)
 /* the first time a Linux program uses the terminal: it speaks UTF-8 and wants xterm's key sequences */
 static void attach(term_surface_t *s)
 {
+    if (s->hidden) { s->utf8 = 1; return; }              /* a service's log: UTF-8, but no keyboard to change */
     if (s != &direct_surface && !s->xterm_keys) {
         s->utf8 = 1;
         s->xterm_keys = 1;
@@ -52,7 +53,7 @@ void tty_detach(void *surf)
     term_surface_t *s = surf;
     if (!s) return;
     vt_reset_modes(s);
-    keyboard_set_xterm(0);
+    if (!s->hidden) keyboard_set_xterm(0);
 }
 
 /* ---------------------------------------------------------------- input */

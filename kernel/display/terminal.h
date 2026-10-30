@@ -54,6 +54,7 @@ typedef struct {
     int top, bottom;                    /* scroll region, rows */
     uint8_t wrap_pending, autowrap, cursor_visible, alt_screen, app_cursor, bracketed_paste;
     uint8_t mouse_mode, mouse_sgr, insert_mode, origin, utf8, xterm_keys;
+    uint8_t hidden;                     /* a log no window shows (a service's): it has no keyboard */
     int alt_saved_row, alt_saved_col;
     uint16_t alt_cells[TERM_SURFACE_W * TERM_SURFACE_H];
     char title[48];

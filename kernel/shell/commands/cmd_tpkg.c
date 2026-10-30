@@ -11,6 +11,7 @@
 #include "sha256.h"
 #include "png.h"
 #include "build.h"
+#include "service.h"
 
 /* tpkg: tOS's package manager. Packages live on update.artfical.com:
  *   GET https://update.artfical.com/pkg/api/list
@@ -721,6 +722,32 @@ static int tpkg_install(uint32_t ip, const char *name, const char *list)
     print_uint((uint32_t)files);
     terminal_writestring(" files)\n");
     register_commands(e.name, dest);
+    {
+        /* tpkg.services: "name|command line|description" per line; tpkg.message: what the package wants said */
+        char f[VFS_NAME_LEN];
+        strcpy(f, dest); strcat(f, "/tpkg.services");
+        char *sv = read_whole(f, 0);
+        for (char *q = sv; q && *q;) {
+            char *line = q;
+            while (*q && *q != '\n') q++;
+            if (*q) *q++ = 0;
+            if (!line[0] || service_register(line, dest) != 0) continue;
+            char *bar = strchr(line, '|');
+            if (bar) *bar = 0;
+            terminal_writestring("  service ");
+            terminal_writestring(line);
+            terminal_writestring("  (sudo service start ");
+            terminal_writestring(line);
+            terminal_writestring(", sudo service enable ");
+            terminal_writestring(line);
+            terminal_writestring(" to start it with tOS; Settings > Services)\n");
+        }
+        if (sv) free(sv);
+        strcpy(f, dest); strcat(f, "/tpkg.message");
+        char *msg = read_whole(f, 0);
+        if (msg && msg[0]) { terminal_putchar('\n'); terminal_writestring(msg); if (msg[strlen(msg) - 1] != '\n') terminal_putchar('\n'); }
+        if (msg) free(msg);
+    }
     return 1;
 }
 
@@ -768,6 +795,7 @@ static void tpkg_remove(const char *name, int force)
         terminal_writestring(" --force)\n");
         return;
     }
+    service_unregister_package(name);                      /* its services stop and go */
     edit_lines(TPKG_PATH_FILE, '=', 0, dir, 0);
     remove_tree(dir);
     edit_lines(TPKG_DB_FILE, '|', name, 0, 0);

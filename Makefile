@@ -166,6 +166,7 @@ KERNEL_OBJS = \
     kernel/fs/syscall.o \
     kernel/fs/linux64.o \
     kernel/fs/tty.o \
+    kernel/core/service.o \
     kernel/core/serial.o \
     kernel/core/debugmon.o \
     kernel/core/sound.o \
@@ -188,6 +189,7 @@ KERNEL_OBJS = \
     kernel/shell/commands/cmd_archive.o \
     kernel/shell/commands/cmd_user.o \
     kernel/shell/commands/cmd_tpkg.o \
+    kernel/shell/commands/cmd_service.o \
     kernel/core/klog.o \
     kernel/fs/ramfs.o \
     kernel/fs/perm.o \

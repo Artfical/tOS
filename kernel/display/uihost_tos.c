@@ -14,6 +14,7 @@
 #include "nic.h"
 #include "webfetch.h"
 #include "imgload.h"
+#include "service.h"
 
 /* uihost.h for tOS: the VFS, the scheduler and the network stack. */
 
@@ -265,6 +266,32 @@ int uihost_add_user(const char *name, const char *password, const char *full, in
     uint32_t uid;
     int r = auth_add_user(name, password, full, admin, &uid);
     if (r == 0) auth_save();
+    auth_restore(&saved);
+    return r;
+}
+
+int uihost_services(uihost_service_t *out, int max)
+{
+    service_info_t l[SERVICE_MAX];
+    int n = service_list(l, SERVICE_MAX);
+    if (n > max) n = max;
+    for (int i = 0; i < n; i++) {
+        strncpy(out[i].name, l[i].name, sizeof(out[i].name) - 1); out[i].name[sizeof(out[i].name) - 1] = 0;
+        strncpy(out[i].desc, l[i].desc, sizeof(out[i].desc) - 1); out[i].desc[sizeof(out[i].desc) - 1] = 0;
+        out[i].running = l[i].running;
+        out[i].enabled = l[i].enabled;
+    }
+    return n;
+}
+
+int uihost_service_set(const char *name, int on)
+{
+    if (!wm_gfx_take_authorization()) return -1;
+    auth_saved_t saved;
+    auth_become(0, 0, &saved);
+    int r;
+    if (on) { r = service_enable(name, 1); if (!r) { r = service_start(name); if (r == -2) r = 0; } }
+    else { service_enable(name, 0); r = service_stop(name); if (r == -3) r = 0; }
     auth_restore(&saved);
     return r;
 }

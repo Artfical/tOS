@@ -9,11 +9,11 @@
  * coloured icons below, and on the right grouped rows with switches and segmented controls.
  */
 
-enum { S_NETWORK, S_APPEARANCE, S_DESKTOP, S_DISPLAYS, S_MOUSE, S_USERS, S_GENERAL, S_UPDATE, S_COUNT };
-static const char *const sec_name[S_COUNT] = { "Network", "Appearance", "Desktop & Dock", "Displays", "Mouse", "Users & Groups", "General", "Software Update" };
+enum { S_NETWORK, S_APPEARANCE, S_DESKTOP, S_DISPLAYS, S_MOUSE, S_USERS, S_GENERAL, S_SERVICES, S_UPDATE, S_COUNT };
+static const char *const sec_name[S_COUNT] = { "Network", "Appearance", "Desktop & Dock", "Displays", "Mouse", "Users & Groups", "General", "Services", "Software Update" };
 static const char *const sec_glyph[S_COUNT] = { "glyph_ethernet-port", "glyph_sun", "glyph_layout-panel-top", "glyph_monitor",
-                                                "glyph_mouse-pointer", "glyph_users", "glyph_info", "glyph_refresh-ccw" };
-static const uint32_t sec_color[S_COUNT] = { 0x2F80ED, 0x1F1F24, 0x14B8A6, 0x3B82F6, 0x8E8E93, 0x8E8E93, 0x8E8E93, 0x8E8E93 };
+                                                "glyph_mouse-pointer", "glyph_users", "glyph_info", "glyph_cpu", "glyph_refresh-ccw" };
+static const uint32_t sec_color[S_COUNT] = { 0x2F80ED, 0x1F1F24, 0x14B8A6, 0x3B82F6, 0x8E8E93, 0x8E8E93, 0x8E8E93, 0x8E8E93, 0x8E8E93 };
 
 #define SIDE 230
 
@@ -24,7 +24,8 @@ typedef struct {
     /* the add-user form */
     int adding, field, admin;
     char new_name[24], new_full[40], new_pw[32];
-    int pending;                  /* waiting for the password dialog: 1 add user */
+    int pending;                  /* waiting for the password dialog: 1 add user, 2 switch a service */
+    char svc_name[24]; int svc_on;
     char msg[80];
     uint32_t last_sec;
     int scroll;                   /* Software Update's notes */
@@ -237,6 +238,25 @@ static void draw_section(uiapp_t *a, set_t *st, gfx_surface_t *s, int x, int y, 
             ui_button(s, px + pw - 126, gy, 126, 30, "Create User", UI_ACCENT, 0xFFFFFF, 0);
         }
         if (st->msg[0]) gfx_text(s, &ui_font_small, px, gy + 8, st->msg, UI_DIM, 255);
+        break;
+    }
+    case S_SERVICES: {
+        uihost_service_t sv[8];
+        int n = uihost_services(sv, 8);
+        if (!n) {
+            gfx_text(s, &ui_font_regular, px, gy + 8, "No services are installed. Packages bring them (tpkg look).", UI_DIM, 255);
+        } else {
+            group(s, px, gy, pw, n);
+            for (int i = 0; i < n; i++) {
+                gfx_text(s, &ui_font_medium, px + 14, gy + i * 44 + 5, sv[i].name, UI_TEXT, 255);
+                gfx_text(s, &ui_font_small, px + 14, gy + i * 44 + 24, sv[i].desc, UI_DIM, 255);
+                row_value(s, px, pw - 56, gy, i, sv[i].running ? "Running" : "Stopped");
+                sw(s, px + pw - 54, gy + i * 44 + 10, sv[i].running && sv[i].enabled);
+            }
+            gy += n * 44 + 12;
+            gfx_text(s, &ui_font_small, px, gy, "On: starts now and whenever tOS starts. Off: stops it and keeps it from starting.", UI_DIM, 255);
+        }
+        if (st->msg[0]) gfx_text(s, &ui_font_small, px, gy + 24, st->msg, UI_DIM, 255);
         break;
     }
     case S_GENERAL: {
@@ -461,6 +481,18 @@ static void s_press(uiapp_t *a, int lx, int ly, int b)
     case S_MOUSE:
         if (ui_hit(lx, ly, px + pw - 254, gy + 8, 240, 28)) uihost_set("mouse_speed", (lx - (px + pw - 254)) / 80);
         break;
+    case S_SERVICES: {
+        uihost_service_t sv[8];
+        int n = uihost_services(sv, 8);
+        for (int i = 0; i < n; i++)
+            if (ui_hit(lx, ly, px + pw - 54, gy + i * 44 + 10, 40, 24)) {
+                strcpy(st->svc_name, sv[i].name);
+                st->svc_on = !(sv[i].running && sv[i].enabled);
+                st->pending = 2; st->msg[0] = 0;
+                uihost_authorize(st->svc_on ? "start a service" : "stop a service");
+            }
+        break;
+    }
     case S_USERS: {
         int top = gy + (st->nusers ? st->nusers : 1) * 44 + 16;
         if (!st->adding) {
@@ -517,7 +549,10 @@ static int s_tick(uiapp_t *a)
     if (st->pending) {
         int r = uihost_authorized();
         if (r == 0) return 0;
-        if (r > 0) {
+        if (r > 0 && st->pending == 2) {
+            int rc = uihost_service_set(st->svc_name, st->svc_on);
+            strcpy(st->msg, rc == 0 ? (st->svc_on ? "Service started." : "Service stopped.") : "That did not work (service log has details).");
+        } else if (r > 0) {
             int rc = uihost_add_user(st->new_name, st->new_pw, st->new_full[0] ? st->new_full : st->new_name, st->admin);
             strcpy(st->msg, rc == 0 ? "User created." : "Could not create that user (is the name taken?).");
             if (rc == 0) st->adding = 0;
@@ -537,7 +572,7 @@ static int s_tick(uiapp_t *a)
         if (u->state != was) { was = u->state; return 1; }
         return 0;
     }
-    if (st->sec == S_GENERAL || st->sec == S_NETWORK) {
+    if (st->sec == S_GENERAL || st->sec == S_NETWORK || st->sec == S_SERVICES) {
         uint32_t sec = uihost_ms() / 1000;
         if (sec != st->last_sec) { st->last_sec = sec; return 1; }
     }

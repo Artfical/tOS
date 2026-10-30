@@ -38,6 +38,7 @@ void cmd_wget(int argc, char **args);
 void cmd_ws(int argc, char **args);
 void cmd_tls(int argc, char **args);
 void cmd_tpkg(int argc, char **args);
+void cmd_service(int argc, char **args);
 void cmd_sctp_connect(int argc, char **args);
 void cmd_sctp_send(int argc, char **args);
 void cmd_sctp_close(int argc, char **args);
