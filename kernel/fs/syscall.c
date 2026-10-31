@@ -2487,9 +2487,19 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
         case SYS_LSEEK: {
             int vfd = proc_vfd(proc_current(), (int)a);
             if (vfd < 0) return (uint32_t)-EBADF;
-            int offset = (int)b;
-            if (offset < 0) return (uint32_t)-EINVAL;
-            int r = vfs_lseek(vfd, (uint32_t)offset, (int)c);
+            int64_t offset = (int32_t)b;
+            int whence = (int)c;
+            if (whence == 0) {
+                if (offset < 0) return (uint32_t)-EINVAL;
+            } else if (whence == 1 || whence == 2) {            /* from here or from the end: the offset may be negative */
+                int base = vfs_lseek(vfd, 0, whence == 1 ? 1 : 2);
+                if (base < 0) return (uint32_t)-EINVAL;
+                int64_t target = (int64_t)base + offset;
+                if (target < 0 || target > 0x7FFFFFFF) return (uint32_t)-EINVAL;
+                offset = target;
+                whence = 0;
+            } else return (uint32_t)-EINVAL;
+            int r = vfs_lseek(vfd, (uint32_t)offset, whence);
             return r < 0 ? (uint32_t)-EINVAL : (uint32_t)r;
         }
 
