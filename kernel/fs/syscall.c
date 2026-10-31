@@ -298,6 +298,142 @@ static int syscall_exec_user(uint64_t path_ptr, uint64_t argv_ptr, uint64_t envp
 static int spair_of_fwd(proc_t *p, int fd);
 int syscall_fd_inherit(proc_t *src, int ss, proc_t *dst, int ds);
 
+/* ---- file locks: fcntl byte-range locks and flock(2), advisory, between processes ---- */
+#ifndef ENOLCK
+#define ENOLCK 37
+#endif
+static int linux_signal_waiting(void);
+static int proc_vfd(proc_t *p, int fd);
+#define LOCKS_MAX 96
+static struct { int used, bsd; uint32_t pid; char path[VFS_NAME_LEN]; uint64_t start, end; int write; } locks[LOCKS_MAX];   /* end is inclusive */
+
+static int lock_overlap(uint64_t s1, uint64_t e1, uint64_t s2, uint64_t e2) { return s1 <= e2 && s2 <= e1; }
+
+/* the first lock of another process that stops this one (0 = none) */
+static int lock_conflict(int bsd, uint32_t pid, const char *path, uint64_t s, uint64_t e, int write)
+{
+    for (int i = 0; i < LOCKS_MAX; i++)
+        if (locks[i].used && locks[i].bsd == bsd && locks[i].pid != pid && !strcmp(locks[i].path, path) &&
+            lock_overlap(s, e, locks[i].start, locks[i].end) && (write || locks[i].write)) return i + 1;
+    return 0;
+}
+
+/* this process's locks no longer cover [s, e] */
+static int lock_cut(int bsd, uint32_t pid, const char *path, uint64_t s, uint64_t e)
+{
+    for (int i = 0; i < LOCKS_MAX; i++) {
+        if (!locks[i].used || locks[i].bsd != bsd || locks[i].pid != pid || strcmp(locks[i].path, path)) continue;
+        if (!lock_overlap(s, e, locks[i].start, locks[i].end)) continue;
+        uint64_t ls = locks[i].start, le = locks[i].end;
+        int w = locks[i].write;
+        if (s <= ls && e >= le) { locks[i].used = 0; continue; }          /* all of it */
+        if (s > ls && e < le) {                                           /* a hole in the middle: two pieces */
+            int j = -1;
+            for (int k = 0; k < LOCKS_MAX; k++) if (!locks[k].used) { j = k; break; }
+            if (j < 0) return -ENOLCK;
+            locks[j] = locks[i];
+            locks[j].start = e + 1;
+            locks[i].end = s - 1;
+            (void)ls; (void)le; (void)w;
+            continue;
+        }
+        if (s <= ls) locks[i].start = e + 1; else locks[i].end = s - 1;
+    }
+    return 0;
+}
+
+static int lock_add(int bsd, uint32_t pid, const char *path, uint64_t s, uint64_t e, int write)
+{
+    for (int i = 0; i < LOCKS_MAX; i++) {
+        if (locks[i].used) continue;
+        locks[i].used = 1; locks[i].bsd = bsd; locks[i].pid = pid; locks[i].start = s; locks[i].end = e; locks[i].write = write;
+        strncpy(locks[i].path, path, VFS_NAME_LEN - 1); locks[i].path[VFS_NAME_LEN - 1] = 0;
+        return 0;
+    }
+    return -ENOLCK;
+}
+
+void syscall_locks_release(uint32_t pid)
+{
+    for (int i = 0; i < LOCKS_MAX; i++) if (locks[i].used && locks[i].pid == pid) locks[i].used = 0;
+}
+
+static int lock_wait_or_try(int wait, int bsd, uint32_t pid, const char *path, uint64_t s, uint64_t e, int write)
+{
+    for (;;) {
+        if (!lock_conflict(bsd, pid, path, s, e, write)) return 0;
+        if (!wait) return -EAGAIN;
+        if (linux_signal_waiting()) return -EINTR;
+        task_yield();
+    }
+}
+
+/* fcntl(F_GETLK / F_SETLK / F_SETLKW): layout 0 = x86-64 struct flock, 1 = i386 flock64, 2 = i386 flock */
+static uint32_t posix_lock(int fd, int cmd, uint64_t arg, int layout)
+{
+    proc_t *p = proc_current();
+    if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1) return (uint32_t)-EBADF;
+    int slot = fd - 3;
+    const char *path = p->fdpath[slot];
+    uint32_t sz = layout == 0 ? 32 : layout == 1 ? 24 : 16;
+    if (!user_wr_ok(arg, sz)) return (uint32_t)-EFAULT;
+    uint8_t *u = (uint8_t *)(uintptr_t)arg;
+    int16_t type, whence; int64_t start, len;
+    memcpy(&type, u, 2); memcpy(&whence, u + 2, 2);
+    if (layout == 0) { memcpy(&start, u + 8, 8); memcpy(&len, u + 16, 8); }
+    else if (layout == 1) { memcpy(&start, u + 4, 8); memcpy(&len, u + 12, 8); }
+    else { int32_t s32, l32; memcpy(&s32, u + 4, 4); memcpy(&l32, u + 8, 4); start = s32; len = l32; }
+    if (type < 0 || type > 2) return (uint32_t)-EINVAL;
+    if (!path[0]) return 0;                                    /* not a file with a name: nothing to lock */
+    int64_t base = 0;
+    int vfd = proc_vfd(p, fd);
+    if (whence == 1) { base = vfd >= 0 ? vfs_lseek(vfd, 0, 1) : 0; }
+    else if (whence == 2) { base = vfd >= 0 ? vfs_lseek(vfd, 0, 2) : 0; }
+    else if (whence != 0) return (uint32_t)-EINVAL;
+    int64_t from = base + start, to;
+    if (len == 0) to = INT64_MAX;
+    else if (len > 0) to = from + len - 1;
+    else { to = from - 1; from = from + len; }
+    if (from < 0 || to < from) return (uint32_t)-EINVAL;
+    uint64_t s = (uint64_t)from, e = len == 0 ? UINT64_MAX : (uint64_t)to;
+    int write = type == 1;
+    if (cmd == 5 || cmd == 12) {                               /* F_GETLK: who is in the way */
+        if (type == 2) return (uint32_t)-EINVAL;
+        int c = lock_conflict(0, p->pid, path, s, e, write);
+        if (!c) { type = 2; memcpy(u, &type, 2); return 0; }
+        int16_t t = locks[c - 1].write ? 1 : 0, wh = 0;
+        int64_t ls = (int64_t)locks[c - 1].start, ll = locks[c - 1].end == UINT64_MAX ? 0 : (int64_t)(locks[c - 1].end - locks[c - 1].start + 1);
+        int32_t pid = (int32_t)locks[c - 1].pid;
+        memcpy(u, &t, 2); memcpy(u + 2, &wh, 2);
+        if (layout == 0) { memcpy(u + 8, &ls, 8); memcpy(u + 16, &ll, 8); memcpy(u + 24, &pid, 4); }
+        else if (layout == 1) { memcpy(u + 4, &ls, 8); memcpy(u + 12, &ll, 8); memcpy(u + 20, &pid, 4); }
+        else { int32_t a = (int32_t)ls, b = (int32_t)ll; memcpy(u + 4, &a, 4); memcpy(u + 8, &b, 4); memcpy(u + 12, &pid, 4); }
+        return 0;
+    }
+    if (type == 2) return (uint32_t)lock_cut(0, p->pid, path, s, e);          /* F_UNLCK */
+    int r = lock_wait_or_try(cmd == 7 || cmd == 14, 0, p->pid, path, s, e, write);
+    if (r < 0) return (uint32_t)r;
+    r = lock_cut(0, p->pid, path, s, e);                                      /* a new lock replaces this process's own */
+    if (r < 0) return (uint32_t)r;
+    return (uint32_t)lock_add(0, p->pid, path, s, e, write);
+}
+
+/* flock(fd, LOCK_SH=1 / LOCK_EX=2 / LOCK_UN=8, | LOCK_NB=4): the whole file */
+static uint32_t bsd_flock(int fd, int op)
+{
+    proc_t *p = proc_current();
+    if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1) return (uint32_t)-EBADF;
+    const char *path = p->fdpath[fd - 3];
+    if (!path[0]) return 0;
+    int what = op & ~4;
+    if (what == 8) return (uint32_t)lock_cut(1, p->pid, path, 0, UINT64_MAX);
+    if (what != 1 && what != 2) return (uint32_t)-EINVAL;
+    int r = lock_wait_or_try(!(op & 4), 1, p->pid, path, 0, UINT64_MAX, what == 2);
+    if (r < 0) return (uint32_t)r;
+    lock_cut(1, p->pid, path, 0, UINT64_MAX);
+    return (uint32_t)lock_add(1, p->pid, path, 0, UINT64_MAX, what == 2);
+}
+
 /* Descriptors passed over a socketpair (SCM_RIGHTS): sendmsg parks a copy of each in a table of its own and
  * queues it for the pipe the other end reads; the next recvmsg there installs them in the receiver. */
 static proc_t scm_holder;
@@ -2541,10 +2677,17 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
                     p->fd_open_flags[slot] = (p->fd_open_flags[slot] & ~0x00000F00u) |
                                                (c & 0x00000F00u);
                     return 0;
+                case 5: case 6: case 7:                    /* F_GETLK, F_SETLK, F_SETLKW: x86-64 or i386 struct flock */
+                    return posix_lock(fd, cmd, c, p->linux_abi == 2 ? 0 : 2);
+                case 12: case 13: case 14:                 /* the 64-bit-offset forms of an i386 program */
+                    return posix_lock(fd, cmd, c, 1);
                 default:
                     return (uint32_t)-ENOSYS;
             }
         }
+
+        case 143:                                       /* flock(fd, operation) */
+            return bsd_flock((int)a, (int)b);
 
         case LINUX_SYS_READLINK:
         case LINUX_SYS_READLINKAT: {
@@ -3031,6 +3174,7 @@ void syscall_dump_recent(void)
 
 void syscall_proc_cleanup(struct proc *p)
 {
+    syscall_locks_release(p->pid);                       /* its file locks go with it */
     linux64_mm_free(p);
     for (int i = 0; i < PROC_MAX_FDS; i++) {
         proc_fd_close(p, i);

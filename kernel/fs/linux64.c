@@ -1098,6 +1098,7 @@ void linux64_syscall(registers_t *r)
         case 62:  ret = call32(37, a, b, 0, 0, 0, 0, r); break;                /* kill */
         case 63:  ret = call32(122, a, 0, 0, 0, 0, 0, r); break;               /* uname */
         case 72:  ret = call32(221, a, b, c, 0, 0, 0, r); break;               /* fcntl */
+        case 73:  ret = call32(143, a, b, 0, 0, 0, 0, r); break;               /* flock */
         case 74:  case 75: ret = 0; break;                                     /* fsync, fdatasync */
         case 77:  ret = call32(93, a, b, 0, 0, 0, 0, r); break;                /* ftruncate */
         case 76:  ret = call32(92, a, b, 0, 0, 0, 0, r); break;                /* truncate */

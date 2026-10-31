@@ -18,6 +18,7 @@ gcc -O2 -static "$here/dupt.c" -o "$w/programs/dupt" 2>/dev/null
 gcc -O2 -static "$here/srvtest.c" -o "$w/programs/srvtest" 2>/dev/null
 gcc -O2 -static "$here/ptytest.c" -o "$w/programs/ptytest" 2>/dev/null
 gcc -O2 -static "$here/scmtest.c" -o "$w/programs/scmtest" 2>/dev/null
+gcc -O2 -static "$here/locktest.c" -o "$w/programs/locktest" 2>/dev/null
 cp "$here/t2.js" "$here/cp.js" "$w/programs/js/"
 cp -r "$here/gcc/." "$w/programs/gcc/"      # sources the gcc test compiles (when EXTRA_PKGS has gcc)
 printf '#!/programs/forktest arg\n' > "$w/programs/ft.sh"; chmod +x "$w/programs/ft.sh"
