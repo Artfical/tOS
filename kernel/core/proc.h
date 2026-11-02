@@ -109,6 +109,8 @@ typedef struct proc {
     int umask_set;
     proc_vm_region_t vm_regions[PROC_MAX_VM_REGIONS];
     char name[32];
+    char exe[VFS_NAME_LEN];             /* the program file (/proc/self/exe) */
+    struct { int used, sig; uint64_t next, interval; } timers[8];   /* POSIX timers 0..6 and the real-time interval timer (7) */
 } proc_t;
 
 /* loads the .t file at `path` into a new address space and starts it; returns the pid or a negative error */
@@ -132,6 +134,7 @@ int  proc_pipe_alloc(void);                       /* a new pipe, one reference o
 void proc_pipe_ref(int index, int write_end);
 void proc_pipe_unref(int index, int write_end);
 proc_t *proc_by_pid(uint32_t pid);
+void proc_timers_poll(proc_t *p);                    /* fires the timers that have run out (a signal each) */
 void proc_exit(int code) __attribute__((noreturn));
 void proc_thread_exit(int code) __attribute__((noreturn));
 /* ends another process (the caller checks permission); 0 = done */

@@ -26,6 +26,12 @@ typedef struct {
 #define IP_MAX_PAYLOAD 1480
 
 int  ip_send(uint32_t dst_ip, uint8_t protocol, void *data, int len);
+
+/* 127.0.0.0/8: packets to it never leave the machine; they wait in a queue that net_poll() empties */
+static inline int ip_is_loopback(uint32_t ip) { return (ip & 0xFFu) == 127u; }
+static inline uint32_t ip_loopback_addr(void) { return 0x0100007Fu; }          /* 127.0.0.1, in net_ip's byte order */
+int  ip_loop_enqueue(const uint8_t *ip_packet, int len);                        /* 0, or an error */
+int  ip_loop_poll(void);                                                       /* handles one queued packet: 1, or 0 when none */
 void ip_handle(uint8_t *data, int len);
 
 #endif

@@ -31,6 +31,7 @@
 #include "linux_abi.h"
 #include "tty.h"
 #include "pty.h"
+#include "procfs.h"
 #include "cmos.h"
 #include "csprng.h"
 #include "gdt.h"
@@ -436,6 +437,7 @@ static uint32_t bsd_flock(int fd, int op)
 
 /* Descriptors passed over a socketpair (SCM_RIGHTS): sendmsg parks a copy of each in a table of its own and
  * queues it for the pipe the other end reads; the next recvmsg there installs them in the receiver. */
+static int sock_of_fwd(proc_t *p, int fd);
 static proc_t scm_holder;
 static int scm_ready;
 static struct { int used, key, hslot; uint32_t grp; } scm_q[16];   /* grp: the sendmsg it came with */
@@ -445,8 +447,13 @@ int scm_send_fds(int sock_fd, const int *fds, int n)
 {
     proc_t *p = proc_current();
     int v = spair_of_fwd(p, sock_fd);
-    if (!v) return -EBADF;
-    int key = PROC_FD_SPAIR_W(v);
+    int key;
+    if (v) key = PROC_FD_SPAIR_W(v);
+    else {
+        int us = sock_of_fwd(p, sock_fd);
+        if (us < 0 || !lsock_is_unix(us) || lsock_unix_peer(us) < 0) return -EBADF;
+        key = 1000 + lsock_unix_peer(us);                   /* the other end's socket */
+    }
     uint32_t grp = ++scm_group;
     if (!scm_ready) { for (int i = 0; i < PROC_MAX_FDS; i++) scm_holder.fd[i] = -1; scm_ready = 1; }
     for (int k = 0; k < n; k++) {
@@ -468,8 +475,9 @@ int scm_recv_fds(int sock_fd, int *out, int max)
 {
     proc_t *p = proc_current();
     int v = spair_of_fwd(p, sock_fd);
-    if (!v || !scm_ready) return 0;
-    int key = PROC_FD_SPAIR_R(v), got = 0;
+    int us = v ? -1 : sock_of_fwd(p, sock_fd);
+    if ((!v && (us < 0 || !lsock_is_unix(us))) || !scm_ready) return 0;
+    int key = v ? PROC_FD_SPAIR_R(v) : 1000 + us, got = 0;
     uint32_t grp = 0;                                    /* the oldest message that has descriptors: only its own */
     for (int i = 0; i < 16; i++)
         if (scm_q[i].used && scm_q[i].key == key && (!grp || scm_q[i].grp < grp)) grp = scm_q[i].grp;
@@ -501,6 +509,7 @@ static int linux_signal_waiting(void)
 {
     proc_t *p = proc_current();
     task_t *t = task_current();
+    proc_timers_poll(p);
     return p && t && (p->sig_pending & ~t->sig_blocked);
 }
 
@@ -695,6 +704,8 @@ static int sock_of(proc_t *p, int fd)
     return PROC_FD_SOCK_BASE - v;
 }
 
+static int sock_of_fwd(proc_t *p, int fd) { return sock_of(p, fd); }
+
 static int sock_nonblock(proc_t *p, int fd, uint32_t flags)
 {
     return (flags & LINUX_MSG_DONTWAIT) || (p->fd_open_flags[fd - 3] & LINUX_SOCK_NONBLOCK);
@@ -737,6 +748,29 @@ static int etc_special(const char *path)
 {
     if (!strcmp(path, "/etc/resolv.conf") || !strcmp(path, "/etc/hosts")) return write_net_files(), 1;
     if (!strcmp(path, "/etc/passwd") || !strcmp(path, "/etc/group")) return write_account_files(), 1;
+    return 0;
+}
+
+/* a sockaddr_un's path as an absolute one ("@name" for an abstract socket): 0, or an error */
+static int unix_addr_path(const uint8_t *a, uint32_t len, char *out)
+{
+    if (len < 3 || (a[0] | (a[1] << 8)) != 1) return -EINVAL;
+    uint32_t n = len - 2;
+    if (n > 107) n = 107;
+    char raw[VFS_NAME_LEN];
+    if (a[2] == 0) {                                         /* abstract: the name follows the NUL */
+        uint32_t k = 0;
+        out[0] = '@';
+        for (uint32_t i = 1; i < n && k < 100; i++) out[1 + k++] = (char)a[2 + i];
+        out[1 + k] = 0;
+        return 0;
+    }
+    uint32_t k = 0;
+    while (k < n && a[2 + k] && k < sizeof(raw) - 1) { raw[k] = (char)a[2 + k]; k++; }
+    raw[k] = 0;
+    if (!k) return -EINVAL;
+    strncpy(out, vfs_abspath(raw), VFS_NAME_LEN - 1);
+    out[VFS_NAME_LEN - 1] = 0;
     return 0;
 }
 
@@ -818,9 +852,32 @@ static uint32_t linux_sockcall(int call, const uint64_t *v)
     switch (call) {
     case 2:                                                      /* bind */
         if (!user_range_ok(v[1], v[2])) return (uint32_t)-EFAULT;
+        if (lsock_is_unix(s)) {
+            char up[VFS_NAME_LEN];
+            int ar = unix_addr_path((const uint8_t *)(uintptr_t)v[1], v[2], up);
+            if (ar < 0) return (uint32_t)ar;
+            if (up[0] != '@') {
+                vfs_entry_t ue;
+                if (vfs_stat(up, &ue) == 0) return (uint32_t)-98;               /* EADDRINUSE */
+                if (fsbridge_create(up) != 0) return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
+            }
+            return (uint32_t)lsock_unix_bind(s, up);
+        }
         return (uint32_t)lsock_bind(s, (const uint8_t *)(uintptr_t)v[1], v[2]);
     case 3: {                                                    /* connect */
         if (!user_range_ok(v[1], v[2])) return (uint32_t)-EFAULT;
+        if (lsock_is_unix(s)) {
+            char up[VFS_NAME_LEN];
+            int ar = unix_addr_path((const uint8_t *)(uintptr_t)v[1], v[2], up);
+            if (ar < 0) return (uint32_t)ar;
+            if (up[0] != '@') { vfs_entry_t ue; if (vfs_stat(up, &ue) != 0) return (uint32_t)-ENOENT; }
+            for (;;) {
+                int ur = lsock_unix_connect(s, up);
+                if (ur != -LINUX_E_AGAIN || sock_nonblock(p, fd, 0)) return (uint32_t)ur;     /* a full backlog: wait for room */
+                if (linux_signal_waiting()) return (uint32_t)-EINTR;
+                task_yield();
+            }
+        }
         int r = lsock_connect_start(s, (const uint8_t *)(uintptr_t)v[1], v[2]);
         if (r != -LINUX_E_INPROGRESS || sock_nonblock(p, fd, 0)) return (uint32_t)r;
         for (;;) {
@@ -862,8 +919,8 @@ static uint32_t linux_sockcall(int call, const uint64_t *v)
     }
     case 6: case 7: {                                            /* getsockname, getpeername */
         if (!user_wr_ok(v[2], 4)) return (uint32_t)-EFAULT;
-        uint32_t cap = *(uint32_t *)(uintptr_t)v[2], alen = 16;
-        uint8_t addr[16];
+        uint32_t cap = *(uint32_t *)(uintptr_t)v[2], alen = 112;
+        uint8_t addr[112];
         int r = lsock_name(s, call == 7, addr, &alen);
         if (r < 0) return (uint32_t)r;
         if (cap && !user_wr_ok(v[1], cap)) return (uint32_t)-EFAULT;
@@ -881,6 +938,13 @@ static uint32_t linux_sockcall(int call, const uint64_t *v)
         if (!user_wr_ok(v[4], 4)) return (uint32_t)-EFAULT;
         uint32_t cap = *(uint32_t *)(uintptr_t)v[4];
         int val = 0;
+        if (v[1] == 1 && v[2] == 17 && lsock_is_unix(s)) {              /* SO_PEERCRED: pid, uid, gid of the other end */
+            if (cap < 12 || !user_wr_ok(v[3], 12)) return (uint32_t)-EINVAL;
+            uint32_t cr[3] = { p->pid, 0, 0 };
+            memcpy((void *)(uintptr_t)v[3], cr, 12);
+            *(uint32_t *)(uintptr_t)v[4] = 12;
+            return 0;
+        }
         int r = lsock_getsockopt(s, (int)v[1], (int)v[2], &val);
         if (r < 0) return (uint32_t)r;
         if (cap >= 4 && user_wr_ok(v[3], 4)) { memcpy((void *)(uintptr_t)v[3], &val, 4); *(uint32_t *)(uintptr_t)v[4] = 4; }
@@ -1813,6 +1877,25 @@ static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode
     /* glibc reads these before it opens any socket: written from the DHCP lease when asked for */
     etc_special(path);
 
+    /* /proc: files made up from the system's state; the text is written into a temporary file the program then reads */
+    if (procfs_is(path) && strncmp(path, "/proc/self/fd/", 14) != 0 && path[5] == '/') {
+        char *txt = malloc(8192);
+        if (!txt) return (uint32_t)-ENOMEM;
+        int tl = procfs_gen(path, txt, 8192);
+        if (tl >= 0) {
+            static uint32_t proc_seq;
+            char tmp[64] = "/tmp/.proc/", num[12];
+            if (!fsbridge_exists("/tmp")) fsbridge_mkdir("/tmp");
+            if (!fsbridge_exists("/tmp/.proc")) fsbridge_mkdir("/tmp/.proc");
+            sprintf_u32(num, p->pid); strcat(tmp, num); strcat(tmp, ".");
+            sprintf_u32(num, ++proc_seq); strcat(tmp, num);
+            if (fsbridge_create(tmp) != 0) { free(txt); return (uint32_t)-ENOSPC; }
+            if (tl > 0) fsbridge_write(tmp, txt, (uint32_t)tl, 0);
+            free(txt);
+            strcpy(path, tmp);
+        } else free(txt);
+    }
+
     /* pseudo-terminals: /dev/ptmx makes a new pair, /dev/pts/N is the slave of pair N */
     if (!strcmp(path, "/dev/ptmx") || !strncmp(path, "/dev/pts/", 9)) {
         int dslot = -1;
@@ -2012,7 +2095,17 @@ static uint32_t linux_nanosleep_on(uint32_t clock_id, int absolute, uint64_t req
     }
     uint64_t ms = (uint64_t)sec * 1000u + ((uint64_t)nsec + 999999u) / 1000000u;
     uint64_t deadline = debugmon_uptime_ms64() + ms;
-    while (debugmon_uptime_ms64() < deadline) task_yield();
+    while (debugmon_uptime_ms64() < deadline) {
+        if (linux_signal_waiting()) {                    /* a signal (a timer's, a kill) ends the sleep early */
+            uint64_t now = debugmon_uptime_ms64(), left = deadline > now ? deadline - now : 0;
+            if (rem_ptr && !absolute) {
+                if (time64) { linux_timespec64_t rm = { (int64_t)(left / 1000), (int64_t)(left % 1000) * 1000000 }; memcpy((void *)(uintptr_t)rem_ptr, &rm, sizeof(rm)); }
+                else { linux_timespec32_t rm = { (int32_t)(left / 1000), (int32_t)(left % 1000) * 1000000 }; memcpy((void *)(uintptr_t)rem_ptr, &rm, sizeof(rm)); }
+            }
+            return (uint32_t)-EINTR;
+        }
+        task_yield();
+    }
     return 0;
 }
 
@@ -2656,6 +2749,24 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
         case LINUX_SYS_FCNTL64: {
             proc_t *p = proc_current();
             int fd = (int)a, cmd = (int)b;
+            if (cmd == 0 || cmd == 1030) {                      /* F_DUPFD, F_DUPFD_CLOEXEC: the lowest free number from c up */
+                if (!p || fd < 0) return (uint32_t)-EBADF;
+                int is_console = fd <= 2;
+                if (!is_console && (fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1)) return (uint32_t)-EBADF;
+                int from = (int)c < 3 ? 0 : (int)c - 3;
+                int ns = -1;
+                for (int i = from; i < PROC_MAX_FDS; i++) if (p->fd[i] == -1) { ns = i; break; }
+                if (ns < 0) return (uint32_t)-EMFILE;
+                if (is_console) {                              /* the console has no slot: the copy is an alias of it */
+                    p->fd[ns] = PROC_FD_CONSOLE(fd);
+                    p->fd_open_flags[ns] = 2u; p->fdpath[ns][0] = 0; p->fd_dir_offset[ns] = 0;
+                } else {
+                    int r = syscall_fd_inherit(p, fd - 3, p, ns);
+                    if (r < 0) return (uint32_t)r;
+                }
+                p->fd_flags[ns] = cmd == 1030 ? LINUX_FD_CLOEXEC : 0;
+                return (uint32_t)ns + 3u;
+            }
             if (fd >= 0 && fd <= 2) {
                 if (cmd == LINUX_F_GETFD) return 0;
                 if (cmd == LINUX_F_SETFD) return c & ~LINUX_FD_CLOEXEC ? (uint32_t)-EINVAL : 0;
@@ -2699,6 +2810,16 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             if (!user_cstr_ok(path_ptr)) return (uint32_t)-EFAULT;
             if (size == 0) return 0;
             if (!user_wr_ok(buf_ptr, size)) return (uint32_t)-EFAULT;
+            {
+                char lk[160];
+                const char *cp0 = (const char *)(uintptr_t)path_ptr;
+                if (procfs_is(cp0) && strncmp(cp0, "/proc/self/fd/", 14) != 0) {      /* /proc/self/exe, cwd... */
+                    int ln = procfs_readlink(cp0, lk, size < sizeof(lk) ? (int)size : (int)sizeof(lk));
+                    if (ln < 0) return (uint32_t)-EINVAL;
+                    memcpy((void *)(uintptr_t)buf_ptr, lk, (size_t)ln);
+                    return (uint32_t)ln;
+                }
+            }
             {   /* /proc/self/fd/N: where the descriptor's file is (ttyname asks) */
                 const char *cp = (const char *)(uintptr_t)path_ptr;
                 if (!strncmp(cp, "/proc/self/fd/", 14) && cp[14]) {
@@ -2706,6 +2827,7 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
                     const char *dgt = cp + 14;
                     for (; *dgt >= '0' && *dgt <= '9'; dgt++) nfd = nfd * 10 + (*dgt - '0');
                     proc_t *rp = proc_current();
+                    if (!*dgt && rp && nfd <= 2) nfd = fd_xlate(rp, nfd);        /* 0, 1, 2 may stand for a hidden copy (a terminal, a pipe) */
                     if (!*dgt && rp && nfd >= 3 && nfd - 3 < PROC_MAX_FDS && rp->fd[nfd - 3] != -1 && rp->fdpath[nfd - 3][0] == '/') {
                         uint32_t pl = (uint32_t)strlen(rp->fdpath[nfd - 3]);
                         if (pl > size) pl = size;
@@ -2785,7 +2907,11 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             /* "already there" has to be EEXIST: mkdir -p (npm's mkdirp) climbs to the parent on
              * ENOENT, and at / that never ends */
             if (vfs_stat((const char *)(uintptr_t)a, &entry) == 0) return (uint32_t)-EEXIST;
-            if (vfs_mkdir((const char *)(uintptr_t)a, b & 0777u) == 0) return 0;
+            if (vfs_mkdir((const char *)(uintptr_t)a, b & 0777u) == 0) {
+                proc_t *mp = proc_current();             /* the folder has the mode asked for, less the umask (tmux wants 0700) */
+                vfs_chmod((const char *)(uintptr_t)a, (b & ~(mp && mp->umask_set ? mp->umask : 022u)) & 07777u);
+                return 0;
+            }
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
         }
 
@@ -3174,6 +3300,16 @@ void syscall_dump_recent(void)
 
 void syscall_proc_cleanup(struct proc *p)
 {
+    if (fsbridge_exists("/tmp/.proc")) {                 /* the /proc files this program opened */
+        int cnt = 0;
+        vfs_entry_t *ents = fsbridge_list_all("/tmp/.proc", &cnt);
+        if (ents) {
+            char pre[16]; sprintf_u32(pre, p->pid); strcat(pre, ".");
+            for (int i = 0; i < cnt; i++)
+                if (!strncmp(ents[i].name, pre, strlen(pre))) { char fp[96] = "/tmp/.proc/"; strcat(fp, ents[i].name); fsbridge_delete(fp); }
+            free(ents);
+        }
+    }
     syscall_locks_release(p->pid);                       /* its file locks go with it */
     linux64_mm_free(p);
     for (int i = 0; i < PROC_MAX_FDS; i++) {

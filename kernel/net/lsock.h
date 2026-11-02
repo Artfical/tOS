@@ -25,6 +25,10 @@ int      lsock_name(int s, int peer, uint8_t *addr, uint32_t *len);
 int      lsock_shutdown(int s, int how);
 int      lsock_pending(int s);                /* bytes that can be read now (FIONREAD) */
 int      lsock_is_stream(int s);
+int      lsock_is_unix(int s);                /* AF_UNIX (a stream, inside this machine) */
+int      lsock_unix_bind(int s, const char *abs_path);       /* abs_path: the file (or "@name" for an abstract one) */
+int      lsock_unix_connect(int s, const char *abs_path);    /* 0, or -ECONNREFUSED */
+int      lsock_unix_peer(int s);              /* the socket on the other end, or -1 */
 void     lsock_pump(void);                    /* moves the network along, if any socket is open */
 
 #endif

@@ -23,6 +23,14 @@
 #include "klog.h"
 #include "csprng.h"
 
+/* what the waiting loops poll: a packet this machine sent to itself is handled on the spot (0 is returned as "no frame");
+ * otherwise the card's next frame */
+static int poll_any(uint8_t *buf, int max)
+{
+    if (ip_loop_poll()) return 0;
+    return nic_poll(buf, max);
+}
+
 /* -- TCP Control Block ---------------------------------------------------- */
 typedef struct {
     int      state;
@@ -232,11 +240,16 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
      * Any TCP connection to an address outside the local subnet needs
      * to be sent to the *gateway's* MAC (with the IP header's dst_ip
      * still the real, final destination). */
-    uint32_t nh = route_lookup(net_ip, s->dst_ip);
-    if (!nh) nh = s->dst_ip;
+    int loop = ip_is_loopback(s->dst_ip);                       /* to this machine: no ARP and no card */
+    uint32_t src_ip = loop ? ip_loopback_addr() : net_ip;
     uint8_t mac[6];
-    int arc = arp_resolve(nh, mac);
-    if (arc != 0) return arc;
+    memset(mac, 0, 6);
+    if (!loop) {
+        uint32_t nh = route_lookup(net_ip, s->dst_ip);
+        if (!nh) nh = s->dst_ip;
+        int arc = arp_resolve(nh, mac);
+        if (arc != 0) return arc;
+    }
 
     /* the opening SYN says what we take: segments of 1460 bytes, and a window counted in 32s */
     int optlen  = flags == TCP_FLAG_SYN ? 8 : 0;
@@ -258,7 +271,7 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     ip->flags_frag = htons(0x4000);
     ip->ttl        = 64;
     ip->protocol   = IPPROTO_TCP;
-    ip->src_ip     = net_ip;
+    ip->src_ip     = src_ip;
     ip->dst_ip     = s->dst_ip;
 
     uint8_t *tcp = pkt + 14 + 20;
@@ -300,8 +313,8 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
      * with ip_checksum()'s byte-indexed style, never hitting this bug)
      * worked fine. */
     uint8_t pseudo[12];
-    pseudo[0] = (uint8_t)(net_ip);         pseudo[1] = (uint8_t)(net_ip >> 8);
-    pseudo[2] = (uint8_t)(net_ip >> 16);   pseudo[3] = (uint8_t)(net_ip >> 24);
+    pseudo[0] = (uint8_t)(src_ip);         pseudo[1] = (uint8_t)(src_ip >> 8);
+    pseudo[2] = (uint8_t)(src_ip >> 16);   pseudo[3] = (uint8_t)(src_ip >> 24);
     pseudo[4] = (uint8_t)(s->dst_ip);      pseudo[5] = (uint8_t)(s->dst_ip >> 8);
     pseudo[6] = (uint8_t)(s->dst_ip >> 16);pseudo[7] = (uint8_t)(s->dst_ip >> 24);
     pseudo[8] = 0;
@@ -327,7 +340,8 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     if (flags & TCP_FLAG_SYN)
         klog_write_hex("tcp: outgoing SYN", pkt, total);
 
-    nic_transmit(pkt, total);
+    if (loop) ip_loop_enqueue(pkt + 14, total - 14);
+    else nic_transmit(pkt, total);
     free(pkt);
 
     if (flags & TCP_FLAG_SYN) s->seq++;
@@ -410,7 +424,7 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
     uint32_t next_retx  = debugmon_uptime_ms() + 1000;
     while (debugmon_uptime_ms() < deadline) {
         uint8_t buf[1536];
-        int len = nic_poll(buf, sizeof(buf));
+        int len = poll_any(buf, sizeof(buf));
         if (len > 0) {
             /* Log absolutely everything nic_poll() hands back while we
              * wait for the SYN-ACK, not just packets we recognize --
@@ -471,7 +485,7 @@ int tcp_send2(int fd, void *data, int len)
             if (s->state != TCP_ESTABLISHED || debugmon_uptime_ms() >= wdeadline) return -1;
             tcp_tick_poll();
             uint8_t wpkt[1536];
-            int wl = nic_poll(wpkt, sizeof(wpkt));
+            int wl = poll_any(wpkt, sizeof(wpkt));
             if (wl > 0) {
                 eth_hdr_t *eth = (eth_hdr_t *)wpkt;
                 if (ntohs(eth->type) == ETHERTYPE_ARP) arp_handle(wpkt, wl);
@@ -489,7 +503,7 @@ int tcp_send2(int fd, void *data, int len)
             while (s->retx_len > 0 && s->state == TCP_ESTABLISHED && debugmon_uptime_ms() < deadline) {
                 tcp_tick_poll();
                 uint8_t pkt[1536];
-                int plen = nic_poll(pkt, sizeof(pkt));
+                int plen = poll_any(pkt, sizeof(pkt));
                 if (plen > 0) {
                     eth_hdr_t *eth = (eth_hdr_t *)pkt;
                     if (ntohs(eth->type) == ETHERTYPE_ARP) arp_handle(pkt, plen);
@@ -549,7 +563,7 @@ int tcp_recv2(int fd, uint8_t *buf, int max_len)
         tcp_tick_poll();
         if (debugmon_uptime_ms() >= deadline) { klog_write("tcp: nothing received for 10 s"); return TCP_ERR_RECV_TIMEOUT; }
         uint8_t pkt[1536];
-        int plen = nic_poll(pkt, sizeof(pkt));
+        int plen = poll_any(pkt, sizeof(pkt));
         if (plen > 0) {
             deadline = debugmon_uptime_ms() + 10000;
             eth_hdr_t *eth = (eth_hdr_t *)pkt;
@@ -573,7 +587,7 @@ void tcp_close2(int fd)
         int retry;
         for (retry = 0; retry < 50000; retry++) {
             uint8_t pkt[1536];
-            int len = nic_poll(pkt, sizeof(pkt));
+            int len = poll_any(pkt, sizeof(pkt));
             if (len > 0) {
                 eth_hdr_t *eth = (eth_hdr_t *)pkt;
                 if (ntohs(eth->type) == ETHERTYPE_ARP) arp_handle(pkt, len);
@@ -617,7 +631,7 @@ int tcp_accept(int fd)
         }
         tcp_tick_poll();
         uint8_t pkt[1536];
-        int len = nic_poll(pkt, sizeof(pkt));
+        int len = poll_any(pkt, sizeof(pkt));
         if (len > 0) {
             eth_hdr_t *eth = (eth_hdr_t *)pkt;
             if (ntohs(eth->type) == ETHERTYPE_ARP) arp_handle(pkt, len);
@@ -734,6 +748,51 @@ static int tcp_checksum_ok(const ip_hdr_t *ip_hdr, const uint8_t *seg, int len)
     return sum == 0xFFFF;
 }
 
+/* A segment for a port nobody listens on: say so with a reset, so the other side fails at once instead of waiting.
+ * (A SYN is answered with RST|ACK, seq 0, ack = its seq + 1.) */
+static void send_reset_for_syn(const ip_hdr_t *ip_hdr, uint16_t src_port, uint16_t dst_port, uint32_t pkt_seq)
+{
+    uint32_t peer = ip_hdr->src_ip;
+    int loop = ip_is_loopback(peer);
+    uint32_t me = loop ? ip_loopback_addr() : ip_hdr->dst_ip;
+    uint8_t mac[6]; memset(mac, 0, 6);
+    if (!loop) {
+        uint32_t nh = route_lookup(net_ip, peer);
+        if (!nh) nh = peer;
+        if (arp_resolve(nh, mac) != 0) return;
+    }
+    int total = 14 + 20 + 20;
+    uint8_t pkt[14 + 20 + 20];
+    memset(pkt, 0, sizeof(pkt));
+    eth_hdr_t *eth = (eth_hdr_t *)pkt;
+    memcpy(eth->dst, mac, 6); memcpy(eth->src, net_mac, 6); eth->type = htons(ETHERTYPE_IP);
+    ip_hdr_t *ip = (ip_hdr_t *)(pkt + 14);
+    ip->ver_ihl = 0x45; ip->total_len = htons(40); { uint16_t rid = tcp_ip_id++; ip->id = htons(rid); } ip->flags_frag = htons(0x4000);
+    ip->ttl = 64; ip->protocol = IPPROTO_TCP; ip->src_ip = me; ip->dst_ip = peer;
+    uint8_t *tcp = pkt + 14 + 20;
+    *(uint16_t *)(tcp + 0) = htons(dst_port);          /* from the port that was asked */
+    *(uint16_t *)(tcp + 2) = htons(src_port);
+    *(uint32_t *)(tcp + 8) = htonl(pkt_seq + 1);
+    tcp[12] = 5 << 4;
+    tcp[13] = TCP_FLAG_RST | TCP_FLAG_ACK;
+    uint8_t pseudo[12];
+    pseudo[0] = (uint8_t)me; pseudo[1] = (uint8_t)(me >> 8); pseudo[2] = (uint8_t)(me >> 16); pseudo[3] = (uint8_t)(me >> 24);
+    pseudo[4] = (uint8_t)peer; pseudo[5] = (uint8_t)(peer >> 8); pseudo[6] = (uint8_t)(peer >> 16); pseudo[7] = (uint8_t)(peer >> 24);
+    pseudo[8] = 0; pseudo[9] = IPPROTO_TCP; pseudo[10] = 0; pseudo[11] = 20;
+    uint32_t sum = 0;
+    for (int j = 0; j < 12; j += 2) sum += ((uint16_t)pseudo[j] << 8) | pseudo[j + 1];
+    sum += csum_net(tcp, 20);
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    uint16_t ck = (uint16_t)(~sum & 0xFFFF);
+    tcp[16] = (uint8_t)(ck >> 8); tcp[17] = (uint8_t)(ck & 0xFF);
+    sum = 0;
+    for (int j = 0; j < 10; j++) sum += ntohs(((uint16_t *)ip)[j]);
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    ip->checksum = htons((uint16_t)(~sum & 0xFFFF));
+    if (loop) ip_loop_enqueue(pkt + 14, total - 14);
+    else nic_transmit(pkt, total);
+}
+
 void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
 {
     if (len < 20) return;
@@ -819,6 +878,7 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
             socks[i].accept_tail++;
             return;
         }
+        send_reset_for_syn(ip_hdr, src_port, dst_port, pkt_seq);   /* nobody listens here */
         return;
     }
 

@@ -28,11 +28,54 @@ static uint16_t ip_checksum(const uint8_t *buf, int len)
     return htons(~sum & 0xFFFF);
 }
 
+#define LOOPQ 256
+static struct { uint8_t *buf; int len; } loopq[LOOPQ];
+static int loop_head, loop_tail;
+
+int ip_loop_enqueue(const uint8_t *pkt, int len)
+{
+    int next = (loop_head + 1) % LOOPQ;
+    if (next == loop_tail) return IP_ERR_NOMEM;                  /* full: dropped, as a busy network would */
+    uint8_t *b = (uint8_t *)malloc((size_t)len);
+    if (!b) return IP_ERR_NOMEM;
+    memcpy(b, pkt, (size_t)len);
+    loopq[loop_head].buf = b; loopq[loop_head].len = len;
+    loop_head = next;
+    return 0;
+}
+
+int ip_loop_poll(void)
+{
+    if (loop_tail == loop_head) return 0;
+    uint8_t *b = loopq[loop_tail].buf; int len = loopq[loop_tail].len;
+    loopq[loop_tail].buf = 0;
+    loop_tail = (loop_tail + 1) % LOOPQ;
+    ip_handle(b, len);
+    free(b);
+    return 1;
+}
+
 int ip_send(uint32_t dst_ip, uint8_t protocol, void *data, int len)
 {
     /* A negative len would wrap into a huge malloc()/memcpy(); anything
      * above the MTU would be sent as an oversized, unfragmented frame. */
     if (len < 0 || len > IP_MAX_PAYLOAD) return IP_ERR_TOOBIG;
+
+    if (ip_is_loopback(dst_ip)) {                                 /* to this machine: no ARP, no network card */
+        int ltotal = (int)sizeof(ip_hdr_t) + len;
+        uint8_t *lb = (uint8_t *)malloc((size_t)ltotal);
+        if (!lb) return IP_ERR_NOMEM;
+        ip_hdr_t *lip = (ip_hdr_t *)lb;
+        memset(lip, 0, sizeof(ip_hdr_t));
+        lip->ver_ihl = 0x45; lip->total_len = htons((uint16_t)ltotal); lip->id = htons(ip_id); ip_id++;
+        lip->flags_frag = htons(0x4000); lip->ttl = 64; lip->protocol = protocol;
+        lip->src_ip = ip_loopback_addr(); lip->dst_ip = dst_ip;
+        lip->checksum = ip_checksum((uint8_t *)lip, sizeof(ip_hdr_t));
+        memcpy(lb + sizeof(ip_hdr_t), data, (size_t)len);
+        int lr = ip_loop_enqueue(lb, ltotal);
+        free(lb);
+        return lr;
+    }
 
     /* Route lookup: resolve next-hop gateway */
     uint32_t nh = route_lookup(net_ip, dst_ip);
@@ -81,7 +124,7 @@ void ip_handle(uint8_t *data, int len)
     if ((ip->ver_ihl >> 4) != 4) return;
     int ihl = (ip->ver_ihl & 0x0F) * 4;
     if (ihl < 20 || len < ihl) return;
-    if (ip->dst_ip != net_ip) return;
+    if (ip->dst_ip != net_ip && !ip_is_loopback(ip->dst_ip)) return;
 
     /* The header checksum covers the whole header including options, not
      * just the fixed 20 bytes. */

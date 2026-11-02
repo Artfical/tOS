@@ -741,7 +741,7 @@ static uint64_t sys_msg(int send, int fd, uint64_t msg, uint32_t flags, register
     if (!lx_user_range_ok(msg, 56)) return (uint64_t)-EFAULT;
     uint64_t *m = (uint64_t *)(uintptr_t)msg;           /* name, namelen, iov, iovlen, control, controllen, flags */
     uint64_t name = m[0], namelen = (uint32_t)m[1], iov = m[2], iovlen = m[3];
-    if (iovlen > 64 || !lx_user_range_ok(iov, iovlen * 16)) return (uint64_t)-EFAULT;
+    if (iovlen > 1024 || !lx_user_range_ok(iov, iovlen * 16)) return (uint64_t)-EFAULT;
     const uint64_t *v = (const uint64_t *)(uintptr_t)iov;
     uint64_t total = 0;
     uint64_t control = m[4], controllen = m[5];
@@ -792,6 +792,105 @@ static uint64_t sys_msg(int send, int fd, uint64_t msg, uint32_t flags, register
         ((uint32_t *)m)[12] = 0;                                              /* no flags */
     }
     return total;
+}
+
+/* madvise: MADV_DONTNEED (4) gives anonymous memory back: what is read afterwards is zeros (jemalloc, Go and others check) */
+static uint64_t sys_madvise(uint64_t addr, uint64_t len, int advice)
+{
+    proc_t *p = proc_current();
+    if (addr & 0xFFF) return (uint64_t)-EINVAL;
+    if (advice != 4 || !p || !len) return 0;
+    uint64_t end = (addr + len + 0xFFF) & ~0xFFFull;
+    if (end <= addr || end > PAGING_USER_END) return (uint64_t)-ENOMEM;
+    for (uint64_t pg = addr; pg < end; pg += PAGE_SIZE) {
+        uint32_t phys = (uint32_t)paging_virt_to_phys(p->pgdir, pg);
+        if (!phys) continue;                                  /* not there yet: it will be zeros when it comes */
+        if (paging_cow_break(p->pgdir, pg) < 0) continue;     /* shared since a fork: our own copy first */
+        phys = (uint32_t)paging_virt_to_phys(p->pgdir, pg) & ~0xFFFu;
+        if (phys) memset(P2V(phys), 0, PAGE_SIZE);
+    }
+    return 0;
+}
+
+/* timers: alarm, setitimer(ITIMER_REAL) and POSIX timers; they fire a signal at the program (see proc_timers_poll) */
+static uint64_t ms_of(int64_t sec, int64_t sub, int64_t per_sec_sub) { return (uint64_t)sec * 1000u + (uint64_t)((sub * 1000) / per_sec_sub) + ((sub * 1000) % per_sec_sub ? 1 : 0); }
+
+static uint64_t sys_timers(int nr, uint64_t a, uint64_t b, uint64_t c)
+{
+    proc_t *p = proc_current();
+    if (!p) return (uint64_t)-ESRCH;
+    proc_timers_poll(p);
+    uint64_t now = debugmon_uptime_ms64();
+    if (nr == 37) {                                                            /* alarm(seconds): the seconds that were left */
+        uint64_t left = p->timers[7].used && p->timers[7].next > now ? (p->timers[7].next - now + 999) / 1000 : 0;
+        p->timers[7].used = a != 0; p->timers[7].sig = 14; p->timers[7].interval = 0;
+        p->timers[7].next = a ? now + a * 1000u : 0;
+        return left;
+    }
+    if (nr == 36 || nr == 38) {                                                // getitimer(which, curr) / setitimer(which, new, old)
+        if (a != 0) return (uint64_t)-EINVAL;                                  // only ITIMER_REAL
+        uint64_t oldp = nr == 36 ? b : c;
+        if (oldp) {
+            int64_t v[4] = { 0, 0, 0, 0 };
+            uint64_t rem = p->timers[7].used && p->timers[7].next > now ? p->timers[7].next - now : 0;
+            v[0] = (int64_t)(p->timers[7].interval / 1000); v[1] = (int64_t)(p->timers[7].interval % 1000) * 1000;
+            v[2] = (int64_t)(rem / 1000); v[3] = (int64_t)(rem % 1000) * 1000;
+            if (!lx_user_wr_ok(oldp, 32)) return (uint64_t)-EFAULT;
+            memcpy((void *)(uintptr_t)oldp, v, 32);
+        }
+        if (nr == 38 && b) {
+            int64_t v[4];
+            if (!lx_user_range_ok(b, 32)) return (uint64_t)-EFAULT;
+            memcpy(v, (const void *)(uintptr_t)b, 32);
+            uint64_t val = ms_of(v[2], v[3], 1000000), iv = ms_of(v[0], v[1], 1000000);
+            p->timers[7].used = 1; p->timers[7].sig = 14; p->timers[7].interval = iv;
+            p->timers[7].next = val ? now + val : 0;
+        }
+        return 0;
+    }
+    if (nr == 222) {                                                           // timer_create(clock, sigevent *, timer_t *)
+        if (!lx_user_wr_ok(c, 4)) return (uint64_t)-EFAULT;
+        int sig = 14, notify = 0;
+        if (b) {
+            if (!lx_user_range_ok(b, 20)) return (uint64_t)-EFAULT;
+            int32_t sv[5]; memcpy(sv, (const void *)(uintptr_t)b, 20);
+            sig = sv[2]; notify = sv[3] & 0xF;
+            if (notify != 0 && notify != 1 && notify != 4) return (uint64_t)-EINVAL;
+            if (notify == 1) sig = 0;                                           // SIGEV_NONE: nothing is sent
+            else if (sig < 1 || sig > 64) return (uint64_t)-EINVAL;
+        }
+        for (int i = 0; i < 7; i++) {
+            if (p->timers[i].used) continue;
+            p->timers[i].used = 1; p->timers[i].sig = sig; p->timers[i].next = 0; p->timers[i].interval = 0;
+            int32_t id = i;
+            memcpy((void *)(uintptr_t)c, &id, 4);
+            return 0;
+        }
+        return (uint64_t)-EAGAIN;
+    }
+    int id = (int)a;
+    if (id < 0 || id >= 7 || !p->timers[id].used) return (uint64_t)-EINVAL;
+    if (nr == 223) {                                                           // timer_settime(id, flags, new, old)
+        uint64_t newp = c, oldp = 0;
+        (void)oldp;
+        if (!lx_user_range_ok(newp, 32)) return (uint64_t)-EFAULT;
+        int64_t v[4]; memcpy(v, (const void *)(uintptr_t)newp, 32);
+        uint64_t iv = ms_of(v[0], v[1], 1000000000), val = ms_of(v[2], v[3], 1000000000);
+        if (b & 1) { uint64_t at = val; val = at > now ? at - now : 1; }       // TIMER_ABSTIME (of the monotonic clock)
+        p->timers[id].interval = iv;
+        p->timers[id].next = val ? now + val : 0;
+        return 0;
+    }
+    if (nr == 224) {                                                           // timer_gettime(id, curr)
+        if (!lx_user_wr_ok(b, 32)) return (uint64_t)-EFAULT;
+        uint64_t rem = p->timers[id].next > now ? p->timers[id].next - now : 0;
+        int64_t v[4] = { (int64_t)(p->timers[id].interval / 1000), (int64_t)(p->timers[id].interval % 1000) * 1000000, (int64_t)(rem / 1000), (int64_t)(rem % 1000) * 1000000 };
+        memcpy((void *)(uintptr_t)b, v, 32);
+        return 0;
+    }
+    if (nr == 225) return 0;                                                   // timer_getoverrun
+    p->timers[id].used = 0; p->timers[id].next = 0;                            // timer_delete
+    return 0;
 }
 
 static uint64_t sys_clock_gettime(uint32_t clk, uint64_t ts)
@@ -1030,11 +1129,24 @@ void linux64_syscall(registers_t *r)
 {
     uint64_t nr = r->rax, a = r->rdi, b = r->rsi, c = r->rdx, d = r->r10, e = r->r8, f = r->r9;
     uint64_t ret;
+    proc_timers_poll(proc_current());                                  /* a timer that has run out signals the program now */
     switch (nr) {
         case 0:   ret = call32(3, a, b, c, 0, 0, 0, r); break;                 /* read */
         case 1:   ret = call32(4, a, b, c, 0, 0, 0, r); break;                 /* write */
         case 2:   ret = call32(295, (uint64_t)-100, a, b, c, 0, 0, r); break;   /* open */
         case 3:   ret = call32(6, a, 0, 0, 0, 0, 0, r); break;                 /* close */
+        case 436: {                                                            /* close_range(first, last, flags): glibc's closefrom */
+            proc_t *cp = proc_current();
+            uint64_t last = b < (uint64_t)(PROC_MAX_FDS + 2) ? b : (uint64_t)(PROC_MAX_FDS + 2);
+            if (!cp || a > b || (c & ~6ull)) { ret = (uint64_t)-EINVAL; break; }
+            for (uint64_t fdn = a < 3 && !(c & 4) ? 3 : a; fdn <= last; fdn++) {
+                if (fdn < 3 || cp->fd[fdn - 3] == -1) continue;
+                if (c & 4) cp->fd_flags[fdn - 3] |= 1u;                          /* CLOSE_RANGE_CLOEXEC */
+                else call32(6, fdn, 0, 0, 0, 0, 0, r);
+            }
+            ret = 0;
+            break;
+        }
         case 4:   ret = sys_stat_at(-100, a, b, 0); break;                     /* stat */
         case 5: {                                                              /* fstat */
             linux_stat64_t st;
@@ -1061,7 +1173,7 @@ void linux64_syscall(registers_t *r)
         case 22:  ret = call32(42, a, 0, 0, 0, 0, 0, r); break;                /* pipe */
         case 24:  ret = 0; task_yield(); break;                                /* sched_yield */
         case 25:  ret = sys_mremap(a, b, c, (uint32_t)d); break;
-        case 28:  ret = 0; break;                                              /* madvise */
+        case 28:  ret = sys_madvise(a, b, (int)c); break;                      /* madvise */
         case 32:  ret = call32(41, a, 0, 0, 0, 0, 0, r); break;                /* dup */
         case 33:  ret = call32(63, a, b, 0, 0, 0, 0, r); break;                /* dup2 */
         case 35:  ret = call32(407, 0, 0, a, b, 0, 0, r); break;               /* nanosleep: clock_nanosleep_time64 */
@@ -1080,10 +1192,11 @@ void linux64_syscall(registers_t *r)
         case 51:  ret = call32(367, a, b, c, 0, 0, 0, r); break;               /* getsockname */
         case 52:  ret = call32(368, a, b, c, 0, 0, 0, r); break;               /* getpeername */
         case 53:  ret = call32(360, a, b, c, d, 0, 0, r); break;               /* socketpair */
-        case 36: case 37: case 38: ret = 0; break;                             /* getitimer, alarm, setitimer: no timers yet (git's progress asks) */
+        case 36: case 37: case 38: case 222: case 223: case 224: case 225: case 226:
+            ret = sys_timers((int)nr, a, b, c); break;                         /* getitimer, alarm, setitimer, timer_create/settime/gettime/getoverrun/delete */
         case 34: {                                                             /* pause */
             proc_t *pp = proc_current();
-            while (!(pp->sig_pending & ~task_current()->sig_blocked)) task_sleep(20);
+            while (proc_timers_poll(pp), !(pp->sig_pending & ~task_current()->sig_blocked)) task_sleep(20);
             ret = (uint64_t)-EINTR;
             break;
         }

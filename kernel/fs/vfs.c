@@ -8,6 +8,7 @@
 
 int proc_std_bin_alias(const char *abs, char *out, int cap);
 int pty_exists(int n);                                        /* pty.c */
+#include "procfs.h"
 
 /* /dev/ptmx and /dev/pts/N: device nodes that exist while the pair does (0 = not one) */
 static int pty_node(const char *abs, vfs_entry_t *e)
@@ -430,6 +431,7 @@ int vfs_readdir(const char *path, vfs_entry_t *entries, int max)
     mount_t *m = resolve_mount(abs);
     if (!m || !m->ops || !m->ops->readdir) return -1;
     if (!may_access(m, abs, VFS_ACC_R)) return -1;
+    if (procfs_is(abs)) { int pn = procfs_readdir(abs, entries, max); if (pn >= 0) return pn; }
     int n = m->ops->readdir(m->private_data, strip_mount(abs, m), entries, max);
     if (n > 0 && m->synth) for (int i = 0; i < n; i++) synth_owner(m, &entries[i]);
     return n;
@@ -498,6 +500,7 @@ int vfs_stat(const char *path, vfs_entry_t *entry)
     abspath_into(path, abs);
     int rc = vfs_stat_abs(abs, entry);
     if (rc != 0 && pty_node(abs, entry)) return 0;
+    if (rc != 0 && procfs_is(abs) && procfs_stat(abs, entry) == 0) return 0;
     char alias[VFS_NAME_LEN];
     if (rc != 0 && !denied_flag && proc_std_bin_alias(abs, alias, sizeof(alias))) rc = vfs_stat_abs(alias, entry);   /* /usr/bin/ls: the ls command */
     return rc;
@@ -590,6 +593,7 @@ int vfs_access(const char *path, int want)
 {
     char abs[VFS_NAME_LEN];
     abspath_into(path, abs);
+    if (procfs_is(abs)) { vfs_entry_t pe; return procfs_stat(abs, &pe) == 0 && !(want & 2) ? 0 : -1; }   /* /proc: readable, not writable */
     {
         vfs_entry_t probe;
         char alias[VFS_NAME_LEN];

@@ -131,7 +131,7 @@ int udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port, void *data, 
     udp->checksum = 0;
     memcpy(buf + sizeof(udp_hdr_t), data, len);
 
-    udp->checksum = udp_checksum(net_ip, dst_ip, buf, total);
+    udp->checksum = udp_checksum(ip_is_loopback(dst_ip) ? ip_loopback_addr() : net_ip, dst_ip, buf, total);
 
     int r = ip_send(dst_ip, IPPROTO_UDP, buf, total);
     free(buf);

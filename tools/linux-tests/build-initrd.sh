@@ -19,6 +19,10 @@ gcc -O2 -static "$here/srvtest.c" -o "$w/programs/srvtest" 2>/dev/null
 gcc -O2 -static "$here/ptytest.c" -o "$w/programs/ptytest" 2>/dev/null
 gcc -O2 -static "$here/scmtest.c" -o "$w/programs/scmtest" 2>/dev/null
 gcc -O2 -static "$here/locktest.c" -o "$w/programs/locktest" 2>/dev/null
+gcc -O2 -static "$here/looptest.c" -o "$w/programs/looptest" 2>/dev/null
+gcc -O2 -static "$here/proctest.c" -o "$w/programs/proctest" 2>/dev/null
+gcc -O2 -static "$here/unixtest.c" -o "$w/programs/unixtest" 2>/dev/null
+gcc -O2 -static "$here/timertest.c" -o "$w/programs/timertest" -lrt 2>/dev/null
 cp "$here/t2.js" "$here/cp.js" "$w/programs/js/"
 cp -r "$here/gcc/." "$w/programs/gcc/"      # sources the gcc test compiles (when EXTRA_PKGS has gcc)
 printf '#!/programs/forktest arg\n' > "$w/programs/ft.sh"; chmod +x "$w/programs/ft.sh"

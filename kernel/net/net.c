@@ -58,6 +58,7 @@ static uint32_t net_test_rng = 12345;
 
 int net_poll(void)
 {
+    if (ip_loop_poll()) return 1;                      /* what this machine sent to itself */
     if (!nic_poll) return 0;
     uint8_t buf[1540]; /* 1536 + 4 bytes headroom for VLAN tag */
     int len = nic_poll(buf, 1536);

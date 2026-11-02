@@ -1,5 +1,6 @@
 #include "proc.h"
 #include "pty.h"
+#include "debugmon.h"
 #include "io.h"
 #include "linux_abi.h"
 #include "tty.h"
@@ -300,6 +301,7 @@ static int proc_start(proc_t *p, const char *path, uint64_t *dir,
     const char *base = path;
     for (const char *c = path; *c; c++) if (*c == '/') base = c + 1;
     strncpy(p->name, base, sizeof(p->name) - 1);
+    strncpy(p->exe, path, sizeof(p->exe) - 1);
 
     /* a setuid / setgid program runs as its owner / group, provided nobody but the owner can have changed it */
     uint32_t run_uid = 0xFFFFFFFFu, run_gid = 0xFFFFFFFFu;
@@ -706,6 +708,8 @@ int proc_execve_argv(const char *path_in, const char *const argv[], const char *
         for (const char *c = path; *c; c++) if (*c == '/') base = c + 1;
         memset(p->name, 0, sizeof(p->name));
         strncpy(p->name, base, sizeof(p->name) - 1);
+        memset(p->exe, 0, sizeof(p->exe));
+        strncpy(p->exe, path, sizeof(p->exe) - 1);
         strncpy(t->name, base, sizeof(t->name) - 1);
         t->name[sizeof(t->name) - 1] = 0;
     }
@@ -758,6 +762,7 @@ int proc_fork(void *regs_ptr, int share_vm, uint64_t child_stack)
     c->gfx = 0;
     c->win = c->win_prev = 0;
     c->sig_pending = 0;
+    memset(c->timers, 0, sizeof(c->timers));            /* timers are not inherited */
     c->ppid = parent->pid;
     c->vfork_parent = 0;
     c->vfork_done = 0;
@@ -829,6 +834,23 @@ int proc_signal(proc_t *q, int sig)
     q->term_sig = sig;
     if (q == proc_current()) proc_exit(128 + sig);
     return proc_kill(q->pid, 128 + sig) == 0 ? 0 : -ESRCH;
+}
+
+/* timers: looked at whenever the program is in the kernel (a system call, a wait that checks for signals) */
+void proc_timers_poll(proc_t *p)
+{
+    if (!p) return;
+    uint64_t now = 0;
+    for (int i = 0; i < 8; i++) {
+        if (!p->timers[i].used || !p->timers[i].next) continue;
+        if (!now) now = debugmon_uptime_ms64();
+        if (now < p->timers[i].next) continue;
+        if (p->timers[i].interval) {                         /* a repeating one: the next time after now */
+            uint64_t iv = p->timers[i].interval;
+            p->timers[i].next += ((now - p->timers[i].next) / iv + 1) * iv;
+        } else p->timers[i].next = 0;
+        if (p->timers[i].sig) proc_signal(p, p->timers[i].sig);
+    }
 }
 
 /* every program that has the slave of pseudo-terminal n open: ^C, the line dropping, a new window size */
