@@ -80,7 +80,7 @@ int wm_term_max_view_offset(window_t *w);
 static int term_max_view_offset(window_t *w)
 {
     int content_h = w->h0 - 1;
-    int extra = TERM_SURFACE_H - content_h;
+    int extra = w->surface.rows - content_h;
     if (extra < 0) extra = 0;
     return w->surface.scrollback_count + extra;
 }
@@ -986,16 +986,16 @@ static void draw_window(window_t *w)
      * by surface_scroll()). "overflow" unifies both cases: 0 while
      * there's nothing to scroll, growing by 1 per line afterward. */
     int newest_row = w->surface.cur_row;
-    if (newest_row >= TERM_SURFACE_H) newest_row = TERM_SURFACE_H - 1;
+    if (newest_row >= w->surface.rows) newest_row = w->surface.rows - 1;
     int overflow = newest_row - (content_h - 1);
     if (overflow < 0) overflow = 0;
     for (int row = 0; row < content_h; row++) {
         int cells_idx = overflow + row - vo;
         for (int col = 0; col < w0; col++) {
             uint16_t cell;
-            if (cells_idx >= 0 && cells_idx < TERM_SURFACE_H && col < TERM_SURFACE_W) {
-                cell = w->surface.cells[cells_idx * TERM_SURFACE_W + col];
-            } else if (cells_idx < 0 && col < TERM_SURFACE_W) {
+            if (cells_idx >= 0 && cells_idx < w->surface.rows && col < w->surface.cols) {
+                cell = w->surface.cells[cells_idx * TERM_MAXW + col];
+            } else if (cells_idx < 0 && col < w->surface.cols) {
                 const uint16_t *sb = terminal_scrollback_row(&w->surface, -cells_idx);
                 cell = sb ? sb[col] : mk_cell(' ', mk_color(VGA_LIGHT_GREY, VGA_BLACK));
             } else {

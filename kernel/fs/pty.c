@@ -83,7 +83,9 @@ static void erase_echo(pty_t *p, int n)
 /* a signal for every program that has the slave open */
 static void signal_slave(int n, int sig)
 {
-    proc_signal_pty(n, sig);
+    pty_t *pp = get(n);
+    uint32_t g = pp && pp->t.fg_set && proc_group_alive(pp->t.fg_pid) ? pp->t.fg_pid : 0;   /* a job-control shell: only the foreground job */
+    proc_signal_pty_g(n, sig, sig == 28 ? 0 : g);
 }
 
 /* one byte the master wrote, through the line discipline to the program */
@@ -96,7 +98,7 @@ static void discipline(int n, pty_t *p, uint8_t c)
     } else if (c == '\n' && (t->c_iflag & INLCR)) c = '\r';
 
     if (t->c_lflag & ISIG) {
-        int sig = c == t->c_cc[VINTR] ? 2 : c == t->c_cc[VQUIT] ? 3 : 0;
+        int sig = c == t->c_cc[VINTR] ? 2 : c == t->c_cc[VQUIT] ? 3 : (c == t->c_cc[VSUSP] && proc_pty_has_jobshell(n)) ? 20 : 0;
         if (sig && c) {
             t->inq_head = t->inq_tail = 0; t->line_len = 0; t->line_done = 0;
             if (t->c_lflag & ECHO) { echo_byte(p, c); out_processed(p, '\n'); }
@@ -201,7 +203,7 @@ void pty_close(int n, int slave)
     if (slave) { if (p->srefs > 0) p->srefs--; }
     else {
         if (p->mrefs > 0) p->mrefs--;
-        if (p->mrefs == 0 && p->srefs > 0) signal_slave(n, 1);        /* the line dropped: SIGHUP */
+        if (p->mrefs == 0 && p->srefs > 0) proc_signal_pty_others(n, 1);   /* the line dropped: SIGHUP (not for the program that closed it itself) */
     }
     if (p->mrefs == 0 && p->srefs == 0) p->used = 0;
 }
@@ -234,6 +236,7 @@ int pty_read(int n, int slave, uint8_t *buf, uint32_t count, int nonblock)
     int got_first = 0;
     uint64_t first_at = 0;
     for (;;) {
+        if (t->fg_set) { int bg = proc_tty_background(t->fg_pid); if (bg < 0) return bg; if (bg) { p = get(n); if (!p) return -EIO; t = &p->t; continue; } }
         int avail = readable(p);
         if (t->c_lflag & ICANON) {
             if (avail) break;
@@ -400,13 +403,14 @@ int pty_ioctl(int n, int slave, uint32_t req, uint64_t arg, int (*wr_ok)(uint64_
         case TIOCGPGRP: case TIOCGSID: {
             if (!wr_ok(arg, 4)) return -EFAULT;
             proc_t *pr = proc_current();
-            uint32_t g = t->fg_pid ? t->fg_pid : (pr ? pr->pid : 1);
+            uint32_t g = t->fg_pid ? t->fg_pid : (pr ? proc_pgid_of(pr) : 1);   /* no job-control shell yet: the caller's own group */
             memcpy((void *)(uintptr_t)arg, &g, 4);
             return 0;
         }
         case TIOCSPGRP: {
             if (!rd_ok(arg, 4)) return -EFAULT;
             memcpy(&t->fg_pid, (const void *)(uintptr_t)arg, 4);
+            t->fg_set = 1;
             return 0;
         }
         case TIOCGPTN: {

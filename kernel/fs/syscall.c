@@ -438,6 +438,8 @@ static uint32_t bsd_flock(int fd, int op)
 /* Descriptors passed over a socketpair (SCM_RIGHTS): sendmsg parks a copy of each in a table of its own and
  * queues it for the pipe the other end reads; the next recvmsg there installs them in the receiver. */
 static int sock_of_fwd(proc_t *p, int fd);
+void lx_shseg_drop(const char *path);                 /* linux64.c: what a file shared through MAP_SHARED */
+void lx_shseg_rename(const char *from, const char *to);
 static proc_t scm_holder;
 static int scm_ready;
 static struct { int used, key, hslot; uint32_t grp; } scm_q[16];   /* grp: the sendmsg it came with */
@@ -510,6 +512,7 @@ static int linux_signal_waiting(void)
     proc_t *p = proc_current();
     task_t *t = task_current();
     proc_timers_poll(p);
+    proc_stop_wait(p);                                   /* ^Z: held here until SIGCONT */
     return p && t && (p->sig_pending & ~t->sig_blocked);
 }
 
@@ -647,12 +650,11 @@ static uint32_t linux_socketpair(int domain, uint32_t type, uint64_t user_fds)
         if (slots[0] < 0) slots[0] = i; else slots[1] = i;
     }
     if (slots[1] < 0) return (uint32_t)-EMFILE;
-    int a = proc_pipe_alloc();
-    if (a < 0) return (uint32_t)-ENFILE;
-    int b = proc_pipe_alloc();
-    if (b < 0) { proc_pipe_unref(a, 0); proc_pipe_unref(a, 1); return (uint32_t)-ENFILE; }
-    p->fd[slots[0]] = PROC_FD_SPAIR(a, b);
-    p->fd[slots[1]] = PROC_FD_SPAIR(b, a);
+    int a, b;                                                    /* two connected AF_UNIX sockets: real ones, so every socket call works */
+    int pr = lsock_unix_pair(&a, &b);
+    if (pr < 0) return (uint32_t)-ENFILE;
+    p->fd[slots[0]] = PROC_FD_SOCK_BASE - a;
+    p->fd[slots[1]] = PROC_FD_SOCK_BASE - b;
     for (int k = 0; k < 2; k++) {
         p->fd_flags[slots[k]] = (type & LINUX_O_CLOEXEC) ? LINUX_FD_CLOEXEC : 0;
         p->fd_open_flags[slots[k]] = 2u | (type & 0x800u);
@@ -893,8 +895,6 @@ static uint32_t linux_sockcall(int call, const uint64_t *v)
         uint32_t alen = sizeof(addr);
         int nb = sock_nonblock(p, fd, 0);
         int slot = -1;
-        for (int i = 0; i < PROC_MAX_FDS; i++) if (p->fd[i] == -1) { slot = i; break; }
-        if (slot < 0) return (uint32_t)-EMFILE;
         int ns;
         for (;;) {
             lsock_pump();
@@ -904,6 +904,9 @@ static uint32_t linux_sockcall(int call, const uint64_t *v)
             task_yield();
         }
         if (ns < 0) return (uint32_t)ns;
+        /* the descriptor number is chosen now: another thread may have opened files while this one waited */
+        for (int i = 0; i < PROC_MAX_FDS; i++) if (p->fd[i] == -1) { slot = i; break; }
+        if (slot < 0) { lsock_close(ns); return (uint32_t)-EMFILE; }
         uint32_t flags = call == 18 ? (uint32_t)v[3] : 0;
         p->fd[slot] = PROC_FD_SOCK_BASE - ns;
         p->fd_flags[slot] = (flags & LINUX_O_CLOEXEC) ? LINUX_FD_CLOEXEC : 0;
@@ -1925,6 +1928,19 @@ static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode
         return (uint32_t)dslot + 3u;
     }
 
+    /* /dev/tty: this program's terminal, which is what its standard descriptors are (a copy of one of them) */
+    if (!strcmp(path, "/dev/tty")) {
+        for (int k = 0; k < 3; k++) {
+            int sv = p->std_fd[k] > 2 ? p->fd[p->std_fd[k] - 3] : 0;
+            int is_tty = p->std_fd[k] > 2 ? (PROC_FD_IS_PTS(sv) || PROC_FD_IS_PTM(sv)) : 1;
+            if (is_tty) {
+                uint32_t nfd = linux_dup(k, -1, (flags & 0x80000u) != 0);
+                return nfd;
+            }
+        }
+        return (uint32_t)-ENXIO;
+    }
+
     /* the few devices programs expect: OpenSSL waits for /dev/urandom before it will start */
     if (!strcmp(path, "/dev/urandom") || !strcmp(path, "/dev/random") || !strcmp(path, "/dev/null")) {
         int dslot = -1;
@@ -2247,7 +2263,7 @@ static uint32_t linux_wait4(int pid, uint64_t status_ptr, uint32_t options, uint
     if (rusage && rusage_size && !user_wr_ok(rusage, rusage_size)) return (uint32_t)-EFAULT;
     if (pid == 0 || pid < -1) pid = -1;                  /* process groups: tOS has one */
     int status = 0;
-    int r = proc_wait_child(pid, options & 1u, &status);   /* WNOHANG */
+    int r = proc_wait_child_ex(pid, options & 1u, (options & 2u) != 0, (options & 8u) != 0, &status);   /* WNOHANG, WUNTRACED, WCONTINUED */
     if (r > 0) {
         if (status_ptr) *(uint32_t *)(uintptr_t)status_ptr = (uint32_t)status;
         if (rusage && rusage_size) memset((void *)(uintptr_t)rusage, 0, rusage_size);
@@ -2853,7 +2869,7 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             if (vfs_stat((const char *)(uintptr_t)a, &entry) != 0)
                 return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
             if (entry.is_dir) return (uint32_t)-EISDIR;
-            if (vfs_unlink((const char *)(uintptr_t)a) == 0) return 0;
+            if (vfs_unlink((const char *)(uintptr_t)a) == 0) { lx_shseg_drop(vfs_abspath((const char *)(uintptr_t)a)); return 0; }
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-EPERM;
         }
 
@@ -2873,12 +2889,23 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
                 return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
             if (!entry.is_dir) return (uint32_t)-ENOTDIR;
             if (vfs_unlink((const char *)(uintptr_t)a) == 0) return 0;
-            if (!vfs_path_has_mount((const char *)(uintptr_t)a) && ramfs_rmdir(vfs_abspath((const char *)(uintptr_t)a)) == 0) return 0;
+            if (vfs_rmdir_root((const char *)(uintptr_t)a) == 0) return 0;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-39;        /* ENOTEMPTY */
         }
 
         case 9: /* link: no hard links here; EPERM is what a filesystem without them says
-                 * (npm's cache then moves the file instead) */
+                 * (npm's cache then moves the file instead). In /dev/shm the file is moved: glibc's sem_open
+                 * links its temporary file to the semaphore's name, and the program keeps the mapping it made */
+            if (user_cstr_ok(a) && user_cstr_ok(b) && !strncmp((const char *)(uintptr_t)a, "/dev/shm/", 9) && !strncmp((const char *)(uintptr_t)b, "/dev/shm/", 9)) {
+                vfs_entry_t le;
+                if (vfs_stat((const char *)(uintptr_t)b, &le) == 0) return (uint32_t)-EEXIST;
+                if (vfs_rename((const char *)(uintptr_t)a, (const char *)(uintptr_t)b) != 0) return (uint32_t)-EPERM;
+                { char oldp[VFS_NAME_LEN]; strncpy(oldp, vfs_abspath((const char *)(uintptr_t)a), VFS_NAME_LEN - 1); oldp[VFS_NAME_LEN - 1] = 0; lx_shseg_rename(oldp, vfs_abspath((const char *)(uintptr_t)b)); }
+                proc_t *lp = proc_current();                 /* its open descriptors follow the file to its new name */
+                for (int i = 0; lp && i < PROC_MAX_FDS; i++)
+                    if (lp->fd[i] >= 0 && !strcmp(lp->fdpath[i], (const char *)(uintptr_t)a)) { strncpy(lp->fdpath[i], (const char *)(uintptr_t)b, VFS_NAME_LEN - 1); lp->fdpath[i][VFS_NAME_LEN - 1] = 0; }
+                return 0;
+            }
             return (uint32_t)-EPERM;
 
         case 118: case 148:                     /* fsync, fdatasync: writes are already done */
@@ -2988,6 +3015,10 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
         case SYS_KILL: {
             int pid = (int)a;
             if (pid == -1) return (uint32_t)-EPERM;
+            if (pid == 0 || (pid < 0 && proc_group_alive((uint32_t)-pid))) {       /* a process group */
+                uint32_t g = pid == 0 ? proc_pgid_of(proc_current()) : (uint32_t)-pid;
+                return proc_signal_group(g, (int)b) > 0 ? 0 : (uint32_t)-ESRCH;
+            }
             proc_t *target = pid == 0 ? proc_current() : proc_by_pid((uint32_t)(pid < 0 ? -pid : pid));
             if (!target || target->done) return (uint32_t)-ESRCH;
             return (uint32_t)proc_signal(target, (int)b);
@@ -3047,8 +3078,10 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             /* Static glibc parses the release as a Linux kernel version and
              * refuses startup when it is below the libc build minimum. */
             strcpy(info.release, "3.2.0-tOS");
-            strcpy(info.version, "tOS Linux-i386 ABI");
-            strcpy(info.machine, "i686");
+            proc_t *up = proc_current();
+            int is64 = up && up->linux_abi == 2;                     /* a 64-bit program is told it runs on x86_64 */
+            strcpy(info.version, is64 ? "tOS Linux-x86_64 ABI" : "tOS Linux-i386 ABI");
+            strcpy(info.machine, is64 ? "x86_64" : "i686");
             strcpy(info.domainname, "localdomain");
             memcpy((void *)(uintptr_t)a, &info, sizeof(info));
             return 0;
@@ -3903,12 +3936,39 @@ int lx_stat_at(int dirfd, uint64_t path_ptr, uint32_t flags, linux_stat64_t *st)
     if (!user_cstr_ok(path_ptr)) return cstr_too_long ? -ENAMETOOLONG : -EFAULT;
     const char *path = (const char *)(uintptr_t)path_ptr;
     if (path[0] == 0 && (flags & 0x1000u)) return linux_fd_stat(dirfd, st);
-    if (path[0] != '/' && dirfd != -100) return -EBADF;
+    char saved[VFS_NAME_LEN];
+    int moved = 0;
+    if (path[0] != '/' && dirfd != -100) {                  /* relative to a directory descriptor: that directory is the working one for a moment */
+        proc_t *p = proc_current();
+        if (!p || dirfd < 3 || dirfd - 3 >= PROC_MAX_FDS || p->fd[dirfd - 3] == -1) return -EBADF;
+        if (!p->fdpath[dirfd - 3][0]) return -ENOTDIR;
+        vfs_getcwd(saved, sizeof(saved));
+        vfs_chdir(p->fdpath[dirfd - 3]);
+        moved = 1;
+    }
     etc_special(path);
-    if (vfs_stat(path, &entry) != 0) return vfs_denied() ? -EACCES : -ENOENT;
+    int sr = vfs_stat(path, &entry);
+    int denied = vfs_denied();
+    if (moved) vfs_chdir(saved);
+    if (sr != 0) return denied ? -EACCES : -ENOENT;
     linux_stat64_fill(st, &entry);
     return 0;
 }
+
+/* the cwd for the *at calls: a directory descriptor's folder (0), or an error; lx_at_restore() puts the old one back */
+int lx_at_enter(int dirfd, uint64_t path_ptr, char *saved)
+{
+    proc_t *p = proc_current();
+    if (dirfd == -100 || !p || !user_cstr_ok(path_ptr)) return 0;
+    const char *path = (const char *)(uintptr_t)path_ptr;
+    if (path[0] == '/' || path[0] == 0) return 0;
+    if (dirfd < 3 || dirfd - 3 >= PROC_MAX_FDS || p->fd[dirfd - 3] == -1) return -EBADF;
+    if (!p->fdpath[dirfd - 3][0]) return -ENOTDIR;
+    vfs_getcwd(saved, VFS_NAME_LEN);
+    vfs_chdir(p->fdpath[dirfd - 3]);
+    return 1;
+}
+void lx_at_restore(const char *saved) { vfs_chdir(saved); }
 
 int lx_fd_stat(int fd, linux_stat64_t *st) { return linux_fd_stat(fd, st); }
 

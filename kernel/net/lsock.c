@@ -458,7 +458,7 @@ int lsock_shutdown(int s, int how)
     if (how < 0 || how > 2) return -E_INVAL;
     if (k->un) { if (k->un_peer < 0 && !k->un_was_conn) return -E_NOTCONN; if (how >= 1) k->shut_wr = 1; return 0; }
     if (k->stream && k->tcp < 0) return -E_NOTCONN;
-    if (how >= 1) k->shut_wr = 1;
+    if (how >= 1 && !k->shut_wr) { k->shut_wr = 1; if (k->stream && k->tcp >= 0 && !k->connecting) tcp_shutdown_wr(k->tcp); }
     return 0;
 }
 
@@ -488,6 +488,18 @@ void lsock_pump(void)
 }
 
 int lsock_is_unix(int s) { lsock_t *k = get(s); return k && k->un; }
+
+int lsock_unix_pair(int *a, int *b)
+{
+    int x = lsock_create(1, 1, 0);
+    if (x < 0) return x;
+    int y = lsock_create(1, 1, 0);
+    if (y < 0) { lsock_close(x); return y; }
+    socks[x].un_peer = y; socks[y].un_peer = x;
+    socks[x].un_was_conn = socks[y].un_was_conn = 1;
+    *a = x; *b = y;
+    return 0;
+}
 
 int lsock_unix_peer(int s) { lsock_t *k = get(s); return k && k->un ? k->un_peer : -1; }
 

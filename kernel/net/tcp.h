@@ -45,6 +45,7 @@
 int  tcp_socket(void);
 int  tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port);
 int  tcp_send2(int fd, void *data, int len);
+void tcp_shutdown_wr(int fd);               /* the FIN: no more to send, the peer's data still comes in */
 int  tcp_recv2(int fd, uint8_t *buf, int max_len);
 void tcp_close2(int fd);
 void tcp_pump(void);

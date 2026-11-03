@@ -110,6 +110,8 @@ typedef struct proc {
     proc_vm_region_t vm_regions[PROC_MAX_VM_REGIONS];
     char name[32];
     char exe[VFS_NAME_LEN];             /* the program file (/proc/self/exe) */
+    uint32_t pgid;                     /* process group (0: its own pid) */
+    int stopped, stop_sig, stop_report, cont_report;   /* job control: SIGSTOP / SIGTSTP until SIGCONT */
     struct { int used, sig; uint64_t next, interval; } timers[8];   /* POSIX timers 0..6 and the real-time interval timer (7) */
 } proc_t;
 
@@ -125,9 +127,20 @@ int  proc_fork(void *regs, int share_vm, uint64_t child_stack);
 /* a signal for a process: its handler (pending), or what the signal does by default */
 int  proc_signal(proc_t *p, int sig);
 void proc_signal_surface(void *surface, int sig);
-void proc_signal_pty(int n, int sig);                /* every program that has pseudo-terminal n's slave open */   /* every program on one terminal window (^C) */
+void proc_signal_pty(int n, int sig);
+void proc_signal_pty_g(int n, int sig, uint32_t pgid);
+void proc_signal_pty_others(int n, int sig);                   /* every program with the slave open but the caller */          /* only the group pgid (0: everyone) */
+void proc_signal_surface_g(void *surface, int sig, uint32_t pgid);
+uint32_t proc_pgid_of(proc_t *p);
+int  proc_group_alive(uint32_t pgid);
+int  proc_signal_group(uint32_t pgid, int sig);             /* the programs in the group: how many */
+int  proc_tty_background(uint32_t fg_pgid);                 /* the caller is not in the terminal's foreground group: it is stopped (SIGTTIN); 1 = reading must not go on */                /* every program that has pseudo-terminal n's slave open */   /* every program on one terminal window (^C) */
 /* wait4: a child that has ended (pid -1 = any); 0 with nohang when none has yet, -ECHILD */
 int  proc_wait_child(int pid, int nohang, int *status);
+int  proc_wait_child_ex(int pid, int nohang, int untraced, int continued, int *status);   /* also a child that stopped / went on */
+void proc_stop_wait(proc_t *p);                     /* a stopped program waits here until SIGCONT */
+int  proc_pty_has_jobshell(int n);                  /* a program on pty n that handles job control itself (it ignores SIGTSTP) */
+int  proc_surface_has_jobshell(void *surface);
 proc_t *proc_current(void);
 proc_pipe_t *proc_pipe(int index);              /* the system's pipe table */
 int  proc_pipe_alloc(void);                       /* a new pipe, one reference on each end; -1 */

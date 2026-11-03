@@ -11,6 +11,7 @@
 #define PTE_PCD      0x010
 #define PTE_HUGE     0x080
 #define PTE_SAVED    0x200          /* software: a page kept while its program allows no access */
+#define PTE_SHARED   0x800          /* software: a MAP_SHARED page: a fork gives the child the same page, still writable */
 #define PTE_COW      0x400          /* software: writable, but shared since a fork: copied on write */
 #define PTE_NX       (1ull << 63)
 #define PDE_PRESENT  PTE_PRESENT
@@ -51,6 +52,7 @@ int  paging_unmap_in(uint64_t *dir, uint64_t virt, uint64_t *phys_out);
 int  paging_protect_in(uint64_t *dir, uint64_t virt, uint64_t flags);
 /* Is [virt, virt+len) mapped user-accessible (and writable when `write`) in the loaded tables? */
 int  paging_user_range_ok(uint64_t virt, uint64_t len, int write);
+uint64_t paging_shared_phys(uint64_t *dir, uint64_t virt);   /* the physical address of a MAP_SHARED page (what other programs see it as), or 0 */
 int  paging_saved_page(uint64_t *dir, uint64_t virt);     /* a PTE_SAVED page is there */
 /* fork: a copy of the user half sharing every page; writable ones become copy-on-write in both */
 uint64_t *paging_fork_dir(uint64_t *src);

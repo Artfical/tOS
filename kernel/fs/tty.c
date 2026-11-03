@@ -87,7 +87,8 @@ static void erase_echo(term_surface_t *s, int n)
 static void signal_group(term_surface_t *s, int sig)
 {
     if (s == &direct_surface) { proc_t *p = proc_current(); if (p) proc_signal(p, sig); return; }
-    proc_signal_surface(s, sig);
+    uint32_t g = s->tty.fg_set && proc_group_alive(s->tty.fg_pid) ? s->tty.fg_pid : 0;
+    proc_signal_surface_g(s, sig, sig == 28 ? 0 : g);
 }
 
 /* one byte from the keyboard through the line discipline */
@@ -104,7 +105,7 @@ static void discipline(term_surface_t *s, uint8_t c, int is_key_seq)
     } else if (c == '\n' && (t->c_iflag & INLCR)) c = '\r';
 
     if (t->c_lflag & ISIG) {
-        int sig = c == t->c_cc[VINTR] ? 2 : c == t->c_cc[VQUIT] ? 3 : 0;
+        int sig = c == t->c_cc[VINTR] ? 2 : c == t->c_cc[VQUIT] ? 3 : (c == t->c_cc[VSUSP] && proc_surface_has_jobshell(s)) ? 20 : 0;
         if (sig && c) {
             t->inq_head = t->inq_tail = 0; t->line_len = 0; t->line_done = 0;
             if (t->c_lflag & ECHO) { echo_byte(s, c); terminal_putchar('\n'); }
@@ -251,6 +252,7 @@ int tty_read(uint8_t *buf, uint32_t count, int nonblock)
     int got_first = 0;
     uint64_t first_at = 0;
     for (;;) {
+        if (t->fg_set) { int bg = proc_tty_background(t->fg_pid); if (bg < 0) return bg; if (bg) continue; }
         pump(s);
         int avail = readable(s);
         if (t->c_lflag & ICANON) {
@@ -367,13 +369,14 @@ int tty_ioctl(uint32_t req, uint64_t arg, int (*wr_ok)(uint64_t, uint64_t), int 
         case TIOCGPGRP: case TIOCGSID: {
             if (!wr_ok(arg, 4)) return -EFAULT;
             proc_t *p = proc_current();
-            uint32_t g = t->fg_pid ? t->fg_pid : (p ? p->pid : 1);
+            uint32_t g = t->fg_pid ? t->fg_pid : (p ? proc_pgid_of(p) : 1);   /* no job-control shell yet: the caller's own group */
             memcpy((void *)(uintptr_t)arg, &g, 4);
             return 0;
         }
         case TIOCSPGRP: {
             if (!rd_ok(arg, 4)) return -EFAULT;
             memcpy(&t->fg_pid, (const void *)(uintptr_t)arg, 4);
+            t->fg_set = 1;
             return 0;
         }
         case TIOCSCTTY: case TIOCNOTTY: case TCSBRK: case TCXONC: case TIOCOUTQ:

@@ -152,7 +152,8 @@ static void protect_level(uint64_t *t, int level, uint64_t base, uint64_t start,
         if (level == 1) {
             /* no access at all: not present, the page kept (PTE_SAVED) for when access comes back */
             uint64_t phys = t[i] & 0x000FFFFFFFFFF000ull;
-            t[i] = (flags & PTE_PRESENT) ? phys | paging_cow_flags(phys, flags) : phys | PTE_SAVED;
+            uint64_t fl = flags | (t[i] & PTE_SHARED);                      /* a shared page stays shared */
+            t[i] = (flags & PTE_PRESENT) ? phys | paging_cow_flags(phys, fl) : phys | PTE_SAVED | (t[i] & PTE_SHARED);
             asm volatile("invlpg (%0)" : : "r"(lo) : "memory");
             continue;
         }
@@ -344,6 +345,83 @@ static const char *fd_path(proc_t *p, int fd)
     return p->fdpath[fd - 3];
 }
 
+/* ---- MAP_SHARED: pages that stay shared between a program and its children, and between programs that map the same file.
+ * A file's shared pages are kept in a segment (by the file's name) that outlives the mappings until the file is removed;
+ * they start as the file's bytes, and what is written into them is not written back to the file. ---- */
+typedef struct { int used; char path[VFS_NAME_LEN]; uint32_t npages; uint32_t *pg; } shseg_t;
+static shseg_t shsegs[24];
+
+static shseg_t *shseg_find(const char *path)
+{
+    for (int i = 0; i < 24; i++) if (shsegs[i].used && !strcmp(shsegs[i].path, path)) return &shsegs[i];
+    return 0;
+}
+
+/* page idx of the file's segment (made when first asked for, from the file's bytes); 0 when out of memory */
+static uint32_t shseg_page(shseg_t *s, uint32_t idx)
+{
+    if (idx >= s->npages) {
+        uint32_t nn = idx + 16;
+        uint32_t *np = (uint32_t *)malloc(nn * sizeof(uint32_t));
+        if (!np) return 0;
+        memset(np, 0, nn * sizeof(uint32_t));
+        if (s->pg) { memcpy(np, s->pg, s->npages * sizeof(uint32_t)); free(s->pg); }
+        s->pg = np; s->npages = nn;
+    }
+    if (!s->pg[idx]) {
+        uint32_t phys = alloc_physical_page();
+        if (!phys) return 0;
+        memset(P2V(phys), 0, PAGE_SIZE);
+        uint8_t *buf = (uint8_t *)malloc(PAGE_SIZE);
+        if (buf) {
+            int got = fsbridge_read(s->path, buf, PAGE_SIZE, idx * PAGE_SIZE);
+            if (got > 0) memcpy(P2V(phys), buf, (size_t)got);
+            free(buf);
+        }
+        s->pg[idx] = phys;
+    }
+    return s->pg[idx];
+}
+
+void lx_shseg_drop(const char *path)                      /* the file is gone: so is what was shared through it (the mappings keep their pages) */
+{
+    shseg_t *s = shseg_find(path);
+    if (!s) return;
+    for (uint32_t i = 0; i < s->npages; i++) if (s->pg[i]) free_physical_page(s->pg[i]);
+    free(s->pg);
+    memset(s, 0, sizeof(*s));
+}
+
+void lx_shseg_rename(const char *from, const char *to)
+{
+    shseg_t *s = shseg_find(from);
+    if (s) { lx_shseg_drop(to); strncpy(s->path, to, VFS_NAME_LEN - 1); s->path[VFS_NAME_LEN - 1] = 0; }
+}
+
+/* the pages of a MAP_SHARED mapping: made now (the file's segment's, or fresh zero ones), each one more owner */
+static int map_shared(proc_t *p, const char *path, uint64_t off, uint64_t start, uint64_t size, uint32_t prot)
+{
+    shseg_t *seg = 0;
+    if (path) {
+        seg = shseg_find(path);
+        if (!seg) for (int i = 0; i < 24; i++) if (!shsegs[i].used) { seg = &shsegs[i]; seg->used = 1; strncpy(seg->path, path, VFS_NAME_LEN - 1); seg->path[VFS_NAME_LEN - 1] = 0; break; }
+        if (!seg) return -1;
+    }
+    for (uint64_t va = start; va < start + size; va += PAGE_SIZE) {
+        uint32_t phys;
+        if (seg) {
+            phys = shseg_page(seg, (uint32_t)((off + (va - start)) / PAGE_SIZE));
+            if (!phys || page_ref_inc(phys) != 0) return -1;
+        } else {
+            phys = alloc_physical_page();
+            if (!phys) return -1;
+            memset(P2V(phys), 0, PAGE_SIZE);
+        }
+        if (paging_map_in(p->pgdir, va, phys, pte_flags(prot) | PTE_SHARED) != 0) { free_physical_page(phys); return -1; }
+    }
+    return 0;
+}
+
 static uint64_t sys_mmap(uint64_t addr, uint64_t len, uint32_t prot, uint32_t flags, int fd, uint64_t off)
 {
     proc_t *p = proc_current();
@@ -369,6 +447,10 @@ static uint64_t sys_mmap(uint64_t addr, uint64_t len, uint32_t prot, uint32_t fl
         if (!start) return (uint64_t)-ENOMEM;
     }
     if (vma_insert(p, start, start + size, prot) != 0) return (uint64_t)-ENOMEM;
+    if ((flags & MAP_SHARED) && (prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) && size <= (64ull << 20)) {
+        if (map_shared(p, path, off, start, size, prot) != 0) { vma_remove(p, start, start + size); return (uint64_t)-ENOMEM; }
+        return start;
+    }
     if (path) {
         /* a private copy of the file's bytes (MAP_SHARED files are read the same way: tOS writes
          * nothing back) */
@@ -709,6 +791,20 @@ static uint64_t put_stat(uint64_t dst, const linux_stat64_t *s)
     if (!lx_user_wr_ok(dst, sizeof(st))) return (uint64_t)-EFAULT;
     memcpy((void *)(uintptr_t)dst, &st, sizeof(st));
     return 0;
+}
+
+int lx_at_enter(int dirfd, uint64_t path_ptr, char *saved);
+void lx_at_restore(const char *saved);
+
+/* an *at call (unlinkat, mkdirat...) with a directory descriptor: runs with that directory as the working one */
+static uint64_t at_call(int dirfd, uint64_t path_ptr, uint32_t nr, uint64_t a, uint64_t b, uint64_t c, uint64_t d, registers_t *r)
+{
+    char saved[VFS_NAME_LEN];
+    int e = lx_at_enter(dirfd, path_ptr, saved);
+    if (e < 0) return (uint64_t)(int64_t)e;
+    uint64_t ret = call32(nr, a, b, c, d, 0, 0, r);
+    if (e > 0) lx_at_restore(saved);
+    return ret;
 }
 
 static uint64_t sys_stat_at(int dirfd, uint64_t path, uint64_t buf, uint32_t flags)
@@ -1130,6 +1226,7 @@ void linux64_syscall(registers_t *r)
     uint64_t nr = r->rax, a = r->rdi, b = r->rsi, c = r->rdx, d = r->r10, e = r->r8, f = r->r9;
     uint64_t ret;
     proc_timers_poll(proc_current());                                  /* a timer that has run out signals the program now */
+    proc_stop_wait(proc_current());                                    /* stopped (^Z, SIGSTOP): it goes on at SIGCONT */
     switch (nr) {
         case 0:   ret = call32(3, a, b, c, 0, 0, 0, r); break;                 /* read */
         case 1:   ret = call32(4, a, b, c, 0, 0, 0, r); break;                 /* write */
@@ -1156,7 +1253,7 @@ void linux64_syscall(registers_t *r)
         }
         case 6:   ret = sys_stat_at(-100, a, b, 0x100); break;                 /* lstat */
         case 7:   ret = call32(168, a, b, c, 0, 0, 0, r); break;               /* poll */
-        case 8:   ret = call32(19, a, b, c, 0, 0, 0, r); break;                /* lseek */
+        case 8:   ret = ((int64_t)b > 0x7FFFFFFFll || (int64_t)b < -0x7FFFFFFFll) ? (uint64_t)-75 : call32(19, a, b, c, 0, 0, 0, r); break;   /* lseek (files are below 2 GB here: further is EOVERFLOW, not a wrapped offset) */
         case 9:   ret = sys_mmap(a, b, (uint32_t)c, (uint32_t)d, (int)e, f); break;
         case 10:  ret = sys_mprotect(a, b, (uint32_t)c); break;
         case 11:  ret = sys_munmap(a, b); break;
@@ -1165,8 +1262,8 @@ void linux64_syscall(registers_t *r)
         case 14:  ret = sys_rt_sigprocmask((int)a, b, c, d); break;
         case 15:  ret = sys_rt_sigreturn(r); break;
         case 16:  ret = call32(54, a, b, c, 0, 0, 0, r); break;                /* ioctl */
-        case 17:  ret = call32(180, a, b, c, d & 0xFFFFFFFFu, d >> 32, 0, r); break;  /* pread64 */
-        case 18:  ret = call32(181, a, b, c, d & 0xFFFFFFFFu, d >> 32, 0, r); break;  /* pwrite64 */
+        case 17:  ret = d > 0x7FFFFFFFull ? (uint64_t)-75 : call32(180, a, b, c, d & 0xFFFFFFFFu, d >> 32, 0, r); break;  /* pread64 */
+        case 18:  ret = d > 0x7FFFFFFFull ? (uint64_t)-27 : call32(181, a, b, c, d & 0xFFFFFFFFu, d >> 32, 0, r); break;  /* pwrite64 */
         case 19:  ret = sys_rwv(0, (int)a, b, c, r); break;                    /* readv */
         case 20:  ret = sys_rwv(1, (int)a, b, c, r); break;                    /* writev */
         case 21:  ret = call32(33, a, b, 0, 0, 0, 0, r); break;                /* access */
@@ -1213,7 +1310,7 @@ void linux64_syscall(registers_t *r)
         case 72:  ret = call32(221, a, b, c, 0, 0, 0, r); break;               /* fcntl */
         case 73:  ret = call32(143, a, b, 0, 0, 0, 0, r); break;               /* flock */
         case 74:  case 75: ret = 0; break;                                     /* fsync, fdatasync */
-        case 77:  ret = call32(93, a, b, 0, 0, 0, 0, r); break;                /* ftruncate */
+        case 77:  ret = b > 0x7FFFFFFFull ? (uint64_t)-27 : call32(93, a, b, 0, 0, 0, 0, r); break;   /* ftruncate: EFBIG past 2 GB */
         case 76:  ret = call32(92, a, b, 0, 0, 0, 0, r); break;                /* truncate */
         case 79:  ret = call32(183, a, b, 0, 0, 0, 0, r); break;               /* getcwd */
         case 80:  ret = call32(12, a, 0, 0, 0, 0, 0, r); break;                /* chdir */
@@ -1235,9 +1332,18 @@ void linux64_syscall(registers_t *r)
         case 107: ret = call32(201, 0, 0, 0, 0, 0, 0, r); break;               /* geteuid */
         case 108: ret = call32(202, 0, 0, 0, 0, 0, 0, r); break;               /* getegid */
         case 110: ret = call32(64, 0, 0, 0, 0, 0, 0, r); break;                /* getppid */
-        case 111: case 112: ret = call32(20, 0, 0, 0, 0, 0, 0, r); break;      /* getpgrp, setsid */
-        case 109: ret = 0; break;                                              /* setpgid */
-        case 121: case 124: ret = call32(20, 0, 0, 0, 0, 0, 0, r); break;      /* getpgid, getsid: one group per program */
+        case 111: ret = proc_pgid_of(proc_current()); break;                   /* getpgrp */
+        case 112: { proc_t *sp = proc_current(); if (sp) sp->pgid = sp->pid; ret = sp ? sp->pid : 0; break; }   /* setsid: a group of its own */
+        case 109: {                                                            /* setpgid(pid, pgid): itself or a child, into a group */
+            proc_t *sp = proc_current();
+            proc_t *tp = a ? proc_by_pid((uint32_t)a) : sp;
+            if (!sp || !tp || tp->done || (tp != sp && tp->ppid != sp->pid)) { ret = (uint64_t)-ESRCH; break; }
+            tp->pgid = b ? (uint32_t)b : tp->pid;
+            ret = 0;
+            break;
+        }
+        case 121: { proc_t *tp = a ? proc_by_pid((uint32_t)a) : proc_current(); ret = tp ? (uint64_t)proc_pgid_of(tp) : (uint64_t)-ESRCH; break; }   /* getpgid */
+        case 124: ret = call32(20, 0, 0, 0, 0, 0, 0, r); break;                /* getsid: the session is the program */
         case 115: ret = 0; break;                                              /* getgroups: none */
         case 1000: {                                                           /* tOS: is this the account's password? (root only: sshd's monitor) */
             uint32_t u, g;
@@ -1318,12 +1424,19 @@ void linux64_syscall(registers_t *r)
         case 233: ret = call32(255, a, b, c, d, 0, 0, r); break;               /* epoll_ctl */
         case 234: ret = sx(sys_tgkill((int)c, 270, a, b, c, r)); break;        /* tgkill */
         case 257: ret = call32(295, a, b, c, d, 0, 0, r); break;               /* openat */
-        case 258: ret = call32(39, b, c, 0, 0, 0, 0, r); break;                /* mkdirat (AT_FDCWD paths) */
+        case 258: ret = at_call((int)a, b, 39, b, c, 0, 0, r); break;          /* mkdirat */
         case 262: ret = sys_stat_at((int)a, b, c, (uint32_t)d); break;         /* newfstatat */
-        case 263: ret = call32((d & 0x200) ? 40 : 10, b, 0, 0, 0, 0, 0, r); break;  /* unlinkat */
-        case 264: case 316: ret = call32(38, b, d, 0, 0, 0, 0, r); break;      /* renameat, renameat2 */
-        case 267: ret = call32(305, a, b, c, d, 0, 0, r); break;               /* readlinkat */
-        case 269: case 439: ret = call32(33, b, c, 0, 0, 0, 0, r); break;      /* faccessat, faccessat2 */
+        case 263: ret = at_call((int)a, b, (c & 0x200) ? 40 : 10, b, 0, 0, 0, r); break;   /* unlinkat(dirfd, path, flags) */
+        case 264: case 316: {                                                  /* renameat, renameat2 */
+            const char *np = lx_user_cstr_ok(d) ? (const char *)(uintptr_t)d : "";
+            if ((int)a != (int)c && np[0] != '/' && (int)c != -100) { ret = (uint64_t)-18; break; }   /* two different directories: not here */
+            ret = at_call((int)a, b, 38, b, d, 0, 0, r);
+            break;
+        }
+        case 267: ret = at_call((int)a, b, 305, a, b, c, d, r); break;         /* readlinkat */
+        case 269: case 439: ret = at_call((int)a, b, 33, b, c, 0, 0, r); break;   /* faccessat, faccessat2 */
+        case 268: ret = at_call((int)a, b, 15, b, c, 0, 0, r); break;          /* fchmodat */
+        case 265: ret = at_call((int)a, b, 9, b, d, 0, 0, r); break;           /* linkat(olddirfd, old, newdirfd, new, flags): in /dev/shm only (see link) */
         case 23: case 270: {                                                   /* select, pselect6 */
             int64_t ms = -1;
             if (e) {
@@ -1350,7 +1463,7 @@ void linux64_syscall(registers_t *r)
             break;
         }
         case 273: ret = 0; break;                                              /* set_robust_list */
-        case 280: ret = call32(412, a, b, c, d, 0, 0, r); break;               /* utimensat */
+        case 280: ret = at_call((int)a, b, 412, a, b, c, d, r); break;         /* utimensat */
         case 281: ret = call32(319, a, b, c, d, e, f, r); break;               /* epoll_pwait */
         case 290: ret = call32(328, a, b, 0, 0, 0, 0, r); break;               /* eventfd2 */
         case 291: ret = call32(329, a, 0, 0, 0, 0, 0, r); break;               /* epoll_create1 */

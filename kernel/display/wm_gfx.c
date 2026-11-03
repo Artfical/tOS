@@ -16,6 +16,7 @@
 #include "uiapp.h"
 #include "keyboard.h"
 #include "uihost.h"
+#include "proc.h"
 #include "imgload.h"
 #include "auth.h"
 #include "wm_notify.h"
@@ -256,12 +257,21 @@ static void dock_activate(const app_t *a)
 
 /* ------------------------------------------------------------------ geometry */
 
+static int dock_limit(void);
+
+/* a terminal window's character grid is as big as the window; the apps that draw to a fixed 80x23 stay that size */
 static void set_cells(window_t *w, int cols, int rows)
 {
+    int term = w->kind == WIN_KIND_TERMINAL;
+    int maxc = term ? TERM_MAXW : TERM_SURFACE_W, maxr = term ? TERM_MAXH : TERM_SURFACE_H;
     if (cols < 20) cols = 20;
-    if (cols > TERM_SURFACE_W) cols = TERM_SURFACE_W;
+    if (cols > maxc) cols = maxc;
     if (rows < 5) rows = 5;
-    if (rows > TERM_SURFACE_H) rows = TERM_SURFACE_H;
+    if (rows > maxr) rows = maxr;
+    if (term && (w->surface.cols != cols || w->surface.rows != rows)) {
+        terminal_surface_resize(&w->surface, cols, rows);
+        proc_signal_surface(&w->surface, 28);                 /* SIGWINCH: the program redraws for the new size */
+    }
     w->w0 = cols;
     w->h0 = rows + 1;
     w->gw = cols * CW + 2 * CPAD_X;
@@ -306,6 +316,7 @@ void wm_gfx_window_opened(window_t *w)
                   w->kind == WIN_KIND_PAINT || w->kind == WIN_KIND_VIEWER || w->kind == WIN_KIND_PDFVIEWER ||
                   w->kind == WIN_KIND_SCRIPT;
         if (w->maximized) set_cells(w, TERM_SURFACE_W, TERM_SURFACE_H);
+        else if (w->kind == WIN_KIND_TERMINAL) set_cells(w, 80, 22);
         else if (big) set_cells(w, 80, 22);
         else set_cells(w, 60, 20);
     }
@@ -325,7 +336,10 @@ static void zoom_window(window_t *w)
     if (w->kind == WIN_KIND_PANEL) return;
     if (!w->maximized) {
         w->g_rest_x = w->gx; w->g_rest_y = w->gy; w->g_rest_w = w->w0; w->g_rest_h = w->h0;
-        set_cells(w, TERM_SURFACE_W, TERM_SURFACE_H);
+        if (w->kind == WIN_KIND_TERMINAL) {                  /* as many cells as fit between the bar and the Dock */
+            int avail = (session == 0 ? dock_limit() : SH) - (TOPBAR_H + 10);
+            set_cells(w, (SW - 2 * CPAD_X) / CW, (avail - TITLE_H - 2 * CPAD_Y) / CH);
+        } else set_cells(w, TERM_SURFACE_W, TERM_SURFACE_H);
         w->gx = (SW - w->gw) / 2;
         w->gy = TOPBAR_H + 10;
         if (w->gy + w->gh > SH - DOCK_H - DOCK_MARGIN) w->gy = TOPBAR_H;
@@ -337,6 +351,41 @@ static void zoom_window(window_t *w)
     }
     clamp_window(w);
     dirty = 1;
+}
+
+/* ---- the mouse for programs that ask for it (vim, tmux, htop...): escape sequences into the program's input ---- */
+static window_t *term_mouse_win;               /* the terminal a pressed button belongs to, until it is let go */
+
+/* b: 0 left, 1 middle, 2 right, 3 none, 64/65 wheel; +32 for motion. release: the button comes up */
+static void term_mouse_report(window_t *w, int b, int release)
+{
+    term_surface_t *s = &w->surface;
+    int col = (mx - w->gx - CPAD_X) / CW + 1, row = (my - (w->gy + TITLE_H + CPAD_Y)) / CH + 1;
+    if (mx - w->gx - CPAD_X < 0) col = 1;
+    if (my - (w->gy + TITLE_H + CPAD_Y) < 0) row = 1;
+    if (col > s->cols) col = s->cols;
+    if (row > s->rows) row = s->rows;
+    char seq[24]; int n = 0;
+    if (s->mouse_sgr) {
+        seq[n++] = 0x1B; seq[n++] = '['; seq[n++] = '<';          /* ESC [ < b ; x ; y M (or m when released) */
+        int vals[3] = { b, col, row };
+        for (int k = 0; k < 3; k++) {
+            char t[8]; int tl = 0, v = vals[k];
+            if (!v) t[tl++] = '0';
+            while (v) { t[tl++] = (char)('0' + v % 10); v /= 10; }
+            while (tl) seq[n++] = t[--tl];
+            if (k < 2) seq[n++] = ';';
+        }
+        seq[n++] = release ? 'm' : 'M';
+    } else {
+        if (col > 223) col = 223;
+        if (row > 223) row = 223;
+        seq[n++] = 0x1B; seq[n++] = '['; seq[n++] = 'M';
+        seq[n++] = (char)(32 + (release ? 3 : b));
+        seq[n++] = (char)(32 + col); seq[n++] = (char)(32 + row);
+    }
+    if (s->reply_len + n > (int)sizeof(s->reply)) return;        /* the program has not read the last ones yet */
+    for (int i = 0; i < n; i++) s->reply[s->reply_len++] = (uint8_t)seq[i];
 }
 
 int wm_gfx_content_mouse(window_t *w, int *x, int *y)
@@ -562,7 +611,8 @@ static uint32_t surface_sum(window_t *w)
 {
     uint32_t s = (uint32_t)w->surface.view_offset * 2654435761u ^ (uint32_t)w->surface.cur_row;
     const uint16_t *c = w->surface.cells;
-    for (int i = 0; i < TERM_SURFACE_W * TERM_SURFACE_H; i++) s = (s << 5) + s + c[i];
+    for (int y = 0; y < w->surface.rows; y++)
+        for (int x = 0; x < w->surface.cols; x++) s = (s << 5) + s + c[y * TERM_MAXW + x];
     return s;
 }
 
@@ -571,13 +621,13 @@ static void draw_cells(window_t *w, int x0, int y0)
     int cols = w->w0, rows = w->h0 - 1;
     int vo = w->surface.view_offset;
     int newest = w->surface.cur_row;
-    if (newest >= TERM_SURFACE_H) newest = TERM_SURFACE_H - 1;
+    if (newest >= w->surface.rows) newest = w->surface.rows - 1;
     int overflow = newest - (rows - 1);
     if (overflow < 0) overflow = 0;
     for (int row = 0; row < rows; row++) {
         int idx = overflow + row - vo;
         const uint16_t *line = 0;
-        if (idx >= 0 && idx < TERM_SURFACE_H) line = &w->surface.cells[idx * TERM_SURFACE_W];
+        if (idx >= 0 && idx < w->surface.rows) line = &w->surface.cells[idx * TERM_MAXW];
         else if (idx < 0) line = terminal_scrollback_row(&w->surface, -idx);
         for (int col = 0; col < cols; col++) {
             uint16_t cell = line ? line[col] : (uint16_t)(' ' | (VGA_LIGHT_GREY << 8));
@@ -2522,6 +2572,11 @@ static void press(int x, int y)
         w->surface.view_offset = vo < 0 ? 0 : vo > maxo ? maxo : vo;
         return;
     }
+    if (w->kind == WIN_KIND_TERMINAL && w->surface.mouse_mode) {
+        term_mouse_win = w;
+        term_mouse_report(w, 0, 0);
+        return;
+    }
     if (was_focused) {
         content_click_target = w;
         int cx2 = lx - CPAD_X, cy2 = ly - TITLE_H - CPAD_Y;
@@ -2597,6 +2652,15 @@ void wm_gfx_tick(void)
     } else if (pressed) {
         press(mx, my);
     }
+    if (term_mouse_win) {                                    /* a button pressed in a terminal that wants the mouse */
+        window_t *tw = term_mouse_win;
+        if (!tw->open || !tw->surface.mouse_mode) term_mouse_win = 0;
+        else if (released || !(btn & 1)) { term_mouse_report(tw, 0, 1); term_mouse_win = 0; }
+        else if (moved && tw->surface.mouse_mode >= 2) term_mouse_report(tw, 32, 0);
+    } else if (moved && !(btn & 1)) {
+        window_t *hw = window_at(mx, my);
+        if (hw && hw->kind == WIN_KIND_TERMINAL && hw->surface.mouse_mode == 3 && hw == wm_focused) term_mouse_report(hw, 35, 0);
+    }
     (void)released;
 
     if (session == 2) {
@@ -2611,7 +2675,9 @@ void wm_gfx_tick(void)
     int wheel = mouse_get_wheel_delta();
     if (wheel) {
         window_t *u = window_at(mx, my);
-        if (u && u->kind == WIN_KIND_TERMINAL && wm_term_max_view_offset(u) > 0) {
+        if (u && u->kind == WIN_KIND_TERMINAL && u->surface.mouse_mode) {      /* a program that wants the mouse takes the wheel too */
+            for (int k = 0; k < (wheel < 0 ? -wheel : wheel) && k < 3; k++) term_mouse_report(u, wheel > 0 ? 64 : 65, 0);
+        } else if (u && u->kind == WIN_KIND_TERMINAL && wm_term_max_view_offset(u) > 0) {
             int maxo = wm_term_max_view_offset(u);
             int vo = u->surface.view_offset + wheel * 2;
             u->surface.view_offset = vo < 0 ? 0 : vo > maxo ? maxo : vo;

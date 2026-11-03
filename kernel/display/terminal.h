@@ -7,8 +7,10 @@
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 
-#define TERM_SURFACE_W 80
+#define TERM_SURFACE_W 80               /* the size a surface starts with (and the one old apps draw for) */
 #define TERM_SURFACE_H 23
+#define TERM_MAXW 180                   /* the most a terminal window can grow to; rows of cells are this far apart */
+#define TERM_MAXH 50
 #define TERM_SCROLLBACK_LINES 100
 
 /* When bound (via task_set_userdata) on the current task, all terminal_*
@@ -28,11 +30,13 @@ typedef struct {
     uint16_t line_len;
     uint8_t line_done;                  /* the line is complete: inq has it */
     uint8_t eof_pending;
-    uint32_t fg_pid;                    /* the foreground process (^C goes to it) */
+    uint32_t fg_pid;                    /* the foreground process group (^C goes to it, once a shell has set it with tcsetpgrp) */
+    uint8_t fg_set;
 } tty_t;
 
 typedef struct {
-    uint16_t cells[TERM_SURFACE_W * TERM_SURFACE_H];
+    uint16_t cells[TERM_MAXW * TERM_MAXH];
+    int cols, rows;                     /* the size in use (a row of cells is TERM_MAXW apart) */
     int cur_row;
     int cur_col;
     uint8_t color;
@@ -40,7 +44,7 @@ typedef struct {
      * scrollback_head is the next write slot; view_offset is how many
      * lines the window manager is currently showing scrolled back from
      * live (0 = live), driven by the scrollbar in wm.c. */
-    uint16_t scrollback[TERM_SCROLLBACK_LINES][TERM_SURFACE_W];
+    uint16_t scrollback[TERM_SCROLLBACK_LINES][TERM_MAXW];
     int scrollback_head;
     int scrollback_count;
     int view_offset;
@@ -56,7 +60,7 @@ typedef struct {
     uint8_t mouse_mode, mouse_sgr, insert_mode, origin, utf8, xterm_keys;
     uint8_t hidden;                     /* a log no window shows (a service's): it has no keyboard */
     int alt_saved_row, alt_saved_col;
-    uint16_t alt_cells[TERM_SURFACE_W * TERM_SURFACE_H];
+    uint16_t alt_cells[TERM_MAXW * TERM_MAXH];
     char title[48];
     uint8_t reply[48];                  /* answers to the program's queries (cursor position...): its input */
     uint8_t reply_len;
@@ -64,6 +68,7 @@ typedef struct {
 } term_surface_t;
 
 void terminal_surface_init(term_surface_t *s);
+void terminal_surface_resize(term_surface_t *s, int cols, int rows);   /* a window's new size: contents kept, cursor kept in view */
 /* vt.c: one byte of a program's output into a surface */
 void vt_init(term_surface_t *s);
 void vt_putbyte(term_surface_t *s, uint8_t c);

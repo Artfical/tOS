@@ -65,6 +65,7 @@ typedef struct {
     uint32_t retx_seq;
     int      retx_tick;
     int      retx_count;
+    int      dupacks;           /* the same acknowledgement again and again: a segment is lost */
 
     uint32_t cwnd;
     uint32_t ssthresh;
@@ -350,17 +351,18 @@ static int send_seg(tcp_sock_t *s, uint8_t flags, const void *payload, int plen)
     return 0;
 }
 
-static void retx_save(tcp_sock_t *s, const void *data, int len)
+#define RETX_CAP 65536       /* what may be sent and not yet acknowledged */
+
+/* send the oldest unacknowledged segment again */
+static void retx_send_first(tcp_sock_t *s)
 {
-    if (s->retx_data) { free(s->retx_data); s->retx_data = 0; }
-    s->retx_seq = s->seq - (uint32_t)len;
-    if (len > 0) {
-        s->retx_data = (uint8_t *)malloc(len);
-        if (s->retx_data) memcpy(s->retx_data, data, len);
-    }
-    s->retx_len   = len;
-    s->retx_tick  = 0;
-    s->retx_count = 0;
+    int mss = s->peer_mss < TCP_MSS ? s->peer_mss : TCP_MSS;
+    int n = s->retx_len < mss ? s->retx_len : mss;
+    if (n <= 0 || !s->retx_data) return;
+    uint32_t keep = s->seq;
+    s->seq = s->retx_seq;
+    send_seg(s, TCP_FLAG_PSH | TCP_FLAG_ACK, s->retx_data, n);
+    s->seq = keep;
 }
 
 static void retx_clear(tcp_sock_t *s)
@@ -380,7 +382,7 @@ int tcp_socket(void)
             memset(&socks[i], 0, sizeof(tcp_sock_t));
             socks[i].used     = 1;
             socks[i].state    = TCP_CLOSED;
-            socks[i].cwnd     = TCP_MSS;
+            socks[i].cwnd     = 4 * TCP_MSS;
             socks[i].ssthresh = 65535;
             socks[i].peer_mss = TCP_MSS;
             return i;
@@ -460,61 +462,71 @@ int tcp_connect2(int fd, uint32_t dst_ip, uint16_t dst_port)
 static void tcp_tick_poll(void);
 static void tcp_flush_acks(void);
 
+/* one frame from the card (or this machine's own queue), handled */
+static void net_pump_once(void)
+{
+    uint8_t pkt[1536];
+    int plen = poll_any(pkt, sizeof(pkt));
+    if (plen > 0) {
+        eth_hdr_t *eth = (eth_hdr_t *)pkt;
+        if (ntohs(eth->type) == ETHERTYPE_ARP) arp_handle(pkt, plen);
+        else if (ntohs(eth->type) == ETHERTYPE_IP)
+            ip_handle(pkt + sizeof(eth_hdr_t), plen - sizeof(eth_hdr_t));
+    }
+}
+
+/* Sends len bytes as MSS-sized segments, several at a time: what is not yet acknowledged (up to the peer's window,
+ * the congestion window and RETX_CAP) is kept in retx_data from retx_seq on, so a lost segment can be sent again. */
 int tcp_send2(int fd, void *data, int len)
 {
     tcp_sock_t *s = get_sock(fd);
     if (!s || s->state != TCP_ESTABLISHED || len < 0) return -1;
-    /* send_seg() builds a single frame, so more than one MSS of payload went
-     * out as an oversized, unfragmentable packet (TLS records are up to 16 KB).
-     * Send MSS-sized segments, and wait for each to be acknowledged before the
-     * next because only one segment is kept for retransmission. */
+    if (!s->retx_data) {
+        s->retx_data = (uint8_t *)malloc(RETX_CAP);
+        if (!s->retx_data) return -1;
+        s->retx_len = 0;
+    }
     const uint8_t *p = (const uint8_t *)data;
     int off = 0;
-    do {
+    while (off < len) {
         int mss = s->peer_mss < TCP_MSS ? s->peer_mss : TCP_MSS;
         int n = len - off < mss ? len - off : mss;
-        /* Flow control: never send more than the peer's advertised window leaves
-         * after what is still unacknowledged. A zero window is waited out (the peer
-         * sends a window update ACK when its application reads); the window used to
-         * be ignored completely, so a slow receiver just lost our data. */
+        /* room: the peer's window (a zero one is waited out: it sends an update when its program reads) and ours */
         uint32_t wdeadline = debugmon_uptime_ms() + 5000;
         for (;;) {
             uint32_t inflight = s->seq - s->snd_una;
-            uint32_t usable = s->snd_wnd > inflight ? s->snd_wnd - inflight : 0;
-            if (usable > 0) { if ((uint32_t)n > usable) n = (int)usable; break; }
-            if (s->state != TCP_ESTABLISHED || debugmon_uptime_ms() >= wdeadline) return -1;
-            tcp_tick_poll();
-            uint8_t wpkt[1536];
-            int wl = poll_any(wpkt, sizeof(wpkt));
-            if (wl > 0) {
-                eth_hdr_t *eth = (eth_hdr_t *)wpkt;
-                if (ntohs(eth->type) == ETHERTYPE_ARP) arp_handle(wpkt, wl);
-                else if (ntohs(eth->type) == ETHERTYPE_IP)
-                    ip_handle(wpkt + sizeof(eth_hdr_t), wl - sizeof(eth_hdr_t));
+            uint32_t limit = s->snd_wnd < s->cwnd ? s->snd_wnd : s->cwnd;
+            if (limit > RETX_CAP) limit = RETX_CAP;
+            uint32_t usable = limit > inflight ? limit - inflight : 0;
+            if (usable >= (uint32_t)n || (usable > 0 && inflight == 0)) { if ((uint32_t)n > usable) n = (int)usable; break; }
+            if (s->state != TCP_ESTABLISHED || debugmon_uptime_ms() >= wdeadline) {
+                if (s->state == TCP_ESTABLISHED) klog_write("tcp: send gave up, nothing was acknowledged");
+                return -1;
             }
+            tcp_flush_acks();
+            tcp_tick_poll();
+            net_pump_once();
+            if (s->snd_una != s->seq - inflight) wdeadline = debugmon_uptime_ms() + 5000;     /* something was acknowledged: still alive */
         }
         uint32_t seq_before = s->seq;
         if (send_seg(s, TCP_FLAG_PSH | TCP_FLAG_ACK, p + off, n) != 0) return -1;
-        s->snd_una = seq_before;
-        retx_save(s, p + off, n);
+        if (s->retx_len == 0) { s->retx_seq = seq_before; s->retx_tick = 0; s->retx_count = 0; }
+        if (s->retx_len + n <= RETX_CAP) { memcpy(s->retx_data + s->retx_len, p + off, (size_t)n); s->retx_len += n; }
         off += n;
-        if (off < len) {
-            uint32_t deadline = debugmon_uptime_ms() + 5000;
-            while (s->retx_len > 0 && s->state == TCP_ESTABLISHED && debugmon_uptime_ms() < deadline) {
-                tcp_tick_poll();
-                uint8_t pkt[1536];
-                int plen = poll_any(pkt, sizeof(pkt));
-                if (plen > 0) {
-                    eth_hdr_t *eth = (eth_hdr_t *)pkt;
-                    if (ntohs(eth->type) == ETHERTYPE_ARP) arp_handle(pkt, plen);
-                    else if (ntohs(eth->type) == ETHERTYPE_IP)
-                        ip_handle(pkt + sizeof(eth_hdr_t), plen - sizeof(eth_hdr_t));
-                }
-            }
-            if (s->retx_len > 0) { klog_write("tcp: send gave up, the segment was not acknowledged"); return -1; }   /* peer never acknowledged the segment */
-        }
-    } while (off < len);
+        net_pump_once();                                  /* acknowledgements that have come meanwhile open the window */
+    }
     return 0;
+}
+
+/* before closing: what was sent is acknowledged (sent again when it is not), for a few seconds at most */
+static void tcp_drain(tcp_sock_t *s)
+{
+    uint32_t deadline = debugmon_uptime_ms() + 4000;
+    while (s->retx_len > 0 && (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT) && debugmon_uptime_ms() < deadline) {
+        tcp_flush_acks();
+        tcp_tick_poll();
+        net_pump_once();
+    }
 }
 
 /* tcp_tick() had no caller at all, so retransmission (and the half-open
@@ -581,6 +593,7 @@ void tcp_close2(int fd)
     if (!s) return;
     klog_write("tcp: closed by the program (close2)");
 
+    tcp_drain(s);
     if (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT) {
         s->state = TCP_FIN_WAIT_1;
         send_seg(s, TCP_FLAG_FIN | TCP_FLAG_ACK, 0, 0);
@@ -699,8 +712,7 @@ void tcp_tick(void)
         if (s->ssthresh < (uint32_t)TCP_MSS) s->ssthresh = TCP_MSS;
         s->cwnd = TCP_MSS;
 
-        s->seq = s->retx_seq;
-        send_seg(s, TCP_FLAG_PSH | TCP_FLAG_ACK, s->retx_data, s->retx_len);
+        retx_send_first(s);
     }
 }
 
@@ -980,13 +992,26 @@ void tcp_handle(ip_hdr_t *ip_hdr, void *pkt, int len)
             s->snd_wnd = s->ws_ok ? (uint32_t)peer_win << s->snd_shift : peer_win;
         if (SEQ_GT(pkt_ack, s->snd_una) && SEQ_LEQ(pkt_ack, s->seq)) {
             s->snd_una = pkt_ack;
+            s->dupacks = 0;
             if (s->cwnd < s->ssthresh)
                 s->cwnd += TCP_MSS;
             else
                 s->cwnd += (uint32_t)(TCP_MSS * TCP_MSS) / s->cwnd;
-            if (s->retx_len > 0 &&
-                SEQ_LEQ(s->retx_seq + (uint32_t)s->retx_len, pkt_ack))
-                retx_clear(s);
+            if (s->retx_len > 0 && SEQ_GT(pkt_ack, s->retx_seq)) {      /* the oldest bytes are acknowledged: forget them */
+                uint32_t acked = pkt_ack - s->retx_seq;
+                if (acked >= (uint32_t)s->retx_len) { s->retx_len = 0; s->retx_tick = 0; s->retx_count = 0; }
+                else {
+                    memmove(s->retx_data, s->retx_data + acked, (size_t)(s->retx_len - (int)acked));
+                    s->retx_len -= (int)acked; s->retx_seq = pkt_ack; s->retx_tick = 0; s->retx_count = 0;
+                }
+            }
+        } else if (pkt_ack == s->snd_una && data_len == 0 && s->retx_len > 0 && !(flags & (TCP_FLAG_SYN | TCP_FLAG_FIN))) {
+            if (++s->dupacks == 3) {                                  /* fast retransmit: the next segment is lost */
+                s->ssthresh = s->cwnd / 2;
+                if (s->ssthresh < 2u * TCP_MSS) s->ssthresh = 2u * TCP_MSS;
+                s->cwnd = s->ssthresh;
+                retx_send_first(s);
+            }
         }
         if (s->state == TCP_FIN_WAIT_1) s->state = TCP_FIN_WAIT_2;
         if (s->state == TCP_CLOSING)    s->state = TCP_TIME_WAIT;
@@ -1168,6 +1193,16 @@ int tcp_recv_nb(int fd, uint8_t *buf, int max_len)
     return TCP_ERR_RECV_TIMEOUT;
 }
 
+/* shutdown(SHUT_WR): what was sent is acknowledged, then the FIN goes; the peer's data still comes in */
+void tcp_shutdown_wr(int fd)
+{
+    tcp_sock_t *s = get_sock(fd);
+    if (!s) return;
+    tcp_drain(s);
+    if (s->state == TCP_ESTABLISHED) { s->state = TCP_FIN_WAIT_1; send_seg(s, TCP_FLAG_FIN | TCP_FLAG_ACK, 0, 0); }
+    else if (s->state == TCP_CLOSE_WAIT) { s->state = TCP_LAST_ACK; send_seg(s, TCP_FLAG_FIN | TCP_FLAG_ACK, 0, 0); }
+}
+
 int tcp_is_established(int fd)
 {
     tcp_sock_t *s = get_sock(fd);
@@ -1194,6 +1229,7 @@ void tcp_release(int fd)
     tcp_sock_t *s = get_sock(fd);
     if (!s) return;
     klog_write("tcp: closed by the program (release)");
+    tcp_drain(s);
     if (s->state == TCP_ESTABLISHED || s->state == TCP_CLOSE_WAIT) {
         send_seg(s, TCP_FLAG_FIN | TCP_FLAG_ACK, 0, 0);
         tcp_pump();

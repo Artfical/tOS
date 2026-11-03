@@ -762,6 +762,8 @@ int proc_fork(void *regs_ptr, int share_vm, uint64_t child_stack)
     c->gfx = 0;
     c->win = c->win_prev = 0;
     c->sig_pending = 0;
+    c->stopped = c->stop_sig = c->stop_report = c->cont_report = 0;
+    c->pgid = proc_pgid_of(parent);
     memset(c->timers, 0, sizeof(c->timers));            /* timers are not inherited */
     c->ppid = parent->pid;
     c->vfork_parent = 0;
@@ -827,11 +829,26 @@ int proc_signal(proc_t *q, int sig)
         }
         if (h == 1) return 0;                           /* SIG_IGN */
     }
+    if (sig == 18) {                                    /* SIGCONT: goes on, and the parent can hear of it */
+        if (q->stopped) { q->stopped = 0; q->cont_report = 1; }
+        proc_t *par = proc_by_pid(q->ppid);
+        if (par && par != q && !par->done) proc_signal(par, 17);
+        return 0;
+    }
+    if (sig == 19 || ((sig == 20 || sig == 21 || sig == 22) && h == 0)) {   /* stops (SIGTSTP & co only when not handled) */
+        if (!q->stopped) {
+            q->stopped = 1; q->stop_sig = sig; q->stop_report = 1;
+            proc_t *par = proc_by_pid(q->ppid);
+            if (par && par != q && !par->done) proc_signal(par, 17);
+        }
+        return 0;
+    }
     switch (sig) {
-        case 17: case 18: case 19: case 20: case 21: case 22: case 23: case 28:
-            return 0;                                   /* by default: nothing (stopping is not supported) */
+        case 17: case 20: case 21: case 22: case 23: case 28:
+            return 0;                                   /* by default: nothing */
     }
     q->term_sig = sig;
+    q->stopped = 0;
     if (q == proc_current()) proc_exit(128 + sig);
     return proc_kill(q->pid, 128 + sig) == 0 ? 0 : -ESRCH;
 }
@@ -853,8 +870,57 @@ void proc_timers_poll(proc_t *p)
     }
 }
 
+uint32_t proc_pgid_of(proc_t *p) { return p ? (p->pgid ? p->pgid : p->pid) : 0; }
+
+int proc_group_alive(uint32_t pgid)
+{
+    for (int i = 0; i < PROC_MAX; i++) {
+        proc_t *q = &procs[i];
+        if (q->used && !q->done && proc_pgid_of(q) == pgid) return 1;
+    }
+    return 0;
+}
+
+int proc_signal_group(uint32_t pgid, int sig)
+{
+    proc_t *self = proc_current();
+    int n = 0, self_in = 0;
+    for (int i = 0; i < PROC_MAX; i++) {
+        proc_t *q = &procs[i];
+        if (!q->used || q->done || proc_pgid_of(q) != pgid) continue;
+        n++;
+        if (q == self) { self_in = 1; continue; }
+        proc_signal(q, sig);
+    }
+    if (self_in) proc_signal(self, sig);                   /* last: it may not return */
+    return n;
+}
+
+/* a read from the terminal by a program outside its foreground group: SIGTTIN stops it (until the shell brings it to the front) */
+int proc_tty_background(uint32_t fg_pgid)
+{
+    proc_t *me = proc_current();
+    if (!me || proc_pgid_of(me) == fg_pgid || !proc_group_alive(fg_pgid)) return 0;
+    if (me->sig_handler[21] == 1) return -5;                /* ignoring SIGTTIN: the read fails (EIO) */
+    proc_signal(me, 21);
+    if (me->stopped) { proc_stop_wait(me); return 1; }      /* it went on: look again */
+    return 1;
+}
+
 /* every program that has the slave of pseudo-terminal n open: ^C, the line dropping, a new window size */
-void proc_signal_pty(int n, int sig)
+void proc_signal_pty(int n, int sig) { proc_signal_pty_g(n, sig, 0); }
+
+void proc_signal_pty_others(int n, int sig)
+{
+    proc_t *self = proc_current();
+    for (int i = 0; i < PROC_MAX; i++) {
+        proc_t *q = &procs[i];
+        if (!q->used || q->done || q == self) continue;
+        for (int k = 0; k < PROC_MAX_FDS; k++) if (q->fd[k] == PROC_FD_PTS(n)) { proc_signal(q, sig); break; }
+    }
+}
+
+void proc_signal_pty_g(int n, int sig, uint32_t pgid)
 {
     proc_t *self = proc_current();
     int self_has = 0;
@@ -864,22 +930,25 @@ void proc_signal_pty(int n, int sig)
         int has = 0;
         for (int k = 0; k < PROC_MAX_FDS; k++) if (q->fd[k] == PROC_FD_PTS(n)) { has = 1; break; }
         if (!has) continue;
+        if (pgid && proc_pgid_of(q) != pgid) continue;
         if (q == self) { self_has = 1; continue; }
         proc_signal(q, sig);
     }
     if (self_has) proc_signal(self, sig);              /* last: it may not return */
 }
 
-void proc_signal_surface(void *surface, int sig)
+void proc_signal_surface(void *surface, int sig) { proc_signal_surface_g(surface, sig, 0); }
+
+void proc_signal_surface_g(void *surface, int sig, uint32_t pgid)
 {
     proc_t *self = proc_current();
     for (int i = 0; i < PROC_MAX; i++) {
         proc_t *q = &procs[i];
         if (!q->used || q->done || q == self) continue;
         task_t *t = task_by_pid(q->pid);
-        if (t && t->user_data == surface) proc_signal(q, sig);
+        if (t && t->user_data == surface && (!pgid || proc_pgid_of(q) == pgid)) proc_signal(q, sig);
     }
-    if (self && task_current() && task_current()->user_data == surface) proc_signal(self, sig);   /* last: it may not return */
+    if (self && task_current() && task_current()->user_data == surface && (!pgid || proc_pgid_of(self) == pgid)) proc_signal(self, sig);   /* last: it may not return */
 }
 
 /* a program that was started from the shell has ended: the shell's terminal is cooked again (a program that
@@ -898,7 +967,32 @@ static void proc_tell_parent(proc_t *p)
     if (parent && parent != p && !parent->done) proc_signal(parent, 17);
 }
 
-int proc_wait_child(int pid, int nohang, int *status)
+/* the program is stopped: it waits (in the kernel, at its next call) until SIGCONT or its end */
+void proc_stop_wait(proc_t *p)
+{
+    while (p && p->stopped && !p->done) task_sleep(20);
+}
+
+static int jobshell_match(int pty, void *surface)
+{
+    for (int i = 0; i < PROC_MAX; i++) {
+        proc_t *q = &procs[i];
+        if (!q->used || q->done || q->sig_handler[20] != 1) continue;    /* a shell with job control ignores SIGTSTP itself */
+        if (pty >= 0) {
+            for (int k = 0; k < PROC_MAX_FDS; k++) if (q->fd[k] == PROC_FD_PTS(pty)) return 1;
+        } else {
+            task_t *t = task_by_pid(q->pid);
+            if (t && t->user_data == surface) return 1;
+        }
+    }
+    return 0;
+}
+int proc_pty_has_jobshell(int n) { return jobshell_match(n, 0); }
+int proc_surface_has_jobshell(void *surface) { return jobshell_match(-1, surface); }
+
+int proc_wait_child(int pid, int nohang, int *status) { return proc_wait_child_ex(pid, nohang, 0, 0, status); }
+
+int proc_wait_child_ex(int pid, int nohang, int untraced, int continued, int *status)
 {
     proc_t *me = proc_current();
     if (!me) return -ECHILD;
@@ -909,7 +1003,11 @@ int proc_wait_child(int pid, int nohang, int *status)
             if (!q->used || q->ppid != me->pid || q == me) continue;
             if (pid > 0 && q->pid != (uint32_t)pid) continue;
             any = 1;
-            if (!q->done) continue;
+            if (!q->done) {
+                if (untraced && q->stopped && q->stop_report) { q->stop_report = 0; if (status) *status = (q->stop_sig << 8) | 0x7F; return (int)q->pid; }
+                if (continued && q->cont_report) { q->cont_report = 0; if (status) *status = 0xFFFF; return (int)q->pid; }
+                continue;
+            }
             if (status) *status = q->term_sig ? (q->term_sig & 0x7F) : (q->exit_code & 0xFF) << 8;
             int got = (int)q->pid;
             q->used = 0;

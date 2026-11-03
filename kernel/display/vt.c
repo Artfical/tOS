@@ -10,8 +10,9 @@
 #include "terminal.h"
 #include "vt_map.h"
 
-#define W TERM_SURFACE_W
-#define H TERM_SURFACE_H
+#define W (s->cols)
+#define H (s->rows)
+#define STR TERM_MAXW
 
 enum { ST_GROUND, ST_ESC, ST_ESC_INTER, ST_CSI, ST_OSC, ST_OSC_ESC, ST_STR, ST_STR_ESC, ST_CHARSET };
 
@@ -76,7 +77,7 @@ void vt_init(term_surface_t *s)
 void vt_reset_modes(term_surface_t *s)
 {
     if (s->alt_screen) {
-        memcopy16(s->cells, s->alt_cells, W * H);
+        memcopy16(s->cells, s->alt_cells, STR * H);
         s->cur_row = s->alt_saved_row; s->cur_col = s->alt_saved_col;
         s->alt_screen = 0;
     }
@@ -102,8 +103,8 @@ static void scroll_up(term_surface_t *s, int n)       /* lines move up inside th
             s->scrollback_head = (s->scrollback_head + 1) % TERM_SCROLLBACK_LINES;
             if (s->scrollback_count < TERM_SCROLLBACK_LINES) s->scrollback_count++;
         }
-        memcopy16(&s->cells[top * W], &s->cells[(top + 1) * W], (bot - top) * W);
-        memfill16(&s->cells[bot * W], mk(' ', s->color), W);
+        memcopy16(&s->cells[top * STR], &s->cells[(top + 1) * STR], (bot - top) * STR);
+        memfill16(&s->cells[bot * STR], mk(' ', s->color), W);
     }
 }
 
@@ -112,8 +113,8 @@ static void scroll_down(term_surface_t *s, int n)
     int top = s->top, bot = s->bottom;
     if (n > bot - top + 1) n = bot - top + 1;
     for (int k = 0; k < n; k++) {
-        memcopy16(&s->cells[(top + 1) * W], &s->cells[top * W], (bot - top) * W);
-        memfill16(&s->cells[top * W], mk(' ', s->color), W);
+        memcopy16(&s->cells[(top + 1) * STR], &s->cells[top * STR], (bot - top) * STR);
+        memfill16(&s->cells[top * STR], mk(' ', s->color), W);
     }
 }
 
@@ -136,8 +137,8 @@ static void put_cell(term_surface_t *s, uint8_t ch)
         if (s->autowrap) { s->cur_col = 0; linefeed(s); }
     }
     if (s->insert_mode && s->cur_col < W - 1)
-        memcopy16(&s->cells[s->cur_row * W + s->cur_col + 1], &s->cells[s->cur_row * W + s->cur_col], W - 1 - s->cur_col);
-    s->cells[s->cur_row * W + s->cur_col] = mk(ch, s->color);
+        memcopy16(&s->cells[s->cur_row * STR + s->cur_col + 1], &s->cells[s->cur_row * STR + s->cur_col], W - 1 - s->cur_col);
+    s->cells[s->cur_row * STR + s->cur_col] = mk(ch, s->color);
     if (s->cur_col == W - 1) s->wrap_pending = 1;
     else s->cur_col++;
 }
@@ -154,7 +155,7 @@ static void erase_cells(term_surface_t *s, int row, int from, int to)   /* [from
 {
     if (from < 0) from = 0;
     if (to > W) to = W;
-    if (from < to) memfill16(&s->cells[row * W + from], mk(' ', s->color), to - from);
+    if (from < to) memfill16(&s->cells[row * STR + from], mk(' ', s->color), to - from);
 }
 
 static void goto_rc(term_surface_t *s, int row, int col)
@@ -274,16 +275,16 @@ static void set_alt(term_surface_t *s, int on, int save_cursor)
     if (on == s->alt_screen) return;
     if (on) {
         s->alt_saved_row = s->cur_row; s->alt_saved_col = s->cur_col;
-        uint16_t tmp[W];                       /* the main screen goes into alt_cells, a blank one comes */
+        uint16_t tmp[STR];                       /* the main screen goes into alt_cells, a blank one comes */
         for (int y = 0; y < H; y++) {
-            memcopy16(tmp, &s->cells[y * W], W);
-            memfill16(&s->cells[y * W], mk(' ', s->color), W);
-            memcopy16(&s->alt_cells[y * W], tmp, W);
+            memcopy16(tmp, &s->cells[y * STR], W);
+            memfill16(&s->cells[y * STR], mk(' ', s->color), W);
+            memcopy16(&s->alt_cells[y * STR], tmp, W);
         }
         s->alt_screen = 1;
         s->cur_row = 0; s->cur_col = 0;
     } else {
-        memcopy16(s->cells, s->alt_cells, W * H);
+        memcopy16(s->cells, s->alt_cells, STR * H);
         s->alt_screen = 0;
         if (save_cursor) { s->cur_row = s->alt_saved_row; s->cur_col = s->alt_saved_col; }
         clamp(s);
@@ -350,20 +351,20 @@ static void csi(term_surface_t *s, uint8_t f)
             break;
         case '@': {
             int n = n1 > W - s->cur_col ? W - s->cur_col : n1;
-            memcopy16(&s->cells[s->cur_row * W + s->cur_col + n], &s->cells[s->cur_row * W + s->cur_col], W - s->cur_col - n);
+            memcopy16(&s->cells[s->cur_row * STR + s->cur_col + n], &s->cells[s->cur_row * STR + s->cur_col], W - s->cur_col - n);
             erase_cells(s, s->cur_row, s->cur_col, s->cur_col + n);
             break;
         }
         case 'P': {
             int n = n1 > W - s->cur_col ? W - s->cur_col : n1;
-            memcopy16(&s->cells[s->cur_row * W + s->cur_col], &s->cells[s->cur_row * W + s->cur_col + n], W - s->cur_col - n);
+            memcopy16(&s->cells[s->cur_row * STR + s->cur_col], &s->cells[s->cur_row * STR + s->cur_col + n], W - s->cur_col - n);
             erase_cells(s, s->cur_row, W - n, W);
             break;
         }
         case 'X': erase_cells(s, s->cur_row, s->cur_col, s->cur_col + n1); break;
         case 'S': scroll_up(s, n1); break;
         case 'T': scroll_down(s, n1); break;
-        case 'b': for (int i = 0; i < n1 && i < W * H && s->vt_last; i++) print_cp(s, s->vt_last); break;
+        case 'b': for (int i = 0; i < n1 && i < STR * H && s->vt_last; i++) print_cp(s, s->vt_last); break;
         case 'r': {
             int t = param(s, 0, 1), b = param(s, 1, H);
             if (b > H) b = H;

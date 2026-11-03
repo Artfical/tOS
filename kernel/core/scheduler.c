@@ -315,6 +315,7 @@ int task_futex_wait(uint64_t user_addr, uint32_t expected, uint64_t deadline_ms)
         return -1;
     }
     current->futex_addr = user_addr;
+    current->futex_phys = paging_shared_phys(current->pgdir, user_addr);
     current->futex_deadline_ms = deadline_ms;
     current->futex_waiting = 1;
     current->futex_result = 0;
@@ -329,11 +330,12 @@ int task_futex_wake(uint64_t user_addr, uint32_t count)
     if (!current || count == 0) return 0;
     uint32_t flags;
     int woke = 0;
+    uint64_t shared_key = paging_shared_phys(current->pgdir, user_addr);
     flags = irq_save();
     for (int i = 0; i < MAX_TASKS && (uint32_t)woke < count; i++) {
         task_t *t = &tasks[i];
-        if (!t->in_use || !t->futex_waiting || t->futex_addr != user_addr ||
-            t->pgdir != current->pgdir) continue;
+        if (!t->in_use || !t->futex_waiting) continue;
+        if (!(t->futex_addr == user_addr && t->pgdir == current->pgdir) && !(shared_key && t->futex_phys == shared_key)) continue;
         t->futex_waiting = 0;
         t->futex_deadline_ms = 0;
         t->futex_result = 0;

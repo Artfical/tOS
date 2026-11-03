@@ -151,7 +151,7 @@ int paging_unmap_in(uint64_t *dir, uint64_t virt, uint64_t *phys_out)
 
 uint64_t paging_cow_flags(uint64_t phys, uint64_t flags)
 {
-    if ((flags & PTE_WRITABLE) && page_is_shared((uint32_t)phys))
+    if ((flags & PTE_WRITABLE) && !(flags & PTE_SHARED) && page_is_shared((uint32_t)phys))
         flags = (flags & ~(uint64_t)PTE_WRITABLE) | PTE_COW;
     return flags;
 }
@@ -197,6 +197,13 @@ uint64_t paging_virt_to_phys(uint64_t *dir, uint64_t virt)
     return (*pte & ADDR_MASK) | (virt & 0xFFF);
 }
 
+uint64_t paging_shared_phys(uint64_t *dir, uint64_t virt)
+{
+    uint64_t *pte = pte_of(dir, virt, 0);
+    if (!pte || !(*pte & PTE_PRESENT) || !(*pte & PTE_SHARED)) return 0;
+    return (*pte & ADDR_MASK) | (virt & 0xFFF);
+}
+
 int paging_saved_page(uint64_t *dir, uint64_t virt)
 {
     uint64_t *pte = pte_of(dir, virt, 0);
@@ -210,7 +217,7 @@ static int fork_level(uint64_t *src, uint64_t *dst, int level)
         if (level == 1) {
             if (!(e & (PTE_PRESENT | PTE_SAVED))) continue;
             if (page_ref_inc((uint32_t)(e & ADDR_MASK)) != 0) return -1;
-            if (e & PTE_WRITABLE) {
+            if ((e & PTE_WRITABLE) && !(e & PTE_SHARED)) {
                 e = (e & ~(uint64_t)PTE_WRITABLE) | PTE_COW;
                 src[i] = e;
             }

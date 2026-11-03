@@ -95,7 +95,8 @@ void terminal_surface_init(term_surface_t *s)
     s->cur_row = 0;
     s->cur_col = 0;
     s->color = color;
-    for (int i = 0; i < TERM_SURFACE_W * TERM_SURFACE_H; i++)
+    if (s->cols < 20 || s->cols > TERM_MAXW || s->rows < 5 || s->rows > TERM_MAXH) { s->cols = TERM_SURFACE_W; s->rows = TERM_SURFACE_H; }   /* a cleared window keeps its size */
+    for (int i = 0; i < TERM_MAXW * TERM_MAXH; i++)
         s->cells[i] = make_vgaentry(' ', color);
     s->scrollback_head = 0;
     s->scrollback_count = 0;
@@ -110,9 +111,46 @@ void terminal_surface_init(term_surface_t *s)
     t->c_cc[0] = 3; t->c_cc[1] = 0x1C; t->c_cc[2] = 0x7F; t->c_cc[3] = 0x15; t->c_cc[4] = 4;
     t->c_cc[6] = 1; t->c_cc[8] = 0x11; t->c_cc[9] = 0x13; t->c_cc[10] = 0x1A; t->c_cc[12] = 0x12;
     t->c_cc[13] = 0x0F; t->c_cc[14] = 0x17; t->c_cc[15] = 0x16;
-    t->ws_row = TERM_SURFACE_H; t->ws_col = TERM_SURFACE_W;
-    t->inq_head = t->inq_tail = 0; t->line_len = 0; t->line_done = 0; t->eof_pending = 0; t->fg_pid = 0;
+    t->ws_row = (uint16_t)s->rows; t->ws_col = (uint16_t)s->cols;
+    t->inq_head = t->inq_tail = 0; t->line_len = 0; t->line_done = 0; t->eof_pending = 0; t->fg_pid = 0; t->fg_set = 0;
     vt_init(s);
+}
+
+static void scrollback_push(term_surface_t *s, const uint16_t *row);
+
+/* A window's new size. The text stays where it is; when the window gets shorter than the cursor's row, the top
+ * lines go to the scrollback (on the main screen) so the cursor stays in view. */
+void terminal_surface_resize(term_surface_t *s, int cols, int rows)
+{
+    if (cols < 20) cols = 20;
+    if (cols > TERM_MAXW) cols = TERM_MAXW;
+    if (rows < 5) rows = 5;
+    if (rows > TERM_MAXH) rows = TERM_MAXH;
+    if (cols == s->cols && rows == s->rows) return;
+    uint16_t blank = make_vgaentry(' ', make_color(VGA_LIGHT_GREY, VGA_BLACK));
+    if (rows < s->rows && !s->alt_screen && s->cur_row >= rows) {
+        int drop = s->cur_row - rows + 1;
+        for (int k = 0; k < drop; k++) {
+            scrollback_push(s, &s->cells[0]);
+            for (int y = 1; y < s->rows; y++)
+                for (int x = 0; x < s->cols; x++) s->cells[(y - 1) * TERM_MAXW + x] = s->cells[y * TERM_MAXW + x];
+            for (int x = 0; x < s->cols; x++) s->cells[(s->rows - 1) * TERM_MAXW + x] = blank;
+        }
+        s->cur_row -= drop;
+    }
+    s->cols = cols; s->rows = rows;
+    for (int pass = 0; pass < 2; pass++) {                  /* the screen and the other (alternate) one: blank outside the new size */
+        uint16_t *c = pass ? s->alt_cells : s->cells;
+        for (int y = 0; y < TERM_MAXH; y++)
+            for (int x = 0; x < TERM_MAXW; x++)
+                if (y >= rows || x >= cols) c[y * TERM_MAXW + x] = blank;
+    }
+    if (s->cur_row >= rows) s->cur_row = rows - 1;
+    if (s->cur_col >= cols) s->cur_col = cols - 1;
+    s->top = 0; s->bottom = rows - 1;
+    s->wrap_pending = 0;
+    s->view_offset = 0;
+    s->tty.ws_row = (uint16_t)rows; s->tty.ws_col = (uint16_t)cols;
 }
 
 const uint16_t *terminal_scrollback_row(const term_surface_t *s, int lines_back)
@@ -124,7 +162,8 @@ const uint16_t *terminal_scrollback_row(const term_surface_t *s, int lines_back)
 
 static void scrollback_push(term_surface_t *s, const uint16_t *row)
 {
-    for (int x = 0; x < TERM_SURFACE_W; x++) s->scrollback[s->scrollback_head][x] = row[x];
+    for (int x = 0; x < s->cols; x++) s->scrollback[s->scrollback_head][x] = row[x];
+    for (int x = s->cols; x < TERM_MAXW; x++) s->scrollback[s->scrollback_head][x] = make_vgaentry(' ', s->color);
     s->scrollback_head = (s->scrollback_head + 1) % TERM_SCROLLBACK_LINES;
     if (s->scrollback_count < TERM_SCROLLBACK_LINES) s->scrollback_count++;
 }
@@ -182,13 +221,13 @@ void terminal_setcolor(uint8_t color)
 static void surface_scroll(term_surface_t *s)
 {
     scrollback_push(s, &s->cells[0]);
-    for (int y = 1; y < TERM_SURFACE_H; y++) {
-        for (int x = 0; x < TERM_SURFACE_W; x++)
-            s->cells[(y - 1) * TERM_SURFACE_W + x] = s->cells[y * TERM_SURFACE_W + x];
+    for (int y = 1; y < s->rows; y++) {
+        for (int x = 0; x < s->cols; x++)
+            s->cells[(y - 1) * TERM_MAXW + x] = s->cells[y * TERM_MAXW + x];
     }
-    for (int x = 0; x < TERM_SURFACE_W; x++)
-        s->cells[(TERM_SURFACE_H - 1) * TERM_SURFACE_W + x] = make_vgaentry(' ', s->color);
-    s->cur_row = TERM_SURFACE_H - 1;
+    for (int x = 0; x < s->cols; x++)
+        s->cells[(s->rows - 1) * TERM_MAXW + x] = make_vgaentry(' ', s->color);
+    s->cur_row = s->rows - 1;
 }
 
 void terminal_scroll(void)
@@ -260,8 +299,8 @@ void terminal_setpos(size_t x, size_t y)
 {
     term_surface_t *s = current_surface();
     if (s) {
-        if ((int)x < TERM_SURFACE_W) s->cur_col = (int)x;
-        if ((int)y < TERM_SURFACE_H) s->cur_row = (int)y;
+        if ((int)x < s->cols) s->cur_col = (int)x;
+        if ((int)y < s->rows) s->cur_row = (int)y;
         s->wrap_pending = 0;
         return;
     }

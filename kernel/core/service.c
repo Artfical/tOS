@@ -316,14 +316,14 @@ int service_log(const char *name, char *out, int cap)
     /* the history that scrolled off, then the screen */
     for (int b = r->log->scrollback_count; b >= 1 && n < cap - 82; b--) {
         const uint16_t *row = terminal_scrollback_row(r->log, b);
-        int last = TERM_SURFACE_W - 1;
+        int last = TERM_MAXW - 1;
         while (last >= 0 && (uint8_t)row[last] <= ' ') last--;
         for (int x = 0; x <= last && n < cap - 2; x++) out[n++] = (char)(uint8_t)row[x];
         out[n++] = '\n';
     }
-    for (int y = 0; y < TERM_SURFACE_H && n < cap - 82; y++) {
-        const uint16_t *row = &r->log->cells[y * TERM_SURFACE_W];
-        int last = TERM_SURFACE_W - 1;
+    for (int y = 0; y < r->log->rows && n < cap - 82; y++) {
+        const uint16_t *row = &r->log->cells[y * TERM_MAXW];
+        int last = r->log->cols - 1;
         while (last >= 0 && (uint8_t)row[last] <= ' ') last--;
         if (last < 0 && y > r->log->cur_row) break;
         for (int x = 0; x <= last && n < cap - 2; x++) out[n++] = (char)(uint8_t)row[x];

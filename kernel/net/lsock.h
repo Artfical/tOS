@@ -7,7 +7,7 @@
  * Every call answers at once; blocking ones are done by the caller (syscall.c) waiting with
  * lsock_pump() in between. Results are Linux error numbers, negative. */
 
-#define LSOCK_MAX 32
+#define LSOCK_MAX 64
 
 int      lsock_create(int domain, int type, int protocol);
 void     lsock_close(int s);             /* one descriptor fewer: the last one closes it */
@@ -28,6 +28,7 @@ int      lsock_is_stream(int s);
 int      lsock_is_unix(int s);                /* AF_UNIX (a stream, inside this machine) */
 int      lsock_unix_bind(int s, const char *abs_path);       /* abs_path: the file (or "@name" for an abstract one) */
 int      lsock_unix_connect(int s, const char *abs_path);    /* 0, or -ECONNREFUSED */
+int      lsock_unix_pair(int *a, int *b);     /* two connected AF_UNIX sockets (socketpair): 0, or an error */
 int      lsock_unix_peer(int s);              /* the socket on the other end, or -1 */
 void     lsock_pump(void);                    /* moves the network along, if any socket is open */
 

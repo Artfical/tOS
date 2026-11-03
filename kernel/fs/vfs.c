@@ -1,4 +1,5 @@
 #include "vfs.h"
+#include "ramfs.h"
 #include "string.h"
 #include "memory.h"
 #include "terminal.h"
@@ -614,6 +615,16 @@ int vfs_exists(const char *path)
 {
     vfs_entry_t e;
     return vfs_stat(path, &e) == 0;
+}
+
+/* rmdir on the root file system (ramfs), also when the path goes through a bind mount (/tmp is one) */
+int vfs_rmdir_root(const char *path)
+{
+    char abs[VFS_NAME_LEN];
+    abspath_into(path, abs);
+    mount_t *m = resolve_mount(abs);
+    if (!m || m->path_len > 1) return -1;                  /* the root mount is "/" itself */
+    return ramfs_rmdir(abs);
 }
 
 int vfs_path_has_mount(const char *path)

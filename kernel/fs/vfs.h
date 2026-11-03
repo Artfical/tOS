@@ -87,6 +87,7 @@ int  vfs_exists(const char *path);
 char *vfs_abspath(const char *path);
 void vfs_chdir(const char *path);
 int  vfs_path_has_mount(const char *path);
+int  vfs_rmdir_root(const char *path);            /* rmdir of an empty folder of the root file system (through bind mounts too) */
 int  vfs_get_mounts(char out[][VFS_NAME_LEN], int max);
 
 #endif

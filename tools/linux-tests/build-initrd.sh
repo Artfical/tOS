@@ -21,10 +21,17 @@ gcc -O2 -static "$here/scmtest.c" -o "$w/programs/scmtest" 2>/dev/null
 gcc -O2 -static "$here/locktest.c" -o "$w/programs/locktest" 2>/dev/null
 gcc -O2 -static "$here/looptest.c" -o "$w/programs/looptest" 2>/dev/null
 gcc -O2 -static "$here/proctest.c" -o "$w/programs/proctest" 2>/dev/null
+gcc -O2 -static "$here/benchtest.c" -o "$w/programs/benchtest" 2>/dev/null
+gcc -O2 -static "$here/winsz.c" -o "$w/programs/winsz" 2>/dev/null
+gcc -O2 -static -pthread "$here/semtest.c" -o "$w/programs/semtest" 2>/dev/null
+gcc -O2 -static "$here/attest.c" -o "$w/programs/attest" 2>/dev/null
+gcc -O2 -static "$here/bigtest.c" -o "$w/programs/bigtest" 2>/dev/null
+gcc -O2 -static "$here/jobtest.c" -o "$w/programs/jobtest" 2>/dev/null
 gcc -O2 -static "$here/unixtest.c" -o "$w/programs/unixtest" 2>/dev/null
 gcc -O2 -static "$here/timertest.c" -o "$w/programs/timertest" -lrt 2>/dev/null
 cp "$here/t2.js" "$here/cp.js" "$w/programs/js/"
 cp -r "$here/gcc/." "$w/programs/gcc/"      # sources the gcc test compiles (when EXTRA_PKGS has gcc)
+mkdir -p "$w/programs/py"; cp "$here"/py/*.py "$w/programs/py/"
 printf '#!/programs/forktest arg\n' > "$w/programs/ft.sh"; chmod +x "$w/programs/ft.sh"
 # "#!/usr/bin/env name" scripts: one name in path.tmbl, one in an installed package's bin folder
 printf '#!/usr/bin/env ftcmd\n' > "$w/programs/ft-env.sh"; chmod +x "$w/programs/ft-env.sh"

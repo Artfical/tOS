@@ -154,6 +154,8 @@ void sysdirs_setup(int have_disk)
     }
     install_system_layout();
     ensure_dir("/tmp", 01777);
+    ensure_dir("/dev", 0755);
+    ensure_dir("/dev/shm", 01777);                       /* POSIX semaphores and shared memory (multiprocessing) live here */
     vfs_chown("/programs", 0, 0);
     if (seed) seed_programs(replace);
     fix_program_modes("/system/programs", 0);
