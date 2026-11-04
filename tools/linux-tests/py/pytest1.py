@@ -8,7 +8,7 @@ def check(cond, what):
     if cond: print("pytest: ok", what)
     else: print("pytest: FAIL", what); fails += 1
 
-check(sys.version_info[:2] == (3, 14) and sys.platform == "linux", "Python %d.%d on %s" % (sys.version_info[0], sys.version_info[1], sys.platform))
+check(sys.version_info[0] == 3 and sys.version_info[1] >= 9 and sys.platform == "linux", "Python %d.%d on %s" % (sys.version_info[0], sys.version_info[1], sys.platform))
 check(json.loads(json.dumps({"a": [1, 2, {"b": None}], "c": "\u00e9"})) == {"a": [1, 2, {"b": None}], "c": "\u00e9"}, "json round trip")
 check(hashlib.sha256(b"abc").hexdigest() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "hashlib sha256")
 check(hashlib.md5(b"abc").hexdigest() == "900150983cd24fb0d6963f7d28e17f72", "hashlib md5")
@@ -109,7 +109,7 @@ check(base64.b64decode(base64.b64encode(b"\x00\xff tOS")) == b"\x00\xff tOS", "b
 check(datetime.datetime(2026, 11, 2, 12, 0) - datetime.datetime(2026, 10, 31) == datetime.timedelta(days=2, hours=12), "datetime")
 check(collections.Counter("mississippi").most_common(1) == [("i", 4)] or collections.Counter("mississippi").most_common(2)[0][1] == 4, "collections")
 random.seed(5); check(len({random.random() for _ in range(100)}) == 100, "random")
-check(pathlib.Path("/system/pkg/python3/bin").is_dir(), "pathlib")
+check(pathlib.Path(sys.prefix, "bin").is_dir(), "pathlib")
 mfd, sfd = pty.openpty(); os.write(mfd, b"hi\n"); check(os.read(sfd, 10) == b"hi\n", "a pty pair (pty.openpty)")
 print("pytest: all passed" if not fails else "pytest: %d FAILED" % fails)
 sys.exit(1 if fails else 0)

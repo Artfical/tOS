@@ -242,6 +242,7 @@ KERNEL_OBJS = \
     kernel/display/apps/network.o \
     kernel/display/apps/paint2.o \
     kernel/display/apps/notes.o \
+    kernel/display/apps/fbwin.o \
     kernel/display/apps/tfire.o \
     kernel/display/apps/tfire_notices.o \
     kernel/display/apps/settings.o \

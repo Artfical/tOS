@@ -155,7 +155,13 @@ void sysdirs_setup(int have_disk)
     install_system_layout();
     ensure_dir("/tmp", 01777);
     ensure_dir("/dev", 0755);
-    ensure_dir("/dev/shm", 01777);                       /* POSIX semaphores and shared memory (multiprocessing) live here */
+    ensure_dir("/dev/shm", 01777);
+    ensure_dir("/dev/input", 0755);
+    if (!vfs_exists("/dev/fb0")) fsbridge_create("/dev/fb0");                            /* the nodes of a Linux program's window (fbwin.c) */
+    if (!vfs_exists("/dev/input/event0")) fsbridge_create("/dev/input/event0");
+    if (!vfs_exists("/dev/input/event1")) fsbridge_create("/dev/input/event1");
+    { static const char *const vts[] = { "/dev/tty0", "/dev/tty1", "/dev/console", 0 }; for (int i = 0; vts[i]; i++) { if (!vfs_exists(vts[i])) fsbridge_create(vts[i]); vfs_chmod(vts[i], 0666); } }   /* an X server asks for a virtual terminal */
+    vfs_chmod("/dev/fb0", 0666); vfs_chmod("/dev/input/event0", 0666); vfs_chmod("/dev/input/event1", 0666);         /* anyone may open them */                       /* POSIX semaphores and shared memory (multiprocessing) live here */
     vfs_chown("/programs", 0, 0);
     if (seed) seed_programs(replace);
     fix_program_modes("/system/programs", 0);

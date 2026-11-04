@@ -7,6 +7,7 @@
 #include "proc.h"
 #include "scheduler.h"
 #include "paging.h"
+#include "fbwin.h"
 #include "memory.h"
 #include "string.h"
 #include "vfs.h"
@@ -447,6 +448,19 @@ static uint64_t sys_mmap(uint64_t addr, uint64_t len, uint32_t prot, uint32_t fl
         if (!start) return (uint64_t)-ENOMEM;
     }
     if (vma_insert(p, start, start + size, prot) != 0) return (uint64_t)-ENOMEM;
+    if (path && !strcmp(path, "/dev/fb0")) {                 /* the window's pixels: its pages, shared with the desktop that draws them */
+        if (!fbwin_active()) { vma_remove(p, start, start + size); return (uint64_t)-ENODEV; }
+        for (uint64_t va = start; va < start + size; va += PAGE_SIZE) {
+            uint32_t phys = fbwin_page((int)((off + (va - start)) / PAGE_SIZE));
+            if (!phys) {                                    /* past the last row: nothing there */
+                phys = alloc_physical_page();
+                if (!phys) { vma_remove(p, start, start + size); return (uint64_t)-ENOMEM; }
+                memset(P2V(phys), 0, PAGE_SIZE);
+            } else if (page_ref_inc(phys) != 0) { vma_remove(p, start, start + size); return (uint64_t)-ENOMEM; }
+            if (paging_map_in(p->pgdir, va, phys, pte_flags(prot | PROT_WRITE) | PTE_SHARED) != 0) { free_physical_page(phys); vma_remove(p, start, start + size); return (uint64_t)-ENOMEM; }
+        }
+        return start;
+    }
     if ((flags & MAP_SHARED) && (prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) && size <= (64ull << 20)) {
         if (map_shared(p, path, off, start, size, prot) != 0) { vma_remove(p, start, start + size); return (uint64_t)-ENOMEM; }
         return start;

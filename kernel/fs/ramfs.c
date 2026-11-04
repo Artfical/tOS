@@ -6,6 +6,9 @@
 #include "serial.h"
 #include "terminal.h"
 
+/* how many files and folders the root file system holds: more on a machine with the memory (a big install is tens of thousands of files) */
+static uint32_t ramfs_max_inodes = 32768;
+
 /* on the heap, not in the kernel image: Software Update cannot start a kernel that grows */
 static ramfs_inode_t *inodes;
 typedef struct {
@@ -27,7 +30,7 @@ static int ino_has_open_fd(uint32_t ino)
 
 static uint32_t alloc_ino(void)
 {
-    for (uint32_t ino = 1; ino < RAMFS_MAX_INODES; ino++) {
+    for (uint32_t ino = 1; ino < ramfs_max_inodes; ino++) {
         if (inodes[ino].ino || ino_has_open_fd(ino)) continue;
         inodes[ino].ino = ino;
         return ino;
@@ -37,7 +40,7 @@ static uint32_t alloc_ino(void)
 
 static ramfs_inode_t *iget(uint32_t ino)
 {
-    if (ino >= RAMFS_MAX_INODES || !inodes[ino].ino) return 0;
+    if (ino >= ramfs_max_inodes || !inodes[ino].ino) return 0;
     return &inodes[ino];
 }
 
@@ -180,9 +183,14 @@ static int resolve_path(const char *path, int follow_final)
 
 void ramfs_init(void)
 {
-    if (!inodes) inodes = malloc(sizeof(ramfs_inode_t) * RAMFS_MAX_INODES);
+    if (!inodes) {
+        uint64_t mem = (uint64_t)get_total_pages() * 4096u;
+        ramfs_max_inodes = mem >= (1536ull << 20) ? 131072u : mem >= (768ull << 20) ? 65536u : 32768u;
+        inodes = malloc(sizeof(ramfs_inode_t) * ramfs_max_inodes);
+        if (!inodes && ramfs_max_inodes > 32768u) { ramfs_max_inodes = 32768u; inodes = malloc(sizeof(ramfs_inode_t) * ramfs_max_inodes); }
+    }
     if (!inodes) { serial_write("ramfs: no memory for the inode table\n"); return; }
-    memset(inodes, 0, sizeof(ramfs_inode_t) * RAMFS_MAX_INODES);
+    memset(inodes, 0, sizeof(ramfs_inode_t) * ramfs_max_inodes);
     memset(fds, 0, sizeof(fds));
     ramfs_next_fd = 3;
 
@@ -930,11 +938,11 @@ int ramfs_chmod(const char *path, uint32_t mode)
 
 void ramfs_get_usage(uint32_t *used_inodes, uint32_t *total_inodes, uint32_t *used_size, uint32_t *total_size)
 {
-    *total_inodes = RAMFS_MAX_INODES;
-    *total_size = RAMFS_MAX_INODES * RAMFS_BLOCK_SZ;
+    *total_inodes = ramfs_max_inodes;
+    *total_size = ramfs_max_inodes * RAMFS_BLOCK_SZ;
     *used_inodes = 0;
     *used_size = 0;
-    for (uint32_t i = 1; i < RAMFS_MAX_INODES; i++) {
+    for (uint32_t i = 1; i < ramfs_max_inodes; i++) {
         if (inodes[i].ino) {
             (*used_inodes)++;
             *used_size += inodes[i].size;

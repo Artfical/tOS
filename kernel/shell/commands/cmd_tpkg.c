@@ -9,6 +9,7 @@
 #include "http.h"
 #include "https.h"
 #include "sha256.h"
+#include "p256.h"
 #include "png.h"
 #include "build.h"
 #include "service.h"
@@ -28,7 +29,17 @@
 #define TPKG_PATH_FILE  "/system/path.tmbl"      /* name=/full/path, read by the shell */
 #define TPKG_DB_FILE    "/system/tpkg_db.tmbl"   /* installed: name|version|destdir */
 #define TPKG_CACHE_FILE "/system/tpkg_cache.tmbl"/* the last server list */
+#define TPKG_SIG_FILE   "/system/tpkg_sigs.tmbl" /* the last signatures: name|version|key id|signature */
 #define TPKG_LIST_CAP   (64 * 1024)
+
+/* The keys whose signatures tpkg trusts (ECDSA P-256, the uncompressed point in hex). Every package is signed by the
+ * package server; one that is not, or whose signature does not fit, is not installed (tpkg install NAME --unsigned
+ * installs it anyway, after a warning). A new key is added here in a new tOS build, so the old one keeps working. */
+static const struct { const char *id, *pub; } tpkg_keys[] = {
+    { "tos-tpkg-1", "04cf785c5628fe1ba07599109973ee26e292f18beeca5fb9c121a9b60c5a62b2ff59e823a3e761254db458e2b52d5d08a819f0bd97a505fe93efbdbeab4fcdd126" },
+};
+static char *g_sigs;                  /* the signatures fetched for this install (malloc'd), or 0 */
+static int   allow_unsigned;          /* --unsigned */
 
 typedef struct {
     char name[40], version[32], license[32], desc[120], sha[65], path[128], deps[96];   /* deps: comma-separated names */
@@ -283,6 +294,78 @@ static char *fetch_list(uint32_t ip, int quiet)
     }
     free(resp);
     return list;
+}
+
+/* the server's signatures for the packages of this build, saved as the cache; a malloc'd string, or 0 */
+static char *fetch_sigs(uint32_t ip)
+{
+    uint8_t *resp = malloc(TPKG_LIST_CAP);
+    if (!resp) return 0;
+    char path[48] = "/pkg/api/sigs?build=", num[12];
+    print_uint_to(num, tos_build);
+    strcat(path, num);
+    int n = https_get(ip, TPKG_HOST, 443, path, resp, TPKG_LIST_CAP - 1);
+    int he = n > 12 ? header_end(resp, n) : -1;
+    char *sigs = 0;
+    if (n > 12 && !strncmp((char *)resp + 9, "200", 3) && he >= 0) {
+        uint32_t bl = (uint32_t)(n - he);
+        sigs = malloc(bl + 1);
+        if (sigs) { memcpy(sigs, resp + he, bl); sigs[bl] = 0; write_whole(TPKG_SIG_FILE, sigs, bl); }
+    }
+    free(resp);
+    return sigs;
+}
+
+static int hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int hex_bytes(const char *h, uint8_t *out, int n)
+{
+    for (int i = 0; i < n; i++) {
+        int a = hex_nibble(h[2 * i]), b = a < 0 ? -1 : hex_nibble(h[2 * i + 1]);
+        if (b < 0) return -1;
+        out[i] = (uint8_t)(a << 4 | b);
+    }
+    return 0;
+}
+
+/* Is there a signature for this package (name, version, size, sha256) that a trusted key made? 1 yes (the key's id in *key),
+ * 0 none listed, -1 one is listed but it does not fit (the package or the signature was changed) */
+static int sig_check(const char *sigs, const char *name, const char *version, uint32_t size, const char *sha, const char **key)
+{
+    char msg[200], num[12];
+    strcpy(msg, "tOS-tpkg-v1|"); strcat(msg, name); strcat(msg, "|"); strcat(msg, version); strcat(msg, "|");
+    print_uint_to(num, size); strcat(msg, num); strcat(msg, "|"); strcat(msg, sha);
+    uint8_t digest[32];
+    sha256_hash((const uint8_t *)msg, (uint32_t)strlen(msg), digest);
+    int seen = 0;
+    for (const char *p = sigs; p && *p;) {
+        const char *line = p;
+        while (*p && *p != '\n') p++;
+        uint32_t ll = (uint32_t)(p - line);
+        if (*p) p++;
+        char buf[320];
+        if (!ll || ll >= sizeof(buf)) continue;
+        memcpy(buf, line, ll); buf[ll] = 0;
+        char *f[4]; int nf = 0;
+        for (char *c = buf; nf < 4;) { f[nf++] = c; while (*c && *c != '|') c++; if (!*c) break; *c++ = 0; }
+        if (nf < 4 || strcmp(f[0], name) || strcmp(f[1], version) || strlen(f[3]) != 128) continue;
+        seen = 1;
+        uint8_t sig[64];
+        if (hex_bytes(f[3], sig, 64) != 0) continue;
+        for (unsigned k = 0; k < sizeof(tpkg_keys) / sizeof(tpkg_keys[0]); k++) {
+            if (strcmp(f[2], tpkg_keys[k].id)) continue;
+            uint8_t pub[65];
+            if (hex_bytes(tpkg_keys[k].pub, pub, 65) != 0) continue;
+            if (ec_ecdsa_verify(EC_CURVE_P256, pub, 65, sig, sig + 32, digest, 32) == 0) { if (key) *key = tpkg_keys[k].id; return 1; }
+        }
+    }
+    return seen ? -1 : 0;
 }
 
 static char *cached_or_fetched(uint32_t ip)
@@ -688,6 +771,19 @@ static int tpkg_install(uint32_t ip, const char *name, const char *list)
     uint8_t *buf, *data;
     if (download(ip, e.path, e.size, &buf, &data) != 0) return 0;
     if (!sha_ok(data, e.size, e.sha)) { free(buf); terminal_writestring("tpkg: the download is damaged (checksum); nothing was installed\n"); return 0; }
+    {                                              /* the signature: made by the package server's key over name, version, size and checksum */
+        if (!g_sigs) g_sigs = fetch_sigs(ip);
+        const char *kid = 0;
+        int sc = g_sigs ? sig_check(g_sigs, e.name, e.version, e.size, e.sha, &kid) : 0;
+        if (sc == 1) { terminal_writestring("Signature: valid ("); terminal_writestring(kid); terminal_writestring(")\n"); }
+        else if (allow_unsigned) terminal_writestring("tpkg: WARNING: no valid signature; installing it anyway (--unsigned)\n");
+        else {
+            free(buf);
+            terminal_writestring(sc < 0 ? "tpkg: the signature of this package does not fit it (it was changed?); nothing was installed\n"
+                                        : "tpkg: this package is not signed by tOS (or the signatures could not be fetched); nothing was installed\n(tpkg install NAME --unsigned installs it anyway)\n");
+            return 0;
+        }
+    }
 
     terminal_writestring("Unpacking...\n");
     uint32_t tlen = 0;
@@ -913,6 +1009,13 @@ static void tpkg_info(const char *name)
         print_mb(e.size);
         terminal_putchar('\n');
         if (e.deps[0]) print_field("Needs:       ", e.deps);
+        {
+            char *sg = read_whole(TPKG_SIG_FILE, 0);
+            const char *kid = 0;
+            int sc = sg ? sig_check(sg, e.name, e.version, e.size, e.sha, &kid) : 0;
+            print_field("Signature:   ", sc == 1 ? "signed by tOS (checked when installing)" : sc < 0 ? "the server's signature does not fit" : "not known yet (tpkg install checks it)");
+            if (sg) free(sg);
+        }
     }
     if (have) {
         char users[160];
@@ -1061,13 +1164,17 @@ void cmd_tpkg(int argc, char **args)
             free(list);
         }
     } else if (!strcmp(args[1], "install")) {
-        if (argc < 3) { terminal_writestring("usage: tpkg install <name>\n"); return; }
+        if (argc < 3) { terminal_writestring("usage: tpkg install <name> [--unsigned]\n"); return; }
         char *list = fetch_list(ip, 0);
         if (!list) return;
+        allow_unsigned = argc > 3 && !strcmp(args[3], "--unsigned");
         tpkg_install(ip, args[2], list);
+        allow_unsigned = 0;
+        if (g_sigs) { free(g_sigs); g_sigs = 0; }
         free(list);
     } else if (!strcmp(args[1], "upgrade")) {
         tpkg_upgrade(ip);
+        if (g_sigs) { free(g_sigs); g_sigs = 0; }
     } else {
         terminal_writestring("tpkg: unknown subcommand (try: list, look, info, search, which, update, install, remove, upgrade)\n");
     }

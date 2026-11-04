@@ -98,6 +98,7 @@ typedef struct proc {
     proc_epoll_watch_t epoll_watch[PROC_MAX_EPOLL_WATCH];
     proc_eventfd_t eventfds[PROC_MAX_EVENTFDS];
     uint32_t std_flags[3];              /* O_NONBLOCK and the like of the console's descriptors 0..2 */
+    uint8_t std_closed;                 /* bit n: descriptor n (0..2) was closed, so the next open() gets that number (a shell does close(0); open("/dev/null")) */
     int std_fd[3];                      /* 0: fd 0..2 is the console; else the descriptor it stands for (dup2) */
     /* signals (64-bit programs run handlers): what each does, which are waiting */
     uint64_t sig_handler[65], sig_flags[65], sig_restorer[65], sig_mask[65];

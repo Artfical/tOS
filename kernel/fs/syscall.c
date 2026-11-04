@@ -32,6 +32,7 @@
 #include "tty.h"
 #include "pty.h"
 #include "procfs.h"
+#include "fbwin.h"
 #include "cmos.h"
 #include "csprng.h"
 #include "gdt.h"
@@ -1073,6 +1074,19 @@ static int is_epoll_fd(proc_t *p, int fd)
 }
 
 /* what a descriptor is ready for right now */
+/* the display and input devices of a Linux program's window: 1 = /dev/fb0, 2 = /dev/input/event0, else 0 */
+static int lx_devkind(proc_t *p, int fd)
+{
+    if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] < 0) return 0;
+    const char *path = p->fdpath[fd - 3];
+    if (path[0] != '/' || path[1] != 'd') return 0;
+    if (!strcmp(path, "/dev/fb0")) return 1;
+    if (!strcmp(path, "/dev/input/event0")) return 2;
+    if (!strcmp(path, "/dev/input/event1")) return 4;
+    if (!strcmp(path, "/dev/tty0") || !strcmp(path, "/dev/tty1") || !strcmp(path, "/dev/console")) return 3;
+    return 0;
+}
+
 static uint32_t fd_ready(proc_t *p, int fd)
 {
     fd = fd_xlate(p, fd);
@@ -1105,6 +1119,7 @@ static uint32_t fd_ready(proc_t *p, int fd)
     int sk = sock_of(p, fd);
     if (sk >= 0) return lsock_ready(sk);
     { int ps; int pn = pty_of(p, fd, &ps); if (pn >= 0) return pty_ready(pn, ps); }
+    { int dk = lx_devkind(p, fd); if (dk == 2 || dk == 4) return fbwin_ev_ready(dk == 4) ? LINUX_EPOLLIN : 0; }       /* the window's input events */
     if (proc_vfd(p, fd) >= 0) return LINUX_EPOLLIN | LINUX_EPOLLOUT;   /* files never block */
     if (fd >= 3 && fd - 3 < PROC_MAX_FDS && (p->fd[fd - 3] == PROC_FD_URANDOM || p->fd[fd - 3] == PROC_FD_NULL))
         return LINUX_EPOLLIN | LINUX_EPOLLOUT;
@@ -1256,6 +1271,13 @@ static uint32_t linux_ioctl(int fd, uint32_t req, uint64_t arg)
     if (fd <= 2 && req != 0x5421) {              /* the terminal: termios, window size, process group */
         int r = tty_ioctl(req, arg, user_wr_ok, user_range_ok);
         if (r != 1) return (uint32_t)r;
+    }
+    {
+        int dk = lx_devkind(p, fd);
+        if (dk) {                                /* /dev/fb0, /dev/input/event0 */
+            int r = dk == 1 ? fbwin_ioctl_fb(req, arg, user_wr_ok) : dk == 2 || dk == 4 ? fbwin_ioctl_ev(dk == 4, req, arg, user_wr_ok) : fbwin_ioctl_vt(req, arg, user_wr_ok);
+            if (r != 1) return (uint32_t)r;
+        }
     }
     switch (req) {
     case 0x5421:                                 /* FIONBIO */
@@ -1854,7 +1876,26 @@ static uint32_t linux_reopen_proc_fd(proc_t *p, int source_fd, uint32_t flags)
     return (uint32_t)(dst + 3);
 }
 
-static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode,
+static uint32_t linux_open_path_inner(uint64_t path_ptr, uint32_t flags, uint32_t mode, int32_t dirfd);
+
+/* open() gives the lowest free number: after close(0), 0 (the descriptor then stands for the new file) */
+static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode, int32_t dirfd)
+{
+    uint32_t r = linux_open_path_inner(path_ptr, flags, mode, dirfd);
+    proc_t *p = proc_current();
+    if (p && p->std_closed && (int32_t)r >= 3) {
+        int k = 0;
+        while (k < 3 && !(p->std_closed & (1u << k))) k++;
+        if (k < 3) {
+            p->std_closed &= (uint8_t)~(1u << k);
+            p->std_fd[k] = (int)r;
+            return (uint32_t)k;
+        }
+    }
+    return r;
+}
+
+static uint32_t linux_open_path_inner(uint64_t path_ptr, uint32_t flags, uint32_t mode,
                                 int32_t dirfd)
 {
     proc_t *p = proc_current();
@@ -1926,6 +1967,12 @@ static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode
         strcpy(p->fdpath[dslot], path);
         p->fd_dir_offset[dslot] = 0;
         return (uint32_t)dslot + 3u;
+    }
+
+    /* /dev/fb0 and /dev/input/event0: a window of the desktop that the program draws in and gets input from */
+    if (!strcmp(path, "/dev/fb0") || !strcmp(path, "/dev/input/event0") || !strcmp(path, "/dev/input/event1")) {
+        if (!gui_is_active() || fbwin_open() != 0) return (uint32_t)-ENODEV;
+        if (!strcmp(path, "/dev/fb0")) fbwin_set_owner(p->pid);
     }
 
     /* /dev/tty: this program's terminal, which is what its standard descriptors are (a copy of one of them) */
@@ -2378,7 +2425,13 @@ static uint32_t linux_futex(uint64_t uaddr, uint32_t op, uint32_t value,
                     return (uint32_t)-EINVAL;
                 uint64_t ms = (uint64_t)sec * 1000u + ((uint64_t)nsec + 999999u) / 1000000u;
                 if (command == 0) deadline = debugmon_uptime_ms64() + ms;
-                else deadline = ms; /* absolute CLOCK_MONOTONIC deadline */
+                else {                                  /* FUTEX_WAIT_BITSET: an absolute time of CLOCK_MONOTONIC, or of CLOCK_REALTIME (pthread_cond_timedwait) */
+                    int64_t ns_, nn_ = 0;
+                    int32_t nnow = 0;
+                    if (linux_clock_now((op & 0x100u) ? 0u : 1u, &ns_, &nnow) != 0) { ns_ = 0; nnow = 0; (void)nn_; }
+                    int64_t rem = (sec - ns_) * 1000 + (nsec - nnow) / 1000000;
+                    deadline = debugmon_uptime_ms64() + (uint64_t)(rem > 0 ? rem : 0) + 1;
+                }
             }
             int rc = task_futex_wait(uaddr, value, deadline);
             if (rc < 0) return (uint32_t)-EAGAIN;
@@ -2554,6 +2607,18 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
                 int pn = pty_of(p, fd, &ps);
                 if (pn >= 0) return (uint32_t)pty_read(pn, ps, (uint8_t *)buf, (uint32_t)count, (p->fd_open_flags[fd - 3] & 0x800u) != 0);
             }
+            int rdk = lx_devkind(p, fd);
+            if (rdk == 2 || rdk == 4) {                  /* /dev/input/event0 (pointer), event1 (keyboard): whole events, waited for unless non-blocking */
+                if (count < 24) return (uint32_t)-EINVAL;
+                for (;;) {
+                    int got = fbwin_ev_read(rdk == 4, (uint8_t *)buf, count);
+                    if (got > 0) return (uint32_t)got;
+                    if (!fbwin_active()) return (uint32_t)-ENODEV;
+                    if (p->fd_open_flags[fd - 3] & 0x800u) return (uint32_t)-EAGAIN;
+                    if (linux_signal_waiting()) return (uint32_t)-EINTR;
+                    task_yield();
+                }
+            }
             if (proc_pipe_endpoint(p, fd, 0) >= 0) {
                 /* a blocking end waits for data (or for the last writer to go) */
                 for (;;) {
@@ -2695,6 +2760,7 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
                 int had = p->std_fd[fd];
                 p->std_fd[fd] = 0;
                 if (had > 2 && !is_std_target(p, had)) proc_fd_close(p, had - 3);
+                p->std_closed |= (uint8_t)(1u << fd);
                 return 0;
             }
             if (is_std_target(p, fd)) return 0;             /* the hidden copy behind 0..2 stays */
@@ -2905,6 +2971,19 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
                 for (int i = 0; lp && i < PROC_MAX_FDS; i++)
                     if (lp->fd[i] >= 0 && !strcmp(lp->fdpath[i], (const char *)(uintptr_t)a)) { strncpy(lp->fdpath[i], (const char *)(uintptr_t)b, VFS_NAME_LEN - 1); lp->fdpath[i][VFS_NAME_LEN - 1] = 0; }
                 return 0;
+            }
+            if (user_cstr_ok(a) && user_cstr_ok(b)) {         /* a small file: the new name gets a copy (lock files: the X server's /tmp/.X0-lock) */
+                vfs_entry_t se, de;
+                if (vfs_stat((const char *)(uintptr_t)a, &se) != 0) return (uint32_t)-ENOENT;
+                if (se.is_dir) return (uint32_t)-EPERM;
+                if (vfs_stat((const char *)(uintptr_t)b, &de) == 0) return (uint32_t)-EEXIST;
+                if (se.size > (1u << 20)) return (uint32_t)-EPERM;
+                char *cp = malloc(se.size ? se.size : 1);
+                if (!cp) return (uint32_t)-ENOMEM;
+                int got = se.size ? fsbridge_read((const char *)(uintptr_t)a, cp, se.size, 0) : 0;
+                int ok = got >= 0 && fsbridge_create((const char *)(uintptr_t)b) == 0 && (!got || fsbridge_write((const char *)(uintptr_t)b, cp, (uint32_t)got, 0) >= 0);
+                free(cp);
+                return ok ? 0 : (uint32_t)-EPERM;
             }
             return (uint32_t)-EPERM;
 
@@ -3333,6 +3412,7 @@ void syscall_dump_recent(void)
 
 void syscall_proc_cleanup(struct proc *p)
 {
+    fbwin_owner_gone(p->pid);                            /* its window (/dev/fb0) closes with it */
     if (fsbridge_exists("/tmp/.proc")) {                 /* the /proc files this program opened */
         int cnt = 0;
         vfs_entry_t *ents = fsbridge_list_all("/tmp/.proc", &cnt);
