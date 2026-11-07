@@ -74,6 +74,17 @@ def render_body(lines, heads):
         if not ln.strip():
             i += 1
             continue
+        m = re.match(r'```svg\s*(.*)$', ln)
+        if m:                                              # a diagram: raw SVG between the fences, the caption after "svg"
+            cap = html.escape(m.group(1).strip(), quote=False)
+            i += 1
+            buf = []
+            while i < len(lines) and not lines[i].startswith('```'):
+                buf.append(lines[i])
+                i += 1
+            i += 1
+            out.append('<figure class="shot diagram">' + '\n'.join(buf) + (f'<figcaption>{cap}</figcaption>' if cap else '') + '</figure>')
+            continue
         if ln.startswith('```'):
             i += 1
             buf = []
@@ -112,13 +123,13 @@ def render_body(lines, heads):
                 rows.append([c.strip() for c in lines[i].strip().strip('|').split('|')])
                 i += 1
             head, body = rows[0], [r for r in rows[2:]] if len(rows) > 1 and set(''.join(rows[1])) <= set('-: ') else rows[1:]
-            t = ['<table class="ref">', '<thead><tr>' + ''.join(f'<th>{inline(c)}</th>' for c in head) + '</tr></thead>', '<tbody>']
+            t = ['<div class="tbl-wrap"><table class="ref">', '<thead><tr>' + ''.join(f'<th>{inline(c)}</th>' for c in head) + '</tr></thead>', '<tbody>']
             for r in body:
                 cells = []
                 for k, c in enumerate(r):
                     cells.append(f'<td class="name">{inline(c)}</td>' if k == 0 else f'<td>{inline(c)}</td>')
                 t.append('<tr>' + ''.join(cells) + '</tr>')
-            t += ['</tbody>', '</table>']
+            t += ['</tbody>', '</table></div>']
             out.append('\n'.join(t))
             continue
         if ln.startswith('> '):
@@ -180,15 +191,24 @@ def main():
     out = sys.argv[1]
     pkgdir = sys.argv[2] if len(sys.argv) > 2 else None
     nav = json.load(open(os.path.join(SITE, 'nav.json')))
-    order = [it for sec in nav['sections'] for it in sec['items']]
-    sec_of = {it['slug']: sec['section'] for sec in nav['sections'] for it in sec['items']}
+    order, sec_of, parent_of = [], {}, {}
+    for sec in nav['sections']:
+        for it in sec['items']:
+            order.append(it); sec_of[it['slug']] = sec['section']
+            for ch in it.get('children', []):
+                order.append(ch); sec_of[ch['slug']] = sec['section']; parent_of[ch['slug']] = it
     os.makedirs(out, exist_ok=True)
 
     # the shared scripts and style sheet, with the sidebar and the tabs filled in
     for f in ('docs.css', 'docs-search.js'):
         shutil.copy(os.path.join(SITE, 'assets', f), os.path.join(out, f))
     navjs = open(os.path.join(SITE, 'assets', 'docs-nav.js'), encoding='utf-8').read()
-    tree = [{'section': s['section'], 'items': [{'label': it['label'], 'href': href(it['slug'])} for it in s['items']]} for s in nav['sections']]
+    def node(it):
+        d = {'label': it['label'], 'href': href(it['slug'])}
+        if it.get('children'):
+            d['children'] = [{'label': c['label'], 'href': href(c['slug'])} for c in it['children']]
+        return d
+    tree = [{'section': s['section'], 'items': [node(it) for it in s['items']]} for s in nav['sections']]
     tabs = [{'label': t['label'], 'href': href(t['slug']), 'sections': t['sections']} for t in nav['tabs']]
     navjs = navjs.replace('/*NAV_TREE*/[]', json.dumps(tree, indent=2)).replace('/*TAB_TREE*/[]', json.dumps(tabs, indent=2))
     open(os.path.join(out, 'docs-nav.js'), 'w', encoding='utf-8').write(navjs)
@@ -212,6 +232,9 @@ def main():
         next_a = (f'<a class="next next" href="{href(order[n+1]["slug"])}"><span class="pager-label">Next</span>'
                   f'<span class="pager-title">{html.escape(order[n+1]["label"])}</span></a>') if n + 1 < len(order) else ''
         title = meta.get('title', it['label'])
+        crumb = ''
+        if slug in parent_of:
+            crumb = f'<div class="sub-breadcrumb"><a href="{href(parent_of[slug]["slug"])}">&#8592; {html.escape(parent_of[slug]["label"])}</a></div>'
         icons = ''
         if meta.get('icon'):
             icons = '<div class="page-icons">' + ''.join(f'<img src="{icon_src(n.strip())}" alt="" width="64" height="64">' for n in meta['icon'].split(',')) + '</div>'
@@ -224,12 +247,13 @@ def main():
 <meta name="description" content="{html.escape(meta.get('lede', ''), quote=True)}">
 <link rel="icon" type="image/png" href="https://artficdn.com.tr/assets/ai-artfical-favicon-v3.png">
 <link rel="stylesheet" href="{BASE}/docs.css?v={VER}">
-<style>.shot{{margin:20px 0 26px;max-width:760px}}.shot img,.shot video{{display:block;width:100%;height:auto;border-radius:10px;border:1px solid rgba(255,255,255,.12)}}.shot figcaption{{color:var(--muted);font-size:13px;margin-top:8px}}.page-icons{{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 18px}}.page-icons img{{width:64px;height:64px;object-fit:contain}}.inline-icon{{width:24px;height:24px;vertical-align:middle;margin:-3px 8px 0 0}}</style>
+<style>.shot{{margin:20px 0 26px;max-width:760px}}.shot img,.shot video{{display:block;width:100%;height:auto;border-radius:10px;border:1px solid rgba(255,255,255,.12)}}.shot figcaption{{color:var(--muted);font-size:13px;margin-top:8px}}.diagram svg{{display:block;width:100%;height:auto;background:#0d0e11;border:1px solid rgba(255,255,255,.12);border-radius:10px}}.diagram svg text{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}}.tbl-wrap{{overflow-x:auto;margin:0 0 24px;-webkit-overflow-scrolling:touch}}.tbl-wrap table.ref{{margin:0;min-width:520px}}pre.code-block{{overflow-x:auto}}img,video{{max-width:100%}}.menu-btn{{display:none;background:none;border:1px solid rgba(255,255,255,.18);color:#fff;border-radius:8px;padding:5px 10px;font-size:17px;line-height:1;cursor:pointer}}@media(max-width:820px){{.menu-btn{{display:block}}.top-right a:not(.btn){{display:none}}.top-right .btn{{padding:7px 12px;font-size:13px}}nav.side{{position:fixed!important;top:66px;left:0;bottom:0;width:290px;max-width:86vw;z-index:60;background:#0a0a0a;overflow-y:auto;transform:translateX(-105%);transition:transform .2s;border-right:1px solid rgba(255,255,255,.12)!important;border-bottom:0!important;height:auto!important;padding:18px 14px!important}}body.nav-open nav.side{{transform:none}}body.nav-open:after{{content:"";position:fixed;inset:66px 0 0 0;background:rgba(0,0,0,.55);z-index:50}}.shell{{display:block!important}}main.content{{padding:26px 16px 80px!important}}.page-title{{font-size:27px!important}}.page-title-row{{flex-wrap:wrap;gap:10px}}.tab-bar-inner{{padding:0 10px!important}}.page-pager{{flex-direction:column;gap:10px}}.shot{{max-width:100%}}}}@media(max-width:480px){{.page-icons img{{width:48px;height:48px}}.top{{gap:8px}}.top-brand span.sep,.top-brand .docs-word{{display:none}}}}.page-icons{{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 18px}}.page-icons img{{width:64px;height:64px;object-fit:contain}}.inline-icon{{width:24px;height:24px;vertical-align:middle;margin:-3px 8px 0 0}}</style>
 </head>
 <body>
 
 <header class="top">
   <div class="top-left">
+    <button class="menu-btn" id="menuBtn" type="button" aria-label="Menu">&#9776;</button>
     <a class="top-brand" href="{BASE}">
       <span style="font-weight:700;font-size:17px;letter-spacing:-.01em;color:#fff">tOS</span>
       <span class="sep">/</span>
@@ -265,7 +289,7 @@ def main():
   <main class="content">
 
     <section class="doc-section" id="{slug}">
-      {icons}
+      {crumb}{icons}
       <div class="kicker">{html.escape(sec_of[slug])}</div>
       <h1 class="page-title">{html.escape(title)}</h1>
       <p class="lede">{inline(meta.get('lede', ''))}</p>

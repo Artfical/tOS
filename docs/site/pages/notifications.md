@@ -70,6 +70,12 @@ In QEMU, start the machine with `-usb`. Then plug a disk image in from the QEMU 
 - Do Not Disturb silences the banners and the chime only; apps keep posting to the Notification Centre.
 - A banner with buttons keeps waiting, so answer it or close it.
 
+## Tips
+
+- Posting a notification from a long job is a good way to know when it ends: `make && notify "Build done" "make finished"`. (Write it with `&&` in a full shell, or run `notify` on its own after the job.)
+- Do Not Disturb silences the banners and the chime only; apps keep posting to the Notification Centre.
+- A banner with buttons keeps waiting, so answer it or close it.
+
 ## Other disks
 
 Disks that are not removable (the ones you find with `disk list`) are handled with Disk Utility and the `disk` command: see [Activity, Network and Disk Utility](/tos/system-apps) and [Files, disks and users](/tos/filesystems).

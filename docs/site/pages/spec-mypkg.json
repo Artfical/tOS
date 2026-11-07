@@ -1,0 +1,13 @@
+{
+  "name": "mytool",
+  "version": "1.0",
+  "license": "MIT",
+  "desc": "A Perl tool for tOS",
+  "min_build": 619,
+  "stage": "/home/user/mystage",
+  "depends": ["perl"],
+  "commands": { "mytool": "bin/mytool" },
+  "licenses": [["LICENSE", "LICENSE"]],
+  "notice": "mytool 1.0\nLicense: MIT\n",
+  "message": "mytool installed: run mytool\n"
+}

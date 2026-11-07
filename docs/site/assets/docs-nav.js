@@ -45,30 +45,28 @@ function renderDocsSidebar(){
 
   DOCS_NAV_TREE.forEach(function(node){
     html += '<div class="grp-section-label">' + node.section + "</div>";
-
-    if (node.group) {
-      var g = node.group;
-      var childActive = g.children.some(function(c){ return _docsIsCurrentOrSubpage(c.href, current); });
-      var isCurrent = _docsIsCurrentOrSubpage(g.href, current);
-      var open = childActive || isCurrent;
-      html += '<div class="grp' + (open ? " open" : "") + '">';
-      html += '  <div class="grp-row' + (isCurrent ? " current" : "") + '">';
-      html += '    <a class="grp-link" href="' + g.href + '">' + g.label + "</a>";
-      html += '    <button class="grp-toggle" type="button" aria-label="Toggle ' + g.label + '">' + _docsChevronSvg() + "</button>";
-      html += "  </div>";
-      html += '  <div class="grp-children"><div class="grp-children-inner">';
-      g.children.forEach(function(c){
-        html += '<a href="' + c.href + '"' + (_docsIsCurrentOrSubpage(c.href, current) ? ' class="active"' : "") + ">" + c.label + "</a>";
-      });
-      html += "  </div></div>";
-      html += "</div>";
-    } else {
-      html += '<div class="single">';
-      node.items.forEach(function(it){
+    html += '<div class="single">';
+    node.items.forEach(function(it){
+      if (it.children && it.children.length) {
+        var childActive = it.children.some(function(c){ return c.href === current; });
+        var isCurrent = it.href === current;
+        var open = childActive || isCurrent;
+        html += '<div class="grp' + (open ? " open" : "") + '">';
+        html += '  <div class="grp-row' + (isCurrent ? " current" : "") + '">';
+        html += '    <a class="grp-link" href="' + it.href + '">' + it.label + "</a>";
+        html += '    <button class="grp-toggle" type="button" aria-label="Toggle ' + it.label + '">' + _docsChevronSvg() + "</button>";
+        html += "  </div>";
+        html += '  <div class="grp-children"><div class="grp-children-inner">';
+        it.children.forEach(function(c){
+          html += '<a href="' + c.href + '"' + (c.href === current ? ' class="active"' : "") + ">" + c.label + "</a>";
+        });
+        html += "  </div></div>";
+        html += "</div>";
+      } else {
         html += '<a href="' + it.href + '"' + (_docsIsCurrentOrSubpage(it.href, current) ? ' class="active"' : "") + ">" + it.label + "</a>";
-      });
-      html += "</div>";
-    }
+      }
+    });
+    html += "</div>";
   });
 
   mount.innerHTML = html;
@@ -78,6 +76,8 @@ function renderDocsSidebar(){
       btn.closest(".grp").classList.toggle("open");
     });
   });
+  var act = mount.querySelector("a.active, .grp-row.current");
+  if (act && act.scrollIntoView && window.innerWidth > 820) { try { act.scrollIntoView({block: "center"}); } catch (e) {} }
 }
 
 function _docsSlugify(text, used){
@@ -171,6 +171,13 @@ function renderDocsCopyButton(){
 }
 
 document.addEventListener("DOMContentLoaded", function(){
+  var mb = document.getElementById("menuBtn");
+  if (mb) {
+    mb.addEventListener("click", function(){ document.body.classList.toggle("nav-open"); });
+    document.addEventListener("click", function(e){
+      if (document.body.classList.contains("nav-open") && !e.target.closest("nav.side") && e.target !== mb) document.body.classList.remove("nav-open");
+    });
+  }
   renderDocsSidebar();
   renderDocsToc();
   renderDocsCopyButton();

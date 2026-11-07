@@ -98,6 +98,40 @@ A link to a file that is not a page (a zip archive, a PDF, a text file) is **dow
 - Pages that depend on features tFire does not have yet may look different from other browsers. Some picture formats (for example progressive JPEG) may not be decoded; their alt text shows instead.
 - tFire is a young browser. If a page looks wrong, please report it with the address.
 
+## Downloads and the Downloads folder
+
+A link to a file that is not a page (a zip archive, a PDF, a text file) is **downloaded**: tFire saves it in your Downloads folder and shows a bar with the name, the size and a **Show in Files** button.
+
+![A download finished: Show in Files](shot:tfire/u4-download.png)
+
+![The Downloads folder, opened from the bar](shot:tfire/u4-files.png)
+
+## Links and history
+
+![Following a link from one article to another](shot:tfire/u4-wikipedia-link.png)
+
+![The destination page](shot:tfire/u4-netscape.png)
+
+## The start page
+
+`tfire:home` is the start page: a short list of places to go (Wikipedia, Hacker News, DuckDuckGo, news, tOS updates) and what tFire can show.
+
+![The start page](shot:tfire/u3-home.png)
+
+![An earlier version of the start page](shot:tfire/home2.png)
+
+## Limits
+
+- Pages that depend on features tFire does not have yet may look different from other browsers. Some picture formats (for example progressive JPEG) may not be decoded; their alt text shows instead.
+- There is a single TCP connection in tOS's own network code for the browser, so a page and its pictures load one after another.
+- tFire is a young browser. If a page looks wrong, please report it with the address.
+
+## Licences
+
+`tfire:licenses` lists the libraries inside tFire, and everything else in tOS that comes from other projects, with their versions and licences.
+
+![tfire:licenses](shot:tfire/u3-licenses.png)
+
 ## Related
 
 - Downloads end up in Files: [Files](/tos/files-app).

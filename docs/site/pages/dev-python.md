@@ -97,6 +97,38 @@ print(hashlib.sha256(b"tOS").hexdigest()[:16])
 print(len(zlib.compress(b"abc" * 100)))
 ```
 
+## More examples
+
+A script that reads a web page over HTTPS:
+
+```python
+import urllib.request
+with urllib.request.urlopen("https://example.com") as r:
+    print(r.status, len(r.read()))
+```
+
+A small SQLite database:
+
+```python
+import sqlite3
+db = sqlite3.connect("/tmp/demo.db")
+db.execute("create table if not exists t (n integer)")
+db.execute("insert into t values (42)")
+print(db.execute("select n from t").fetchall())
+```
+
+Hashing and compression:
+
+```python
+import hashlib, zlib
+print(hashlib.sha256(b"tOS").hexdigest()[:16])
+print(len(zlib.compress(b"abc" * 100)))
+```
+
+## The kernel's built-in MicroPython
+
+The kernel has its own, much smaller Python: `python` in the shell starts **MicroPython** (without installing anything), with modules that script the desktop. See [MicroPython and T#](/tos/scripting). The `python3` package also brings a command named `python`, the same name; use `python3` to be sure you get CPython.
+
 ## Related
 
 - [Packages](/tos/packages) and [Developing on tOS](/tos/developing).

@@ -50,6 +50,17 @@ Every mount, unmount and format that Disk Utility does is written to a log that 
 
 Disk Utility is also on the Recovery screen, so you can prepare a disk before you install. See [Recovery and the installer](/tos/recovery).
 
-## About tOS and Software Update
+## About tOS
 
-**About tOS** shows the version. **Software Update** is in [Settings](/tos/settings).
+**About tOS** shows the version and information about the system.
+
+## Software Update
+
+**Software Update** is in [Settings](/tos/settings). It checks for a newer build and installs it.
+
+## Tips
+
+- **First Aid** only checks and changes nothing. Run it before reporting disk errors.
+- **Erase** destroys all data on the selected volume or disk. Check the name twice.
+- **Partition** and **Restore** are not implemented yet.
+- The `disk` command does the same things from the Terminal: see [Files, disks and users](/tos/filesystems).

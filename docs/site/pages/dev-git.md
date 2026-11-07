@@ -85,6 +85,91 @@ rsync -a src/ dst/
 rsync -a --delete src/ user@host:/backup/
 ```
 
+## Git internals on tOS
+
+The `git` package brings the standard Git binaries: `git`, `git-shell`, `git-upload-pack`, `git-receive-pack`, `git-upload-archive`. They run as Linux programs through tOS's compatibility layer, using the same sockets, file system and threads as on Linux. The package depends on `curl` (for HTTPS), `zlib` (compression), and the `ca-certificates` package for server verification.
+
+## SSH keys and GitHub/GitLab
+
+SSH is the recommended way to push. Generate an Ed25519 key:
+
+```bash
+ssh-keygen -t ed25519 -C "you@example.com"
+cat ~/.ssh/id_ed25519.pub
+```
+
+Copy the printed public key to GitHub (Settings → SSH and GPG keys → New SSH key) or GitLab (Preferences → SSH Keys). Then clone with SSH:
+
+```bash
+git clone git@github.com:Artfical/tOS.git
+cd tOS
+```
+
+The first connection asks you to verify the host's fingerprint. Type `yes` to add it to `~/.ssh/known_hosts`.
+
+## HTTPS clones and credentials
+
+For HTTPS, Git uses the `ca-certificates` package for server verification:
+
+```bash
+git clone https://github.com/Artfical/tOS.git
+```
+
+If the repository is private, Git prompts for a username and a **personal access token** (not your password). Create one on GitHub (Settings → Developer settings → Personal access tokens) or GitLab (Access tokens), give it `repo` scope, and use it as the password.
+
+Shallow clones save memory:
+
+```bash
+git clone --depth 1 https://github.com/Artfical/tOS.git
+```
+
+A full clone of a large repository can use hundreds of megabytes of RAM (everything lives in tOS's ramfs). Shallow clones are much lighter.
+
+## SSH agent and keys
+
+```bash
+eval $(ssh-agent)
+ssh-add ~/.ssh/id_ed25519
+```
+
+Now `git push` and `ssh host` work without re-typing the passphrase.
+
+## Remotes and workflows
+
+```bash
+git remote add upstream https://github.com/Artfical/tOS.git
+git fetch upstream
+git rebase upstream/main
+git push origin main
+```
+
+For feature branches:
+
+```bash
+git checkout -b feature/xyz
+# work work work
+git commit -am "feat: add xyz"
+git push origin feature/xyz
+# open a pull request on GitHub/GitLab
+```
+
+## Submodules
+
+```bash
+git submodule add https://github.com/Artfical/tos-sdk.git sdk
+git submodule update --init --recursive
+```
+
+## Configuration tips
+
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+git config --global init.defaultBranch main
+git config --global pull.rebase true
+git config --global core.autocrlf input
+```
+
 ## Related
 
 - [Networking](/tos/networking) and [Developing on tOS](/tos/developing).

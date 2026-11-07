@@ -93,6 +93,91 @@ Perl 5.40 with its standard modules: `List::Util`, `Data::Dumper`, `File::Temp`,
 - In a script that must run anywhere, start with `#!/bin/sh` and use only POSIX; use `#!/bin/bash` when you need bash features.
 - Commands are on the PATH by name and also under `/usr/bin` and `/bin`.
 
+## Advanced bash features
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# Arrays and associative arrays
+declare -A ports=(["http"]=80 ["https"]=443 ["ssh"]=22)
+for proto in "${!ports[@]}"; do echo "$proto -> ${ports[$proto]}"; done
+
+# Process substitution and redirection
+diff <(sort a.txt) <(sort b.txt)
+grep pattern <(command_that_outputs)
+
+# Parameter expansion
+file=/path/to/file.txt
+echo "${file##*/}"     # filename
+echo "${file%.*}"      # without extension
+echo "${file/path/new}" # replace first
+
+# Arithmetic and logic
+echo $(( 16 + 4 * 3 ))
+[[ -f file.txt && -r file.txt ]] && echo "readable"
+
+# Functions
+die() { echo "ERROR: $*" >&2; exit 1; }
+die "something went wrong"
+```
+
+## Loops and conditionals
+
+```bash
+for f in *.c; do echo "compiling $f"; gcc -c "$f"; done
+while read -r line; do echo "got: $line"; done < file.txt
+until ping -c 1 host; do sleep 5; done
+```
+
+## Pipes and the GNU tools
+
+```bash
+sudo tpkg install coreutils sed gawk grep findutils diffutils patch tar gzip less file wget rsync
+```
+
+Then:
+
+```bash
+# Find and process
+find . -name '*.c' -exec grep -l 'main' {} +
+grep -r 'TODO' --include='*.c' .
+awk -F: '{print $1, $3}' /etc/passwd | sort
+sed -i 's/old/new/g' file.txt
+tar -czf backup.tgz folder/
+```
+
+## Here-documents and input
+
+```bash
+cat <<'EOF' > config.txt
+server {
+    listen 80;
+    root /var/www;
+}
+EOF
+
+# With parameter expansion
+cat <<EOF
+Hello $USER, today is $(date)
+EOF
+```
+
+## Debugging
+
+```bash
+bash -x script.sh          # trace execution
+set -x                     # trace from here
+set +x                     # stop tracing
+```
+
+## Tips
+
+- Always `chmod +x script.sh` before running.
+- Use `#!/bin/bash` when you need bash features; `#!/bin/sh` (busybox ash) for maximum portability.
+- `set -euo pipefail` at the top catches errors early.
+- Commands are on the PATH by name and also under `/usr/bin` and `/bin`.
+
 ## Related
 
 - [Terminal and shell](/tos/terminal) and [Shell commands](/tos/commands).
