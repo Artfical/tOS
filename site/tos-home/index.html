@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tOS — a 64-bit operating system that runs Linux programs</title>
+<meta name="description" content="tOS is a from-scratch 64-bit operating system with its own desktop, package manager and network stack, and it runs real Linux x86-64 programs. Download the ISO.">
+<link rel="icon" type="image/png" href="https://artficdn.com.tr/assets/ai-artfical-favicon-v3.png">
+<style>
+:root{--bg:#0a0a0a;--fg:#ededed;--mut:#8f8f8f;--line:rgba(255,255,255,.12);--acc:#fff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+a{color:var(--fg)}
+.wrap{max-width:820px;margin:0 auto;padding:0 22px}
+header{border-bottom:1px solid var(--line)}
+header .wrap{display:flex;align-items:center;justify-content:space-between;height:60px}
+.brand{font-weight:700;font-size:18px;text-decoration:none}
+nav a{color:var(--mut);text-decoration:none;margin-left:20px;font-size:14px}
+nav a:hover{color:var(--fg)}
+.hero{padding:72px 0 40px}
+h1{font-size:44px;line-height:1.12;letter-spacing:-.02em;margin:0 0 16px}
+.lede{color:var(--mut);font-size:19px;max-width:620px;margin:0 0 30px}
+.btn{display:inline-block;background:var(--acc);color:#000;padding:12px 20px;border-radius:9px;font-weight:600;text-decoration:none}
+.btn.ghost{background:none;color:var(--fg);border:1px solid var(--line);margin-left:10px}
+.small{color:var(--mut);font-size:13px;margin-top:12px}
+.shot{margin:34px 0 10px}
+.shot img{width:100%;height:auto;display:block;border-radius:12px;border:1px solid var(--line)}
+section{padding:42px 0;border-top:1px solid var(--line)}
+h2{font-size:25px;letter-spacing:-.01em;margin:0 0 14px}
+ul{padding-left:20px;margin:10px 0}
+li{margin:5px 0}
+code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px}
+pre{background:#111;border:1px solid var(--line);border-radius:9px;padding:14px;overflow-x:auto}
+.tl{list-style:none;padding:0;margin:18px 0;border-left:1px solid var(--line)}
+.tl li{position:relative;padding:0 0 22px 22px;margin:0}
+.tl li:before{content:"";position:absolute;left:-4px;top:9px;width:7px;height:7px;border-radius:50%;background:var(--fg)}
+.tl time{display:block;color:var(--mut);font-size:13px}
+.tl b{display:block}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+.pill{display:inline-block;border:1px solid var(--line);border-radius:99px;padding:1px 10px;font-size:12px;color:var(--mut);margin-left:6px}
+footer{border-top:1px solid var(--line);padding:28px 0 50px;color:var(--mut);font-size:14px}
+@media(max-width:640px){h1{font-size:33px}.hero{padding:44px 0 26px}.cols{grid-template-columns:1fr}nav a{margin-left:13px}.btn.ghost{margin:10px 0 0}}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <a class="brand" href="/">tOS</a>
+  <nav><a href="#download">Download</a><a href="#progress">Progress</a><a href="https://docs.artfical.com/tos">Docs</a><a href="https://github.com/Artfical/tOS">GitHub</a></nav>
+</div></header>
+
+<main class="wrap">
+  <div class="hero">
+    <h1>An operating system built from scratch, that runs Linux programs.</h1>
+    <p class="lede">tOS is a 64-bit operating system with its own kernel, desktop, network stack and package manager. It runs real Linux x86-64 programs, so gcc, Python, Node.js, Git and SSH work on it.</p>
+    <a class="btn" id="dl" href="https://github.com/Artfical/tOS/releases/latest">Download the ISO</a>
+    <a class="btn ghost" href="https://docs.artfical.com/tos">Read the docs</a>
+    <div class="small" id="dlinfo">Latest build from GitHub Releases.</div>
+    <div class="shot"><img src="desktop.png" alt="The tOS desktop" width="1280" height="720"></div>
+  </div>
+
+  <section id="download">
+    <h2>Download and try it</h2>
+    <p>The ISO boots on BIOS machines. The easiest way to try it is a virtual machine.</p>
+    <pre>qemu-system-x86_64 -cdrom tOS.iso -m 2048 -vga std -nic user,model=e1000</pre>
+    <ul>
+      <li>QEMU, VMware or VirtualBox: attach the ISO as a CD to a 64-bit machine with BIOS boot.</li>
+      <li>Real hardware: write the ISO to a USB stick.</li>
+      <li>Give it 2 GB of RAM or more. tOS keeps its files in memory.</li>
+      <li>The live user is <code>tos</code> with an empty password. Use <code>sudo</code> for anything that changes the system.</li>
+    </ul>
+    <p>Installed systems update themselves from Settings → Software Update. Step by step: <a href="https://docs.artfical.com/tos/installation">Installation</a>.</p>
+  </section>
+
+  <section>
+    <h2>What you get</h2>
+    <div class="cols">
+      <div>
+        <b>Desktop</b>
+        <ul>
+          <li>Windows, dock, launcher, notifications</li>
+          <li>Files, Terminal, Settings</li>
+          <li>tFire web browser with HTTPS</li>
+          <li>Notepad, Paint, viewers, games</li>
+        </ul>
+      </div>
+      <div>
+        <b>Linux programs</b>
+        <ul>
+          <li>Install with <code>sudo tpkg install gcc python3 git</code></li>
+          <li>Signed packages, 60+ available</li>
+          <li>Node.js, Perl, Tcl/Tk, X11 windows</li>
+          <li>SSH client and server</li>
+        </ul>
+      </div>
+    </div>
+    <p>Networking has its own stack: Ethernet, ARP, IPv4/IPv6, TCP, UDP, TLS, DHCP, DNS and more. Everything is documented at <a href="https://docs.artfical.com/tos">docs.artfical.com/tos</a>.</p>
+  </section>
+
+  <section id="progress">
+    <h2>Development progress</h2>
+    <p>tOS is developed in the open. These are the main steps so far.</p>
+    <ul class="tl">
+      <li><time>May 2026</time><b>First release</b>Boots with Multiboot, serial console, PCI and a USB keyboard.</li>
+      <li><time>June 2026</time><b>Network cards</b>Drivers for E1000, virtio-net, NE2000, RTL8139 and PCnet.</li>
+      <li><time>July 2026</time><b>More protocols and file systems</b>SCTP, DCCP, UDP-Lite, IPsec, VLAN, bridge and bonding. Btrfs, XFS, ZFS and APFS support.</li>
+      <li><time>August 2026</time><b>Package manager</b>tpkg with install, remove and upgrade. Crypto system calls and an SSH client.</li>
+      <li><time>September 2026</time><b>Graphics</b>Framebuffer console and real graphics modes.</li>
+      <li><time>October 2026</time><b>Hardening</b>Pointer checks in system calls, file system fixes, a signed update channel.</li>
+      <li><time>November 2026</time><b>Linux programs</b>Loopback network, /proc, Unix sockets, job control, Python 3.9 to 3.14, X11 and Tk, signed packages, and the GNU and build tools (bash, perl, coreutils, cmake, autotools).</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>What is still missing</h2>
+    <p>We would rather tell you than let you find out.</p>
+    <ul>
+      <li>Go and Rust toolchains <span class="pill">in progress</span></li>
+      <li>Debuggers: gdb and strace need <code>ptrace</code></li>
+      <li>GTK, Qt, SDL and xterm</li>
+      <li>Files larger than 2 GB</li>
+      <li>Some Notepad, Terminal and Network app features are still basic. The docs list them.</li>
+    </ul>
+    <p>Found a bug? Open an issue on <a href="https://github.com/Artfical/tOS/issues">GitHub</a>. Security problems: <a href="mailto:security@artfical.com">security@artfical.com</a>.</p>
+  </section>
+</main>
+
+<footer><div class="wrap">Made by Artfical DT · <a href="https://docs.artfical.com/tos">Docs</a> · <a href="https://github.com/Artfical/tOS">GitHub</a> · <a href="https://github.com/Artfical/tOS/releases">All releases</a></div></footer>
+
+<script>
+fetch("https://api.github.com/repos/Artfical/tOS/releases/latest").then(function(r){return r.json()}).then(function(d){
+  var a=(d.assets||[]).filter(function(x){return /\.iso$/.test(x.name)})[0];
+  if(!a)return;
+  document.getElementById("dl").href=a.browser_download_url;
+  document.getElementById("dl").textContent="Download the ISO ("+(a.size/1048576).toFixed(0)+" MB)";
+  document.getElementById("dlinfo").textContent=a.name+" · released "+(d.published_at||"").slice(0,10);
+}).catch(function(){});
+</script>
+</body>
+</html>

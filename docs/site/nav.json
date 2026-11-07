@@ -79,10 +79,6 @@
           "label": "Terminal and shell"
         },
         {
-          "slug": "packages",
-          "label": "Packages (tpkg)"
-        },
-        {
           "slug": "linux-programs",
           "label": "Linux programs"
         },
@@ -165,48 +161,54 @@
       "section": "Package manager (tpkg)",
       "items": [
         {
-          "slug": "tpkg-commands",
-          "label": "tpkg commands in depth"
-        },
-        {
-          "slug": "tpkg-install",
-          "label": "What happens when you install"
-        },
-        {
-          "slug": "tpkg-dependencies",
-          "label": "Dependencies"
-        },
-        {
-          "slug": "tpkg-signatures",
-          "label": "Signatures"
-        },
-        {
-          "slug": "tpkg-format",
-          "label": "The package format"
-        },
-        {
-          "slug": "tpkg-commands-path",
-          "label": "How commands reach your PATH"
-        },
-        {
-          "slug": "tpkg-builds",
-          "label": "Builds, versions and upgrades"
-        },
-        {
-          "slug": "tpkg-server",
-          "label": "The package server"
-        },
-        {
-          "slug": "tpkg-sources",
-          "label": "Licences and source code"
-        },
-        {
-          "slug": "tpkg-creating",
-          "label": "Making your own package"
-        },
-        {
-          "slug": "tpkg-troubleshooting",
-          "label": "tpkg troubleshooting"
+          "slug": "packages",
+          "label": "Packages (tpkg)",
+          "children": [
+            {
+              "slug": "tpkg-commands",
+              "label": "tpkg commands in depth"
+            },
+            {
+              "slug": "tpkg-install",
+              "label": "What happens when you install"
+            },
+            {
+              "slug": "tpkg-dependencies",
+              "label": "Dependencies"
+            },
+            {
+              "slug": "tpkg-signatures",
+              "label": "Signatures"
+            },
+            {
+              "slug": "tpkg-format",
+              "label": "The package format"
+            },
+            {
+              "slug": "tpkg-commands-path",
+              "label": "How commands reach your PATH"
+            },
+            {
+              "slug": "tpkg-builds",
+              "label": "Builds, versions and upgrades"
+            },
+            {
+              "slug": "tpkg-server",
+              "label": "The package server"
+            },
+            {
+              "slug": "tpkg-sources",
+              "label": "Licences and source code"
+            },
+            {
+              "slug": "tpkg-creating",
+              "label": "Making your own package"
+            },
+            {
+              "slug": "tpkg-troubleshooting",
+              "label": "tpkg troubleshooting"
+            }
+          ]
         }
       ]
     },
