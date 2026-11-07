@@ -10,7 +10,7 @@ OUTDIR                 receives <slug>.html, docs-search-index.js and the assets
 PACKAGE_DIR            the update server's package folder (for the package list page)
 
 The text is a small Markdown: ## and ### headings, paragraphs, - and 1. lists, ``` code, | tables |,
-![caption](shot:name.png) pictures (from docs/screenshots), "> " notes, `code`, **bold**, [links](url). The page "package-list" gets its table from PACKAGE_DIR.
+![caption](shot:name.png) pictures (from docs/screenshots), ![caption](video:name.mp4) short videos (from docs/videos), "> " notes, `code`, **bold**, [links](url). The page "package-list" gets its table from PACKAGE_DIR.
 """
 import html, json, os, re, shutil, sys
 
@@ -32,6 +32,7 @@ def href(slug):
 
 
 def inline(t):
+    t = re.sub(r'!\[\]\(icon:([a-z0-9_]+)\)', lambda m: '\x00I' + m.group(1) + '\x00', t)
     parts = re.split(r'(`[^`]+`)', t)
     out = []
     for p in parts:
@@ -42,7 +43,7 @@ def inline(t):
         p = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', p)
         p = re.sub(r'\[([^\]]+)\]\(([^)\s]+)\)', lambda m: '<a href="%s">%s</a>' % (m.group(2).replace('"', '%22'), m.group(1)), p)
         out.append(p)
-    return ''.join(out)
+    return re.sub('\x00I([a-z0-9_]+)\x00', lambda m: f'<img class="inline-icon" src="{icon_src(m.group(1))}" alt="">', ''.join(out))
 
 
 def slugify(text, used):
@@ -56,6 +57,13 @@ def slugify(text, used):
 
 
 SHOTS = set()      # screenshots the pages use
+ICONS = set()      # app icons the pages use (third_party/whitesur-icons/svg, or docs/site/assets/icons)
+
+
+def icon_src(name):
+    ICONS.add(name)
+    return f'{BASE}/img/icons/{name}.' + ('png' if os.path.exists(os.path.join(SITE, 'assets', 'icons', name + '.png')) else 'svg')
+VIDEOS = set()     # videos the pages use
 
 
 def render_body(lines, heads):
@@ -82,12 +90,19 @@ def render_body(lines, heads):
             out.append(f'<figure class="shot"><img src="{BASE}/img/{m.group(2)}" alt="{cap}" loading="lazy"><figcaption>{cap}</figcaption></figure>')
             i += 1
             continue
+        m = re.match(r'!\[([^\]]*)\]\(video:([^)\s]+)\)\s*$', ln)
+        if m:
+            VIDEOS.add(m.group(2))
+            cap = html.escape(m.group(1), quote=True)
+            out.append(f'<figure class="shot"><video src="{BASE}/img/{m.group(2)}" controls loop muted playsinline preload="metadata"></video><figcaption>{cap}</figcaption></figure>')
+            i += 1
+            continue
         m = re.match(r'(#{2,3}) +(.+)', ln)
         if m:
             lvl = len(m.group(1))
             text = m.group(2).strip()
-            hid = slugify(text, used)
-            heads.append((lvl, hid, text))
+            hid = slugify(re.sub(r'!\[\]\(icon:[a-z0-9_]+\)\s*', '', text), used)
+            heads.append((lvl, hid, re.sub(r'!\[\]\(icon:[a-z0-9_]+\)\s*', '', text)))
             out.append(f'<h{lvl} id="{hid}">{inline(text)}</h{lvl}>')
             i += 1
             continue
@@ -187,7 +202,7 @@ def main():
             lines += [''] + package_table(pkgdir)
         heads = []
         body = render_body(lines, heads)
-        h2 = [h for h in heads if h[0] == 2]
+        h2 = [h for h in heads if h[0] == 2 and h[2] != 'Related']
         covers = ''
         if len(h2) >= 3:
             covers = ('<div class="page-covers"><div class="covers-label">This page covers:</div><ul>' +
@@ -197,6 +212,9 @@ def main():
         next_a = (f'<a class="next next" href="{href(order[n+1]["slug"])}"><span class="pager-label">Next</span>'
                   f'<span class="pager-title">{html.escape(order[n+1]["label"])}</span></a>') if n + 1 < len(order) else ''
         title = meta.get('title', it['label'])
+        icons = ''
+        if meta.get('icon'):
+            icons = '<div class="page-icons">' + ''.join(f'<img src="{icon_src(n.strip())}" alt="" width="64" height="64">' for n in meta['icon'].split(',')) + '</div>'
         page = f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -206,7 +224,7 @@ def main():
 <meta name="description" content="{html.escape(meta.get('lede', ''), quote=True)}">
 <link rel="icon" type="image/png" href="https://artficdn.com.tr/assets/ai-artfical-favicon-v3.png">
 <link rel="stylesheet" href="{BASE}/docs.css?v={VER}">
-<style>.shot{{margin:20px 0 26px;max-width:760px}}.shot img{{display:block;width:100%;height:auto;border-radius:10px;border:1px solid rgba(255,255,255,.12)}}.shot figcaption{{color:var(--muted);font-size:13px;margin-top:8px}}</style>
+<style>.shot{{margin:20px 0 26px;max-width:760px}}.shot img,.shot video{{display:block;width:100%;height:auto;border-radius:10px;border:1px solid rgba(255,255,255,.12)}}.shot figcaption{{color:var(--muted);font-size:13px;margin-top:8px}}.page-icons{{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 18px}}.page-icons img{{width:64px;height:64px;object-fit:contain}}.inline-icon{{width:24px;height:24px;vertical-align:middle;margin:-3px 8px 0 0}}</style>
 </head>
 <body>
 
@@ -247,6 +265,7 @@ def main():
   <main class="content">
 
     <section class="doc-section" id="{slug}">
+      {icons}
       <div class="kicker">{html.escape(sec_of[slug])}</div>
       <h1 class="page-title">{html.escape(title)}</h1>
       <p class="lede">{inline(meta.get('lede', ''))}</p>
@@ -279,6 +298,22 @@ def main():
         dst = os.path.join(out, 'img', name)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy(os.path.join(shots, name), dst)
+
+    wsi = os.path.join(SITE, '..', '..', 'third_party', 'whitesur-icons', 'svg')
+    for name in sorted(ICONS):
+        os.makedirs(os.path.join(out, 'img', 'icons'), exist_ok=True)
+        a = os.path.join(SITE, 'assets', 'icons', name + '.png')
+        b = os.path.join(wsi, name + '.svg')
+        shutil.copy(a if os.path.exists(a) else b, os.path.join(out, 'img', 'icons', os.path.basename(a if os.path.exists(a) else b)))
+
+    vids = os.path.join(SITE, '..', 'videos')
+    for name in sorted(VIDEOS):
+        src = os.path.join(vids, name)
+        if not os.path.exists(src):
+            src = os.path.join(shots, name)               # e.g. tfire/u5-anim.mp4
+        dst = os.path.join(out, 'img', name)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy(src, dst)
 
     open(os.path.join(out, 'docs-search-index.js'), 'w', encoding='utf-8').write(
         '// Generated by tools/gen_docs_site.py -- do not edit by hand.\nvar DOCS_SEARCH_INDEX = ' + json.dumps(index, indent=2, ensure_ascii=False) + ';\n')

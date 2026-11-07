@@ -3,19 +3,43 @@
     { "section": "Getting started", "items": [
       { "slug": "index", "label": "Overview" },
       { "slug": "installation", "label": "Installation" },
+      { "slug": "recovery", "label": "Recovery and the installer" },
       { "slug": "quickstart", "label": "Quickstart" }
     ]},
-    { "section": "Using tOS", "items": [
+    { "section": "Desktop", "items": [
       { "slug": "desktop", "label": "The desktop" },
+      { "slug": "apps", "label": "The apps" },
+      { "slug": "files-app", "label": "Files" },
+      { "slug": "settings", "label": "Settings" },
+      { "slug": "notifications", "label": "Notifications and USB disks" }
+    ]},
+    { "section": "Apps", "items": [
+      { "slug": "tfire", "label": "tFire, the web browser" },
+      { "slug": "productivity", "label": "Notepad, Paint and viewers" },
+      { "slug": "system-apps", "label": "Activity, Network and Disk Utility" },
+      { "slug": "games", "label": "Games and demos" },
+      { "slug": "audio", "label": "Audio and the media player" }
+    ]},
+    { "section": "System", "items": [
       { "slug": "terminal", "label": "Terminal and shell" },
       { "slug": "packages", "label": "Packages (tpkg)" },
       { "slug": "linux-programs", "label": "Linux programs" },
-      { "slug": "files", "label": "Files, disks and users" },
-      { "slug": "networking", "label": "Networking" }
+      { "slug": "filesystems", "label": "Files, disks and users" },
+      { "slug": "networking", "label": "Networking" },
+      { "slug": "network-tools", "label": "Network tools" }
     ]},
-    { "section": "Guides", "items": [
+    { "section": "Developing", "items": [
       { "slug": "developing", "label": "Developing on tOS" },
-      { "slug": "build-tos", "label": "Building tOS from source" }
+      { "slug": "dev-c", "label": "C and C++" },
+      { "slug": "dev-build", "label": "Build systems" },
+      { "slug": "dev-python", "label": "Python" },
+      { "slug": "dev-node", "label": "Node.js" },
+      { "slug": "dev-git", "label": "Git and SSH" },
+      { "slug": "dev-x11", "label": "Windowed programs (X11, Tk)" },
+      { "slug": "dev-shell", "label": "Shell scripting" },
+      { "slug": "scripting", "label": "MicroPython and T#" },
+      { "slug": "build-tos", "label": "Building tOS from source" },
+      { "slug": "architecture", "label": "How tOS works inside" }
     ]},
     { "section": "Reference", "items": [
       { "slug": "commands", "label": "Shell commands" },
@@ -31,8 +55,9 @@
   ],
   "tabs": [
     { "label": "Getting started", "slug": "index", "sections": ["Getting started"] },
-    { "label": "Using tOS", "slug": "desktop", "sections": ["Using tOS"] },
-    { "label": "Guides", "slug": "developing", "sections": ["Guides"] },
+    { "label": "Desktop and apps", "slug": "desktop", "sections": ["Desktop", "Apps"] },
+    { "label": "System", "slug": "terminal", "sections": ["System"] },
+    { "label": "Developing", "slug": "developing", "sections": ["Developing"] },
     { "label": "Reference", "slug": "commands", "sections": ["Reference"] },
     { "label": "Security", "slug": "security", "sections": ["Security"] },
     { "label": "Help", "slug": "troubleshooting", "sections": ["Help"] }
