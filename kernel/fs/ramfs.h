@@ -24,6 +24,7 @@ typedef struct ramfs_inode {
     uint32_t  mtime;
     uint32_t  uid;
     uint32_t  gid;
+    uint32_t  orphan;   /* unlinked while open: it lives until the last close */
 } ramfs_inode_t;
 
 typedef struct ramfs_dir_entry {
@@ -33,6 +34,7 @@ typedef struct ramfs_dir_entry {
 
 void ramfs_init(void);
 void ramfs_import_initrd(uint32_t addr, uint32_t size);
+int  ramfs_set_mtime(const char *abs_path, uint32_t t);
 void ramfs_mount_vfs(void);
 
 typedef vfs_entry_t ramfs_entry_t;

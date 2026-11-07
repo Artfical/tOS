@@ -32,6 +32,7 @@ gcc -O2 -static "$here/timertest.c" -o "$w/programs/timertest" -lrt 2>/dev/null
 cp "$here/t2.js" "$here/cp.js" "$w/programs/js/"
 cp -r "$here/gcc/." "$w/programs/gcc/"      # sources the gcc test compiles (when EXTRA_PKGS has gcc)
 mkdir -p "$w/programs/py"; cp "$here"/py/*.py "$w/programs/py/"
+mkdir -p "$w/programs/gt"; cp "$here"/gnu/* "$w/programs/gt/"        # the GNU tools and build tools packages (EXTRA_PKGS has them): bash, perl, coreutils... cmake, autotools
 printf '#!/programs/forktest arg\n' > "$w/programs/ft.sh"; chmod +x "$w/programs/ft.sh"
 # "#!/usr/bin/env name" scripts: one name in path.tmbl, one in an installed package's bin folder
 printf '#!/usr/bin/env ftcmd\n' > "$w/programs/ft-env.sh"; chmod +x "$w/programs/ft-env.sh"
@@ -46,7 +47,7 @@ mkdir -p "$w/n24/x"; tar xzf "$pkgs/node24/$(sed -n 's/.*"file": "\(.*\)".*/\1/p
 cp -a "$w/n24/x/bin" "$w/n24/node24/"
 for p in git curl openssl zlib ca-certificates busybox openssh xz $EXTRA_PKGS; do
     mkdir -p "$w/sys/system/pkg/$p"
-    f=$(sed -n 's/.*"file": "\(.*\)".*/\1/p' "$pkgs/$p/meta.json")     # the version the server serves now
+    f=$(sed -n 's/^ "file": "\(.*\)",$/\1/p' "$pkgs/$p/meta.json")     # the version the server serves now
     tar xzf "$pkgs/$p/$f" -C "$w/sys/system/pkg/$p"
     [ -f "$w/sys/system/pkg/$p/tpkg.commands" ] && while IFS='=' read -r name target; do      # what tpkg install puts in path.tmbl
         [ -n "$name" ] && printf '%s=/system/pkg/%s/%s\n' "$name" "$p" "$target" >> "$w/sys/system/path.tmbl"

@@ -26,6 +26,8 @@ typedef struct task {
     uint64_t clear_tid;
     uint64_t fs_base;       /* a 64-bit program's thread pointer (arch_prctl, clone) */
     uint64_t sig_blocked;   /* signals this thread does not take now (bit n-1 = signal n) */
+    uint64_t saved_sigmask; /* rt_sigsuspend: the mask to put back once the signal's handler is set up (and by its sigreturn) */
+    int      has_saved_sigmask;
     uint64_t futex_addr;
     uint64_t futex_phys;                /* a futex in a MAP_SHARED page: its physical address (programs sharing it wake each other) */
     uint64_t futex_deadline_ms;

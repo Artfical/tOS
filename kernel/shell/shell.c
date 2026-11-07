@@ -81,7 +81,7 @@ static int run_program(const char *fullpath, const char *lead, int argc, char **
     strcat(env_user, auth_name_of(uid));
     strcpy(env_pwd, "PWD=");
     vfs_getcwd(env_pwd + 4, sizeof(env_pwd) - 4);
-    strcpy(env_path, "PATH=/system/pkg/node/bin:/system/programs:/programs");
+    strcpy(env_path, "PATH=/system/pkg/node/bin:/usr/bin:/bin:/system/programs:/programs");
     const char *envp[] = { env_home, env_user, env_pwd, env_path, "TERM=dumb", "TMPDIR=/tmp", 0 };
     int pid = proc_spawn_argv(argv[0], argv, envp);
     if (pid < 0) {

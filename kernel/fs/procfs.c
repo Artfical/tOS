@@ -282,7 +282,8 @@ int procfs_readlink(const char *path, char *buf, int cap)
     if (!p) return -1;
     const char *target = 0;
     if (!strcmp(rest, "/exe")) target = p->exe[0] ? p->exe : p->name;
-    else if (!strcmp(rest, "/cwd") || !strcmp(rest, "/root")) target = "/";
+    else if (!strcmp(rest, "/cwd")) target = p->cwd[0] ? p->cwd : "/";
+    else if (!strcmp(rest, "/root")) target = "/";
     if (!target) return -1;
     int n = (int)strlen(target);
     if (n > cap) n = cap;

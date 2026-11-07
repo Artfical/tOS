@@ -111,6 +111,7 @@ typedef struct proc {
     proc_vm_region_t vm_regions[PROC_MAX_VM_REGIONS];
     char name[32];
     char exe[VFS_NAME_LEN];             /* the program file (/proc/self/exe) */
+    char cwd[VFS_NAME_LEN];             /* its working folder (chdir of one program does not move another, or the shell) */
     uint32_t pgid;                     /* process group (0: its own pid) */
     int stopped, stop_sig, stop_report, cont_report;   /* job control: SIGSTOP / SIGTSTP until SIGCONT */
     struct { int used, sig; uint64_t next, interval; } timers[8];   /* POSIX timers 0..6 and the real-time interval timer (7) */
@@ -156,6 +157,8 @@ int  proc_kill(uint32_t pid, int code);
 /* blocks until the process has ended; returns its exit code (or -1 for an unknown pid) and releases it */
 int  proc_wait(uint32_t pid);
 void proc_fd_close(proc_t *p, int slot);
+void proc_vfd_ref(int vfd);     /* one more descriptor for this open file (they share its place) */
+void proc_vfd_unref(int vfd);   /* one fewer; the file is closed with the last */
 int  proc_running_count(void);
 
 #endif

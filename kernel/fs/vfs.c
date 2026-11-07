@@ -53,7 +53,9 @@ static fd_entry_t fd_table[VFS_MAX_FDS];
 static int mount_count = 0;
 static int next_fd = 3;
 
-static char cwd[VFS_NAME_LEN] = "/";
+static char cwd[VFS_NAME_LEN] = "/";      /* the shell's; a Linux process has its own (proc_cwd_ptr) */
+extern char *proc_cwd_ptr(void);
+static char *cur_cwd(void) { char *c = proc_cwd_ptr(); return c ? c : cwd; }
 static int denied_flag;                /* the last refusal was a permission refusal */
 
 int vfs_denied(void) { return denied_flag; }
@@ -416,12 +418,13 @@ int vfs_getcwd(char *buf, uint32_t size)
 {
     if (!buf || size == 0) return -1;
     uint32_t i = 0;
-    while (i + 1 < size && cwd[i]) {
-        buf[i] = cwd[i];
+    const char *cw = cur_cwd();
+    while (i + 1 < size && cw[i]) {
+        buf[i] = cw[i];
         i++;
     }
     buf[i] = 0;
-    return cwd[i] ? -1 : (int)i;
+    return cw[i] ? -1 : (int)i;
 }
 
 int vfs_readdir(const char *path, vfs_entry_t *entries, int max)
@@ -494,9 +497,12 @@ int vfs_exists_raw(const char *path)
     return vfs_stat_abs(abs, &e) == 0;
 }
 
+int vfs_nofollow;       /* set by vfs_lstat: a symbolic link as the last part of the path is itself, not what it points to */
+
 int vfs_stat(const char *path, vfs_entry_t *entry)
 {
     denied_flag = 0;
+    entry->mtime = 0;
     char abs[VFS_NAME_LEN];
     abspath_into(path, abs);
     int rc = vfs_stat_abs(abs, entry);
@@ -504,6 +510,14 @@ int vfs_stat(const char *path, vfs_entry_t *entry)
     if (rc != 0 && procfs_is(abs) && procfs_stat(abs, entry) == 0) return 0;
     char alias[VFS_NAME_LEN];
     if (rc != 0 && !denied_flag && proc_std_bin_alias(abs, alias, sizeof(alias))) rc = vfs_stat_abs(alias, entry);   /* /usr/bin/ls: the ls command */
+    return rc;
+}
+
+int vfs_lstat(const char *path, vfs_entry_t *entry)
+{
+    vfs_nofollow = 1;
+    int rc = vfs_stat(path, entry);
+    vfs_nofollow = 0;
     return rc;
 }
 
@@ -649,7 +663,7 @@ int vfs_get_mounts(char out[][VFS_NAME_LEN], int max)
 
 void vfs_chdir(const char *path)
 {
-    abspath_into(path, cwd);
+    abspath_into(path, cur_cwd());
 }
 
 /* "//", "/./" and a trailing "/" mean nothing (git asks for "dir/", "a//b", "./x"); ".." stays */
@@ -685,7 +699,8 @@ static char *vfs_abspath_raw(const char *path, char *buf)
         buf[i] = 0;
     } else {
         int i = 0;
-        while (cwd[i] && i < VFS_NAME_LEN - 1) { buf[i] = cwd[i]; i++; }
+        const char *cw = cur_cwd();
+        while (cw[i] && i < VFS_NAME_LEN - 1) { buf[i] = cw[i]; i++; }
         if (buf[i-1] != '/') { buf[i] = '/'; i++; }
         int j = 0;
         while (path[j] && i < VFS_NAME_LEN - 1) { buf[i] = path[j]; i++; j++; }

@@ -23,6 +23,13 @@
 
 static proc_t procs[PROC_MAX];
 
+/* vfs asks where "here" is: the running Linux process's own folder (0: the shell's) */
+char *proc_cwd_ptr(void)
+{
+    proc_t *p = proc_current();
+    return p && p->cwd[0] ? p->cwd : 0;
+}
+
 proc_t *proc_current(void)
 {
     task_t *t = task_current();
@@ -106,6 +113,15 @@ static proc_t *proc_slot(void)
     return 0;
 }
 
+/* Several descriptors (dup, a fork) can stand for one open file and then share its place: how many more than one hold each VFS descriptor */
+uint8_t proc_vfd_extra[VFS_MAX_FDS];
+void proc_vfd_ref(int vfd) { if (vfd >= 0 && vfd < VFS_MAX_FDS && proc_vfd_extra[vfd] < 255) proc_vfd_extra[vfd]++; }
+void proc_vfd_unref(int vfd)
+{
+    if (vfd >= 0 && vfd < VFS_MAX_FDS && proc_vfd_extra[vfd]) { proc_vfd_extra[vfd]--; return; }
+    vfs_close(vfd);
+}
+
 void proc_fd_close(proc_t *p, int slot)
 {
     if (!p || slot < 0 || slot >= PROC_MAX_FDS || p->fd[slot] == -1) return;
@@ -120,7 +136,7 @@ void proc_fd_close(proc_t *p, int slot)
         if (p->eventfds[PROC_FD_EVENTFD_BASE - value].used)
             p->eventfds[PROC_FD_EVENTFD_BASE - value].used--;      /* one descriptor fewer */
     } else if (value >= 0) {
-        vfs_close(value);
+        proc_vfd_unref(value);
     } else if (PROC_FD_IS_SPAIR(value)) {
         proc_pipe_unref(PROC_FD_SPAIR_R(value), 0);
         proc_pipe_unref(PROC_FD_SPAIR_W(value), 1);
@@ -290,6 +306,7 @@ static int proc_start(proc_t *p, const char *path, uint64_t *dir,
     memset(p, 0, sizeof(*p));
     p->mm64 = mm64;
     p->used = 1;
+    vfs_getcwd(p->cwd, sizeof(p->cwd));                  /* starts where whoever started it is */
     p->pgdir = dir;
     p->entry = entry;
     p->user_stack = user_stack;
@@ -576,7 +593,7 @@ int proc_execve_argv(const char *path_in, const char *const argv[], const char *
     const char *path = path_in;
     int rc = 0;
     for (int depth = 0;; depth++) {
-        if (depth == 0 && !vfs_exists_raw(path)) {
+        if (!vfs_exists_raw(path)) {                         /* the program, and an interpreter named by #! ("#!/bin/sh") */
             /* /bin/ls is not a file here: tOS keeps its commands where tpkg registered them (path.tmbl) */
             const char *base = proc_std_bin_name(path);
             char prog[VFS_NAME_LEN], farg[48];
@@ -589,7 +606,11 @@ int proc_execve_argv(const char *path_in, const char *const argv[], const char *
                 if (np && nv && argc + extra <= PROC_EXEC_MAX_ARGS) {
                     int k = 0;
                     strcpy(np, prog);
-                    nv[k++] = extra ? np : use_argv[0];      /* an applet runner is called by its own name, the rest keep theirs */
+                    /* an applet runner is called by its own name; a program started as /usr/bin/gcc learns where it really is (gcc finds cc1 from there) */
+                    const char *pb = np;
+                    for (const char *c = np; *c; c++) if (*c == '/') pb = c + 1;
+                    int same_name = !strcmp(pb, base);        /* cmake, gcc: the command is the program's own name */
+                    nv[k++] = extra ? np : ((same_name || !strcmp(use_argv[0], path_in)) && use_argv[0][0] != '-' ? np : use_argv[0]);
                     if (extra) nv[k++] = fa;
                     for (int i = 1; i < argc; i++) nv[k++] = use_argv[i];
                     nv[k] = 0;
@@ -611,9 +632,9 @@ int proc_execve_argv(const char *path_in, const char *const argv[], const char *
         if (sb == 0) break;
         if (sb == 1 && interp && arg && !strcmp(interp, "/usr/bin/env")) {      /* env name: where name is */
             char r[VFS_NAME_LEN];
-            if (proc_command_lookup(arg, r, sizeof(r))) {
-                char *ni = malloc((uint32_t)strlen(r) + 1);
-                if (ni) { strcpy(ni, r); free(interp); free(arg); interp = ni; arg = 0; }
+            if (proc_command_lookup(arg, r, sizeof(r)) && strlen(arg) < 40) {
+                char *ni = malloc((uint32_t)strlen(arg) + 10);       /* /usr/bin/NAME: the next round turns it into the command (with its applet name, "sh") */
+                if (ni) { strcpy(ni, "/usr/bin/"); strcat(ni, arg); free(interp); free(arg); interp = ni; arg = 0; }
             }
         }
         if (interp) owned[owned_n++] = interp;

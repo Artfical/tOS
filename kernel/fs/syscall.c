@@ -1639,6 +1639,7 @@ static void linux_stat64_fill(linux_stat64_t *st, const vfs_entry_t *entry)
     st->st_size = entry->size;
     st->st_blksize = 4096;
     st->st_blocks = (entry->size + 511u) / 512u;
+    st->atime_sec = st->mtime_sec = st->ctime_sec = (int32_t)entry->mtime;
     if (type == 0x2000u) { st->st_rdev = entry->size; st->st_size = 0; st->st_blocks = 0; }   /* a device node: its number rides in size */
 }
 
@@ -1654,7 +1655,7 @@ static int linux_fd_stat(int fd, linux_stat64_t *st)
         /* a character device with Linux's numbers: 1,3 null, 1,8 random, 1,9 urandom */
         linux_stat64_fill(st, 0);
         st->st_mode = 0x2000u | 0666u;
-        uint32_t minor = v == PROC_FD_NULL ? 3u : p->fdpath[fd - 3][5] == 'r' ? 8u : 9u;
+        uint32_t minor = v == PROC_FD_NULL ? 3u : p->fdpath[fd - 3][5] == 'z' ? 5u : p->fdpath[fd - 3][5] == 'r' ? 8u : 9u;
         st->st_rdev = (1u << 8) | minor;
         st->st_ino = st->ino32 = 100u + minor;
         return 0;
@@ -1685,7 +1686,15 @@ static int linux_fd_stat(int fd, linux_stat64_t *st)
         return 0;
     }
     vfs_entry_t entry;
-    if (vfs_stat(p->fdpath[fd - 3], &entry) != 0) return vfs_denied() ? -EACCES : -ENOENT;
+    if (vfs_stat(p->fdpath[fd - 3], &entry) != 0) {
+        int vfd = proc_vfd(p, fd);                         /* a file unlinked while open: its descriptor still knows its size */
+        if (vfd < 0) return vfs_denied() ? -EACCES : -ENOENT;
+        int cur = vfs_lseek(vfd, 0, 1), end = vfs_lseek(vfd, 0, 2);
+        if (cur >= 0) vfs_lseek(vfd, cur, 0);
+        if (end < 0) return -ENOENT;
+        memset(&entry, 0, sizeof(entry));
+        entry.size = (uint32_t)end; entry.mode = 0100600u;
+    }
     linux_stat64_fill(st, &entry);
     return 0;
 }
@@ -1743,15 +1752,7 @@ int syscall_fd_inherit(proc_t *src, int ss, proc_t *dst, int ds)
     int v = src->fd[ss];
     if (v == -1) return -EBADF;
     if (v >= 0) {
-        /* a file: opened again at the same place (the offset is not shared afterwards) */
-        uint32_t fl = src->fd_open_flags[ss];
-        int vflags = (fl & 3u) == 2 ? VFS_RDWR : (fl & 3u) == 1 ? VFS_WRONLY : VFS_RDONLY;
-        if (fl & 0x400u) vflags |= VFS_APPEND;
-        int nv = vfs_open(src->fdpath[ss], vflags);
-        if (nv < 0) return -ENFILE;
-        int at = vfs_lseek(v, 0, 1);
-        if (at > 0) vfs_lseek(nv, (uint32_t)at, 0);
-        v = nv;
+        proc_vfd_ref(v);                              /* the same open file: dup and fork share its place, as on Linux */
     } else if (v <= PROC_FD_PIPE_READ_BASE && v > PROC_FD_PIPE_READ_BASE - PROC_MAX_PIPES) {
         proc_pipe_ref(PROC_FD_PIPE_READ_BASE - v, 0);
     } else if (v <= PROC_FD_PIPE_WRITE_BASE && v > PROC_FD_PIPE_WRITE_BASE - PROC_MAX_PIPES) {
@@ -1906,8 +1907,15 @@ static uint32_t linux_open_path_inner(uint64_t path_ptr, uint32_t flags, uint32_
     if (!path[0]) return (uint32_t)-ENOENT;
 
     static const char proc_fd_prefix[] = "/proc/self/fd/";
-    if (strncmp(path, proc_fd_prefix, sizeof(proc_fd_prefix) - 1) == 0) {
-        const char *s = path + sizeof(proc_fd_prefix) - 1;
+    static const char dev_fd_prefix[] = "/dev/fd/";                  /* bash's <(...) and /dev/stdin: the same as /proc/self/fd */
+    int pfx = strncmp(path, proc_fd_prefix, sizeof(proc_fd_prefix) - 1) == 0 ? (int)sizeof(proc_fd_prefix) - 1
+            : strncmp(path, dev_fd_prefix, sizeof(dev_fd_prefix) - 1) == 0 ? (int)sizeof(dev_fd_prefix) - 1 : 0;
+    if (!pfx) {
+        int std = !strcmp(path, "/dev/stdin") ? 0 : !strcmp(path, "/dev/stdout") ? 1 : !strcmp(path, "/dev/stderr") ? 2 : -1;
+        if (std >= 0) return linux_dup(std, -1, (flags & LINUX_O_CLOEXEC) != 0);
+    }
+    if (pfx) {
+        const char *s = path + pfx;
         if (!*s) return (uint32_t)-ENOENT;
         uint32_t fd = 0;
         while (*s >= '0' && *s <= '9') {
@@ -1916,6 +1924,7 @@ static uint32_t linux_open_path_inner(uint64_t path_ptr, uint32_t flags, uint32_
             fd = fd * 10u + digit;
         }
         if (*s) return (uint32_t)-ENOENT;
+        if (fd <= 2) return linux_dup((int)fd, -1, (flags & LINUX_O_CLOEXEC) != 0);
         return linux_reopen_proc_fd(p, (int)fd, flags);
     }
     /* glibc reads these before it opens any socket: written from the DHCP lease when asked for */
@@ -1989,7 +1998,7 @@ static uint32_t linux_open_path_inner(uint64_t path_ptr, uint32_t flags, uint32_
     }
 
     /* the few devices programs expect: OpenSSL waits for /dev/urandom before it will start */
-    if (!strcmp(path, "/dev/urandom") || !strcmp(path, "/dev/random") || !strcmp(path, "/dev/null")) {
+    if (!strcmp(path, "/dev/urandom") || !strcmp(path, "/dev/random") || !strcmp(path, "/dev/null") || !strcmp(path, "/dev/zero")) {
         int dslot = -1;
         for (int i = 0; i < PROC_MAX_FDS; i++)
             if (p->fd[i] == -1) { dslot = i; break; }
@@ -2094,6 +2103,13 @@ static int linux_clock_now(uint32_t clock_id, int64_t *sec, int32_t *nsec)
         return 0;
     }
     return -1;
+}
+
+uint32_t fs_unix_time(void)
+{
+    int64_t s; int32_t ns;
+    if (linux_clock_now(0, &s, &ns) != 0 || s < 0) return 0;
+    return (uint32_t)s;
 }
 
 static int linux_clock_cmos(int64_t *sec)
@@ -2463,7 +2479,9 @@ static uint64_t linux_syscall_handler(uint32_t number, uint64_t a, uint64_t b,
         if (saved > 2) {
             xp->std_fd[k] = 0;
             uint64_t r = linux_syscall_handler_inner(number, a, b, c, d, e, f, regs);
-            xp->std_fd[k] = saved;
+            /* dup2(copy of the console, k) puts the console back on k: that stays (a shell undoes "> file" so) */
+            int put_back = (number == 63 || number == 330) && (int)b == k && (int64_t)r >= 0;
+            if (!put_back) xp->std_fd[k] = saved;
             return r;
         }
     }
@@ -2594,7 +2612,8 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             }
             proc_t *p = proc_current();
             if (p && fd >= 3 && fd - 3 < PROC_MAX_FDS && p->fd[fd - 3] == PROC_FD_URANDOM) {
-                csprng_fill((uint8_t *)buf, count);
+                if (p->fdpath[fd - 3][5] == 'z') memset(buf, 0, count);       /* /dev/zero */
+                else csprng_fill((uint8_t *)buf, count);
                 return (uint32_t)count;
             }
             if (p && fd >= 3 && fd - 3 < PROC_MAX_FDS && p->fd[fd - 3] == PROC_FD_NULL) return 0;
@@ -2797,7 +2816,13 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
 
         case SYS_LSEEK: {
             int vfd = proc_vfd(proc_current(), (int)a);
-            if (vfd < 0) return (uint32_t)-EBADF;
+            if (vfd < 0) {                                   /* a pipe, a socket, a terminal: open, but nothing to seek in */
+                proc_t *sp = proc_current();
+                int sfd = (int)a;
+                if (sfd >= 0 && sfd <= 2) return (uint32_t)-ESPIPE;
+                if (sp && sfd >= 3 && sfd - 3 < PROC_MAX_FDS && sp->fd[sfd - 3] != -1) return (uint32_t)-ESPIPE;
+                return (uint32_t)-EBADF;
+            }
             int64_t offset = (int32_t)b;
             int whence = (int)c;
             if (whence == 0) {
@@ -2833,6 +2858,7 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             int fd = (int)a, cmd = (int)b;
             if (cmd == 0 || cmd == 1030) {                      /* F_DUPFD, F_DUPFD_CLOEXEC: the lowest free number from c up */
                 if (!p || fd < 0) return (uint32_t)-EBADF;
+                if (fd <= 2 && p->std_fd[fd] > 2) fd = p->std_fd[fd];          /* 0, 1 or 2 redirected (a pty, a file): the copy is of that */
                 int is_console = fd <= 2;
                 if (!is_console && (fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1)) return (uint32_t)-EBADF;
                 int from = (int)c < 3 ? 0 : (int)c - 3;
@@ -2932,7 +2958,7 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
         case LINUX_SYS_UNLINK: {
             vfs_entry_t entry;
             if (!user_cstr_ok(a)) return (uint32_t)-EFAULT;
-            if (vfs_stat((const char *)(uintptr_t)a, &entry) != 0)
+            if (vfs_lstat((const char *)(uintptr_t)a, &entry) != 0)
                 return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
             if (entry.is_dir) return (uint32_t)-EISDIR;
             if (vfs_unlink((const char *)(uintptr_t)a) == 0) { lx_shseg_drop(vfs_abspath((const char *)(uintptr_t)a)); return 0; }
@@ -2999,11 +3025,36 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
          * though (touch creates it only when this says it isn't). */
         case 30: case 271: case 299: case 320: case 412: {
             uint64_t path = (number == 30 || number == 271) ? a : b;
+            uint64_t tp = (number == 30 || number == 271) ? b : c;        /* the times */
             vfs_entry_t entry;
-            if (!path) return 0;                         /* utimensat on an open fd */
+            uint32_t now = fs_unix_time(), mt = now;
+            int set = 1;
+            if (tp) {                                    /* the modification time asked for */
+                if (number == 30 && user_range_ok(tp, 8)) mt = ((uint32_t *)(uintptr_t)tp)[1];
+                else if ((number == 271 || number == 299) && user_range_ok(tp, 16)) mt = ((uint32_t *)(uintptr_t)tp)[2];
+                else if (number == 320 && user_range_ok(tp, 16)) {
+                    int32_t ns = ((int32_t *)(uintptr_t)tp)[3];
+                    mt = (uint32_t)((int32_t *)(uintptr_t)tp)[2];
+                    if (ns == 0x3ffffffe) set = 0; else if (ns == 0x3fffffff) mt = now;
+                } else if (number == 412 && user_range_ok(tp, 32)) {
+                    int64_t ns = ((int64_t *)(uintptr_t)tp)[3];
+                    mt = (uint32_t)((int64_t *)(uintptr_t)tp)[2];
+                    if (ns == 0x3ffffffe) set = 0; else if (ns == 0x3fffffff) mt = now;
+                }
+            }
+            if (!path) {                                 /* futimens on an open descriptor */
+                proc_t *up = proc_current();
+                int fdn = (int)a;
+                if (set && up && fdn >= 3 && fdn - 3 < PROC_MAX_FDS && up->fd[fdn - 3] != -1 && up->fdpath[fdn - 3][0])
+                    ramfs_set_mtime(vfs_abspath(up->fdpath[fdn - 3]), mt);
+                return 0;
+            }
             if (!user_cstr_ok(path)) return (uint32_t)-EFAULT;
-            if (vfs_stat((const char *)(uintptr_t)path, &entry) != 0)
+            int nofollow = (number == 320 || number == 412) && (d & 0x100u);     /* AT_SYMLINK_NOFOLLOW: the link itself */
+            if ((nofollow ? vfs_lstat((const char *)(uintptr_t)path, &entry) : vfs_stat((const char *)(uintptr_t)path, &entry)) != 0)
                 return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
+            if (nofollow && (entry.mode & 0170000u) == 0120000u) return 0;      /* a link keeps no time here */
+            if (set) ramfs_set_mtime(vfs_abspath((const char *)(uintptr_t)path), mt);
             return 0;
         }
 
@@ -3032,10 +3083,23 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
         }
 
-        case LINUX_SYS_CHMOD:
+        case LINUX_SYS_CHMOD: {
             if (!user_cstr_ok(a)) return (uint32_t)-EFAULT;
-            if (vfs_chmod((const char *)(uintptr_t)a, b & 07777u) == 0) return 0;
+            const char *cp = (const char *)(uintptr_t)a;
+            proc_t *cpp = proc_current();
+            int pl = !strncmp(cp, "/proc/self/fd/", 14) ? 14 : !strncmp(cp, "/dev/fd/", 8) ? 8 : 0;
+            if (pl && cpp && cp[pl] >= '0' && cp[pl] <= '9') {          /* rsync's fchmod: chmod of /proc/self/fd/N is that descriptor's file */
+                int cfd = 0;
+                for (const char *q = cp + pl; *q >= '0' && *q <= '9'; q++) cfd = cfd * 10 + (*q - '0');
+                if (cfd <= 2) { if (cpp->std_fd[cfd] > 2) cfd = cpp->std_fd[cfd]; else return 0; }      /* 0, 1, 2: the file behind them if redirected */
+                if (cfd < 3 || cfd - 3 >= PROC_MAX_FDS || cpp->fd[cfd - 3] == -1) return (uint32_t)-EBADF;
+                if (!cpp->fdpath[cfd - 3][0]) return 0;
+                if (vfs_chmod(cpp->fdpath[cfd - 3], b & 07777u) == 0) return 0;
+                return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-EPERM;
+            }
+            if (vfs_chmod(cp, b & 07777u) == 0) return 0;
             return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-EPERM;
+        }
 
         case LINUX_SYS_DUP:
             return linux_dup((int)a, -1, 0);
@@ -3172,7 +3236,7 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             vfs_entry_t entry;
             if (!user_cstr_ok(a) || !user_wr_ok(b, sizeof(st))) return (uint32_t)-EFAULT;
             etc_special((const char *)(uintptr_t)a);
-            if (vfs_stat((const char *)(uintptr_t)a, &entry) != 0) return (uint32_t)-ENOENT;
+            if (vfs_lstat((const char *)(uintptr_t)a, &entry) != 0) return (uint32_t)-ENOENT;
             linux_stat64_fill(&st, &entry);
             memcpy((void *)(uintptr_t)b, &st, sizeof(st));
             return 0;
@@ -3190,7 +3254,7 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
             } else {
                 if (path[0] != '/' && dirfd != -100) return (uint32_t)-EBADF;
                 etc_special(path);
-                if (vfs_stat(path, &entry) != 0)
+                if (((d & 0x100u) ? vfs_lstat(path, &entry) : vfs_stat(path, &entry)) != 0)
                     return vfs_denied() ? (uint32_t)-EACCES : (uint32_t)-ENOENT;
                 linux_stat64_fill(&st, &entry);
             }
@@ -3579,7 +3643,7 @@ uint32_t syscall_handler(uint32_t syscall, uint32_t a, uint32_t b, uint32_t c,
             int fd = (int)a;
             proc_t *p = proc_current();
             if (p && fd >= 3 && fd - 3 < PROC_MAX_FDS && p->fd[fd - 3] >= 0) {
-                vfs_close(p->fd[fd - 3]);
+                proc_vfd_unref(p->fd[fd - 3]);
                 p->fd[fd - 3] = -1;
                 return 0;
             }
@@ -4027,7 +4091,7 @@ int lx_stat_at(int dirfd, uint64_t path_ptr, uint32_t flags, linux_stat64_t *st)
         moved = 1;
     }
     etc_special(path);
-    int sr = vfs_stat(path, &entry);
+    int sr = (flags & 0x100u) ? vfs_lstat(path, &entry) : vfs_stat(path, &entry);     /* AT_SYMLINK_NOFOLLOW */
     int denied = vfs_denied();
     if (moved) vfs_chdir(saved);
     if (sr != 0) return denied ? -EACCES : -ENOENT;
@@ -4049,6 +4113,28 @@ int lx_at_enter(int dirfd, uint64_t path_ptr, char *saved)
     return 1;
 }
 void lx_at_restore(const char *saved) { vfs_chdir(saved); }
+
+/* fchmod(fd, mode) */
+int lx_fchmod(int fd, uint32_t mode)
+{
+    proc_t *p = proc_current();
+    if (p && fd >= 0 && fd <= 2 && p->std_fd[fd] > 2) fd = p->std_fd[fd];      /* stdout redirected to a file: that file */
+    if (fd <= 2) return 0;
+    if (!p || fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1) return -EBADF;
+    if (!p->fdpath[fd - 3][0]) return 0;
+    if (vfs_chmod(p->fdpath[fd - 3], mode & 07777u) == 0) return 0;
+    return vfs_denied() ? -EACCES : -EPERM;
+}
+
+/* fchdir(fd): the folder a descriptor was opened on */
+int lx_fchdir(int fd)
+{
+    proc_t *p = proc_current();
+    if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1) return -EBADF;
+    if (!p->fdpath[fd - 3][0]) return -ENOTDIR;
+    vfs_chdir(p->fdpath[fd - 3]);
+    return 0;
+}
 
 int lx_fd_stat(int fd, linux_stat64_t *st) { return linux_fd_stat(fd, st); }
 

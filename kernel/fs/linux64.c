@@ -808,6 +808,8 @@ static uint64_t put_stat(uint64_t dst, const linux_stat64_t *s)
 }
 
 int lx_at_enter(int dirfd, uint64_t path_ptr, char *saved);
+int lx_fchdir(int fd);
+int lx_fchmod(int fd, uint32_t mode);
 void lx_at_restore(const char *saved);
 
 /* an *at call (unlinkat, mkdirat...) with a directory descriptor: runs with that directory as the working one */
@@ -1145,12 +1147,18 @@ static void deliver_signal(registers_t *r)
     task_t *t = task_current();
     if (!p || !t || p->linux_abi != 2) return;
     uint64_t ready = p->sig_pending & ~t->sig_blocked;
-    if (!ready) return;
+    if (!ready) {
+        if (t->has_saved_sigmask) { t->sig_blocked = t->saved_sigmask; t->has_saved_sigmask = 0; }
+        return;
+    }
     int sig = 1;
     while (!(ready & SIGBIT(sig))) sig++;
     p->sig_pending &= ~SIGBIT(sig);
     uint64_t handler = p->sig_handler[sig];
-    if (handler <= 1) return;                                   /* changed meanwhile */
+    if (handler <= 1) {                                         /* changed meanwhile */
+        if (t->has_saved_sigmask) { t->sig_blocked = t->saved_sigmask; t->has_saved_sigmask = 0; }
+        return;
+    }
 
     uint64_t sp = (r->rsp - 128) & ~63ull;                      /* past the red zone */
     sp -= 512;
@@ -1168,7 +1176,7 @@ static void deliver_signal(registers_t *r)
     m->rip = r->rip; m->eflags = r->rflags;
     m->cs = 0x2B; m->ss = 0x23;
     m->fpstate = fp;
-    uc.sigmask = t->sig_blocked;
+    uc.sigmask = t->has_saved_sigmask ? t->saved_sigmask : t->sig_blocked;       /* after rt_sigsuspend: the mask from before it */
     uint8_t info[128];
     memset(info, 0, sizeof(info));
     int32_t code = sig == 17 ? 1 : 0;                           /* CLD_EXITED, SI_USER */
@@ -1180,6 +1188,7 @@ static void deliver_signal(registers_t *r)
         p->term_sig = 11;                                       /* no stack for it: as Linux, SIGSEGV */
         proc_exit(128 + 11);
     }
+    if (t->has_saved_sigmask) { t->sig_blocked = t->saved_sigmask; t->has_saved_sigmask = 0; }
     t->sig_blocked |= p->sig_mask[sig];
     if (!(p->sig_flags[sig] & SA_NODEFER)) t->sig_blocked |= SIGBIT(sig);
     if (p->sig_flags[sig] & SA_RESETHAND) { p->sig_handler[sig] = 0; p->sig_flags[sig] = 0; }
@@ -1328,6 +1337,43 @@ void linux64_syscall(registers_t *r)
         case 76:  ret = call32(92, a, b, 0, 0, 0, 0, r); break;                /* truncate */
         case 79:  ret = call32(183, a, b, 0, 0, 0, 0, r); break;               /* getcwd */
         case 80:  ret = call32(12, a, 0, 0, 0, 0, 0, r); break;                /* chdir */
+        case 81:  ret = (uint64_t)(int64_t)lx_fchdir((int)a); break;           /* fchdir */
+        case 162: ret = 0; break;                                              /* sync */
+        case 285: {                                                            /* fallocate(fd, mode, offset, len): mode 0 and KEEP_SIZE */
+            linux_stat64_t fs_;
+            if ((b & ~1ull) != 0) { ret = (uint64_t)-95; break; }
+            int fr = lx_fd_stat((int)a, &fs_);
+            if (fr < 0) { ret = (uint64_t)(int64_t)fr; break; }
+            uint64_t want = c + d;
+            if (!(b & 1) && want > (uint64_t)fs_.st_size) ret = want > 0x7FFFFFFFull ? (uint64_t)-27 : call32(93, a, want, 0, 0, 0, 0, r);
+            else ret = 0;
+            break;
+        }
+        case 85:  ret = call32(5, a, 0x241, b, 0, 0, 0, r); break;             /* creat */
+        case 98: {                                                             /* getrusage: nothing is counted */
+            if (!lx_user_wr_ok(b, 144)) { ret = (uint64_t)-EFAULT; break; }
+            memset((void *)(uintptr_t)b, 0, 144); ret = 0; break;
+        }
+        case 127: {                                                            /* rt_sigpending(set, size) */
+            proc_t *pp = proc_current(); task_t *t = task_current();
+            if (b != 8 || !lx_user_wr_ok(a, 8)) { ret = (uint64_t)-EINVAL; break; }
+            uint64_t pend = pp ? (pp->sig_pending & t->sig_blocked) : 0;
+            memcpy((void *)(uintptr_t)a, &pend, 8); ret = 0; break;
+        }
+        case 221: ret = 0; break;                                              /* fadvise64: only a hint */
+        case 266: ret = at_call((int)b, c, 83, a, c, 0, 0, r); break;          /* symlinkat(target, newdirfd, linkpath) */
+        case 130: {                                                            /* rt_sigsuspend(mask, size): wait for a signal under another mask */
+            task_t *t = task_current(); proc_t *pp = proc_current();
+            uint64_t m = 0;
+            if (b != 8) { ret = (uint64_t)-EINVAL; break; }
+            if (!lx_user_range_ok(a, 8)) { ret = (uint64_t)-EFAULT; break; }
+            memcpy(&m, (const void *)(uintptr_t)a, 8);
+            t->saved_sigmask = t->sig_blocked; t->has_saved_sigmask = 1;      /* put back after the handler (see deliver_signal) */
+            t->sig_blocked = m & ~(SIGBIT(9) | SIGBIT(19));
+            while (proc_timers_poll(pp), !(pp->sig_pending & ~t->sig_blocked)) task_sleep(20);
+            ret = (uint64_t)-EINTR;
+            break;
+        }
         case 82:  ret = call32(38, a, b, 0, 0, 0, 0, r); break;                /* rename */
         case 83:  ret = call32(39, a, b, 0, 0, 0, 0, r); break;                /* mkdir */
         case 84:  ret = call32(40, a, 0, 0, 0, 0, 0, r); break;                /* rmdir */
@@ -1336,7 +1382,8 @@ void linux64_syscall(registers_t *r)
         case 88:  ret = call32(83, a, b, 0, 0, 0, 0, r); break;                /* symlink */
         case 89:  ret = call32(85, a, b, c, 0, 0, 0, r); break;                /* readlink */
         case 90:  ret = call32(15, a, b, 0, 0, 0, 0, r); break;                /* chmod */
-        case 91:  case 92: case 93: case 94: ret = 0; break;                   /* fchmod, chown, fchown, lchown */
+        case 91:  ret = (uint64_t)(int64_t)lx_fchmod((int)a, (uint32_t)b); break;   /* fchmod */
+        case 92: case 93: case 94: ret = 0; break;                             /* chown, fchown, lchown */
         case 95:  ret = call32(60, a, 0, 0, 0, 0, 0, r); break;                /* umask */
         case 96:  ret = sys_gettimeofday(a); break;
         case 97:  ret = call32(340, 0, a, 0, b, 0, 0, r); break;               /* getrlimit: prlimit64 */
@@ -1447,7 +1494,7 @@ void linux64_syscall(registers_t *r)
             ret = at_call((int)a, b, 38, b, d, 0, 0, r);
             break;
         }
-        case 267: ret = at_call((int)a, b, 305, a, b, c, d, r); break;         /* readlinkat */
+        case 267: ret = at_call((int)a, b, 85, b, c, d, 0, r); break;          /* readlinkat(dirfd, path, buf, size): readlink in that folder */
         case 269: case 439: ret = at_call((int)a, b, 33, b, c, 0, 0, r); break;   /* faccessat, faccessat2 */
         case 268: ret = at_call((int)a, b, 15, b, c, 0, 0, r); break;          /* fchmodat */
         case 265: ret = at_call((int)a, b, 9, b, d, 0, 0, r); break;           /* linkat(olddirfd, old, newdirfd, new, flags): in /dev/shm only (see link) */

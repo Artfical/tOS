@@ -26,7 +26,10 @@ typedef struct vfs_entry {
     uint32_t mode;
     uint32_t uid;
     uint32_t gid;
+    uint32_t mtime;     /* seconds since 1970 (0: this file system keeps no times) */
 } vfs_entry_t;
+
+uint32_t fs_unix_time(void);      /* now, in seconds since 1970 (0 before the clock is known) */
 
 typedef struct vfs_ops {
     int   (*open)(void *ctx, const char *path, int flags);
@@ -68,6 +71,7 @@ int  vfs_readdir(const char *path, vfs_entry_t *entries, int max);
 int  vfs_mkdir(const char *path, uint32_t mode);
 int  vfs_unlink(const char *path);
 int  vfs_stat(const char *path, vfs_entry_t *entry);
+int  vfs_lstat(const char *path, vfs_entry_t *entry);   /* like vfs_stat, but a final symbolic link is not followed */
 int  vfs_exists_raw(const char *path);    /* a real file, not a command standing in for a /usr/bin name */
 int  vfs_rename(const char *oldpath, const char *newpath);
 int  vfs_symlink(const char *target, const char *path);

@@ -337,6 +337,7 @@ int lsock_recv(int s, uint8_t *buf, uint32_t len, uint8_t *from, uint32_t *froml
 {
     lsock_t *k = get(s);
     if (!k) return -E_INVAL;
+    if (k->listening) return -E_NOTCONN;          /* a socket that only accepts has nothing to receive (Python's ssl asks) */
     if (k->un) {
         if (k->un_len) {
             uint32_t n = len < k->un_len ? len : k->un_len;

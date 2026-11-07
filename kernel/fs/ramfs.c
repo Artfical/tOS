@@ -33,6 +33,7 @@ static uint32_t alloc_ino(void)
     for (uint32_t ino = 1; ino < ramfs_max_inodes; ino++) {
         if (inodes[ino].ino || ino_has_open_fd(ino)) continue;
         inodes[ino].ino = ino;
+        inodes[ino].atime = inodes[ino].mtime = fs_unix_time();
         return ino;
     }
     return 0;
@@ -114,13 +115,15 @@ static int follow_link(uint32_t ino, char *out, int out_sz)
     return 0;
 }
 
-#define RAMFS_MAX_SYMLINK_DEPTH 8
+#define RAMFS_MAX_SYMLINK_DEPTH 40
 
 static int resolve_path_depth(const char *path, int follow_final, int depth)
 {
     if (depth > RAMFS_MAX_SYMLINK_DEPTH) return 0;
     if (!path || !path[0]) return 1;
     uint32_t cur = 1;
+    char cur_path[VFS_NAME_LEN];             /* the folder we are in, from the root ("" is the root) */
+    cur_path[0] = 0;
     int i = 0;
     while (path[i] == '/') i++;
     while (path[i]) {
@@ -139,6 +142,10 @@ static int resolve_path_depth(const char *path, int follow_final, int depth)
                 uint32_t parent = find_child(cur, "..");
                 if (parent) cur = parent;
             }
+            int e = (int)strlen(cur_path);
+            while (e > 0 && cur_path[e - 1] != '/') e--;
+            if (e > 0) e--;
+            cur_path[e] = 0;
             while (path[i] == '/') i++;
             continue;
         }
@@ -147,30 +154,35 @@ static int resolve_path_depth(const char *path, int follow_final, int depth)
         if (!next) return 0;
 
         ramfs_inode_t *n = iget(next);
-        if (n && (n->mode & S_IFMT) == S_IFLNK && (follow_final || path[i] != 0)) {
+        int rest = i;
+        while (path[rest] == '/') rest++;
+        if (n && (n->mode & S_IFMT) == S_IFLNK && (follow_final || path[rest] != 0 || path[i] == '/')) {
             char target[512];
             if (follow_link(next, target, sizeof(target)) == 0) {
+                /* the link's text, from the folder the link is in (or from the root), then what was left of the path */
                 char full[VFS_NAME_LEN];
-                if (target[0] == '/') {
-                    int k = 0;
-                    while (target[k] && k < VFS_NAME_LEN - 1) { full[k] = target[k]; k++; }
-                    full[k] = 0;
-                } else {
-                    ramfs_inode_t *d = iget(cur);
-                    uint32_t p_ino = (d && find_child(cur, "..")) ? find_child(cur, "..") : 1;
-                    ramfs_inode_t *p = iget(p_ino);
-                    if (p) {
-                        int k = 0; while (p->name[k] && k < VFS_NAME_LEN - 1) { full[k] = p->name[k]; k++; }
-                        if (k > 0 && full[k-1] != '/') { full[k] = '/'; k++; }
-                        int t = 0; while (target[t] && k < VFS_NAME_LEN - 1) { full[k] = target[t]; k++; t++; }
-                        full[k] = 0;
-                    }
+                int k = 0;
+                if (target[0] != '/') {
+                    for (int c = 0; cur_path[c] && k < VFS_NAME_LEN - 2; c++) full[k++] = cur_path[c];
+                    full[k++] = '/';
                 }
+                for (int t = 0; target[t] && k < VFS_NAME_LEN - 2; t++) full[k++] = target[t];
+                if (path[rest]) {
+                    full[k++] = '/';
+                    for (int t = rest; path[t] && k < VFS_NAME_LEN - 1; t++) full[k++] = path[t];
+                }
+                full[k] = 0;
                 return resolve_path_depth(full, follow_final, depth + 1);
             }
         }
 
         cur = next;
+        int e = (int)strlen(cur_path);
+        if (e + 1 + clen < VFS_NAME_LEN) {
+            cur_path[e] = '/';
+            for (int j = 0; j < clen; j++) cur_path[e + 1 + j] = comp[j];
+            cur_path[e + 1 + clen] = 0;
+        }
         while (path[i] == '/') i++;
     }
     return cur;
@@ -347,6 +359,11 @@ int ramfs_vfs_close(int fd)
 {
     if (fd < 0 || fd >= VFS_MAX_FDS || !fds[fd].used) return -1;
     fds[fd].used = 0;
+    ramfs_inode_t *o = iget(fds[fd].ino);
+    if (o && o->orphan && !ino_has_open_fd(fds[fd].ino)) {     /* unlinked while open, and this was the last one */
+        if (o->data) free(o->data);
+        memset(o, 0, sizeof(*o));
+    }
     return 0;
 }
 
@@ -393,6 +410,7 @@ int ramfs_vfs_write(int fd, const void *buf, uint32_t size)
     if (fds[fd].offset > old_size) memset(n->data + old_size, 0, fds[fd].offset - old_size);   /* a seek past the end leaves zeros */
     memcpy(n->data + fds[fd].offset, buf, size);
     fds[fd].offset += size;
+    n->mtime = fs_unix_time();
     return size;
 }
 
@@ -414,6 +432,7 @@ static int ramfs_truncate_stub(void *ctx, int fd, uint32_t size)
         memset(n->data + n->size, 0, size - n->size);
     }
     n->size = size;
+    n->mtime = fs_unix_time();
     return 0;
 }
 
@@ -536,11 +555,12 @@ int ramfs_vfs_unlink(const char *path)
 
     uint32_t p_ino = resolve_path(parent_path, 1);
     if (!p_ino) return -1;
+    del_child(p_ino, name_buf);
+    if (ino_has_open_fd(ino)) { n->orphan = 1; return 0; }     /* still open: the data stays until the last close */
     if (n->data) free(n->data);
     n->data = 0;
     n->size = 0;
     n->ino = 0;
-    del_child(p_ino, name_buf);
     return 0;
 }
 
@@ -594,9 +614,10 @@ int ramfs_rmdir(const char *path)
     return 0;
 }
 
+extern int vfs_nofollow;
 int ramfs_vfs_stat(const char *path, vfs_entry_t *entry)
 {
-    uint32_t ino = resolve_path(path, 1);
+    uint32_t ino = resolve_path(path, vfs_nofollow ? 0 : 1);
     if (!ino) return -1;
     ramfs_inode_t *n = iget(ino);
     if (!n) return -1;
@@ -609,6 +630,16 @@ int ramfs_vfs_stat(const char *path, vfs_entry_t *entry)
     entry->mode = n->mode;
     entry->uid = n->uid;
     entry->gid = n->gid;
+    entry->mtime = n->mtime;
+    return 0;
+}
+
+int ramfs_set_mtime(const char *abs_path, uint32_t t)
+{
+    uint32_t ino = resolve_path(abs_path, 1);
+    ramfs_inode_t *n = ino ? iget(ino) : 0;
+    if (!n) return -1;
+    n->mtime = t;
     return 0;
 }
 
