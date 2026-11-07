@@ -1,0 +1,40 @@
+{
+  "sections": [
+    { "section": "Getting started", "items": [
+      { "slug": "index", "label": "Overview" },
+      { "slug": "installation", "label": "Installation" },
+      { "slug": "quickstart", "label": "Quickstart" }
+    ]},
+    { "section": "Using tOS", "items": [
+      { "slug": "desktop", "label": "The desktop" },
+      { "slug": "terminal", "label": "Terminal and shell" },
+      { "slug": "packages", "label": "Packages (tpkg)" },
+      { "slug": "linux-programs", "label": "Linux programs" },
+      { "slug": "files", "label": "Files, disks and users" },
+      { "slug": "networking", "label": "Networking" }
+    ]},
+    { "section": "Guides", "items": [
+      { "slug": "developing", "label": "Developing on tOS" },
+      { "slug": "build-tos", "label": "Building tOS from source" }
+    ]},
+    { "section": "Reference", "items": [
+      { "slug": "commands", "label": "Shell commands" },
+      { "slug": "package-list", "label": "Package list" }
+    ]},
+    { "section": "Security", "items": [
+      { "slug": "security", "label": "How tOS protects your system" }
+    ]},
+    { "section": "Help", "items": [
+      { "slug": "troubleshooting", "label": "Troubleshooting and limits" },
+      { "slug": "faq", "label": "FAQ" }
+    ]}
+  ],
+  "tabs": [
+    { "label": "Getting started", "slug": "index", "sections": ["Getting started"] },
+    { "label": "Using tOS", "slug": "desktop", "sections": ["Using tOS"] },
+    { "label": "Guides", "slug": "developing", "sections": ["Guides"] },
+    { "label": "Reference", "slug": "commands", "sections": ["Reference"] },
+    { "label": "Security", "slug": "security", "sections": ["Security"] },
+    { "label": "Help", "slug": "troubleshooting", "sections": ["Help"] }
+  ]
+}

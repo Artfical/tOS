@@ -58,7 +58,7 @@ x86-64 CPU, 1 GB of memory or more recommended (Linux programs and packages live
 
 ## Documentation
 
-The documentation is being written. Until it is, `docs/reference.md` has the long feature-by-feature description that used to be this file.
+Read it at **[docs.artfical.com/tos](https://docs.artfical.com/tos)**. Its sources are in `docs/site/`; `tools/gen_docs_site.py` builds the pages. `docs/reference.md` is the older, long feature-by-feature description.
 
 ## Contributing
 
