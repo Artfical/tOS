@@ -29,7 +29,7 @@
  * so a packet landing in that last stretch of the ring would DMA
  * straight past this buffer's allocation into whatever the heap
  * placed next -- the same class of bug found in the E1000 driver
- * (see HEAP_DEBUG_LOG.md), just directly reproducible here instead of
+ * -- just directly reproducible here instead of
  * needing to be inferred from a DMA quirk. */
 #define RX_PAD 1536
 

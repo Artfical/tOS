@@ -36,7 +36,7 @@
 #define NET_HDR_LEN   10
 #define BUF_SIZE      (NET_HDR_LEN + 1514)
 
-/* Same defense as the other NIC drivers (see HEAP_DEBUG_LOG.md): a
+/* Same defense as the other NIC drivers: a
  * virtio-net host backend is expected to never write past the
  * descriptor length it was given, but this costs nothing and isn't
  * advertised to the device, so it's cheap insurance against a

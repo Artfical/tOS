@@ -13,7 +13,7 @@
 #define BUF_SZ 1536
 #define TMO 5000
 
-/* Same defense as the E1000/RTL8139 drivers (see HEAP_DEBUG_LOG.md):
+/* Same defense as the E1000/RTL8139 drivers:
  * rxb[] is only ever written by the NIC's own DMA engine, and the
  * receive descriptor's buffer-length field (below) is the only thing
  * telling the chip how big each buffer is -- give it zero slack over
