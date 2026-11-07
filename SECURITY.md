@@ -8,13 +8,22 @@ tOS is released continuously: every commit on `main` becomes a build. Only the *
 
 Please **do not open a public issue** for a security problem.
 
-Report it privately: open the repository's **Security** tab and choose **Report a vulnerability** (GitHub private vulnerability reporting). Say:
+Report it privately, in either way:
+
+- by email to **security@artfical.com**, or
+- on GitHub: open the repository's **Security** tab and choose **Report a vulnerability**.
+
+Say:
 
 - what is affected (kernel, a driver, the network stack, tpkg, the update server, an app, a package),
 - how to reproduce it (steps, a program, or a packet capture), and the build you used,
 - what an attacker could do with it.
 
-You can expect an answer within a week, and updates as the fix progresses. When it is fixed we will say so in the release notes and, if you wish, thank you by name.
+You can expect an answer within a week, and updates as the fix progresses.
+
+## Artfical Security Intel
+
+Every vulnerability, once it is fixed, is published in **Artfical Security Intel**: what it was, which builds were affected, which build fixes it, and credit to whoever reported it (if they wish). Nothing is kept quiet.
 
 ## What is in scope
 

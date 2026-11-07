@@ -28,7 +28,7 @@ This applies to everything in the project: issues, pull requests, discussions, c
 
 The maintainers (Artfical DT) may edit or remove comments, issues, commits and pull requests that break this code, and may warn, temporarily block, or permanently ban a person. They will try to be fair, and will keep the identity of whoever reports a problem private.
 
-To report a problem, use GitHub's private reporting on this repository (**Security → Report a vulnerability** works for any private report), or contact the maintainer through the profile on GitHub. Do not post it publicly.
+To report a problem, write to **security@artfical.com**, or use GitHub's private reporting on this repository (**Security → Report a vulnerability**). Do not post it publicly.
 
 ## Credit
 
