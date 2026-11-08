@@ -1,13 +1,11 @@
-# GNU tools and build tools: bash, perl, coreutils... cmake, autotools
+# Go and Rust
 
 ## terminal | Programs (tpkg install ...)
-- New packages for everyday work and for building software: bash, perl, coreutils, gawk, sed, grep (with -P), findutils, diffutils, patch, tar, gzip, less, file, wget (HTTPS), rsync, m4, autoconf, automake, libtool, bison, flex, pkgconf (pkg-config), cmake and ninja. Scripts that start with #!/bin/bash or #!/bin/sh, ./configure, make, cmake and ninja projects now build and run.
-- Linux programs now find the commands of installed packages in /usr/bin and /bin; /bin/sh works as an interpreter.
+- Go 1.27 (`sudo tpkg install go`): the compiler, the go command and the whole standard library. `go build`, `go run`, `gofmt` and HTTPS programs work; the package carries a ready-made build cache so a first build takes seconds.
+- Rust 1.99 (`sudo tpkg install rust`): rustc, cargo and rustdoc; it installs the gcc package, which rustc links with. Programs with threads compile, link and run.
 
 ## terminal | Fixed
-- Redirections work as on Linux: `cmd > file` and `cmd > log 2>&1` no longer overwrite each other (dup() and fork() share the file's place), and the output of a shell comes back after `echo x > file`.
-- Each program has its own working folder: a program that changes folder no longer moves the shell or other programs.
-- Symbolic links: relative links and links in the middle of a path are followed correctly; lstat and rm see the link itself.
-- Files carry their modification times (make, tar, rsync, gzip, find -newer work); utime, utimensat and futimens set them.
-- A file deleted while open stays usable until it is closed; fchmod, fchdir, symlinkat, fallocate, creat, rt_sigsuspend, /dev/zero and /dev/fd/N (bash <(...)) work; timeout, sleep and sigsuspend based tools behave.
-- Python's ssl can wrap a listening socket (servers); glibc-dev has the link script for -lgcc_s.
+- Linux programs that start threads on memory they have not touched yet (Go's thread stacks) no longer fail with "cannot create thread".
+- Signal handlers run on the alternate stack a thread sets with sigaltstack (SA_ONSTACK), per thread, as Go and other runtimes need.
+- waitid() is available (Go waits for programs this way), including WNOWAIT.
+- Files mapped shared and writable (Go's linker writes its output this way) are written back to the file on munmap, msync and exit; files mapped shared for reading no longer run out of the few shared segments (Go's compiler maps every package file).

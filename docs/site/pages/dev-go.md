@@ -1,83 +1,76 @@
 title: Go
-lede: Go 1.23 is not yet packaged for tOS, but static Go binaries run unmodified. Cross-compilation from Linux works today.
+lede: Go 1.27 runs on tOS: the compiler, the go command and the whole standard library, from a tpkg package. Build and run programs on tOS itself.
 ---
-## Current status
+## Install
 
-Go (`go`, `gofmt`, `golint`, etc.) is **not yet a tpkg package**. The Go toolchain is written in Go and bootstraps itself; porting it requires a working Go compiler first.
+```
+sudo tpkg install go
+go version
+```
 
-## Running Go programs on tOS
+`go version` answers `go version go1.27.3 linux/amd64`. The package is about 100 MB to download and about 370 MB on disk (tOS keeps files in memory, so give the machine 2 GB or more). It brings two commands: `go` and `gofmt`. It needs `sudo` only to install; running `go` needs no root.
 
-Go compiles to static binaries by default (when `CGO_ENABLED=0`). These run on tOS without any Go installation:
+> **sudo:** `sudo tpkg install go` (and `sudo tpkg remove go`) change the system, so they need root. Everything else on this page runs as your normal user.
 
-```go
-// hello.go
+## Your first program
+
+```
+mkdir hello && cd hello
+cat > hello.go <<'EOF'
 package main
-import (
-    "fmt"
-    "net/http"
-)
 
-func main() {
-    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Fprintln(w, "hello from Go on tOS")
-    })
-    http.ListenAndServe(":8080", nil)
-}
+import "fmt"
+
+func main() { fmt.Println("hello from Go on tOS") }
+EOF
+go build -o hello hello.go
+./hello
 ```
 
-```bash
-# On your Linux host
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o myserver hello.go
-scp myserver tos@192.168.x.x:/tmp/
-```
+`go run hello.go` builds and runs in one step. `gofmt -l .` lists the files that are not formatted.
 
-On tOS:
+## The first run and the build cache
 
-```bash
-/tmp/myserver
-# Then from host: curl http://tos-ip:8080
-```
+Go compiles the standard library the first time a program needs it, and keeps the result in a build cache. On a fresh machine that takes minutes. To spare you that, the package carries a **ready-made cache** of the whole standard library (built for `CGO_ENABLED=0` with the same compiler). The `go` command copies it to `~/.cache/go-build` the first time you run it, so that the first `go build` only compiles your own code.
 
-## Cross-compilation
+- The copy is about 180 MB and takes a while on a slow machine. It happens once.
+- `GOCACHE` changes the place. `go clean -cache` empties it (the next build then compiles the library again, slowly).
+- Packages you download or write are compiled on first use and cached like the rest.
 
-```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o myapp main.go
-```
+## What was tested
 
-The resulting binary is statically linked (no glibc dependency) and runs on any Linux x86-64, including tOS.
+These ran on tOS (in a QEMU virtual machine) and worked:
 
-## What works in Go on tOS
-
-| Feature | Status |
+| Test | Result |
 |---|---|
-| Standard library | ✅ Full (net, http, crypto, encoding, etc.) |
-| `net/http` servers/clients | ✅ TLS 1.2 supported |
-| `database/sql` + SQLite | ✅ With `github.com/mattn/go-sqlite3` (CGO) |
-| `net/rpc`, `net/rpc/jsonrpc` | ✅ |
-| `html/template`, `text/template` | ✅ |
-| `compress/*`, `archive/*` | ✅ |
-| `plugin` package | ❌ (needs dynamic loading) |
-| `runtime/cgo` | ⚠️ Only with CGO_ENABLED=1 (needs gcc) |
+| `go version` | go1.27.3 linux/amd64 |
+| `go build` of a hello-world program, then running it | works |
+| `go run` of a program with 8 goroutines, a channel, a timer, a map, sha256, file write and read, a 64 MB allocation and a forced garbage collection | works |
+| `gofmt -l` | works |
+| `go build` of a program that uses `net/http`, then an HTTPS request to example.com | status 200 |
 
-## CGO and C libraries
+Not tested yet: `go get` and modules from the internet, cgo (programs that use C code), `go test`, `go vet`, and the race detector. They may work; this page does not promise it.
 
-If you need CGO (e.g. `github.com/mattn/go-sqlite3`), you must:
+## HTTPS from your own Go programs
 
-1. Cross-compile with a C cross-compiler (not available yet on tOS).
-2. Or build on a Linux host with `gcc` and copy the binary.
+A Go program looks for the CA certificates in the usual Linux places. On tOS the bundle is in the `ca-certificates` package, so point Go at it:
 
-Pure Go packages (no CGO) work out of the box.
+```
+export SSL_CERT_FILE=/system/pkg/ca-certificates/cacert.pem
+./myserver-or-client
+```
 
-## Modules and `go.mod`
+The `go` command sets this for itself and for `go run`.
 
-Go modules work normally. `go mod download`, `go mod tidy`, `go mod vendor` all work on the build host. The resulting binary has no external dependencies.
+## cgo
 
-## Private modules
+When the `gcc` package is installed, Go switches cgo on by itself, the same as on Linux. A program that imports `net` or `os/user` then needs the C parts compiled, which is slower than the pure Go build that the ready-made cache holds. To get the quick build, run `CGO_ENABLED=0 go build`.
 
-Use `GOPRIVATE` or `.netrc` for private modules. The `go` command uses the same environment variables on the build host.
+## Threads and the machine
+
+A Go program starts several operating system threads, and tOS supports them (clone with a thread stack, futexes, `sigaltstack`, `waitid`). Go sees one CPU on tOS (`runtime.NumCPU()` is 1 today), so goroutines share one core.
 
 ## Related
 
-- [Developing on tOS](/tos/developing)
-- [Networking](/tos/networking)
-- [Linux programs](/tos/linux-programs)
+- [Developing on tOS](/tos/developing) and [Rust](/tos/dev-rust).
+- [Packages](/tos/packages) and [tpkg commands](/tos/tpkg-commands).

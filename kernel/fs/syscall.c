@@ -2385,6 +2385,10 @@ static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint64_t child_st
         if (rc < 0) return (uint32_t)rc;
     }
 
+    /* the new thread's stack comes from the program's memory, which is brought in when touched (Go's thread
+     * stacks have not been used yet): bring in the page the thread starts on */
+    if (child_stack && p->linux_abi == 2) user_wr_ok(child_stack - 8, 8);
+
     task_preempt_disable();
     int tid = task_spawn_user_thread(regs, child_stack, p, p->pgdir,
                                      (flags & LINUX_CLONE_PARENT) ? parent->thread_group : p->pid,
@@ -4154,4 +4158,30 @@ int lx_execve(uint64_t path, uint64_t argv, uint64_t envp) { return syscall_exec
 uint32_t lx_wait4(int pid, uint64_t status, uint32_t options, uint64_t rusage)
 {
     return linux_wait4(pid, status, options, rusage, 144);
+}
+
+/* waitid(idtype, id, siginfo *, options): P_ALL / P_PID, WEXITED / WSTOPPED / WCONTINUED, WNOHANG, WNOWAIT (Go waits this way) */
+uint32_t lx_waitid(int idtype, int id, uint64_t info, uint32_t options)
+{
+    if (options & ~(1u | 2u | 4u | 8u | 0x01000000u)) return (uint32_t)-EINVAL;
+    if (!(options & (2u | 4u | 8u)) || idtype < 0 || idtype > 2) return (uint32_t)-EINVAL;
+    if (info && !user_wr_ok(info, 128)) return (uint32_t)-EFAULT;
+    int pid = idtype == 1 ? id : -1;                     /* process groups: tOS has one */
+    int status = 0;
+    int r = proc_wait_child_ex2(pid, (int)(options & 1u), (options & 2u) != 0, (options & 8u) != 0, !(options & 0x01000000u), &status);
+    if (r < 0) return (uint32_t)r;
+    if (info) {
+        int32_t si[32];
+        memset(si, 0, sizeof(si));
+        if (r > 0) {
+            int code, st;
+            if ((status & 0xFF) == 0x7F) { code = 5; st = (status >> 8) & 0xFF; }          /* CLD_STOPPED */
+            else if (status == 0xFFFF) { code = 6; st = 18; }                              /* CLD_CONTINUED */
+            else if (status & 0x7F) { code = 2; st = status & 0x7F; }                      /* CLD_KILLED */
+            else { code = 1; st = (status >> 8) & 0xFF; }                                  /* CLD_EXITED */
+            si[0] = 17; si[2] = code; si[4] = r; si[6] = st;                               /* si_signo SIGCHLD, si_code, si_pid, si_status */
+        }
+        memcpy((void *)(uintptr_t)info, si, sizeof(si));
+    }
+    return 0;
 }

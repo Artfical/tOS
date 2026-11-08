@@ -140,6 +140,7 @@ int  proc_tty_background(uint32_t fg_pgid);                 /* the caller is not
 /* wait4: a child that has ended (pid -1 = any); 0 with nohang when none has yet, -ECHILD */
 int  proc_wait_child(int pid, int nohang, int *status);
 int  proc_wait_child_ex(int pid, int nohang, int untraced, int continued, int *status);   /* also a child that stopped / went on */
+int  proc_wait_child_ex2(int pid, int nohang, int untraced, int continued, int reap, int *status);   /* reap 0: the child stays to be waited for (waitid WNOWAIT) */
 void proc_stop_wait(proc_t *p);                     /* a stopped program waits here until SIGCONT */
 int  proc_pty_has_jobshell(int n);                  /* a program on pty n that handles job control itself (it ignores SIGTSTP) */
 int  proc_surface_has_jobshell(void *surface);

@@ -1,69 +1,63 @@
 title: Rust
-lede: Rust is not yet packaged for tOS, but you can cross-compile or use a static binary. This page documents the current state and workarounds.
+lede: Rust 1.99 runs on tOS: rustc, cargo and the standard library, from a tpkg package. Compile and run Rust programs on tOS itself.
 ---
-## Current status
+## Install
 
-Rust (`rustc`, `cargo`) is **not yet available as a tpkg package**. The Rust toolchain has complex bootstrap requirements (it builds itself) and depends on LLVM, which is not yet ported to tOS.
-
-## Workarounds
-
-### 1. Cross-compile from Linux
-
-On a Linux host with `rustup`:
-
-```bash
-rustup target add x86_64-unknown-linux-musl
-cargo build --target x86_64-unknown-linux-musl --release
+```
+sudo tpkg install rust
+rustc --version
+cargo --version
 ```
 
-Copy the resulting static binary to tOS and run it. It will use the musl libc (tOS uses glibc 2.35, but musl binaries work if fully static).
+The package is about 205 MB to download and about 600 MB on disk (tOS keeps files in memory, so give the machine 4 GB if you can). It brings `rustc`, `cargo` and `rustdoc`, and it installs the `gcc` package with it, because `rustc` links programs with the C compiler.
 
-### 2. Use a pre-built static binary
+> **sudo:** `sudo tpkg install rust` (and `sudo tpkg remove rust`) change the system, so they need root. Compiling and running programs needs no root.
 
-Download a statically linked Rust binary from the upstream releases (e.g. from `rust-lang.org`) and run it on tOS. The `x86_64-unknown-linux-gnu` builds work if they are fully static or only depend on glibc 2.35+.
+## Your first program
 
-### 3. Use a container
-
-On a Linux host with Docker/Podman:
-
-```bash
-podman run --rm -v $(pwd):/src -w /src rust:1.80 \
-  cargo build --target x86_64-unknown-linux-musl --release
+```
+cat > hello.rs <<'EOF'
+fn main() {
+    let v: Vec<u32> = (1..=10).collect();
+    println!("sum = {}", v.iter().sum::<u32>());
+    let h = std::thread::spawn(|| 6 * 7);
+    println!("thread says {}", h.join().unwrap());
+}
+EOF
+rustc hello.rs -o hello
+./hello
 ```
 
-## What works on tOS once you have the binary
+This prints `sum = 55` and `thread says 42`.
 
-- Pure-Rust binaries (no C dependencies) run unmodified.
-- Binaries that link to `libc` need glibc 2.35+ (tOS has 2.35).
-- Networking (`std::net`, `tokio`, `async-std`) works through tOS's socket layer.
-- Threads (`std::thread`, `tokio::task`) work through tOS's pthreads implementation.
-- File I/O works through the VFS layer.
+## The commands
 
-## What does not work yet
+| Command | What it does |
+|---|---|
+| `rustc` | The compiler. A wrapper starts the real one with the `gcc` package's compiler as the linker, named by its full path so that it finds its own files |
+| `cargo` | The build tool. The wrapper points it at that `rustc`, that linker, and the CA bundle for HTTPS downloads |
+| `rustdoc` | The documentation tool |
 
-- `cargo` itself (needs Rust compiler).
-- `rustc` (needs LLVM, which is not ported).
-- Crates that need `cc` crate (C code compilation at build time).
-- Proc-macros that need dynamic loading (`.so` plugins).
+The real programs are in `/system/pkg/rust/bin/`.
 
-## Future plans
+## What was tested
 
-- Package `rustc` and `cargo` once LLVM is ported to tOS (tracking issue on GitHub).
-- Provide a `rustup`-style installer that downloads pre-built toolchains.
+These ran on tOS (in a QEMU virtual machine) and worked:
 
-## Current workaround for Rust developers
+| Test | Result |
+|---|---|
+| `rustc --version` | rustc 1.99.1 |
+| `cargo --version` | cargo 1.99.1 |
+| Compile and link a program that uses collections, `println!` and `std::thread`, then run it | works |
 
-Develop on Linux/macOS, cross-compile with `--target x86_64-unknown-linux-musl`, test on tOS in QEMU:
+Not tested yet: building a project with `cargo build`, downloading crates from the internet, `cargo test`, `rustdoc`, and programs that build C code through the `cc` crate. They may work; this page does not promise it.
 
-```bash
-qemu-system-x86_64 -cdrom tOS.iso -m 2048 -nic user,model=e1000 \
-  -serial file:serial.log -display none
-```
+## Size and speed
 
-Copy your binary to the QEMU disk image or transfer via `scp`/`rsync` from the host.
+`rustc` is large: its compiler library and LLVM are about 370 MB, and tOS reads them into memory each time `rustc` starts. A first compile takes a while on a slow or emulated machine. On real hardware or a virtual machine with hardware acceleration it is much quicker.
 
 ## Related
 
-- [Developing on tOS](/tos/developing)
-- [Building tOS from source](/tos/build-tos)
-EOF
+- [Developing on tOS](/tos/developing) and [Go](/tos/dev-go).
+- [C and C++](/tos/dev-c): the `gcc` package that Rust uses to link.
+- [Packages](/tos/packages) and [tpkg commands](/tos/tpkg-commands).

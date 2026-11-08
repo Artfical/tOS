@@ -13,7 +13,7 @@ A 64-bit hobby operating system, written from scratch. It boots to a desktop, ha
 
 ## What it does
 
-- **Runs Linux programs.** 64-bit and 32-bit ELF programs, static or linked against glibc: Node.js, Python 3.9 to 3.14, Git, OpenSSH, vim, tmux, gcc, make, cmake, Perl, bash and more. Windowed programs run on an X server (`xorg`, `tcltk`, tkinter).
+- **Runs Linux programs.** 64-bit and 32-bit ELF programs, static or linked against glibc: Node.js, Python 3.9 to 3.14, Git, OpenSSH, vim, tmux, gcc, make, cmake, Perl, Go, Rust, bash and more. Windowed programs run on an X server (`xorg`, `tcltk`, tkinter).
 - **Packages.** `tpkg` installs them from the update server. Every package is signed and checked on install; gcc, the C library headers and the build tools are separate packages.
 - **Desktop.** Window manager, Files, Settings, Terminal, Paint, Notepad, notifications, Disk Utility, an installer and a recovery screen.
 - **tFire**, the web browser: HTTPS, HTML and CSS, JavaScript, images.

@@ -7,7 +7,7 @@ Programs built for Linux run as they are, whether they are **static** or linked 
 
 | Kind | What |
 |---|---|
-| Languages | Python (3.9 to 3.14, with pip), Node.js (several versions), Perl, bash, Tcl/Tk, gcc and g++ |
+| Languages | Python (3.9 to 3.14, with pip), Node.js (several versions), Perl, Go, Rust, bash, Tcl/Tk, gcc and g++ |
 | Version control and network tools | Git, curl, GNU wget (with HTTPS), OpenSSH (client and server), rsync |
 | Editors and terminal tools | vim, nano, tmux, htop, ripgrep, jq, less |
 | Build tools | make, cmake, ninja, autoconf, automake, libtool, m4, bison, flex, pkgconf |

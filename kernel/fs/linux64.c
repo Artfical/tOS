@@ -77,10 +77,16 @@ typedef struct {
     uint32_t prot;
 } vma_t;
 
+/* a file mapped MAP_SHARED and writable: what the program writes into it goes back to the file (munmap, msync, exit) */
+typedef struct { uint64_t start, end, off; char path[VFS_NAME_LEN]; } fmap_t;
+#define FMAP_MAX 8
+
 typedef struct mm64 {
     vma_t *v;
     int n, cap;
     uint64_t brk_base, brk;
+    fmap_t fm[FMAP_MAX];
+    int nfm;
 } mm64_t;
 
 static mm64_t *mm_of(proc_t *p) { return p ? (mm64_t *)p->mm64 : 0; }
@@ -159,6 +165,28 @@ static void protect_level(uint64_t *t, int level, uint64_t base, uint64_t start,
             continue;
         }
         protect_level((uint64_t *)P2V(t[i] & 0x000FFFFFFFFFF000ull), level - 1, lo, start, end, flags);
+    }
+}
+
+/* writes the pages of [lo, hi) that belong to writable file mappings back to their files; drop: forget the parts in it */
+static void fmap_flush(proc_t *p, uint64_t lo, uint64_t hi, int drop)
+{
+    mm64_t *mm = mm_of(p);
+    if (!mm || !p->pgdir) return;
+    for (int i = 0; i < mm->nfm; i++) {
+        fmap_t *f = &mm->fm[i];
+        if (f->end <= lo || f->start >= hi) continue;
+        uint64_t a = f->start > lo ? f->start : lo, b = f->end < hi ? f->end : hi;
+        uint32_t fsz = fsbridge_size(f->path);
+        for (uint64_t va = a & ~0xFFFull; va < b; va += PAGE_SIZE) {
+            if (va < f->start) continue;
+            uint64_t phys = paging_virt_to_phys(p->pgdir, va);
+            uint64_t foff = f->off + (va - f->start);
+            if (!phys || foff >= fsz) continue;
+            uint64_t n = fsz - foff < PAGE_SIZE ? fsz - foff : PAGE_SIZE;
+            fsbridge_write(f->path, (const uint8_t *)P2V(phys), (uint32_t)n, (uint32_t)foff);
+        }
+        if (drop && f->start >= lo && f->end <= hi) { *f = mm->fm[--mm->nfm]; i--; }     /* all of it is going */
     }
 }
 
@@ -461,8 +489,16 @@ static uint64_t sys_mmap(uint64_t addr, uint64_t len, uint32_t prot, uint32_t fl
         }
         return start;
     }
-    if ((flags & MAP_SHARED) && (prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) && size <= (64ull << 20)) {
+    /* a file mapped shared but only for reading (Go's compiler maps each package file it imports) is the file's bytes,
+     * like a private mapping: it needs none of the shared segments, of which there are only a few */
+    if ((flags & MAP_SHARED) && (prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) && size <= (64ull << 20) &&
+        !(path && !(prot & PROT_WRITE))) {
         if (map_shared(p, path, off, start, size, prot) != 0) { vma_remove(p, start, start + size); return (uint64_t)-ENOMEM; }
+        if (path && (prot & PROT_WRITE) && mm->nfm < FMAP_MAX) {
+            fmap_t *f = &mm->fm[mm->nfm++];
+            f->start = start; f->end = start + size; f->off = off;
+            strncpy(f->path, path, VFS_NAME_LEN - 1); f->path[VFS_NAME_LEN - 1] = 0;
+        }
         return start;
     }
     if (path) {
@@ -486,6 +522,7 @@ static uint64_t sys_munmap(uint64_t addr, uint64_t len)
     if (!mm_of(p) || (addr & 0xFFF) || !len) return (uint64_t)-EINVAL;
     uint64_t end = addr + ((len + 0xFFF) & ~0xFFFull);
     if (end > PAGING_USER_END || end < addr) return (uint64_t)-EINVAL;
+    fmap_flush(p, addr, end, 1);
     return vma_remove(p, addr, end) == 0 ? 0 : (uint64_t)-ENOMEM;
 }
 
@@ -561,6 +598,7 @@ int linux64_mm_clone(proc_t *child, proc_t *parent)
     if (!mm) return -1;
     *mm = *src;
     mm->v = 0;
+    mm->nfm = 0;
     if (src->cap) {
         mm->v = malloc(sizeof(vma_t) * (uint32_t)src->cap);
         if (!mm->v) { free(mm); return -1; }
@@ -574,6 +612,7 @@ void linux64_mm_free(proc_t *p)
 {
     mm64_t *mm = mm_of(p);
     if (!mm) return;
+    if (mm->nfm) fmap_flush(p, 0, PAGING_USER_END, 1);
     if (mm->v) free(mm->v);
     free(mm);
     p->mm64 = 0;
@@ -1160,7 +1199,11 @@ static void deliver_signal(registers_t *r)
         return;
     }
 
-    uint64_t sp = (r->rsp - 128) & ~63ull;                      /* past the red zone */
+    uint64_t base = r->rsp;
+    if ((p->sig_flags[sig] & SA_ONSTACK) && t->alt_size && !(t->alt_flags & 2u) &&      /* sigaltstack: Go runs its handlers there */
+        !(r->rsp > t->alt_sp && r->rsp <= t->alt_sp + t->alt_size))
+        base = t->alt_sp + t->alt_size;
+    uint64_t sp = (base - 128) & ~63ull;                        /* past the red zone */
     sp -= 512;
     uint64_t fp = sp;                                           /* fxsave image, 64-byte aligned */
     uint64_t frame = ((fp - (8 + sizeof(ucontext64_t) + 128)) & ~15ull) - 8;
@@ -1231,6 +1274,34 @@ static uint64_t sys_rt_sigreturn(registers_t *r)
     return m->rax;
 }
 
+/* sigaltstack(ss, old): the stack this thread's SA_ONSTACK handlers run on (stack_t: sp, flags, size) */
+static uint64_t sys_sigaltstack(uint64_t ss, uint64_t old, registers_t *r)
+{
+    task_t *t = task_current();
+    if (!t) return (uint64_t)-EINVAL;
+    if (old) {
+        uint64_t o[3];
+        int on = t->alt_size && !(t->alt_flags & 2u) && r->rsp > t->alt_sp && r->rsp <= t->alt_sp + t->alt_size;
+        o[0] = t->alt_size && !(t->alt_flags & 2u) ? t->alt_sp : 0;
+        o[1] = (uint64_t)(uint32_t)(t->alt_size && !(t->alt_flags & 2u) ? (on ? 1u : 0u) : 2u);
+        o[2] = t->alt_size;
+        if (!lx_user_wr_ok(old, 24)) return (uint64_t)-EFAULT;
+        memcpy((void *)(uintptr_t)old, o, 24);
+    }
+    if (ss) {
+        uint64_t n[3];
+        if (!lx_user_range_ok(ss, 24)) return (uint64_t)-EFAULT;
+        memcpy(n, (const void *)(uintptr_t)ss, 24);
+        uint32_t fl = (uint32_t)n[1];
+        if (t->alt_size && !(t->alt_flags & 2u) && r->rsp > t->alt_sp && r->rsp <= t->alt_sp + t->alt_size)
+            return (uint64_t)-EPERM;                            /* running on it now */
+        if (fl & 2u) { t->alt_sp = 0; t->alt_size = 0; t->alt_flags = 2u; return 0; }
+        if (n[2] < 2048) return (uint64_t)-ENOMEM;              /* MINSIGSTKSZ */
+        t->alt_sp = n[0]; t->alt_size = n[2]; t->alt_flags = 0;
+    }
+    return 0;
+}
+
 /* tkill/tgkill: a handler if the program has one, else what the shared code does (abort...) */
 static uint64_t sys_tgkill(int sig, uint32_t nr, uint64_t a, uint64_t b, uint64_t c, registers_t *r)
 {
@@ -1293,6 +1364,8 @@ void linux64_syscall(registers_t *r)
         case 22:  ret = call32(42, a, 0, 0, 0, 0, 0, r); break;                /* pipe */
         case 24:  ret = 0; task_yield(); break;                                /* sched_yield */
         case 25:  ret = sys_mremap(a, b, c, (uint32_t)d); break;
+        case 26:  if (a & 0xFFF) { ret = (uint64_t)-EINVAL; break; }                /* msync(addr, len, flags): to the file */
+                  fmap_flush(proc_current(), a, a + ((b + 0xFFF) & ~0xFFFull), 0); ret = 0; break;
         case 28:  ret = sys_madvise(a, b, (int)c); break;                      /* madvise */
         case 32:  ret = call32(41, a, 0, 0, 0, 0, 0, r); break;                /* dup */
         case 33:  ret = call32(63, a, b, 0, 0, 0, 0, r); break;                /* dup2 */
@@ -1327,6 +1400,7 @@ void linux64_syscall(registers_t *r)
         case 58:  ret = call32(190, 0, 0, 0, 0, 0, 0, r); break;               /* vfork */
         case 59:  ret = (uint64_t)(int64_t)lx_execve(a, b, c); break;          /* execve: only on failure */
         case 61:  ret = sx(lx_wait4((int)a, b, (uint32_t)c, d)); break;        /* wait4 */
+        case 247: ret = sx(lx_waitid((int)a, (int)b, c, (uint32_t)d)); break;  /* waitid: idtype, id, siginfo, options */
         case 60:  ret = call32(1, a, 0, 0, 0, 0, 0, r); break;                 /* exit */
         case 62:  ret = call32(37, a, b, 0, 0, 0, 0, r); break;                /* kill */
         case 63:  ret = call32(122, a, 0, 0, 0, 0, 0, r); break;               /* uname */
@@ -1455,7 +1529,7 @@ void linux64_syscall(registers_t *r)
         case 122: case 123: { uint32_t u, g; task_get_cred(&u, &g); ret = nr == 122 ? u : g; break; }   /* setfsuid, setfsgid: the old value */
         case 161: { uint32_t u, g; task_get_cred(&u, &g); ret = u == 0 ? 0 : (uint64_t)-EPERM; break; }  /* chroot: tOS has one root */
         case 125: ret = (uint64_t)-EINVAL; break;                              /* capget */
-        case 131: ret = call32(186, a, b, 0, 0, 0, 0, r); break;               /* sigaltstack */
+        case 131: ret = sys_sigaltstack(a, b, r); break;                       /* sigaltstack */
         case 137: case 138: ret = (uint64_t)-ENOSYS; break;                    /* statfs, fstatfs */
         case 143: case 145: ret = 0; break;                                    /* sched_getparam, sched_getscheduler */
         case 157: ret = call32(172, a, b, c, d, e, 0, r); break;               /* prctl */

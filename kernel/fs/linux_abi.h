@@ -39,6 +39,7 @@ int lx_user_wr_ok(uint64_t p, uint64_t len);
 int lx_user_cstr_ok(uint64_t p);
 int lx_execve(uint64_t path, uint64_t argv, uint64_t envp);
 uint32_t lx_wait4(int pid, uint64_t status, uint32_t options, uint64_t rusage);
+uint32_t lx_waitid(int idtype, int id, uint64_t info, uint32_t options);
 int lx_tls_clone(uint32_t base, uint32_t limit, uint32_t flags);
 int lx_clock_now(uint32_t clock_id, int64_t *sec, int32_t *nsec);
 void linux64_prefault(uint64_t addr, uint64_t len, int write);

@@ -657,6 +657,8 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             { "/system/pkg/git/bin/git", "-C", "/tmp/t", "status", "--short", 0 },
             { "/system/pkg/git/bin/git", "-C", "/tmp/t", "log", "--oneline", "-3", 0 },
             { "/node24/bin/node", "/programs/js/cp.js", 0 },
+            { "/system/pkg/busybox/bin/busybox", "sh", "/programs/gt/t10.sh", 0 },       /* Go (only when the go package is in the initrd) */
+            { "/system/pkg/busybox/bin/busybox", "sh", "/programs/gt/t11.sh", 0 },       /* Rust (the rust package) */
             { 0 } };
         for (int i = 0; runs[i][0]; i++) {
             const char *const *av = runs[i];

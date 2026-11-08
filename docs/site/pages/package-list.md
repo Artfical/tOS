@@ -56,6 +56,8 @@ A package is offered to your system only when its build can run it, so the list 
 | python3.12-tk | 3.12.16 | PSF-2.0 | tkinter for Python 3.12 |
 | python3.13-tk | 3.13.18 | PSF-2.0 | tkinter for Python 3.13 |
 | node24 | 24.22.1 | MIT | Node.js 24 with npm |
+| go | 1.27.3 | BSD-3-Clause | Go compiler, go command and standard library (with a ready-made build cache) |
+| rust | 1.99.1 | MIT OR Apache-2.0 | rustc, cargo, rustdoc and the standard library (needs gcc) |
 | node22 | 22.23.4 | MIT | Node.js 22 LTS |
 | node | 8.17.0-2 | MIT | Legacy Node 8 |
 | perl | 5.40.0 | Artistic/GPL | Perl 5.40 with standard modules |

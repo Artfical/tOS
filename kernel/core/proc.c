@@ -1013,7 +1013,7 @@ int proc_surface_has_jobshell(void *surface) { return jobshell_match(-1, surface
 
 int proc_wait_child(int pid, int nohang, int *status) { return proc_wait_child_ex(pid, nohang, 0, 0, status); }
 
-int proc_wait_child_ex(int pid, int nohang, int untraced, int continued, int *status)
+int proc_wait_child_ex2(int pid, int nohang, int untraced, int continued, int reap, int *status)
 {
     proc_t *me = proc_current();
     if (!me) return -ECHILD;
@@ -1031,7 +1031,7 @@ int proc_wait_child_ex(int pid, int nohang, int untraced, int continued, int *st
             }
             if (status) *status = q->term_sig ? (q->term_sig & 0x7F) : (q->exit_code & 0xFF) << 8;
             int got = (int)q->pid;
-            q->used = 0;
+            if (reap) q->used = 0;
             return got;
         }
         if (!any) return -ECHILD;
@@ -1039,6 +1039,11 @@ int proc_wait_child_ex(int pid, int nohang, int untraced, int continued, int *st
         if (me->sig_pending & ~task_current()->sig_blocked) return -EINTR;
         task_sleep(10);
     }
+}
+
+int proc_wait_child_ex(int pid, int nohang, int untraced, int continued, int *status)
+{
+    return proc_wait_child_ex2(pid, nohang, untraced, continued, 1, status);
 }
 
 /* releases everything a process holds except its slot (kept until someone waits) */
