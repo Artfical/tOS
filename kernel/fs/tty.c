@@ -225,6 +225,16 @@ static int signal_waiting(void)
     return p && t && (p->sig_pending & ~t->sig_blocked);
 }
 
+/* the shell waits for a program that may never read the terminal: ^C and ^Z in the keyboard queue still reach it */
+void tty_service_signals(void)
+{
+    term_surface_t *s = surface();
+    uint8_t c;
+    if (s == &direct_surface) return;
+    attach(s);
+    while (keyboard_tty_take_signal(&c)) discipline(s, c, 0);
+}
+
 /* bytes a read could return now; canonical mode only counts completed lines */
 static int readable(term_surface_t *s)
 {

@@ -89,10 +89,9 @@ Start QEMU with `-usb` and plug the disk in from the monitor (see [Notifications
 
 ## Known limits
 
-- `gdb` and `strace` do not work yet (they need `ptrace`).
+- `gdb` and `strace` work for single programs; debugging threads apart and hardware watchpoints are not done yet: see [Debugging](/tos/dev-debug).
 - Files larger than 2 GB are not supported: programs get an error.
 - `tclsh` and `wish` stop with "can not find channel named stdout". Tcl/Tk inside Python (tkinter) works.
-- In the Terminal app, `Ctrl+Z` does not suspend a program yet (it does in an SSH session).
 - Software that needs containers, kernel modules or most of `/sys` does not run.
 - xterm, GTK, Qt and SDL are not available yet.
 - tOS is tested in virtual machines; real hardware may not work.

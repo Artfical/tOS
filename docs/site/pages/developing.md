@@ -9,6 +9,7 @@ lede: tOS can build software on itself. Compilers, build tools, languages, edito
 | Build a project with make, CMake or the autotools | `make`, `cmake`, `ninja`, `autoconf`, `automake`, `libtool` | [Build systems](/tos/dev-build) |
 | Write Python | `python3` | [Python](/tos/dev-python) |
 | Write JavaScript | `node24` (or `node22`, `node`) | [Node.js](/tos/dev-node) |
+| Debug a program | `gdb`, `strace` | [Debugging](/tos/dev-debug) |
 | Write Go | `go` | [Go](/tos/dev-go) |
 | Write Rust | `rust` | [Rust](/tos/dev-rust) |
 | Use Git, and connect with SSH | `git`, `openssh` | [Git and SSH](/tos/dev-git) |

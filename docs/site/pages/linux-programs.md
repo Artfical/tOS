@@ -74,7 +74,7 @@ See [Windowed programs](/tos/dev-x11). Programs that draw to a framebuffer direc
 
 ## Terminals and SSH
 
-Over SSH you get a real terminal with job control: `Ctrl+Z`, `fg`, `bg` and `jobs` work. In the Terminal app, programs get a terminal too (the window size reaches them, `Ctrl+C` stops them, full-screen programs work). See [Git and SSH](/tos/dev-git).
+You get job control in an SSH session and in the Terminal app: `Ctrl+Z`, `fg`, `bg` and `jobs` work. In the Terminal app, programs get a terminal too (the window size reaches them, `Ctrl+C` stops them, full-screen programs work). See [Git and SSH](/tos/dev-git).
 
 ## 32-bit programs
 
@@ -82,7 +82,7 @@ Over SSH you get a real terminal with job control: `Ctrl+Z`, `fg`, `bg` and `job
 
 ## What does not work yet
 
-- Debuggers that use `ptrace` (**gdb**, **strace**).
+- Debugging several threads of one program apart, hardware watchpoints and `PTRACE_SEIZE`: see [Debugging](/tos/dev-debug).
 - **Files larger than 2 GB:** programs get a clear error instead of a wrong answer.
 - Programs that need a Linux kernel feature tOS lacks: containers, kernel modules, most of `/sys`.
 - `tclsh` and `wish` stop with "can not find channel named stdout". Tcl/Tk inside Python (tkinter) works.

@@ -10,6 +10,7 @@
 #include "paging.h"
 #include "tss.h"
 #include "fpu.h"
+#include "proc.h"
 #include "gdt.h"
 
 static task_t tasks[MAX_TASKS];
@@ -462,6 +463,13 @@ uint64_t timer_handler(uint64_t esp)
         if (current->kernel_stack) tss_set_kernel_stack(((uint64_t)(uintptr_t)current->kernel_stack + KERNEL_STACK_SZ) & ~15ull);
     }
     fpu_restore_state(current->fpu_state);
+    /* ptrace: a signal queued for the tracer to see stops a program that is running only in user mode at its next
+     * instruction: the trap flag makes it come to the kernel at once */
+    if (current->proc) {
+        proc_t *pp = (proc_t *)current->proc;
+        registers_t *uf = (registers_t *)(uintptr_t)current->esp;
+        if (pp->tracer && pp->pt_async_mask && (uf->cs & 3) == 3) uf->rflags |= 0x100ull;
+    }
     /* FS base: a 64-bit program's thread pointer */
     {
         uint64_t fs = current->fs_base;

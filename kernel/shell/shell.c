@@ -3,6 +3,7 @@
 #include "keyboard.h"
 #include "gui.h"
 #include "string.h"
+#include "stdlib.h"
 #include "version.h"
 #include "ramfs.h"
 #include "commands.h"
@@ -14,10 +15,94 @@
 #include "auth.h"
 #include "perm.h"
 #include "proc.h"
+#include "tty.h"
 
 #define PATH_FILE "/system/path.tmbl"
 
 static int path_lookup(const char *cmd, char *out, int cap);
+
+/* ---- job control: ^Z stops the program the shell waits for; jobs, fg and bg ---- */
+#define JOBS_MAX 8
+static struct { uint32_t pid; void *surface; char name[32]; } jobs[JOBS_MAX];
+
+static void job_forget(uint32_t pid)
+{
+    for (int i = 0; i < JOBS_MAX; i++) if (jobs[i].pid == pid) jobs[i].pid = 0;
+}
+
+static void job_say(int i, const char *state)
+{
+    char n[12];
+    terminal_writestring("[");
+    sprintf_u32(n, (uint32_t)(i + 1));
+    terminal_writestring(n);
+    terminal_writestring("]+  ");
+    terminal_writestring(state);
+    terminal_writestring("  ");
+    terminal_writestring(jobs[i].name);
+    terminal_writestring("\n");
+}
+
+/* waits for a foreground program; if it is stopped (^Z) it becomes a job and the prompt returns */
+static void shell_wait_fg(uint32_t pid, const char *name)
+{
+    proc_t *p = proc_by_pid(pid);
+    if (!p) return;
+    void *surface = task_current() ? task_current()->user_data : 0;
+    proc_kshell_job(surface, 1);
+    while (!p->done && !p->stopped) { tty_service_signals(); task_sleep(10); }
+    proc_kshell_job(surface, 0);
+    if (p->done) {
+        job_forget(pid);
+        p->used = 0;
+        return;
+    }
+    p->stop_report = 0;
+    int slot = -1;
+    for (int i = 0; i < JOBS_MAX; i++) if (jobs[i].pid == pid) slot = i;
+    for (int i = 0; slot < 0 && i < JOBS_MAX; i++) if (!jobs[i].pid) slot = i;
+    if (slot < 0) return;
+    jobs[slot].pid = pid;
+    jobs[slot].surface = surface;
+    const char *base = name;
+    for (const char *c = name; *c; c++) if (*c == '/') base = c + 1;
+    strncpy(jobs[slot].name, base, sizeof(jobs[slot].name) - 1);
+    terminal_writestring("\n");
+    job_say(slot, "Stopped");
+}
+
+/* jobs, fg [n], bg [n] */
+static void cmd_job_control(const char *c, int argc, char **args)
+{
+    void *surface = task_current() ? task_current()->user_data : 0;
+    int pick = -1;
+    if (c[0] == 'j') {
+        int any = 0;
+        for (int i = 0; i < JOBS_MAX; i++) {
+            if (!jobs[i].pid || jobs[i].surface != surface) continue;
+            proc_t *p = proc_by_pid(jobs[i].pid);
+            if (!p || p->done) { jobs[i].pid = 0; continue; }
+            job_say(i, p->stopped ? "Stopped" : "Running");
+            any = 1;
+        }
+        if (!any) terminal_writestring("no jobs\n");
+        return;
+    }
+    int want = argc > 1 ? atoi(args[1] + (args[1][0] == '%' ? 1 : 0)) : 0;
+    for (int i = 0; i < JOBS_MAX; i++) {
+        if (!jobs[i].pid || jobs[i].surface != surface) continue;
+        proc_t *p = proc_by_pid(jobs[i].pid);
+        if (!p || p->done) { jobs[i].pid = 0; continue; }
+        if (want ? want == i + 1 : 1) pick = i;       /* no number: the latest one */
+    }
+    if (pick < 0) { terminal_writestring(c); terminal_writestring(": no such job\n"); return; }
+    proc_t *p = proc_by_pid(jobs[pick].pid);
+    proc_signal(p, 18);                                 /* SIGCONT */
+    if (c[0] == 'b') { job_say(pick, "Running"); return; }
+    terminal_writestring(jobs[pick].name);
+    terminal_writestring("\n");
+    shell_wait_fg(jobs[pick].pid, jobs[pick].name);
+}
 
 /* A Linux program (ELF), or a script whose first line names its interpreter ("#!/usr/bin/env
  * node" is npm's): it starts with the shell's arguments and the session's HOME, USER, PWD and
@@ -89,7 +174,7 @@ static int run_program(const char *fullpath, const char *lead, int argc, char **
         terminal_writestring(": could not start it\n");
         return 1;
     }
-    proc_wait((uint32_t)pid);
+    shell_wait_fg((uint32_t)pid, argv[0]);
     return 1;
 }
 
@@ -334,7 +419,7 @@ static const char *builtin_names[] = {
     "chmod", "hexdump", "tee", "alias", "history", "font", "htop",
     "disk", "rev", "uniq", "tar", "zip", "unzip",
     "id", "groups", "passwd", "useradd", "userdel", "chown", "chgrp", "umask", "stat",
-    "su", "sudo", "exit", "logout",
+    "su", "sudo", "exit", "logout", "jobs", "fg", "bg",
     NULL
 };
 
@@ -825,6 +910,8 @@ void shell_dispatch(int argc, char **args)
             cmd_service(argc, args);
         } else if (strcmp(c, "tpkg") == 0) {
             cmd_tpkg(argc, args);
+        } else if (strcmp(c, "jobs") == 0 || strcmp(c, "fg") == 0 || strcmp(c, "bg") == 0) {
+            cmd_job_control(c, argc, args);
         } else if (strcmp(c, "uptime") == 0) {
             cmd_uptime(argc, args);
         } else if (strcmp(c, "notify") == 0) {

@@ -1,11 +1,12 @@
-# Go and Rust
+# Debugging: ptrace, gdb and strace; job control in the Terminal
 
 ## terminal | Programs (tpkg install ...)
-- Go 1.27 (`sudo tpkg install go`): the compiler, the go command and the whole standard library. `go build`, `go run`, `gofmt` and HTTPS programs work; the package carries a ready-made build cache so a first build takes seconds.
-- Rust 1.99 (`sudo tpkg install rust`): rustc, cargo and rustdoc; it installs the gcc package, which rustc links with. Programs with threads compile, link and run.
+- gdb 17.2 (`sudo tpkg install gdb`): breakpoints, stepping, backtraces, registers and memory of programs built with `gcc -g`.
+- strace 7.3 (`sudo tpkg install strace`): the system calls of a program (`strace ls`, `strace -c`, `strace -f`).
+
+## terminal | New
+- ptrace for 64-bit programs: breakpoints (int3), single steps, stops at system calls, signals and crashes, reading and writing registers and memory, forks followed on request. /proc/PID/maps, /proc/PID/auxv and /proc/PID/exe.
+- Job control in the Terminal app: Ctrl+Z stops a program, `jobs`, `fg` and `bg` bring it back or let it run. Ctrl+C now ends a program that never reads the keyboard (a sleep).
 
 ## terminal | Fixed
-- Linux programs that start threads on memory they have not touched yet (Go's thread stacks) no longer fail with "cannot create thread".
-- Signal handlers run on the alternate stack a thread sets with sigaltstack (SA_ONSTACK), per thread, as Go and other runtimes need.
-- waitid() is available (Go waits for programs this way), including WNOWAIT.
-- Files mapped shared and writable (Go's linker writes its output this way) are written back to the file on munmap, msync and exit; files mapped shared for reading no longer run out of the few shared segments (Go's compiler maps every package file).
+- personality() is kept (a debugger turns address randomization off and checks it); a forked child no longer starts as a traced program unless its tracer asked for forks.

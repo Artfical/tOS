@@ -5,6 +5,7 @@
 #include "linux_abi.h"
 #include "syscall.h"
 #include "proc.h"
+#include "ptrace.h"
 #include "scheduler.h"
 #include "paging.h"
 #include "fbwin.h"
@@ -323,6 +324,36 @@ static int fault_in(proc_t *p, uint64_t addr, int write)
     if (paging_map_in(p->pgdir, page, phys, pte_flags(prot)) != 0) { free_physical_page(phys); return 0; }
     return 1;
 }
+
+/* /proc/PID/maps: the regions of a 64-bit program (permissions, no file names) */
+int lx_maps_text(void *proc, char *b, int cap)
+{
+    proc_t *p = (proc_t *)proc;
+    mm64_t *mm = mm_of(p);
+    int n = 0;
+    if (!mm) return 0;
+    for (int i = 0; i < mm->n && n < cap - 80; i++) {
+        vma_t *r = &mm->v[i];
+        uint64_t v[2] = { r->start, r->end };
+        for (int k = 0; k < 2; k++) {
+            int started = 0;
+            for (int sh = 60; sh >= 0; sh -= 4) {
+                int d = (int)((v[k] >> sh) & 15);
+                if (d || started || sh == 0) { b[n++] = "0123456789abcdef"[d]; started = 1; }
+            }
+            b[n++] = k ? ' ' : '-';
+        }
+        b[n++] = (r->prot & PROT_READ) ? 'r' : '-';
+        b[n++] = (r->prot & PROT_WRITE) ? 'w' : '-';
+        b[n++] = (r->prot & PROT_EXEC) ? 'x' : '-';
+        b[n++] = 'p';
+        const char *tail = " 00000000 00:00 0\n";
+        for (const char *c = tail; *c; c++) b[n++] = *c;
+    }
+    return n;
+}
+
+int lx_fault_in(void *proc, uint64_t addr, int write) { return fault_in((proc_t *)proc, addr, write); }
 
 int linux64_page_fault(uint64_t addr, uint64_t err)
 {
@@ -795,6 +826,7 @@ int linux64_load(proc_t *p, const char *path, int argc, const char *const argv[]
     for (int i = 0; i < envc; i++) { put_user(p, at, &argv_va[argc + 1 + i], 8); at += 8; }
     v = 0; put_user(p, at, &v, 8); at += 8;
     put_user(p, at, aux, sizeof(aux));
+    p->auxv_va = at; p->auxv_len = (uint32_t)sizeof(aux);
     free(argv_va);
     *entry_out = start;
     *sp_out = sp;
@@ -1198,6 +1230,15 @@ static void deliver_signal(registers_t *r)
         if (t->has_saved_sigmask) { t->sig_blocked = t->saved_sigmask; t->has_saved_sigmask = 0; }
         return;
     }
+    if (p->tracer) {                                            /* ptrace: the tracer sees the signal, and may change or drop it */
+        int ns = ptrace_signal_stop(p, r, sig);
+        if (ns != sig) {
+            if (ns <= 0 || ns > 64) return;
+            sig = ns;
+            handler = p->sig_handler[sig];
+            if (handler <= 1) { p->pt_deliver_mask |= 1ull << (sig - 1); proc_signal(p, sig); return; }
+        }
+    }
 
     uint64_t base = r->rsp;
     if ((p->sig_flags[sig] & SA_ONSTACK) && t->alt_size && !(t->alt_flags & 2u) &&      /* sigaltstack: Go runs its handlers there */
@@ -1319,6 +1360,11 @@ void linux64_syscall(registers_t *r)
 {
     uint64_t nr = r->rax, a = r->rdi, b = r->rsi, c = r->rdx, d = r->r10, e = r->r8, f = r->r9;
     uint64_t ret;
+    proc_t *ptp = proc_current();
+    if (ptp && ptp->tracer && ptp->pt_mode == 2) {                    /* ptrace: stopped at the entry of the call (the tracer may change it) */
+        ptrace_syscall_stop(ptp, r, 1);
+        nr = r->rax; a = r->rdi; b = r->rsi; c = r->rdx; d = r->r10; e = r->r8; f = r->r9;
+    }
     proc_timers_poll(proc_current());                                  /* a timer that has run out signals the program now */
     proc_stop_wait(proc_current());                                    /* stopped (^Z, SIGSTOP): it goes on at SIGCONT */
     switch (nr) {
@@ -1364,6 +1410,14 @@ void linux64_syscall(registers_t *r)
         case 22:  ret = call32(42, a, 0, 0, 0, 0, 0, r); break;                /* pipe */
         case 24:  ret = 0; task_yield(); break;                                /* sched_yield */
         case 25:  ret = sys_mremap(a, b, c, (uint32_t)d); break;
+        case 135: {                                                            /* personality: kept, with no effect (a debugger turns address randomization off and checks) */
+            proc_t *pp = proc_current();
+            uint32_t old = pp ? pp->persona : 0;
+            if (pp && (uint32_t)a != 0xFFFFFFFFu) pp->persona = (uint32_t)a;
+            ret = old;
+            break;
+        }
+        case 101: ret = sx(lx_ptrace(a, b, c, d, r)); break;                   /* ptrace: request, pid, addr, data */
         case 26:  if (a & 0xFFF) { ret = (uint64_t)-EINVAL; break; }                /* msync(addr, len, flags): to the file */
                   fmap_flush(proc_current(), a, a + ((b + 0xFFF) & ~0xFFFull), 0); ret = 0; break;
         case 28:  ret = sys_madvise(a, b, (int)c); break;                      /* madvise */
@@ -1656,5 +1710,9 @@ done:
         serial_write(line);
     }
     r->rax = ret;
+    if (ptp && ptp->tracer) {                                          /* ptrace: stopped at the end of the call; a signal the tracer queued stops it now */
+        if (ptp->pt_mode == 2) ptrace_syscall_stop(ptp, r, 2);
+        ptrace_async_stop(ptp, r);
+    }
     deliver_signal(r);
 }

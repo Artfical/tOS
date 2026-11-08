@@ -179,6 +179,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
     isr_init();
     for (int i = 0; i < 48; i++)
         idt_set_gate(i, isr_stub_table[i], GDT_KERNEL_CS, 0x8E);
+    idt_set_gate(3, isr_stub_table[3], GDT_KERNEL_CS, 0xEE);          /* int3 from a program: a breakpoint (ptrace) */
     terminal_writestring("[OK] ISR handlers set\n");
     klog_write("[OK] ISR handlers set\n");
 
@@ -657,6 +658,10 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             { "/system/pkg/git/bin/git", "-C", "/tmp/t", "status", "--short", 0 },
             { "/system/pkg/git/bin/git", "-C", "/tmp/t", "log", "--oneline", "-3", 0 },
             { "/node24/bin/node", "/programs/js/cp.js", 0 },
+            { "/programs/ptrtest", 0 },                                                   /* ptrace: breakpoints, steps, system calls, signals */
+            { "/system/pkg/strace/bin/strace", "-f", "-o", "/tmp/st.txt", "/system/pkg/busybox/bin/busybox", "sh", "-c", "/system/pkg/busybox/bin/busybox echo traced", 0 },
+            { "/system/pkg/busybox/bin/busybox", "grep", "-c", "write(1, \"traced", "/tmp/st.txt", 0 },
+            { "/system/pkg/busybox/bin/busybox", "sh", "/programs/gt/t12.sh", 0 },       /* gdb and strace (the gdb, strace and gcc packages) */
             { "/system/pkg/busybox/bin/busybox", "sh", "/programs/gt/t10.sh", 0 },       /* Go (only when the go package is in the initrd) */
             { "/system/pkg/busybox/bin/busybox", "sh", "/programs/gt/t11.sh", 0 },       /* Rust (the rust package) */
             { 0 } };

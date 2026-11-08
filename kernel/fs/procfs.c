@@ -8,6 +8,8 @@
 #include "net.h"
 #include "ip.h"
 #include "scheduler.h"
+#include "ptrace.h"
+#include "linux_abi.h"
 
 static int app(char *buf, int cap, int n, const char *s)
 {
@@ -134,7 +136,7 @@ static int gen_status_pid(proc_t *p, char *b, int cap)
     n = app(b, cap, n, "\nTgid:\t"); n = app_u(b, cap, n, p->pid);
     n = app(b, cap, n, "\nPid:\t"); n = app_u(b, cap, n, p->pid);
     n = app(b, cap, n, "\nPPid:\t"); n = app_u(b, cap, n, p->ppid);
-    n = app(b, cap, n, "\nTracerPid:\t0\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nFDSize:\t256\nThreads:\t1\nVmPeak:\t0 kB\nVmSize:\t0 kB\nVmRSS:\t0 kB\nSigQ:\t0/0\nCapEff:\t0000003fffffffff\nCpus_allowed:\t1\n");
+    n = app(b, cap, n, "\nTracerPid:\t"); n = app_u(b, cap, n, p->tracer); n = app(b, cap, n, "\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\nFDSize:\t256\nThreads:\t1\nVmPeak:\t0 kB\nVmSize:\t0 kB\nVmRSS:\t0 kB\nSigQ:\t0/0\nCapEff:\t0000003fffffffff\nCpus_allowed:\t1\n");
     return n;
 }
 
@@ -183,6 +185,11 @@ int procfs_gen(const char *path, char *b, int cap)
         if (!strcmp(rest, "/status")) return gen_status_pid(p, b, cap);
         if (!strcmp(rest, "/cmdline")) { int n = app(b, cap, 0, p->exe[0] ? p->exe : p->name); if (n < cap - 1) b[n++] = 0; return n; }
         if (!strcmp(rest, "/comm")) { int n = app(b, cap, 0, p->name); return app(b, cap, n, "\n"); }
+        if (!strcmp(rest, "/maps") && p->linux_abi == 2) return lx_maps_text(p, b, cap);
+        if (!strcmp(rest, "/auxv")) {
+            if (!p->auxv_va || p->auxv_len > (uint32_t)cap || ptrace_read_mem(p, p->auxv_va, b, p->auxv_len) != 0) return 0;
+            return (int)p->auxv_len;
+        }
         if (!strcmp(rest, "/environ") || !strcmp(rest, "/maps") || !strcmp(rest, "/smaps") || !strcmp(rest, "/mountinfo")) { b[0] = 0; return 0; }
         if (!strcmp(rest, "/statm")) return app(b, cap, 0, "0 0 0 0 0 0 0\n");
         if (!strcmp(rest, "/limits")) return app(b, cap, 0, "Limit                     Soft Limit           Hard Limit           Units\nMax open files            256                  256                  files\n");
@@ -199,7 +206,7 @@ static void fill(vfs_entry_t *e, const char *name, int dir, uint32_t inode)
 }
 
 static const char *const top_files[] = { "cpuinfo", "meminfo", "version", "cmdline", "filesystems", "mounts", "uptime", "loadavg", "stat", 0 };
-static const char *const pid_files[] = { "stat", "status", "cmdline", "comm", "environ", "maps", "statm", "limits", 0 };
+static const char *const pid_files[] = { "stat", "status", "cmdline", "comm", "environ", "maps", "auxv", "statm", "limits", 0 };
 
 int procfs_stat(const char *path, vfs_entry_t *e)
 {

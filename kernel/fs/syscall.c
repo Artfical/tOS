@@ -24,6 +24,7 @@
 #include "gui.h"
 #include "wm.h"
 #include "proc.h"
+#include "ptrace.h"
 #include "vfs.h"
 #include "scheduler.h"
 #include "auth.h"
@@ -1930,6 +1931,16 @@ static uint32_t linux_open_path_inner(uint64_t path_ptr, uint32_t flags, uint32_
     /* glibc reads these before it opens any socket: written from the DHCP lease when asked for */
     etc_special(path);
 
+    /* /proc/PID/exe opens the program's file itself (a debugger reads its ELF header to tell 32-bit from 64-bit) */
+    if (procfs_is(path) && path[5] == '/') {
+        int pl = (int)strlen(path);
+        if (pl > 4 && !strcmp(path + pl - 4, "/exe")) {
+            char tgt[VFS_NAME_LEN];
+            int ln = procfs_readlink(path, tgt, (int)sizeof(tgt) - 1);
+            if (ln > 0) { tgt[ln] = 0; strcpy(path, tgt); }
+        }
+    }
+
     /* /proc: files made up from the system's state; the text is written into a temporary file the program then reads */
     if (procfs_is(path) && strncmp(path, "/proc/self/fd/", 14) != 0 && path[5] == '/') {
         char *txt = malloc(8192);
@@ -2365,6 +2376,7 @@ static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint64_t child_st
         }
         if ((flags & LINUX_CLONE_PARENT_SETTID) && parent_tid && user_wr_ok(parent_tid, 4))
             *(uint32_t *)(uintptr_t)parent_tid = (uint32_t)pid;
+        ptrace_fork_event(p, regs, (uint32_t)pid, share);             /* a tracer that asked for forks is told */
         return (uint32_t)pid;
     }
     if (flags & ~supported) return (uint32_t)-EINVAL;

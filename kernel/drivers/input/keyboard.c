@@ -409,6 +409,28 @@ int keyboard_tty_poll(uint8_t *out)
     return 1;
 }
 
+/* ^C or ^Z waiting in the keyboard queue (taken out of it): lets a program that never reads the terminal be interrupted or stopped */
+int keyboard_tty_take_signal(uint8_t *out)
+{
+    if (!wm_current_task_has_focus()) return 0;
+    if (key_buffer_head == key_buffer_tail) {
+        char usb_c;
+        if (usb_keyboard_read(&usb_c)) keyboard_push_char(usb_c);
+    }
+    int n = (key_buffer_head - key_buffer_tail + 256) % 256;
+    for (int k = 0; k < n; k++) {
+        int i = (key_buffer_tail + k) % 256;
+        uint8_t c = (uint8_t)key_buffer[i];
+        if (c == 0xFF) { k += 2; continue; }                 /* a key sequence: 0xFF, the key, the modifiers */
+        if (c != 3 && c != 26) continue;
+        for (int j = i; j != (key_buffer_head + 255) % 256; j = (j + 1) % 256) key_buffer[j] = key_buffer[(j + 1) % 256];
+        key_buffer_head = (key_buffer_head + 255) % 256;
+        *out = c;
+        return 1;
+    }
+    return 0;
+}
+
 char keyboard_getchar_ring3(void)
 {
     if (wm_current_task_has_focus() && key_buffer_head != key_buffer_tail) {

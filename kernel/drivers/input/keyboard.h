@@ -51,6 +51,7 @@ int keyboard_get_raw_event(uint8_t *key, int *pressed);
 #define XKEY_F4    14
 void keyboard_set_xterm(int on);
 int  keyboard_tty_poll(uint8_t *out);          /* the next byte for the focused window's program, without waiting */
+int  keyboard_tty_take_signal(uint8_t *out);     /* a ^C or ^Z waiting in the queue, taken out of it (0: none) */
 
 extern volatile int interrupt_char;
 extern void (*interrupt_callback)(void);

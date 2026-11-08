@@ -25,6 +25,7 @@ gcc -O2 -static "$here/benchtest.c" -o "$w/programs/benchtest" 2>/dev/null
 gcc -O2 -static "$here/winsz.c" -o "$w/programs/winsz" 2>/dev/null
 gcc -O2 -static -pthread "$here/semtest.c" -o "$w/programs/semtest" 2>/dev/null
 gcc -O2 -static "$here/attest.c" -o "$w/programs/attest" 2>/dev/null
+gcc -O1 -static -no-pie "$here/ptrtest.c" -o "$w/programs/ptrtest" 2>/dev/null
 gcc -O2 -static "$here/bigtest.c" -o "$w/programs/bigtest" 2>/dev/null
 gcc -O2 -static "$here/jobtest.c" -o "$w/programs/jobtest" 2>/dev/null
 gcc -O2 -static "$here/unixtest.c" -o "$w/programs/unixtest" 2>/dev/null

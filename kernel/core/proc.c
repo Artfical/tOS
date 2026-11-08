@@ -19,6 +19,7 @@
 #include "csprng.h"
 #include "fpu.h"
 #include "errno.h"
+#include "ptrace.h"
 #include "gdt.h"
 
 static proc_t procs[PROC_MAX];
@@ -35,6 +36,8 @@ proc_t *proc_current(void)
     task_t *t = task_current();
     return t ? (proc_t *)t->proc : 0;
 }
+
+proc_t *proc_table_at(int i) { return i >= 0 && i < PROC_MAX ? &procs[i] : 0; }
 
 proc_t *proc_by_pid(uint32_t pid)
 {
@@ -747,6 +750,7 @@ int proc_execve_argv(const char *path_in, const char *const argv[], const char *
     if (scratch) free(scratch);
     fpu_state_init(t->fpu_state);                       /* a new program starts with a clean FPU */
     fpu_restore_state(t->fpu_state);
+    if (p->tracer && abi == 2) ptrace_exec_stop(p, &entry, &user_sp);    /* a traced program stops before its first instruction */
     enter_user_mode_as(entry, user_sp, abi == 2);
     __builtin_unreachable();
 
@@ -786,6 +790,13 @@ int proc_fork(void *regs_ptr, int share_vm, uint64_t child_stack)
     c->stopped = c->stop_sig = c->stop_report = c->cont_report = 0;
     c->pgid = proc_pgid_of(parent);
     memset(c->timers, 0, sizeof(c->timers));            /* timers are not inherited */
+    c->tracer = 0; c->pt_stop = c->pt_report = 0; c->pt_mode = 0; c->pt_options = 0; c->pt_resume_sig = 0;   /* ptrace is not inherited... */
+    c->pt_async_mask = c->pt_deliver_mask = 0; c->pt_exit_reported = 0; c->pt_regs = 0; c->pt_in_syscall = 0;
+    if (parent->tracer && (parent->pt_options & (share_vm ? 0x4 : 0x2))) {      /* ...unless the tracer asked for forks (PTRACE_O_TRACEFORK/VFORK): the child is traced and starts stopped */
+        c->tracer = parent->tracer;
+        c->pt_options = parent->pt_options;
+        c->pt_async_mask = 1ull << (19 - 1);
+    }
     c->ppid = parent->pid;
     c->vfork_parent = 0;
     c->vfork_done = 0;
@@ -842,6 +853,7 @@ int proc_signal(proc_t *q, int sig)
     if (!q || !q->used || q->done) return -ESRCH;
     if (sig == 0) return 0;
     if (sig < 1 || sig > 64) return -EINVAL;
+    if (ptrace_intercept(q, sig)) return 0;             /* a traced program: its tracer sees the signal first */
     uint64_t h = q->sig_handler[sig];
     if (sig != 9 && sig != 19) {
         if (q->linux_abi == 2 && h > 1) {               /* its handler runs (linux64.c) */
@@ -983,6 +995,7 @@ static void proc_tty_release(proc_t *p, void *surface)
 /* a process has ended: its parent hears of it (SIGCHLD), a vfork parent goes on */
 static void proc_tell_parent(proc_t *p)
 {
+    ptrace_proc_gone(p);
     if (p->vfork_parent) proc_after_vfork(p);
     proc_t *parent = proc_by_pid(p->ppid);
     if (parent && parent != p && !parent->done) proc_signal(parent, 17);
@@ -994,8 +1007,20 @@ void proc_stop_wait(proc_t *p)
     while (p && p->stopped && !p->done) task_sleep(20);
 }
 
+/* the built-in shell is a job shell too while it waits for a program in a Terminal window: ^Z stops the program and the
+ * prompt comes back (jobs, fg, bg) */
+static void *kshell_waiting[8];
+void proc_kshell_job(void *surface, int waiting)
+{
+    for (int i = 0; i < 8; i++) {
+        if (waiting && !kshell_waiting[i]) { kshell_waiting[i] = surface; return; }
+        if (!waiting && kshell_waiting[i] == surface) { kshell_waiting[i] = 0; return; }
+    }
+}
+
 static int jobshell_match(int pty, void *surface)
 {
+    if (pty < 0 && surface) for (int i = 0; i < 8; i++) if (kshell_waiting[i] == surface) return 1;
     for (int i = 0; i < PROC_MAX; i++) {
         proc_t *q = &procs[i];
         if (!q->used || q->done || q->sig_handler[20] != 1) continue;    /* a shell with job control ignores SIGTSTP itself */
@@ -1021,9 +1046,22 @@ int proc_wait_child_ex2(int pid, int nohang, int untraced, int continued, int re
         int any = 0;
         for (int i = 0; i < PROC_MAX; i++) {
             proc_t *q = &procs[i];
-            if (!q->used || q->ppid != me->pid || q == me) continue;
+            if (!q->used || q == me) continue;
+            int is_child = q->ppid == me->pid, is_tracee = q->tracer == me->pid;
+            if (!is_child && !is_tracee) continue;
             if (pid > 0 && q->pid != (uint32_t)pid) continue;
             any = 1;
+            if (is_tracee && !q->done && q->pt_stop && q->pt_report) {    /* ptrace: stopped for the tracer */
+                q->pt_report = 0;
+                if (status) *status = (((q->pt_event << 8) | (q->pt_sig & 0xFF)) << 8) | 0x7F;
+                return (int)q->pid;
+            }
+            if (q->done && !is_child) {                                   /* a traced program that is not its child: its end is told once */
+                if (q->pt_exit_reported) continue;
+                q->pt_exit_reported = 1;
+                if (status) *status = q->term_sig ? (q->term_sig & 0x7F) : (q->exit_code & 0xFF) << 8;
+                return (int)q->pid;
+            }
             if (!q->done) {
                 if (untraced && q->stopped && q->stop_report) { q->stop_report = 0; if (status) *status = (q->stop_sig << 8) | 0x7F; return (int)q->pid; }
                 if (continued && q->cont_report) { q->cont_report = 0; if (status) *status = 0xFFFF; return (int)q->pid; }

@@ -96,7 +96,21 @@ See [Shell scripting](/tos/dev-shell) and [MicroPython and T#](/tos/scripting).
 
 ## Linux programs in the Terminal
 
-Linux programs run from the Terminal like any other command. They get a real terminal: window size changes reach them, `Ctrl+C` stops them, and full-screen programs such as vim, tmux, htop and less work. In an SSH session, `Ctrl+Z` and job control (`fg`, `bg`, `jobs`) work too. See [Linux programs](/tos/linux-programs).
+Linux programs run from the Terminal like any other command. They get a real terminal: window size changes reach them, `Ctrl+C` stops them, and full-screen programs such as vim, tmux, htop and less work. See [Linux programs](/tos/linux-programs).
+
+### Stopping a program and coming back (job control)
+
+Press `Ctrl+Z` while a Linux program runs. The program stops, the shell tells you `[1]+  Stopped  busybox`, and the prompt returns. Then:
+
+| Command | What it does |
+|---|---|
+| `jobs` | Lists the stopped programs |
+| `fg` (or `fg 2`) | Brings the latest (or number 2) back to the front |
+| `bg` | Lets it run in the background |
+
+`Ctrl+C` ends the running program even when it never reads the keyboard (a `sleep`, for example). The same works in an SSH session.
+
+![Ctrl+Z, jobs, fg and Ctrl+C in the Terminal](shot:terminal_jobs.png)
 
 ## Processes
 

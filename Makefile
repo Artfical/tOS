@@ -165,6 +165,7 @@ KERNEL_OBJS = \
     kernel/fs/fsbridge.o \
     kernel/fs/syscall.o \
     kernel/fs/linux64.o \
+    kernel/fs/ptrace.o \
     kernel/fs/tty.o \
     kernel/fs/procfs.o \
     kernel/fs/pty.o \

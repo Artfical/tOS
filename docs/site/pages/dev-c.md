@@ -112,7 +112,7 @@ What you build runs on tOS and needs nothing else installed. It links against th
 | `make` | Build from a Makefile |
 | `pkg-config` | Find compile flags for libraries |
 
-`gdb` and `strace` (they need `ptrace`) do not work yet.
+For debugging, install `gdb` and `strace`: see [Debugging: gdb and strace](/tos/dev-debug).
 
 ## If the compiler is not found by a build tool
 

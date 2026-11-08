@@ -6,6 +6,7 @@
 #include "debugmon.h"
 #include "scheduler.h"
 #include "proc.h"
+#include "ptrace.h"
 #include "serial.h"
 #include "string.h"
 #include "syscall.h"
@@ -118,6 +119,13 @@ void isr_handler(registers_t *regs)
     if (interrupt_handlers[regs->int_no]) {
         interrupt_handlers[regs->int_no](regs);
         return;
+    }
+
+    /* a traced program (ptrace): a breakpoint, a single step, or a fault stops it for its tracer */
+    if (regs->int_no < 32 && (regs->cs & 3) == 3 && proc_current() && proc_current()->tracer) {
+        if ((regs->int_no == 1 || regs->int_no == 3) && ptrace_trap(regs)) return;
+        static const int8_t sig_of[32] = { 8, 5, 0, 5, 11, 11, 4, 8, 0, 11, 11, 11, 11, 11, 11, 0, 8, 7, 6, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        if (sig_of[regs->int_no] && regs->int_no != 1 && regs->int_no != 3 && ptrace_fault_stop(regs, sig_of[regs->int_no])) return;
     }
 
     if (regs->int_no < 32 && (regs->cs & 3) == 3 && proc_current()) {

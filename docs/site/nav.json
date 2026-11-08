@@ -140,6 +140,10 @@
           "label": "Rust"
         },
         {
+          "slug": "dev-debug",
+          "label": "Debugging: gdb and strace"
+        },
+        {
           "slug": "dev-go",
           "label": "Go"
         },

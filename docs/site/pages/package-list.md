@@ -94,6 +94,8 @@ A package is offered to your system only when its build can run it, so the list 
 | ripgrep | 15.2.0 | MIT | Fast search (rg) |
 | jq | 1.8.2 | MIT | JSON processor |
 | git | 2.56.0-3 | GPL-2.0 | Version control |
+| gdb | 17.2 | GPL-3.0-or-later | The GNU debugger (needs ptrace) |
+| strace | 7.3 | LGPL-2.1-or-later | Shows a program's system calls |
 | openssh | 10.6p1-5 | BSD-3 | SSH client and server |
 | openssl | 3.0.2 | Apache-2.0 | TLS/SSL |
 | zlib | 1.2.13 | Zlib | Compression library |

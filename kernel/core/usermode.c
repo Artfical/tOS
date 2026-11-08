@@ -21,9 +21,13 @@ void usermode_init(void)
  * _start reads %edx/%rdx as a function to run at exit (the dynamic linker's), and a leftover
  * kernel value there made every static glibc program jump into its own stack when it exited.
  * The kernel stack ring 3 comes back to (TSS rsp0) is the task's own, set by the scheduler. */
+uint64_t user_entry_extra_flags;                 /* ptrace: 0x100 (the trap flag) starts a traced program in single step mode */
+
 __attribute__((noreturn)) void enter_user_mode_as(uint64_t entry, uint64_t user_stack_top, int is64)
 {
     uint64_t cs = is64 ? GDT_USER64_CS : GDT_USER32_CS;
+    uint64_t fl = 0x200 | user_entry_extra_flags;
+    user_entry_extra_flags = 0;
     asm volatile(
         "cli\n"
         "mov %4, %%ds\n"
@@ -31,7 +35,7 @@ __attribute__((noreturn)) void enter_user_mode_as(uint64_t entry, uint64_t user_
         "pushq %4\n"
         "pushq %1\n"
         "pushfq\n"
-        "orq $0x200, (%%rsp)\n"
+        "orq %5, (%%rsp)\n"
         "pushq %2\n"
         "pushq %0\n"
         "xorl %%eax, %%eax\n"
@@ -52,7 +56,7 @@ __attribute__((noreturn)) void enter_user_mode_as(uint64_t entry, uint64_t user_
         "xorl %%r15d, %%r15d\n"
         "iretq\n"
         :
-        : "r"(entry), "r"(user_stack_top), "r"(cs), "i"(0), "r"((uint64_t)GDT_USER_DS)
+        : "r"(entry), "r"(user_stack_top), "r"(cs), "i"(0), "r"((uint64_t)GDT_USER_DS), "r"(fl)
         : "memory"
     );
     __builtin_unreachable();

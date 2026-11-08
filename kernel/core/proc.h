@@ -115,6 +115,21 @@ typedef struct proc {
     uint32_t pgid;                     /* process group (0: its own pid) */
     int stopped, stop_sig, stop_report, cont_report;   /* job control: SIGSTOP / SIGTSTP until SIGCONT */
     struct { int used, sig; uint64_t next, interval; } timers[8];   /* POSIX timers 0..6 and the real-time interval timer (7) */
+    /* ptrace (ptrace.c): the program being debugged stops for the tracer at breakpoints, steps, system calls and signals */
+    uint32_t tracer;                    /* the process tracing this one (0: none) */
+    int pt_stop, pt_report;             /* stopped for the tracer; wait() has not told it yet */
+    int pt_sig, pt_event, pt_code;      /* why: the signal, the PTRACE_EVENT, the siginfo code */
+    uint64_t pt_addr, pt_eventmsg;      /* the faulting address; PTRACE_GETEVENTMSG */
+    int pt_mode;                        /* how it goes on: 0 continue, 1 single step, 2 stop at system calls */
+    int pt_options, pt_resume_sig;      /* PTRACE_SETOPTIONS; the signal the tracer lets through */
+    int pt_in_syscall, pt_syscall_nr;   /* 1 at the entry of a system call, 2 at its exit */
+    uint64_t pt_async_mask;             /* signals for the tracer to see, not yet stopped for */
+    uint64_t pt_deliver_mask;           /* signals the tracer let through: delivered without another stop */
+    int pt_exit_reported;
+    void *pt_regs;                      /* the registers at the stop (registers_t) */
+    uint32_t persona;                   /* personality(2): kept, with no effect (a debugger sets ADDR_NO_RANDOMIZE and checks it) */
+    uint32_t pt_tid;                    /* the thread that is stopped */
+    uint64_t auxv_va; uint32_t auxv_len;   /* /proc/PID/auxv: where the auxiliary vector is on the initial stack */
 } proc_t;
 
 /* loads the .t file at `path` into a new address space and starts it; returns the pid or a negative error */
@@ -139,6 +154,7 @@ int  proc_signal_group(uint32_t pgid, int sig);             /* the programs in t
 int  proc_tty_background(uint32_t fg_pgid);                 /* the caller is not in the terminal's foreground group: it is stopped (SIGTTIN); 1 = reading must not go on */                /* every program that has pseudo-terminal n's slave open */   /* every program on one terminal window (^C) */
 /* wait4: a child that has ended (pid -1 = any); 0 with nohang when none has yet, -ECHILD */
 int  proc_wait_child(int pid, int nohang, int *status);
+void proc_kshell_job(void *surface, int waiting);       /* the built-in shell waits for a program on this window (^Z can stop it) */
 int  proc_wait_child_ex(int pid, int nohang, int untraced, int continued, int *status);   /* also a child that stopped / went on */
 int  proc_wait_child_ex2(int pid, int nohang, int untraced, int continued, int reap, int *status);   /* reap 0: the child stays to be waited for (waitid WNOWAIT) */
 void proc_stop_wait(proc_t *p);                     /* a stopped program waits here until SIGCONT */
@@ -150,6 +166,7 @@ int  proc_pipe_alloc(void);                       /* a new pipe, one reference o
 void proc_pipe_ref(int index, int write_end);
 void proc_pipe_unref(int index, int write_end);
 proc_t *proc_by_pid(uint32_t pid);
+proc_t *proc_table_at(int i);                          /* slot i of the process table (0 when out of range) */
 void proc_timers_poll(proc_t *p);                    /* fires the timers that have run out (a signal each) */
 void proc_exit(int code) __attribute__((noreturn));
 void proc_thread_exit(int code) __attribute__((noreturn));

@@ -165,6 +165,8 @@ EOF
 
 ## Debugging
 
+For compiled programs use `gdb` and `strace` ([Debugging](/tos/dev-debug)). For scripts:
+
 ```bash
 bash -x script.sh          # trace execution
 set -x                     # trace from here
