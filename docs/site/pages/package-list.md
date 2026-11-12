@@ -25,7 +25,7 @@ A package is offered to your system only when its build can run it, so the list 
 
 | Package | Version | Licence | Description |
 |---|---|---|---|
-| gcc | 15.3.0-2 | GPL-3.0+ | C/C++ compiler, includes binutils, make, glibc-dev |
+| gcc | 15.3.0-3 | GPL-3.0+ | C/C++ compiler, includes binutils, make, glibc-dev |
 | binutils | 2.46.1 | GPL-3.0+ | as, ld, ar, nm, objdump, strip, readelf |
 | make | 4.4 | GPL-3.0 | Build automation |
 | cmake | 3.30.5 | BSD-3 | Build system generator |
@@ -55,6 +55,13 @@ A package is offered to your system only when its build can run it, so the list 
 | python3.11-tk | 3.11.18 | PSF-2.0 | tkinter for Python 3.11 |
 | python3.12-tk | 3.12.16 | PSF-2.0 | tkinter for Python 3.12 |
 | python3.13-tk | 3.13.18 | PSF-2.0 | tkinter for Python 3.13 |
+| sdl2 | 2.30.9-2 | Zlib | SDL 2: windows, input and 2D drawing for games (X11 backend), with headers |
+| qt6-base | 6.8.2-2 | LGPL-3.0 | Qt 6: Core, Gui, Widgets, Network, Xml, Sql; xcb, linuxfb and offscreen platforms; headers, qmake, moc, cmake |
+| xcb-libs | 1.17.0 | MIT | The libxcb extension libraries and headers (what Qt needs) |
+| xcb-util | 0.4.1 | MIT | xcb-util: icccm, ewmh, image, keysyms, render-util, cursor |
+| xkbcommon | 1.7.0 | MIT | Keyboard layouts for Qt |
+| fontconfig | 2.15.0 | MIT | Finds fonts for Qt and other programs |
+| fonts-dejavu | 2.37 | Bitstream Vera | DejaVu Sans, Serif and Mono (TrueType) |
 | node24 | 24.22.1 | MIT | Node.js 24 with npm |
 | go | 1.27.3 | BSD-3-Clause | Go compiler, go command and standard library (with a ready-made build cache) |
 | rust | 1.99.1 | MIT OR Apache-2.0 | rustc, cargo, rustdoc and the standard library (needs gcc) |

@@ -64,37 +64,14 @@ The X screen is the size of the tOS window (800x560 by default); the X program s
 
 ## Other X programs
 
-Any Linux X11 client built for x86-64 and glibc runs the same way: `tos-x <client>`. Programs that need extensions such as GLX or XRender may not. Some will ask for packages that tOS does not have yet (xterm, GTK and Qt are not in the package list at the moment).
+Any Linux X11 client built for x86-64 and glibc runs the same way: `tos-x <client>`. Programs that need extensions such as GLX or XRender may not. Programs built with [SDL 2](/tos/dev-sdl) and [Qt](/tos/dev-qt) have their own packages (`sdl2`, `qt6-base`). GTK and xterm are not in the package list yet.
 
 ## Framebuffer programs
 
-A program that draws to the Linux framebuffer can open `/dev/fb0` and gets a tOS window of its own, with input events from `/dev/input/event0` (pointer) and `/dev/input/event1` (keyboard), as an X server does. This is the base that Xfbdev uses, and what SDL and similar toolkits would use.
-
-## The screen
-
-The X screen is the size of the tOS window (800x560 by default); the X program sees that as its screen.
-
-## A Tcl/Tk script
-
-The same window in Tcl (for when `wish` works):
-
-```
-label .l -text "Hello from Tk on tOS" -font fixed
-button .b -text "Click me" -command {puts clicked}
-pack .l .b -padx 20 -pady 10
-```
-
-Python's tkinter runs the same Tk, so use the Python form for now.
-
-## Other X programs
-
-Any Linux X11 client built for x86-64 and glibc runs the same way: `tos-x <client>`. Programs that need extensions such as GLX or XRender may not. Some will ask for packages that tOS does not have yet (xterm, GTK and Qt are not in the package list at the moment).
-
-## Framebuffer programs
-
-A program that draws to the Linux framebuffer can open `/dev/fb0` and gets a tOS window of its own, with input events from `/dev/input/event0` (pointer) and `/dev/input/event1` (keyboard), as an X server does. This is the base that Xfbdev uses, and what SDL and similar toolkits would use.
+A program that draws to the Linux framebuffer can open `/dev/fb0` and gets a tOS window of its own, with input events from `/dev/input/event0` (pointer) and `/dev/input/event1` (keyboard), as an X server does. This is the base that Xfbdev uses; Qt's `linuxfb` platform draws there too.
 
 ## Related
 
+- [SDL 2](/tos/dev-sdl) and [Qt](/tos/dev-qt).
 - [Python](/tos/dev-python) and [Linux programs](/tos/linux-programs).
 - [Troubleshooting](/tos/troubleshooting) if the window does not open.

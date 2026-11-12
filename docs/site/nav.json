@@ -128,6 +128,14 @@
           "label": "Windowed programs (X11, Tk)"
         },
         {
+          "slug": "dev-sdl",
+          "label": "SDL 2"
+        },
+        {
+          "slug": "dev-qt",
+          "label": "Qt"
+        },
+        {
           "slug": "dev-shell",
           "label": "Shell scripting"
         },

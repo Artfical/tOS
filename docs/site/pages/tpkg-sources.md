@@ -30,6 +30,15 @@ If a package is under GPL-2.0, GPL-3.0, LGPL-2.1, LGPL-3.0, or AGPL-3.0, the sou
 
 For LGPL libraries (e.g. `glibc`), the dynamic linking exception applies: you may link your own code without it becoming GPL, provided you use dynamic linking and allow the user to swap the library.
 
+## Every package has its own repository on GitHub
+
+Each package is also published as a repository of its own: **`github.com/Artfical/tpkg-<name>`** (for example [tpkg-gcc](https://github.com/Artfical/tpkg-gcc), [tpkg-qt6-base](https://github.com/Artfical/tpkg-qt6-base), [tpkg-sdl2](https://github.com/Artfical/tpkg-sdl2)).
+
+- The repository holds the text: `README.md` (what it is, its licence, what it needs, the SHA-256 of the package), `meta.json`, the licence files and `NOTICE.txt` (how it was built, what was changed).
+- Each version is a **release** (`v<version>`) that carries the `.tpkg` and the upstream source tarballs it was built from, so the corresponding source is always one click away.
+- Signatures are not kept there: the package server signs a package when it hands it out, and the signing key is never published. `tpkg install` is the supported way to install and checks the signature; a `.tpkg` downloaded from GitHub has the hash from the README but not the server's signature.
+- Problems with a package (a build, a missing file, a version) belong in that repository's issues; problems in the software itself belong upstream.
+
 ## How to find a package's source
 
 On the server, in `/root/tos-update/pkg/<name>/`:
