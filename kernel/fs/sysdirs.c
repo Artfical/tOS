@@ -157,7 +157,10 @@ void sysdirs_setup(int have_disk)
     ensure_dir("/dev", 0755);
     ensure_dir("/dev/shm", 01777);
     ensure_dir("/dev/input", 0755);
+    ensure_dir("/dev/dri", 0755);
     if (!vfs_exists("/dev/fb0")) fsbridge_create("/dev/fb0");                            /* the nodes of a Linux program's window (fbwin.c) */
+    if (!vfs_exists("/dev/dri/card0")) fsbridge_create("/dev/dri/card0");              /* DRM/KMS with dumb buffers over the window (fbwin.c) */
+    vfs_chmod("/dev/dri/card0", 0666);
     if (!vfs_exists("/dev/input/event0")) fsbridge_create("/dev/input/event0");
     if (!vfs_exists("/dev/input/event1")) fsbridge_create("/dev/input/event1");
     { static const char *const vts[] = { "/dev/tty0", "/dev/tty1", "/dev/console", 0 }; for (int i = 0; vts[i]; i++) { if (!vfs_exists(vts[i])) fsbridge_create(vts[i]); vfs_chmod(vts[i], 0666); } }   /* an X server asks for a virtual terminal */

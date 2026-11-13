@@ -68,7 +68,7 @@ Any Linux X11 client built for x86-64 and glibc runs the same way: `tos-x <clien
 
 ## Framebuffer programs
 
-A program that draws to the Linux framebuffer can open `/dev/fb0` and gets a tOS window of its own, with input events from `/dev/input/event0` (pointer) and `/dev/input/event1` (keyboard), as an X server does. This is the base that Xfbdev uses; Qt's `linuxfb` platform draws there too.
+A program that draws to the Linux framebuffer can open `/dev/fb0` and gets a tOS window of its own, with input events from `/dev/input/event0` (pointer) and `/dev/input/event1` (keyboard), as an X server does. This is the base that Xfbdev uses; Qt's `linuxfb` platform draws there too. `/dev/dri/card0` gives KMS programs the same window: see [DRM and KMS](/tos/dev-drm).
 
 ## Related
 

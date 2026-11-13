@@ -136,6 +136,10 @@
           "label": "Qt"
         },
         {
+          "slug": "dev-drm",
+          "label": "DRM and KMS"
+        },
+        {
           "slug": "dev-shell",
           "label": "Shell scripting"
         },

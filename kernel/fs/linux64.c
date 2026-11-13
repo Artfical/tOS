@@ -507,6 +507,15 @@ static uint64_t sys_mmap(uint64_t addr, uint64_t len, uint32_t prot, uint32_t fl
         if (!start) return (uint64_t)-ENOMEM;
     }
     if (vma_insert(p, start, start + size, prot) != 0) return (uint64_t)-ENOMEM;
+    if (path && !strcmp(path, "/dev/dri/card0")) {          /* a dumb buffer (MAP_DUMB's offset): its pages, shared with the window that shows it */
+        if (!fbwin_active()) { vma_remove(p, start, start + size); return (uint64_t)-ENODEV; }
+        for (uint64_t va = start; va < start + size; va += PAGE_SIZE) {
+            uint32_t phys = fbwin_drm_page(off + (va - start));
+            if (!phys || page_ref_inc(phys) != 0) { vma_remove(p, start, start + size); return (uint64_t)-EINVAL; }
+            if (paging_map_in(p->pgdir, va, phys, pte_flags(prot | PROT_WRITE) | PTE_SHARED) != 0) { free_physical_page(phys); vma_remove(p, start, start + size); return (uint64_t)-ENOMEM; }
+        }
+        return start;
+    }
     if (path && !strcmp(path, "/dev/fb0")) {                 /* the window's pixels: its pages, shared with the desktop that draws them */
         if (!fbwin_active()) { vma_remove(p, start, start + size); return (uint64_t)-ENODEV; }
         for (uint64_t va = start; va < start + size; va += PAGE_SIZE) {

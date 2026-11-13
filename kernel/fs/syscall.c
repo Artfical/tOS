@@ -1082,6 +1082,7 @@ static int lx_devkind(proc_t *p, int fd)
     const char *path = p->fdpath[fd - 3];
     if (path[0] != '/' || path[1] != 'd') return 0;
     if (!strcmp(path, "/dev/fb0")) return 1;
+    if (!strcmp(path, "/dev/dri/card0")) return 5;
     if (!strcmp(path, "/dev/input/event0")) return 2;
     if (!strcmp(path, "/dev/input/event1")) return 4;
     if (!strcmp(path, "/dev/tty0") || !strcmp(path, "/dev/tty1") || !strcmp(path, "/dev/console")) return 3;
@@ -1120,7 +1121,7 @@ static uint32_t fd_ready(proc_t *p, int fd)
     int sk = sock_of(p, fd);
     if (sk >= 0) return lsock_ready(sk);
     { int ps; int pn = pty_of(p, fd, &ps); if (pn >= 0) return pty_ready(pn, ps); }
-    { int dk = lx_devkind(p, fd); if (dk == 2 || dk == 4) return fbwin_ev_ready(dk == 4) ? LINUX_EPOLLIN : 0; }       /* the window's input events */
+    { int dk = lx_devkind(p, fd); if (dk == 2 || dk == 4) return fbwin_ev_ready(dk == 4) ? LINUX_EPOLLIN : 0; if (dk == 5) return fbwin_drm_ready() ? LINUX_EPOLLIN : 0; }       /* the window's input events */
     if (proc_vfd(p, fd) >= 0) return LINUX_EPOLLIN | LINUX_EPOLLOUT;   /* files never block */
     if (fd >= 3 && fd - 3 < PROC_MAX_FDS && (p->fd[fd - 3] == PROC_FD_URANDOM || p->fd[fd - 3] == PROC_FD_NULL))
         return LINUX_EPOLLIN | LINUX_EPOLLOUT;
@@ -1276,7 +1277,7 @@ static uint32_t linux_ioctl(int fd, uint32_t req, uint64_t arg)
     {
         int dk = lx_devkind(p, fd);
         if (dk) {                                /* /dev/fb0, /dev/input/event0 */
-            int r = dk == 1 ? fbwin_ioctl_fb(req, arg, user_wr_ok) : dk == 2 || dk == 4 ? fbwin_ioctl_ev(dk == 4, req, arg, user_wr_ok) : fbwin_ioctl_vt(req, arg, user_wr_ok);
+            int r = dk == 1 ? fbwin_ioctl_fb(req, arg, user_wr_ok) : dk == 2 || dk == 4 ? fbwin_ioctl_ev(dk == 4, req, arg, user_wr_ok) : dk == 5 ? fbwin_ioctl_drm(req, arg, user_wr_ok) : fbwin_ioctl_vt(req, arg, user_wr_ok);
             if (r != 1) return (uint32_t)r;
         }
     }
@@ -1990,9 +1991,9 @@ static uint32_t linux_open_path_inner(uint64_t path_ptr, uint32_t flags, uint32_
     }
 
     /* /dev/fb0 and /dev/input/event0: a window of the desktop that the program draws in and gets input from */
-    if (!strcmp(path, "/dev/fb0") || !strcmp(path, "/dev/input/event0") || !strcmp(path, "/dev/input/event1")) {
+    if (!strcmp(path, "/dev/fb0") || !strcmp(path, "/dev/dri/card0") || !strcmp(path, "/dev/input/event0") || !strcmp(path, "/dev/input/event1")) {
         if (!gui_is_active() || fbwin_open() != 0) return (uint32_t)-ENODEV;
-        if (!strcmp(path, "/dev/fb0")) fbwin_set_owner(p->pid);
+        if (!strcmp(path, "/dev/fb0") || !strcmp(path, "/dev/dri/card0")) fbwin_set_owner(p->pid);
     }
 
     /* /dev/tty: this program's terminal, which is what its standard descriptors are (a copy of one of them) */
@@ -2643,6 +2644,17 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
                 if (pn >= 0) return (uint32_t)pty_read(pn, ps, (uint8_t *)buf, (uint32_t)count, (p->fd_open_flags[fd - 3] & 0x800u) != 0);
             }
             int rdk = lx_devkind(p, fd);
+            if (rdk == 5) {                              /* /dev/dri/card0: flip-complete events */
+                if (count < 32) return (uint32_t)-EINVAL;
+                for (;;) {
+                    int got = fbwin_drm_read((uint8_t *)buf, count);
+                    if (got > 0) return (uint32_t)got;
+                    if (!fbwin_active()) return (uint32_t)-ENODEV;
+                    if (p->fd_open_flags[fd - 3] & 0x800u) return (uint32_t)-EAGAIN;
+                    if (linux_signal_waiting()) return (uint32_t)-EINTR;
+                    task_yield();
+                }
+            }
             if (rdk == 2 || rdk == 4) {                  /* /dev/input/event0 (pointer), event1 (keyboard): whole events, waited for unless non-blocking */
                 if (count < 24) return (uint32_t)-EINVAL;
                 for (;;) {
