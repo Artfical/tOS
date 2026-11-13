@@ -55,6 +55,7 @@ A package is offered to your system only when its build can run it, so the list 
 | python3.11-tk | 3.11.18 | PSF-2.0 | tkinter for Python 3.11 |
 | python3.12-tk | 3.12.16 | PSF-2.0 | tkinter for Python 3.12 |
 | python3.13-tk | 3.13.18 | PSF-2.0 | tkinter for Python 3.13 |
+| pyqt6 | 6.8.1 | GPL-3.0 | PyQt6 for Python 3.14: QtCore, QtGui, QtWidgets, QtXml, QtSql, QtPrintSupport (needs qt6-base) |
 | sdl2 | 2.30.9-2 | Zlib | SDL 2: windows, input and 2D drawing for games (X11 backend), with headers |
 | qt6-base | 6.8.2-2 | LGPL-3.0 | Qt 6: Core, Gui, Widgets, Network, Xml, Sql; xcb, linuxfb and offscreen platforms; headers, qmake, moc, cmake |
 | xcb-libs | 1.17.0 | MIT | The libxcb extension libraries and headers (what Qt needs) |

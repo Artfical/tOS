@@ -65,6 +65,28 @@ g++ prog.cpp -fPIC -I/system/pkg/qt6-base/include -I/system/pkg/qt6-base/include
 
 Compiling Qt programs needs memory and time on tOS: Qt's headers are big. Give tOS 2 GB or more.
 
+## PyQt6 (Qt in Python)
+
+```
+sudo tpkg install python3 pyqt6
+```
+
+```
+from PyQt6.QtWidgets import QApplication, QPushButton
+import sys
+app = QApplication(sys.argv)
+b = QPushButton("Hello from PyQt6 on tOS")
+b.clicked.connect(app.quit)
+b.show()
+app.exec()
+```
+
+```
+tos-x python3 hello_qt.py
+```
+
+`pyqt6` 6.8.1 is for the Python of the `python3` package (3.14) and has QtCore, QtGui, QtWidgets, QtXml, QtSql and QtPrintSupport. It has no QtNetwork (this Qt has no OpenSSL) and nothing that needs OpenGL, Vulkan, D-Bus, QML, Multimedia or WebEngine. PyQt6 is under the GPL-3.0 (or a commercial licence from Riverbank): a program that uses it must be GPL-compatible. PyQt5 is not available yet.
+
 ## Run a window
 
 Qt picks a platform plugin with `QT_QPA_PLATFORM`:
@@ -91,7 +113,7 @@ QT_QPA_PLATFORM=linuxfb ./demo
 
 ## Status
 
-On tOS itself: a Qt Core program and a Widgets program (with the `offscreen` platform, drawing text and buttons) run, and `g++` on tOS compiles and links a Qt program that then runs. The `xcb` platform (windows on `tos-x`) was tried on a Linux host with a virtual X server and works there; the `xcb` and `linuxfb` windows have not been checked in a tOS window yet.
+On tOS itself: PyQt6 imports and runs a Widgets program (signal and slot, drawing text and a button with the `offscreen` platform); a Qt Core program and a Widgets program (with the `offscreen` platform, drawing text and buttons) run, and `g++` on tOS compiles and links a Qt program that then runs. The `xcb` platform (windows on `tos-x`) was tried on a Linux host with a virtual X server and works there; the `xcb` and `linuxfb` windows have not been checked in a tOS window yet.
 
 ## Source and licence
 

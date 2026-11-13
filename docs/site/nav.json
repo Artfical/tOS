@@ -133,7 +133,7 @@
         },
         {
           "slug": "dev-qt",
-          "label": "Qt"
+          "label": "Qt and PyQt6"
         },
         {
           "slug": "dev-drm",
