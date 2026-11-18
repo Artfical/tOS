@@ -10,6 +10,8 @@
 #include "scheduler.h"
 
 static volatile char key_buffer[256];
+static volatile uint8_t key_mods_buffer[256];   /* Shift (1), Ctrl (2), Alt (4) as they were when the key at that place was pressed */
+static int last_pop_mods;                       /* the ones of the key keyboard_try_getchar gave last (0 after an arrow) */
 static volatile int key_buffer_head = 0;
 static volatile int key_buffer_tail = 0;
 static volatile int special_buf[16];
@@ -127,6 +129,7 @@ void keyboard_push_char(char c)
     int next = (key_buffer_head + 1) % 256;
     if (next != key_buffer_tail) {
         key_buffer[key_buffer_head] = c;
+        key_mods_buffer[key_buffer_head] = (uint8_t)((shift_pressed ? 1 : 0) | (ctrl_pressed ? 2 : 0) | (alt_pressed ? 4 : 0));
         key_buffer_head = next;
     }
 }
@@ -306,11 +309,16 @@ int keyboard_try_getchar(char *out)
     keyboard_poll();
     if (key_buffer_head != key_buffer_tail) {
         *out = key_buffer[key_buffer_tail];
+        last_pop_mods = key_mods_buffer[key_buffer_tail];
         key_buffer_tail = (key_buffer_tail + 1) % 256;
         return 1;
     }
     return 0;
 }
+
+/* the modifiers that were held when the key keyboard_try_getchar returned last was pressed: an app that gets a character can
+ * tell Ctrl+T (the character 0x14) from the right arrow (also 0x14) with it, even if Ctrl is let go before the app looks */
+int keyboard_last_mods(void) { return last_pop_mods; }
 
 char keyboard_getchar(void)
 {
@@ -423,7 +431,7 @@ int keyboard_tty_take_signal(uint8_t *out)
         uint8_t c = (uint8_t)key_buffer[i];
         if (c == 0xFF) { k += 2; continue; }                 /* a key sequence: 0xFF, the key, the modifiers */
         if (c != 3 && c != 26) continue;
-        for (int j = i; j != (key_buffer_head + 255) % 256; j = (j + 1) % 256) key_buffer[j] = key_buffer[(j + 1) % 256];
+        for (int j = i; j != (key_buffer_head + 255) % 256; j = (j + 1) % 256) { key_buffer[j] = key_buffer[(j + 1) % 256]; key_mods_buffer[j] = key_mods_buffer[(j + 1) % 256]; }
         key_buffer_head = (key_buffer_head + 255) % 256;
         *out = c;
         return 1;
@@ -515,6 +523,7 @@ int keyboard_get_special(void)
     if (wm_current_task_has_focus() && special_head != special_tail) {
         int k = special_buf[special_tail];
         special_tail = (special_tail + 1) % 16;
+        last_pop_mods = 0;
         return k;
     }
     return 0;

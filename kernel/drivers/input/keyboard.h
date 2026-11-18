@@ -12,6 +12,7 @@ char keyboard_getchar_ring3(void);
 void keyboard_readline(char *buf, int max);
 int keyboard_data_available(void);
 int keyboard_try_getchar(char *out);
+int keyboard_last_mods(void);          /* Shift 1, Ctrl 2, Alt 4 held when that key was pressed; 0 for an arrow */
 int keyboard_yesno(void);
 void keyboard_set_layout(int layout);
 int keyboard_get_layout(void);
