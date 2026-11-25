@@ -40,7 +40,7 @@ jobs:
       - name: Build the kernel, slowed down twelve times
         run: |
           make clean
-          make ANIM_SLOW=12 -j"$(nproc)" kernel/tOS.elf
+          make ANIM_SLOW=12 -j"$(nproc)" kernel/tOS.elf initrd.tar
           cp initrd.tar initrd-demo.tar
           # the example themes, where the desktop looks for them
           tar --append -f initrd-demo.tar --transform 's,^docs/themes/,home/tos/.themes/,' docs/themes/Nord docs/themes/Sunset
