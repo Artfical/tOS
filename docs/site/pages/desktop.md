@@ -82,6 +82,8 @@ Files you delete from Files go to the **Trash** at the end of the dock. The Tras
 
 Most things can be done from the keyboard too. In Files, the arrow keys move between files and Shift extends the selection; in Notepad there are shortcuts for Find, Replace and Go to line (see [Notepad, Paint and viewers](/tos/productivity)). In the Terminal you type commands. **Ctrl+C** stops a program that is running in the Terminal.
 
+Ctrl+Up (or F3) shows Mission Control and Ctrl+Left and Ctrl+Right change the Space: see [Spaces and Mission Control](/tos/spaces).
+
 ## Sound
 
 tOS plays short sounds when you open or close a window and when you click a menu or a dock icon. Turn them off with `beep off`. See [Audio](/tos/audio).

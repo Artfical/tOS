@@ -29,6 +29,10 @@
           "label": "The desktop"
         },
         {
+          "slug": "spaces",
+          "label": "Spaces and Mission Control"
+        },
+        {
           "slug": "apps",
           "label": "The apps"
         },

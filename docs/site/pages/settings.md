@@ -40,6 +40,24 @@ Under the themes, choose **Light** or **Dark**. The whole desktop follows it: wi
 
 ![Appearance, in the light](shot:settings_light.png)
 
+### Your own themes
+
+A theme is a folder in `.themes` in your home folder (`/home/tos/.themes/NAME`) with a file `theme.conf`:
+
+```
+dark=1
+accent=88C0D0
+wallpaper=2
+icons=classic
+```
+
+- `dark`: 1 for dark, 0 for light.
+- `accent`: the accent colour as `RRGGBB`.
+- `wallpaper`: 0 Dusk, 1 Ocean, 2 Graphite, or the name of a PNG or JPEG inside the theme's folder.
+- `icons`: `whitesur`, `classic`, or the name of a folder inside the theme's folder with your own icons.
+
+Your themes appear as buttons under the four ready-made ones; a click applies one and it is kept. Icons are PNG files named like the picture they replace, for example `icon48_files.png` (48 x 48, the Dock and the launcher), `icon20_files.png` (the small one), `doc64_folder.png`. A picture of another size is scaled; the ones you leave out stay as they are. The examples Nord and Sunset are in the project's `docs/themes` folder.
+
 ## Desktop & Dock
 
 The **wallpaper**: *Dusk*, *Ocean*, *Graphite* or a *Picture* you choose. **Magnification** makes dock icons grow when the pointer passes over them. **Show indicators for open apps** puts a dot under the apps that are running.

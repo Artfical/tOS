@@ -57,6 +57,8 @@ int keyboard_get_raw_event(uint8_t *key, int *pressed)
     return 1;
 }
 
+volatile int keyboard_hotkey, keyboard_hotkey_esc;
+
 static int caps_lock = 0;
 static int shift_pressed = 0;
 static int shift_seen = 0;             /* Shift went down at some point since the start (held while booting: Recovery) */
@@ -176,6 +178,11 @@ static void process_scancode(uint8_t scancode)
         int is_release = (scancode & 0x80) != 0;
         if (scancode == 0x1D) { ctrl_pressed = 1; return; }       /* right Ctrl */
         if (scancode == 0x9D) { ctrl_pressed = 0; return; }
+        if (!is_release && ctrl_pressed && (alt_pressed || !xterm_keys) &&
+            (base == 0x4B || base == 0x4D || base == 0x48 || base == 0x50)) {
+            keyboard_hotkey = base == 0x4B ? 1 : base == 0x4D ? 2 : base == 0x48 ? 3 : 4;
+            return;
+        }
         if (xterm_keys && !is_release) {
             uint8_t xk = 0;
             switch (base) {
@@ -224,6 +231,9 @@ static void process_scancode(uint8_t scancode)
     }
 
     if (scancode & 0x80) return;
+
+    if (scancode == 0x3D && (alt_pressed || !xterm_keys)) { keyboard_hotkey = 5; return; }              /* F3 */
+    if (scancode == 0x01 && keyboard_hotkey_esc) { keyboard_hotkey = 6; return; }
 
     if (xterm_keys) {
         if (scancode == 0x01) { keyboard_push_char(27); return; }                    /* Escape */

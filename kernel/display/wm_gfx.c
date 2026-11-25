@@ -89,6 +89,10 @@ static uint32_t last_title_click_ms;
 static window_t *last_title_click_win;
 
 static int launcher_open;
+#define MAX_SPACES 4
+static int cur_space, nspaces = 1;    /* the Space being shown, and how many there are (Mission Control adds them) */
+static void space_switch(int to);
+static void fix_focus(void);
 static int hover_dock = -1, hover_launch = -1, hover_menu = -1, hover_lights;
 static int dock_magnify = 1;
 static int dock_indicators = 1;       /* a dot under the apps that are open */
@@ -249,6 +253,7 @@ static void dock_activate(const app_t *a)
     }
     if (!best) { launch(a); return; }
     sound_click();
+    if (best->space != cur_space) { space_switch(best->space); wm_focus_window(best); dirty = 1; return; }
     if (best == wm_focused && !best->minimized) genie(best, 0);
     else if (best->minimized) genie(best, 1);
     else wm_focus_window(best);
@@ -302,6 +307,7 @@ static void clamp_window(window_t *w)
 
 void wm_gfx_window_opened(window_t *w)
 {
+    w->space = cur_space;
     if (w->kind == WIN_KIND_PANEL) {
         panel_size(w->panel, &w->gw, &w->gh);
         w->w0 = 1; w->h0 = 1;
@@ -1972,20 +1978,26 @@ static void poll_volumes(void)
     }
 }
 
-static void compose(void)
+/* the wallpaper, the desktop's icons and the windows of one Space: all but the Dock and the top bar */
+static void compose_desk(int sp)
 {
-    if (session == 2) { draw_login(); return; }
-    if (launcher_open) { draw_launcher(); return; }
     draw_wallpaper();
     if (session == 0) draw_desktop_disks();
     int order[MAX_WINDOWS], n = 0;
-    for (int i = 0; i < MAX_WINDOWS; i++) if (windows[i].open && !windows[i].minimized) order[n++] = i;
+    for (int i = 0; i < MAX_WINDOWS; i++) if (windows[i].open && !windows[i].minimized && windows[i].space == sp) order[n++] = i;
     for (int i = 1; i < n; i++) {
         int k = order[i], j = i - 1;
         while (j >= 0 && windows[order[j]].z > windows[k].z) { order[j + 1] = order[j]; j--; }
         order[j + 1] = k;
     }
     for (int i = 0; i < n; i++) draw_window_g(&windows[order[i]]);
+}
+
+static void compose(void)
+{
+    if (session == 2) { draw_login(); return; }
+    if (launcher_open) { draw_launcher(); return; }
+    compose_desk(cur_space);
     if (session == 0) draw_dock();
     draw_topbar();
     draw_menu();
@@ -2034,7 +2046,26 @@ static void present(void)
 /* ------------------------------------------------------------------ animations */
 
 /* recordings of the animations are made with this raised (slow motion), then sped up */
+#ifndef ANIM_SLOW
 #define ANIM_SLOW 1
+#endif
+
+/* In a slow-motion build the frames are spaced out, so that QEMU has the time to hand each one to the recorder
+ * (a loop that presents as fast as it can leaves the monitor starving). */
+#if ANIM_SLOW > 1
+static void anim_pace(void)
+{
+    static uint32_t last;
+    while (debugmon_uptime_ms() - last < 250) {
+        uint64_t fl;
+        __asm__ volatile("pushfq; pop %0" : "=r"(fl));
+        if (fl & 0x200) __asm__ volatile("hlt"); else __asm__ volatile("pause");
+    }
+    last = debugmon_uptime_ms();
+}
+#else
+#define anim_pace() ((void)0)
+#endif
 
 /* 0..1024 in, eased 0..1024 out: slow start, slow end */
 static int ease(int t)
@@ -2119,6 +2150,7 @@ static void genie(window_t *w, int restore)
                 }
             }
         }
+        anim_pace();
         present();
         if (t >= 1024) break;
     }
@@ -2127,6 +2159,439 @@ static void genie(window_t *w, int restore)
     w->minimized = !restore;
     if (restore) wm_focus_window(w);
     dirty = 1;
+}
+
+/* ------------------------------------------------------------------ Spaces and Mission Control */
+
+/* the window on top of a Space gets the keyboard when one is shown */
+static void fix_focus(void)
+{
+    window_t *best = 0;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        window_t *w = &windows[i];
+        if (!w->open || w->minimized || w->space != cur_space) continue;
+        if (!best || w->z > best->z) best = w;
+    }
+    wm_focused = best;
+}
+
+/* Another Space: the desktop slides sideways, the way the Mac's does, while the Dock and the top
+ * bar stay. Both Spaces are drawn once; every frame only moves rows of them. */
+static void space_switch(int to)
+{
+    if (to < 0 || to >= nspaces || to == cur_space) return;
+    int from = cur_space;
+    size_t n = (size_t)SW * SH * 4;
+    uint32_t *a = 0, *b = 0;
+    if (session == 0 && !launcher_open) { a = malloc(n); b = malloc(n); }
+    if (!a || !b) { free(a); free(b); cur_space = to; fix_focus(); dirty = 1; return; }
+    compose_desk(from);
+    memcpy(a, back, n);
+    cur_space = to;
+    fix_focus();
+    compose_desk(to);
+    memcpy(b, back, n);
+    uint32_t start = debugmon_uptime_ms(), dur = 420 * ANIM_SLOW;
+    for (;;) {
+        uint32_t el = debugmon_uptime_ms() - start;
+        int t = el >= dur ? 1024 : (int)(el * 1024 / dur);
+        int off = (int)((long long)SW * ease(t) >> 10);
+        for (int y = 0; y < SH; y++) {
+            uint32_t *d = back + (size_t)y * SW, *fa = a + (size_t)y * SW, *fb = b + (size_t)y * SW;
+            if (to > from) { memcpy(d, fa + off, (size_t)(SW - off) * 4); memcpy(d + SW - off, fb, (size_t)off * 4); }
+            else { memcpy(d, fb + SW - off, (size_t)off * 4); memcpy(d + off, fa, (size_t)(SW - off) * 4); }
+        }
+        draw_dock();
+        draw_topbar();
+        anim_pace();
+        present();
+        if (t >= 1024) break;
+    }
+    free(a);
+    free(b);
+    dirty = 1;
+}
+
+void wm_gfx_focus_space(window_t *w)
+{
+    if (session == 0 && w->open && w->space != cur_space) space_switch(w->space);
+}
+
+/* Mission Control: every window of this Space flies out to a grid, the Spaces show along the top.
+ * A click on a window brings it forward, a click on a Space goes there, a drag moves a window to
+ * a Space, "+" makes a new one. Windows are drawn from pictures taken when it opens, scaled with
+ * a smoothing filter; every move is an exponential approach, so it looks the same at any speed. */
+typedef struct { uint32_t *px; int w, h; } mip_t;
+typedef struct {
+    window_t *win;
+    mip_t m[3];                       /* the picture, half and a quarter of its size */
+    int rx, ry, rw, rh;               /* where the window really is */
+    int tx, ty, tw, th;               /* where the grid puts it */
+    int cx, cy, cw, ch;               /* where it is now, in 1/256 pixels */
+} mc_item_t;
+
+static struct {
+    int phase;                        /* 0 off, 1 open (flying out, or shown), 2 flying back */
+    uint32_t last_ms, t0;
+    uint32_t *base;                   /* the wallpaper alone */
+    mc_item_t it[MAX_WINDOWS];
+    int n;
+    int mcp;                          /* 0..1024: how far the Spaces and the dimming have come */
+    int hot, hot_chip, hot_close;
+    int drag, drag_moved, grab_x, grab_y, press_x, press_y;
+    int pick, then_space;
+    int redraw;
+} mc;
+
+static void mip_half(const mip_t *s, mip_t *d)
+{
+    d->w = s->w > 1 ? s->w / 2 : 1; d->h = s->h > 1 ? s->h / 2 : 1;
+    d->px = malloc((size_t)d->w * d->h * 4);
+    if (!d->px) return;
+    for (int y = 0; y < d->h; y++)
+        for (int x = 0; x < d->w; x++) {
+            int x1 = 2 * x + 1 < s->w ? 2 * x + 1 : 2 * x, y1 = 2 * y + 1 < s->h ? 2 * y + 1 : 2 * y;
+            uint32_t p[4] = { s->px[(2 * y) * s->w + 2 * x], s->px[(2 * y) * s->w + x1], s->px[y1 * s->w + 2 * x], s->px[y1 * s->w + x1] };
+            uint32_t o = 0;
+            for (int sh = 0; sh < 32; sh += 8) o |= (((p[0] >> sh & 255) + (p[1] >> sh & 255) + (p[2] >> sh & 255) + (p[3] >> sh & 255)) >> 2) << sh;
+            d->px[y * d->w + x] = o;
+        }
+}
+
+static void mc_free_item(mc_item_t *it) { for (int k = 0; k < 3; k++) { free(it->m[k].px); it->m[k].px = 0; } }
+
+/* a picture of one window alone on the wallpaper, its corners see-through */
+static int mc_capture(mc_item_t *it, window_t *w)
+{
+    int ww = w->gw, hh = w->gh;
+    if (ww < 8 || hh < 8) return -1;
+    uint32_t *pic = malloc((size_t)ww * hh * 4);
+    if (!pic) return -1;
+    draw_wallpaper();
+    draw_window_g(w);
+    for (int j = 0; j < hh; j++)
+        for (int i = 0; i < ww; i++) {
+            int sx = w->gx + i, sy = w->gy + j;
+            uint32_t c = (sx >= 0 && sx < SW && sy >= 0 && sy < SH) ? (back[sy * SW + sx] & 0xFFFFFF) | 0xFF000000u : 0;
+            int cx = i < RADIUS ? RADIUS - i : i >= ww - RADIUS ? i - (ww - RADIUS - 1) : 0;
+            int cy = j < RADIUS ? RADIUS - j : j >= hh - RADIUS ? j - (hh - RADIUS - 1) : 0;
+            pic[j * ww + i] = (cx && cy && cx * cx + cy * cy > RADIUS * RADIUS) ? 0 : c;
+        }
+    memset(it, 0, sizeof(*it));
+    it->win = w;
+    it->m[0].px = pic; it->m[0].w = ww; it->m[0].h = hh;
+    mip_half(&it->m[0], &it->m[1]);
+    if (it->m[1].px) mip_half(&it->m[1], &it->m[2]);
+    it->rx = w->gx; it->ry = w->gy; it->rw = ww; it->rh = hh;
+    it->cx = it->rx << 8; it->cy = it->ry << 8; it->cw = it->rw << 8; it->ch = it->rh << 8;
+    return 0;
+}
+
+static void mc_chip_rect(int i, int *x, int *y, int *w, int *h)
+{
+    int cw = SW / 7, ch = cw * SH / SW, gap = 16;
+    int count = nspaces + (nspaces < MAX_SPACES ? 1 : 0);
+    int total = count * cw + (count - 1) * gap;
+    *w = cw; *h = ch;
+    *x = (SW - total) / 2 + i * (cw + gap);
+    *y = TOPBAR_H + 14 - (int)((long long)(1024 - mc.mcp) * (ch + 60) >> 10);
+}
+
+static int mc_strip_h(void) { int cw = SW / 7; return TOPBAR_H + 14 + cw * SH / SW + 34; }
+
+/* the grid: as many columns as give the windows the biggest size */
+static void mc_layout(void)
+{
+    if (!mc.n) return;
+    int ax = 60, ay = mc_strip_h() + 16, aw = SW - 120, ah = SH - DOCK_H - DOCK_MARGIN - 36 - ay;
+    int best_cols = 1, best_scale = -1;
+    for (int cols = 1; cols <= mc.n; cols++) {
+        int rows = (mc.n + cols - 1) / cols, cw = aw / cols, chh = ah / rows, low = 1 << 20;
+        for (int k = 0; k < mc.n; k++) {
+            int s1 = (cw - 24) * 1000 / mc.it[k].rw, s2 = (chh - 52) * 1000 / mc.it[k].rh, s = s1 < s2 ? s1 : s2;
+            if (s > 1000) s = 1000;
+            if (s < low) low = s;
+        }
+        if (low > best_scale) { best_scale = low; best_cols = cols; }
+    }
+    int cols = best_cols, rows = (mc.n + cols - 1) / cols, cw = aw / cols, chh = ah / rows;
+    for (int k = 0; k < mc.n; k++) {
+        mc_item_t *it = &mc.it[k];
+        int row = k / cols, col = k % cols, inrow = mc.n - row * cols < cols ? mc.n - row * cols : cols;
+        int s1 = (cw - 24) * 1000 / it->rw, s2 = (chh - 52) * 1000 / it->rh, s = s1 < s2 ? s1 : s2;
+        if (s > 1000) s = 1000;
+        if (s < 60) s = 60;
+        it->tw = it->rw * s / 1000; it->th = it->rh * s / 1000;
+        int cellx = ax + (aw - inrow * cw) / 2 + col * cw, celly = ay + row * chh;
+        it->tx = cellx + (cw - it->tw) / 2;
+        it->ty = celly + (chh - 28 - it->th) / 2;
+    }
+}
+
+static void mc_rebuild(void)
+{
+    for (int k = 0; k < mc.n; k++) mc_free_item(&mc.it[k]);
+    mc.n = 0;
+    window_t *ws[MAX_WINDOWS];
+    int n = 0;
+    for (int i = 0; i < MAX_WINDOWS; i++)
+        if (windows[i].open && !windows[i].minimized && windows[i].space == cur_space) ws[n++] = &windows[i];
+    for (int i = 1; i < n; i++) { window_t *k = ws[i]; int j = i - 1; while (j >= 0 && ws[j]->gx > k->gx) { ws[j + 1] = ws[j]; j--; } ws[j + 1] = k; }
+    for (int i = 0; i < n; i++) if (mc_capture(&mc.it[mc.n], ws[i]) == 0) mc.n++;
+    draw_wallpaper();
+    memcpy(mc.base, back, (size_t)SW * SH * 4);
+    mc_layout();
+}
+
+static void mc_open(void)
+{
+    if (session != 0 || launcher_open || mc.phase) return;
+    memset(&mc, 0, sizeof(mc));
+    mc.base = malloc((size_t)SW * SH * 4);
+    if (!mc.base) return;
+    mc.phase = 1; mc.drag = -1; mc.hot = -1; mc.hot_chip = -1; mc.hot_close = -1; mc.pick = -1; mc.then_space = -1;
+    mc.last_ms = mc.t0 = debugmon_uptime_ms();
+    mc_rebuild();
+    mc.redraw = 1;
+}
+
+static void mc_leave(int pick, int then_space)
+{
+    if (mc.phase != 1) return;
+    mc.phase = 2; mc.drag = -1; mc.pick = pick; mc.then_space = then_space; mc.t0 = debugmon_uptime_ms();
+    if (pick >= 0 && pick < mc.n) wm_focus_window(mc.it[pick].win);
+    for (int k = 0; k < mc.n; k++) { mc.it[k].tx = mc.it[k].rx; mc.it[k].ty = mc.it[k].ry; mc.it[k].tw = mc.it[k].rw; mc.it[k].th = mc.it[k].rh; }
+    mc.redraw = 1;
+}
+
+/* one picture scaled into a rectangle, smoothed (bilinear, from the half or quarter size when it shrinks a lot) */
+static void mc_blit(const mc_item_t *it, int x, int y, int w, int h)
+{
+    if (w < 2 || h < 2) return;
+    int l = 0;
+    while (l < 2 && it->m[l + 1].px && it->m[l + 1].w >= w) l++;
+    const mip_t *m = &it->m[l];
+    int sxs = (m->w << 16) / w, sys = (m->h << 16) / h;
+    for (int j = 0; j < h; j++) {
+        int dy = y + j;
+        if (dy < 0 || dy >= SH) continue;
+        int fy = j * sys + (sys >> 1) - 32768;
+        if (fy < 0) fy = 0;
+        int y0 = fy >> 16, wy = (fy >> 8) & 255, y1 = y0 + 1 < m->h ? y0 + 1 : y0;
+        if (y0 >= m->h) y0 = y1 = m->h - 1;
+        const uint32_t *r0 = m->px + (size_t)y0 * m->w, *r1 = m->px + (size_t)y1 * m->w;
+        uint32_t *dst = back + (size_t)dy * SW;
+        for (int i = 0; i < w; i++) {
+            int dx = x + i;
+            if (dx < 0 || dx >= SW) continue;
+            int fx = i * sxs + (sxs >> 1) - 32768;
+            if (fx < 0) fx = 0;
+            int x0 = fx >> 16, wx = (fx >> 8) & 255, x1 = x0 + 1 < m->w ? x0 + 1 : x0;
+            if (x0 >= m->w) x0 = x1 = m->w - 1;
+            uint32_t p00 = r0[x0], p10 = r0[x1], p01 = r1[x0], p11 = r1[x1];
+            uint32_t o = 0;
+            for (int sh = 0; sh < 32; sh += 8) {
+                int top = (int)(p00 >> sh & 255) * (256 - wx) + (int)(p10 >> sh & 255) * wx;
+                int bot = (int)(p01 >> sh & 255) * (256 - wx) + (int)(p11 >> sh & 255) * wx;
+                o |= (uint32_t)((top * (256 - wy) + bot * wy) >> 16) << sh;
+            }
+            uint32_t a = o >> 24;
+            if (!a) continue;
+            dst[dx] = a >= 250 ? (o & 0xFFFFFF) : gfx_mix(dst[dx], o & 0xFFFFFF, (int)a);
+        }
+    }
+}
+
+static inline uint32_t mc_dark(uint32_t c, int k) { return (((c & 0xFF00FF) * k >> 8) & 0xFF00FF) | (((c & 0xFF00) * k >> 8) & 0xFF00); }
+
+static void mc_frame(void)
+{
+    int k = 256 - (mc.mcp * 70 >> 10);
+    for (int i = 0; i < SW * SH; i++) back[i] = mc_dark(mc.base[i], k);
+    /* the Spaces */
+    int chips = nspaces + (nspaces < MAX_SPACES ? 1 : 0);
+    for (int i = 0; i < chips; i++) {
+        int x, y, w, h;
+        mc_chip_rect(i, &x, &y, &w, &h);
+        if (i < nspaces) {
+            for (int j = 0; j < h; j++)
+                for (int q = 0; q < w; q++) {
+                    int dy = y + j, dx = x + q;
+                    if (dy >= 0 && dy < SH) back[dy * SW + dx] = wall[(j * SH / h) * SW + q * SW / w];
+                }
+            for (int z = 0; z < MAX_WINDOWS; z++) {
+                const window_t *w2 = &windows[z];
+                if (!w2->open || w2->minimized || w2->space != i) continue;
+                int wx = x + w2->gx * w / SW, wy = y + w2->gy * h / SH, ww = w2->gw * w / SW, wh = w2->gh * h / SH;
+                gfx_rrect(&bs, wx, wy, ww, wh, 2, 0xF2F2F5, 240);
+                gfx_fill_alpha(&bs, wx, wy, ww, wh / 6 + 1, 0x8E8E93, 90);
+            }
+            gfx_rrect_outline(&bs, x - 2, y - 2, w + 4, h + 4, 5, i == cur_space ? UI_ACCENT : 0xFFFFFF, i == cur_space ? 255 : mc.hot_chip == i ? 230 : 70);
+            char lab[12] = "Desktop 0";
+            lab[8] = (char)('1' + i);
+            gfx_text_center(&bs, &ui_font_small, x - 20, y + h + 6, w + 40, lab, 0xFFFFFF, 230);
+            if (nspaces > 1 && mc.hot_chip == i) {
+                gfx_circle(&bs, x + 10, y + 10, 8, 0x1E1F25, 230);
+                gfx_fill_alpha(&bs, x + 6, y + 9, 8, 2, 0xFFFFFF, 255);
+            }
+        } else {
+            gfx_rrect(&bs, x, y, w, h, 6, 0xFFFFFF, mc.hot_chip == i ? 70 : 38);
+            gfx_fill_alpha(&bs, x + w / 2 - 12, y + h / 2 - 1, 24, 3, 0xFFFFFF, 220);
+            gfx_fill_alpha(&bs, x + w / 2 - 1, y + h / 2 - 12, 3, 24, 0xFFFFFF, 220);
+        }
+    }
+    /* the windows, the one being picked or dragged last */
+    int last = mc.drag >= 0 && mc.drag_moved ? mc.drag : mc.pick;
+    for (int pass = 0; pass < 2; pass++)
+        for (int q = 0; q < mc.n; q++) {
+            if ((q == last) != (pass == 1)) continue;
+            mc_item_t *it = &mc.it[q];
+            int x = it->cx >> 8, y = it->cy >> 8, w = it->cw >> 8, h = it->ch >> 8;
+            gfx_rrect(&bs, x, y + 5, w, h, 10, 0x000000, 70);
+            mc_blit(it, x, y, w, h);
+            if (mc.hot == q && mc.phase == 1) gfx_rrect_outline(&bs, x - 3, y - 3, w + 6, h + 6, 12, 0xFFFFFF, 230);
+            if (mc.phase == 1 && mc.mcp > 700) gfx_text_center(&bs, &ui_font_regular, x - 30, y + h + 8, w + 60, it->win->title, 0xFFFFFF, 235);
+        }
+    draw_dock();
+    draw_topbar();
+}
+
+static int mc_item_at(int x, int y)
+{
+    for (int q = mc.n - 1; q >= 0; q--) {
+        const mc_item_t *it = &mc.it[q];
+        int ix = it->cx >> 8, iy = it->cy >> 8;
+        if (x >= ix && x < ix + (it->cw >> 8) && y >= iy && y < iy + (it->ch >> 8)) return q;
+    }
+    return -1;
+}
+
+static int mc_chip_at(int x, int y)
+{
+    int chips = nspaces + (nspaces < MAX_SPACES ? 1 : 0);
+    for (int i = 0; i < chips; i++) {
+        int cx, cy, cw, ch;
+        mc_chip_rect(i, &cx, &cy, &cw, &ch);
+        if (x >= cx - 4 && x < cx + cw + 4 && y >= cy - 4 && y < cy + ch + 4) return i;
+    }
+    return -1;
+}
+
+/* a Space closes: its windows go to the one before it */
+static void mc_close_space(int s)
+{
+    if (nspaces <= 1) return;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        window_t *w = &windows[i];
+        if (!w->open) continue;
+        if (w->space == s) w->space = s > 0 ? s - 1 : 0;
+        else if (w->space > s) w->space--;
+    }
+    nspaces--;
+    cur_space = cur_space == s ? (s > 0 ? s - 1 : 0) : cur_space > s ? cur_space - 1 : cur_space;
+    fix_focus();
+    mc_rebuild();
+}
+
+static void mc_move_window(int q, int space)
+{
+    if (space == cur_space || q < 0 || q >= mc.n) return;
+    if (space >= nspaces) { if (nspaces >= MAX_SPACES) return; nspaces++; space = nspaces - 1; }
+    mc.it[q].win->space = space;
+    mc_free_item(&mc.it[q]);
+    for (int i = q; i < mc.n - 1; i++) mc.it[i] = mc.it[i + 1];
+    mc.n--;
+    fix_focus();
+    mc_layout();
+}
+
+/* called every tick while Mission Control is up */
+static void mc_step(int pressed, int released, int moved, int btn)
+{
+    uint32_t now = debugmon_uptime_ms();
+    int dt = (int)(now - mc.last_ms);
+    if (dt < 1) dt = 1;
+    if (dt > 100) dt = 100;
+    mc.last_ms = now;
+    int tau = 60 * ANIM_SLOW, kk = dt * 1024 / (dt + tau);
+
+    if (mc.phase == 1) {
+        int hot = mc.drag >= 0 ? mc.drag : mc_item_at(mx, my), chip = mc_chip_at(mx, my);
+        if (hot != mc.hot || chip != mc.hot_chip) { mc.hot = hot; mc.hot_chip = chip; mc.redraw = 1; }
+        if (pressed) {
+            if (mc.hot >= 0) { mc.drag = mc.hot; mc.drag_moved = 0; mc.press_x = mx; mc.press_y = my; mc.grab_x = mx - (mc.it[mc.hot].cx >> 8); mc.grab_y = my - (mc.it[mc.hot].cy >> 8); }
+            else if (chip >= 0) {
+                int cx, cy, cw, chh;
+                mc_chip_rect(chip, &cx, &cy, &cw, &chh);
+                if (chip == nspaces) { nspaces++; mc.redraw = 1; }
+                else if (nspaces > 1 && mx < cx + 22 && my < cy + 22) { mc_close_space(chip); mc.redraw = 1; }
+                else mc_leave(-1, chip == cur_space ? -1 : chip);
+            } else mc_leave(-1, -1);
+        }
+        if (mc.drag >= 0 && mc.phase == 1) {
+            int dx = mx - mc.press_x, dy = my - mc.press_y;
+            if (!mc.drag_moved && (dx * dx + dy * dy > 36)) mc.drag_moved = 1;
+            if (mc.drag_moved && (btn & 1)) {
+                /* the window shrinks to a small picture held by the pointer */
+                mc_item_t *it = &mc.it[mc.drag];
+                int tw = it->tw * 3 / 5 < 200 ? it->tw * 3 / 5 : 200;
+                int th = it->th * tw / (it->tw ? it->tw : 1);
+                it->cw += ((tw << 8) - it->cw) / 3; it->ch += ((th << 8) - it->ch) / 3;
+                it->cx = (mx << 8) - it->cw / 2; it->cy = (my << 8) - it->ch / 2;
+                mc.redraw = 1;
+            }
+            if (released || !(btn & 1)) {
+                int q = mc.drag;
+                mc.drag = -1;
+                if (!mc.drag_moved) mc_leave(q, -1);
+                else if (chip >= 0) { mc_move_window(q, chip); mc.hot = -1; }
+                mc.redraw = 1;
+            }
+        }
+    }
+
+    /* everything approaches where it is going */
+    int moving = 0;
+    int goal = mc.phase == 1 ? 1024 : 0;
+    if (mc.mcp != goal) {
+        mc.mcp += (goal - mc.mcp) * kk / 1024;
+        if (goal - mc.mcp < 6 && mc.mcp - goal > -6) mc.mcp = goal;
+        moving = 1;
+    }
+    for (int q = 0; q < mc.n; q++) {
+        mc_item_t *it = &mc.it[q];
+        if (q == mc.drag && mc.drag_moved) continue;
+        int tg[4] = { mc.it[q].tx << 8, mc.it[q].ty << 8, mc.it[q].tw << 8, mc.it[q].th << 8 };
+        int *cu[4] = { &it->cx, &it->cy, &it->cw, &it->ch };
+        for (int a = 0; a < 4; a++) {
+            int d = tg[a] - *cu[a];
+            if (d > -512 && d < 512) { if (d) { *cu[a] = tg[a]; moving = 1; } continue; }
+            int st = (int)((long long)d * kk >> 10);
+            *cu[a] += st ? st : d > 0 ? 1 : -1;
+            moving = 1;
+        }
+    }
+    if (moving) mc.redraw = 1;
+
+    if (mc.phase == 2 && (!moving || now - mc.t0 > 1500u * ANIM_SLOW)) {
+        for (int q = 0; q < mc.n; q++) mc_free_item(&mc.it[q]);
+        free(mc.base);
+        int then = mc.then_space;
+        memset(&mc, 0, sizeof(mc));
+        mc.phase = 0;
+        dirty = 1;
+        if (then >= 0) space_switch(then);
+        return;
+    }
+
+    if (mc.redraw) { mc.redraw = 0; anim_pace(); mc_frame(); present(); }
+    else if (moved) {
+        int ox = cur_x, oy = cur_y;
+        cursor_erase();
+        cursor_draw();
+        if (ox > -50) bochs_update_rect(&vdev, ox, oy, 26, 28);
+        bochs_update_rect(&vdev, cur_x, cur_y, 26, 28);
+    }
 }
 
 /* Logging in: the blurred lock screen clears into the desktop, the way the Mac's does. */
@@ -2143,6 +2608,7 @@ static void login_transition(const uint32_t *from)
         int a = ease(t) * 255 >> 10;
         if (a >= 255) break;
         for (int i = 0; i < SW * SH; i++) back[i] = gfx_mix(from[i], to[i], a);
+        anim_pace();
         present();
     }
     memcpy(back, to, (size_t)SW * SH * 4);
@@ -2172,6 +2638,114 @@ static void set_wallpaper(int choice);
 static void prefs_save(void);
 static void set_accent(int v);
 
+/* ---- the user's own themes: ~/.themes/NAME/theme.conf, and NAME/<icons folder>/<picture name>.png ---- */
+
+static char utheme_name[8][32];
+static int utheme_n, utheme_cur = -1;
+static uint32_t utheme_scan_ms;
+
+static void themes_dir(char *out)
+{
+    strcpy(out, uihost_home());
+    if (strcmp(out, "/")) strcat(out, "/");
+    strcat(out, ".themes");
+}
+
+int uihost_user_themes(void)
+{
+    uint32_t now = debugmon_uptime_ms();
+    if (utheme_scan_ms && now - utheme_scan_ms < 3000) return utheme_n;
+    utheme_scan_ms = now ? now : 1;
+    static uihost_entry_t e[16];
+    char d[96];
+    themes_dir(d);
+    int n = uihost_list(d, e, 16);
+    utheme_n = 0;
+    for (int i = 0; i < n && utheme_n < 8; i++)
+        if (e[i].is_dir && strlen(e[i].name) < 32) strcpy(utheme_name[utheme_n++], e[i].name);
+    return utheme_n;
+}
+
+const char *uihost_user_theme_name(int i) { return i >= 0 && i < utheme_n ? utheme_name[i] : ""; }
+
+/* the text after "key=" on its line, up to the end of the line */
+static int conf_str(const char *text, const char *key, char *out, int max)
+{
+    int kl = (int)strlen(key);
+    for (const char *p = text; *p; p++) {
+        if ((p == text || p[-1] == '\n') && !strncmp(p, key, (size_t)kl) && p[kl] == '=') {
+            int n = 0;
+            for (p += kl + 1; *p && *p != '\n' && *p != '\r' && n < max - 1; p++) out[n++] = *p;
+            out[n] = 0;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int pref_int(const char *text, const char *key, int dflt);
+static void set_wallpaper(int choice);
+static void set_accent(int v);
+
+static void user_theme_icons(const char *dir)
+{
+    gfx_overlay_clear();
+    for (int k = 0; k < ui_image_count; k++) {
+        const char *nm = ui_images[k].name;
+        if (!strcmp(nm, "wallpaper") || !strcmp(nm, "cursor")) continue;
+        char p[256];
+        strcpy(p, dir); strcat(p, "/"); strcat(p, nm); strcat(p, ".png");
+        if (!uihost_exists(p)) continue;
+        uint8_t *rgba; uint32_t w, h; const char *err;
+        if (img_load(p, &rgba, &w, &h, &err) != 0) continue;
+        int W = ui_images[k].w, H = ui_images[k].h;
+        if ((int)w != W || (int)h != H) {                  /* a picture of another size is scaled to the one it replaces */
+            uint8_t *s = malloc((size_t)W * H * 4);
+            if (!s) { free(rgba); continue; }
+            for (int y = 0; y < H; y++)
+                for (int x = 0; x < W; x++) memcpy(s + ((size_t)y * W + x) * 4, rgba + (((size_t)y * h / H) * w + (size_t)x * w / W) * 4, 4);
+            free(rgba);
+            rgba = s;
+        }
+        gfx_overlay_add(nm, rgba, W, H);
+    }
+}
+
+static void user_theme_apply(int i)
+{
+    if (i < 0 || i >= utheme_n) return;
+    char dir[160], p[200], v[96];
+    themes_dir(dir);
+    strcat(dir, "/"); strcat(dir, utheme_name[i]);
+    strcpy(p, dir); strcat(p, "/theme.conf");
+    uint8_t *d; uint32_t len;
+    if (uihost_read(p, &d, &len) != 0) return;
+    char *t = malloc(len + 1);
+    if (!t) { free(d); return; }
+    memcpy(t, d, len); t[len] = 0;
+    free(d);
+    ui_set_dark(pref_int(t, "dark", 1));
+    if (conf_str(t, "accent", v, sizeof v)) {
+        uint32_t c = 0;
+        for (const char *q = v[0] == '#' ? v + 1 : v; *q; q++) c = c * 16 + (uint32_t)(*q >= 'a' ? *q - 'a' + 10 : *q >= 'A' ? *q - 'A' + 10 : *q - '0');
+        ui_accent = c & 0xFFFFFF;
+        accent_choice = -1;
+    } else set_accent(0);
+    gfx_overlay_clear();
+    gfx_set_icon_pack(0);
+    if (conf_str(t, "icons", v, sizeof v)) {
+        if (!strcmp(v, "classic")) gfx_set_icon_pack(1);
+        else if (strcmp(v, "whitesur")) { char ip[256]; strcpy(ip, dir); strcat(ip, "/"); strcat(ip, v); user_theme_icons(ip); }
+    }
+    if (conf_str(t, "wallpaper", v, sizeof v)) {
+        if (v[0] >= '0' && v[0] <= '2' && !v[1]) set_wallpaper(v[0] - '0');
+        else { char wp[256]; strcpy(wp, dir); strcat(wp, "/"); strcat(wp, v); if (uihost_set_wallpaper(wp) != 0) set_wallpaper(0); }
+    } else set_wallpaper(0);
+    free(t);
+    utheme_cur = i;
+    dirty = 1;
+}
+
 /* the preset whose settings are all in force, or -1 */
 static int theme_match(void)
 {
@@ -2185,6 +2759,7 @@ int uihost_get(const char *key)
 {
     if (!strcmp(key, "dark")) return ui_theme.dark;
     if (!strcmp(key, "icons")) return gfx_icon_pack();
+    if (!strcmp(key, "usertheme")) return utheme_cur;
     if (!strcmp(key, "theme")) return theme_match();
     if (!strcmp(key, "dock_magnify")) return dock_magnify;
     if (!strcmp(key, "mouse_speed")) return mouse_speed;
@@ -2200,7 +2775,12 @@ int uihost_get(const char *key)
 
 void uihost_set(const char *key, int v)
 {
-    if (!strcmp(key, "dark")) ui_set_dark(v);
+    if (strcmp(key, "usertheme") && (!strcmp(key, "dark") || !strcmp(key, "icons") || !strcmp(key, "theme") || !strcmp(key, "accent") || !strcmp(key, "wallpaper"))) {
+        utheme_cur = -1;                      /* a change of one's own: no user theme is in force any more */
+        if (strcmp(key, "dark") && strcmp(key, "accent") && strcmp(key, "wallpaper")) gfx_overlay_clear();
+    }
+    if (!strcmp(key, "usertheme")) { uihost_user_themes(); user_theme_apply(v); }
+    else if (!strcmp(key, "dark")) ui_set_dark(v);
     else if (!strcmp(key, "icons")) gfx_set_icon_pack(v);
     else if (!strcmp(key, "theme")) {
         if (v >= 0 && v < ui_preset_count) {
@@ -2241,7 +2821,7 @@ static void set_accent(int v)
 
 static void prefs_save(void)
 {
-    char b[256] = "dark=";
+    char b[320] = "dark=";
     char n[12];
     n[0] = 0; fmt_num(n, (uint32_t)ui_theme.dark); strcat(b, n);
     strcat(b, "\nmagnify="); n[0] = 0; fmt_num(n, (uint32_t)dock_magnify); strcat(b, n);
@@ -2253,6 +2833,7 @@ static void prefs_save(void)
     strcat(b, "\nshadows="); n[0] = 0; fmt_num(n, (uint32_t)window_shadows); strcat(b, n);
     strcat(b, "\nindicators="); n[0] = 0; fmt_num(n, (uint32_t)dock_indicators); strcat(b, n);
     strcat(b, "\nicons="); n[0] = 0; fmt_num(n, (uint32_t)gfx_icon_pack()); strcat(b, n);
+    if (utheme_cur >= 0) { strcat(b, "\nusertheme="); strcat(b, utheme_name[utheme_cur]); }
     strcat(b, "\n");
     char p[96];
     prefs_path(p);
@@ -2287,6 +2868,11 @@ static void prefs_load(void)
     window_shadows = pref_int(t, "shadows", 1) ? 1 : 0;
     dock_indicators = pref_int(t, "indicators", 1) ? 1 : 0;
     gfx_set_icon_pack(pref_int(t, "icons", 0));
+    char ut[40];
+    if (conf_str(t, "usertheme", ut, sizeof ut)) {
+        uihost_user_themes();
+        for (int i = 0; i < utheme_n; i++) if (!strcmp(utheme_name[i], ut)) { user_theme_apply(i); break; }
+    }
     int w = pref_int(t, "width", 1280), h = pref_int(t, "height", 720);
     free(d);
     if (w != SW || h != SH) set_resolution(w, h);
@@ -2461,7 +3047,7 @@ static window_t *window_at(int x, int y)
     window_t *hit = 0;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         window_t *w = &windows[i];
-        if (!w->open || w->minimized) continue;
+        if (!w->open || w->minimized || w->space != cur_space) continue;
         if (x >= w->gx && x < w->gx + w->gw && y >= w->gy && y < w->gy + w->gh)
             if (!hit || w->z > hit->z) hit = w;
     }
@@ -2645,6 +3231,28 @@ void wm_gfx_tick(void)
         sheet_input(pressed);
         pressed = 0;
         rpressed = 0;
+    }
+
+    /* desktop shortcuts: Ctrl+Left and Ctrl+Right change the Space, Ctrl+Up and F3 show Mission Control */
+    {
+        int hk = keyboard_hotkey;
+        keyboard_hotkey = 0;
+        keyboard_hotkey_esc = mc.phase == 1;
+        if (hk && session == 0 && !launcher_open && !(sheet.active && !sheet.done) && !menu_which && !drag_win && !resize_win) {
+            if (mc.phase == 0) {
+                if (hk == 5 || hk == 3) mc_open();
+                else if (hk == 1) space_switch(cur_space - 1);
+                else if (hk == 2) space_switch(cur_space + 1);
+            } else if (mc.phase == 1) {
+                if (hk == 5 || hk == 3 || hk == 4 || hk == 6) mc_leave(-1, -1);
+                else if (hk == 1 && cur_space > 0) mc_leave(-1, cur_space - 1);
+                else if (hk == 2 && cur_space < nspaces - 1) mc_leave(-1, cur_space + 1);
+            }
+        }
+        if (mc.phase) {
+            mc_step(pressed, released, moved, btn);
+            if (mc.phase) return;
+        }
     }
 
     if (drag_win) {

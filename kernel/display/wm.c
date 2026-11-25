@@ -382,6 +382,7 @@ static void window_task_entry(void)
 
 void wm_focus_window(window_t *w)
 {
+    if (wm_gfx_mode) wm_gfx_focus_space(w);
     w->minimized = 0;
     w->z = next_z++;
     wm_focused = w;

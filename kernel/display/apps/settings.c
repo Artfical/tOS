@@ -155,7 +155,12 @@ static void draw_section(uiapp_t *a, set_t *st, gfx_surface_t *s, int x, int y, 
             gfx_set_icon_pack(keep);
             gfx_text_center(s, &ui_font_small, bx, by + 74, 112, t->name, UI_TEXT, 255);
         }
-        gy += 120;
+        /* the user's own themes (~/.themes/NAME/theme.conf) */
+        int un = uihost_user_themes(), ucur = uihost_get("usertheme");
+        if (un > 0) {
+            for (int k = 0; k < un; k++) ui_button(s, px + k * 118, gy + 112, 110, 26, uihost_user_theme_name(k), k == ucur ? UI_ACCENT : UI_CARD2, k == ucur ? 0xFFFFFF : UI_TEXT, 0);
+        } else gfx_text(s, &ui_font_small, px, gy + 118, "Your own themes: a folder with a theme.conf in .themes in your home folder", UI_DIM, 255);
+        gy += 150;
         group(s, px, gy, pw, 4);
         row_label(s, px, gy, 0, "Appearance", 0);
         int dark = uihost_get("dark");
@@ -473,7 +478,8 @@ static void s_press(uiapp_t *a, int lx, int ly, int b)
         break;
     case S_APPEARANCE:
         for (int k = 0; k < ui_preset_count; k++) if (ui_hit(lx, ly, px + k * 128, gy + 16, 112, 66)) uihost_set("theme", k);
-        gy += 120;
+        for (int k = 0; k < uihost_user_themes(); k++) if (ui_hit(lx, ly, px + k * 118, gy + 112, 110, 26)) uihost_set("usertheme", k);
+        gy += 150;
         if (ui_hit(lx, ly, px + pw - 214, gy + 8, 200, 28)) uihost_set("dark", lx >= px + pw - 114);
         for (int k = 0; k < 7; k++) if (ui_hit(lx, ly, px + pw - 190 + k * 26 - 11, gy + 44 + 11, 22, 22)) uihost_set("accent", k);
         if (ui_hit(lx, ly, px + pw - 214, gy + 88 + 8, 200, 28)) uihost_set("icons", lx >= px + pw - 114);

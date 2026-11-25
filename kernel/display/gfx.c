@@ -179,6 +179,25 @@ static int images_ready;
 static uint8_t *classic_assets;
 static gfx_image_t classic_images[64];
 static int icon_pack;
+#define OVERLAY_MAX 128
+static gfx_image_t overlay[OVERLAY_MAX];
+static const char *overlay_name[OVERLAY_MAX];
+static int overlay_n;
+
+void gfx_overlay_clear(void)
+{
+    for (int i = 0; i < overlay_n; i++) free((void *)overlay[i].rgba);
+    overlay_n = 0;
+}
+
+int gfx_overlay_add(const char *name, uint8_t *rgba, int w, int h)
+{
+    if (overlay_n >= OVERLAY_MAX) { free(rgba); return -1; }
+    overlay_name[overlay_n] = name;
+    overlay[overlay_n].w = w; overlay[overlay_n].h = h; overlay[overlay_n].rgba = rgba;
+    overlay_n++;
+    return 0;
+}
 
 void gfx_set_icon_pack(int pack)
 {
@@ -202,6 +221,8 @@ int gfx_icon_pack(void) { return icon_pack; }
 const gfx_image_t *gfx_image(const char *name)
 {
     if (!assets) return 0;
+    for (int i = 0; i < overlay_n; i++)
+        if (!strcmp(overlay_name[i], name)) return &overlay[i];
     if (icon_pack == 1)
         for (int i = 0; i < ui_classic_count && i < 64; i++)
             if (!strcmp(ui_classic_images[i].name, name)) return &classic_images[i];

@@ -1,0 +1,64 @@
+# A video of the desktop's animations (the genie, Mission Control, Spaces, the themes ...), recorded in QEMU from a
+# kernel built with ANIM_SLOW=12 so the screen can be followed frame by frame, then played at real speed.
+# Kept as the workflow's artifact and as the "animations" release.
+
+name: record animations
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'kernel/display/**'
+      - 'tools/record-animations.py'
+      - 'tools/qemu_drive.py'
+      - 'docs/themes/**'
+      - '.github/workflows/animations.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install the toolchain, QEMU and ffmpeg
+        timeout-minutes: 25
+        run: |
+          echo 'Acquire::Retries "5"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99retry
+          sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.source 2>/dev/null || true
+          for i in 1 2 3; do
+            timeout 420 sh -c 'sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib g++-multilib qemu-system-x86 ffmpeg fonts-dejavu-core' && break
+            echo "try $i stalled; again"
+          done
+
+      - name: Build the kernel, slowed down twelve times
+        run: |
+          make clean
+          make ANIM_SLOW=12 -j"$(nproc)" kernel/tOS.elf
+          cp initrd.tar initrd-demo.tar
+          # the example themes, where the desktop looks for them
+          tar --append -f initrd-demo.tar --transform 's,^docs/themes/,home/tos/.themes/,' docs/themes/Nord docs/themes/Sunset
+
+      - name: Record
+        timeout-minutes: 90
+        run: python3 -I tools/record-animations.py kernel/tOS.elf initrd-demo.tar tOS-animations.mp4 12
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tOS-animations
+          path: tOS-animations.mp4
+
+      - name: Publish as the animations release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view animations >/dev/null 2>&1 || gh release create animations --prerelease --title "Animations" \
+            --notes "The desktop's animations, recorded by tools/record-animations.py in a GitHub Actions run. Replaced on every change of the desktop."
+          gh release upload animations tOS-animations.mp4 --clobber
+          gh release edit animations --notes "The desktop's animations, recorded by tools/record-animations.py from commit ${GITHUB_SHA::7}. Replaced on every change of the desktop."

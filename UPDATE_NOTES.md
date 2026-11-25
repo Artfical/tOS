@@ -1,18 +1,15 @@
-# Themes and icon packs
+# Spaces, Mission Control, your own themes
+
+## desktop | New
+- Mission Control: Ctrl+Up or F3. The windows of a Space fly out to a grid (smoothly scaled, titles under them) and the Spaces show along the top. Click a window to bring it forward, click a Space to go there, drag a window onto a Space to move it (onto + for a new one), click + to add a Space (four at most), the minus in a Space's corner closes it. Esc, Ctrl+Down or F3 leave.
+- Spaces: Ctrl+Left and Ctrl+Right slide the desktop sideways like the Mac's while the Dock and the top bar stay. A new window opens in the current Space, and a click on a Dock icon whose app is in another Space goes there. (In a Terminal running a Linux program, use Ctrl+Alt+arrows.)
 
 ## settings | New
-- Themes: System Settings > Appearance has a Theme row with four ready-made themes. One click sets light or dark, the accent colour, the wallpaper and the icons together: **tOS** (dark, blue, Dusk), **Classic** (light, Graphite, the old icons), **Midnight** (dark, purple, Graphite) and **Ocean** (light, green, Ocean). The one in force is outlined; changing any single setting afterwards leaves the row without a selection.
-- Icon packs: a new Icons switch chooses **WhiteSur** (the macOS-like icons, as now) or **Classic** (tOS's own icons from before build 577). It changes every app icon, the Dock, the launcher, Files, notifications and the document, folder and disk icons at once.
-- The choice is kept in `~/.desktop` (`icons=`), like the other desktop settings.
-
-## settings | Changed
-- The Appearance page no longer has the two Light and Dark preview pictures (the Light/Dark switch and the themes replace them).
+- Your own themes: a folder `~/.themes/NAME` with a `theme.conf` (`dark=`, `accent=RRGGBB`, `wallpaper=`, `icons=`) and, if you like, an icons folder of PNGs named like the pictures they replace (`icon48_files.png`). They show as buttons in Settings > Appearance under the four ready-made themes, and the choice is kept. Examples: `docs/themes` (Nord, Sunset).
 
 ## terminal | Developers
-- `gfx_set_icon_pack()` and `gfx_icon_pack()` in `gfx.h`: `gfx_image()` looks in the selected pack first, so any app gets the pack's icons without changes. `ui_presets` in `uiapp.h` lists the themes; `uihost_set("theme", n)` applies one. `tools/gen_classic_icons.py` builds the Classic pack (`ui_classic.c`, 59 icons, 78 KB packed) from the old and the current `ui_assets.c`.
+- The animations are recorded on video by GitHub Actions on every change of the desktop (the release "animations"): `tools/record-animations.py` drives QEMU (`tools/qemu_drive.py`) from a kernel built with `make ANIM_SLOW=12`, which runs them twelve times slower so the screen can be followed, and plays them back at real speed.
+- `gfx_overlay_add()` puts pictures in front of the icon packs; `window_t` has a `space`; Ctrl+arrows and F3 reach the desktop before any app (`keyboard_hotkey`).
 
-## files | New
-- Double-clicking a Windows program (.exe) or installer (.msi) opens it with Wine, once Wine is installed.
-
-## terminal | Changed
-- Kernel support for Wine 10: faults reach signal handlers, per-thread GS base, `tgkill`, socket `stat`, shared memory that outlives its mapper, `epoll_create`, `getxattr`, file descriptors passed with SCM_RIGHTS, up to 40 processes and 512 open files.
+## terminal | Documentation
+- New page: Spaces and Mission Control. Settings explains your own themes and the theme.conf format.

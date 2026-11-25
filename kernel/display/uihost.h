@@ -57,6 +57,9 @@ const char *uihost_hostname(void);
 /* desktop settings: "dark", "dock_magnify", "mouse_speed", "wallpaper" (0-3), "width", "height";
  * set also takes "resolution" (an index into 1024x768, 1280x720, 1366x768, 1600x900, 1920x1080) */
 int  uihost_get(const char *key);
+/* the user's own themes: folders in ~/.themes with a theme.conf (dark=, accent=RRGGBB, wallpaper=, icons=); uihost_set("usertheme", i) applies one */
+int  uihost_user_themes(void);                 /* how many (looked for again every few seconds) */
+const char *uihost_user_theme_name(int i);
 void uihost_set(const char *key, int value);
 
 /* accounts */

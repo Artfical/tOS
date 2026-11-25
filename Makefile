@@ -26,6 +26,9 @@ CFLAGS = -MMD -MP $(ARCH_CFLAGS) -ffreestanding -nostdlib -nostartfiles -nodefau
          -Ikernel/micropython/ports/tos \
          -Ikernel/audio
 
+ifdef ANIM_SLOW
+CFLAGS += -DANIM_SLOW=$(ANIM_SLOW)      # slow motion, for recording the desktop's animations (tools/record-animations.py)
+endif
 ifeq ($(FPU_CONTEXT_SELFTEST),1)
 CFLAGS += -DTOS_FPU_CONTEXT_SELFTEST
 kernel/core/kernel.o kernel/core/scheduler.o: FORCE

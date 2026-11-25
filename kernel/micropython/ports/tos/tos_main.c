@@ -17,7 +17,7 @@
  * past that cannot be started from there (kexec refuses an image that overlaps its own source: build 580,
  * 2.6 MB larger, ended past 574-576's 0x20A15000-0x20A1E000). It went from 504 to 503 MB when the kernel
  * gained the Linux ABI and sockets, so the kernel still ends below 583-592's 0x20596000-0x20597000. */
-static char heap[498 * 1024 * 1024];     /* (shrunk by what the process table grew: 40 processes of 512 descriptors, so the kernel still ends before 0x205A0000) */
+static char heap[497 * 1024 * 1024];     /* (shrunk by what the process table, Spaces and the user themes grew, so the kernel still ends before 0x205A0000) */
 
 void tos_module_init(void);
 void tosgui_module_init(void);
