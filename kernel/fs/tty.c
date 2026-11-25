@@ -222,7 +222,7 @@ static int signal_waiting(void)
 {
     proc_t *p = proc_current();
     task_t *t = task_current();
-    return p && t && (p->sig_pending & ~t->sig_blocked);
+    return p && t && ((p->sig_pending | t->sig_tpending) & ~t->sig_blocked);
 }
 
 /* the shell waits for a program that may never read the terminal: ^C and ^Z in the keyboard queue still reach it */

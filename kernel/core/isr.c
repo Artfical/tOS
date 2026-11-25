@@ -129,6 +129,12 @@ void isr_handler(registers_t *regs)
     }
 
     if (regs->int_no < 32 && (regs->cs & 3) == 3 && proc_current()) {
+        {                                                    /* a 64-bit program with a handler for the signal this fault is: it runs the handler */
+            extern int linux64_fault_signal(registers_t *r, int vector, uint64_t cr2, uint64_t err);
+            uint64_t fcr2 = 0;
+            if (regs->int_no == 14) asm volatile("mov %%cr2, %0" : "=r"(fcr2));
+            if (linux64_fault_signal(regs, (int)regs->int_no, fcr2, regs->err_code)) return;
+        }
         /* a user program misbehaved: that program ends, the system carries on */
         proc_t *p = proc_current();
         uint64_t cr2 = 0;

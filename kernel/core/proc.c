@@ -718,6 +718,7 @@ int proc_execve_argv(const char *path_in, const char *const argv[], const char *
         t->tls_base = t->tls_limit = t->tls_flags = 0;
     }
     t->fs_base = 0;
+    t->gs_base = 0;
     for (int i = 1; i <= 64; i++)                       /* handlers do not survive; ignoring does */
         if (p->sig_handler[i] > 1) { p->sig_handler[i] = 0; p->sig_flags[i] = 0; }
     p->pgdir = dir;
@@ -1074,7 +1075,7 @@ int proc_wait_child_ex2(int pid, int nohang, int untraced, int continued, int re
         }
         if (!any) return -ECHILD;
         if (nohang) return 0;
-        if (me->sig_pending & ~task_current()->sig_blocked) return -EINTR;
+        if ((me->sig_pending | task_current()->sig_tpending) & ~task_current()->sig_blocked) return -EINTR;
         task_sleep(10);
     }
 }

@@ -72,6 +72,6 @@ A program that draws to the Linux framebuffer can open `/dev/fb0` and gets a tOS
 
 ## Related
 
-- [SDL 2](/tos/dev-sdl) and [Qt](/tos/dev-qt).
+- [SDL 2](/tos/dev-sdl), [Qt](/tos/dev-qt) and [Wine](/tos/dev-wine) (Windows programs).
 - [Python](/tos/dev-python) and [Linux programs](/tos/linux-programs).
 - [Troubleshooting](/tos/troubleshooting) if the window does not open.

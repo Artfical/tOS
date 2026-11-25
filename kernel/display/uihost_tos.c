@@ -101,6 +101,20 @@ void uihost_open(const char *app_id, const char *path)
         for (const char *q = path; *q && o < (int)sizeof(cmd) - 1; q++) cmd[o++] = *q;
         cmd[o] = 0;
         wm_open_terminal(cmd);
+    } else if (!strcmp(app_id, "wine") && path) {                    /* a Windows program or installer: Wine's own command, in a Terminal (tos-x gives it the X server) */
+        char cmd[250] = "tos-x wine ";
+        int o = 11;
+        const char *dot = 0;
+        for (const char *q = path; *q; q++) if (*q == '.') dot = q;
+        if (dot && (dot[1] == 'm' || dot[1] == 'M') && (dot[2] == 's' || dot[2] == 'S') && (dot[3] == 'i' || dot[3] == 'I' || dot[3] == 'p' || dot[3] == 'P') && !dot[4]) {
+            for (const char *q = "msiexec /i "; *q; q++) cmd[o++] = *q;          /* an installer: msiexec /i (a patch, .msp, is opened as one too) */
+            if (dot[3] == 'p' || dot[3] == 'P') { o -= 3; for (const char *q = "/p "; *q; q++) cmd[o++] = *q; }
+        }
+        cmd[o++] = '"';
+        for (const char *q = path; *q && o < (int)sizeof(cmd) - 2; q++) cmd[o++] = *q;
+        cmd[o++] = '"';
+        cmd[o] = 0;
+        wm_open_terminal(cmd);
     } else if (!strcmp(app_id, "music")) wm_open_app("mediaplayer");
     else wm_open_app(app_id);
 }

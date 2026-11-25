@@ -195,6 +195,8 @@ int task_spawn_user_thread(const registers_t *regs, uint64_t child_stack,
     t->tls_flags = tls_flags;
     t->sig_blocked = current ? current->sig_blocked : 0;
     t->fs_base = current ? current->fs_base : 0;
+    t->gs_base = current ? current->gs_base : 0;
+    t->sig_tpending = 0;
     t->user_thread = 1;
     t->in_use = 1;
     t->state = TASK_STATE_READY;
@@ -245,6 +247,8 @@ int task_spawn_fork(const registers_t *regs, const uint8_t *fpu, void *proc, uin
     t->pid = next_pid++;
     t->thread_group = t->pid;
     t->fs_base = current->fs_base;
+    t->gs_base = current->gs_base;
+    t->sig_tpending = 0;
     t->sig_blocked = current->sig_blocked;
     t->tls_gdt_entry = tls_gdt_entry;
     t->tls_base = current->tls_base;
@@ -472,8 +476,9 @@ uint64_t timer_handler(uint64_t esp)
     }
     /* FS base: a 64-bit program's thread pointer */
     {
-        uint64_t fs = current->fs_base;
+        uint64_t fs = current->fs_base, gs = current->gs_base;
         asm volatile("wrmsr" : : "c"(0xC0000100u), "a"((uint32_t)fs), "d"((uint32_t)(fs >> 32)));
+        asm volatile("wrmsr" : : "c"(0xC0000101u), "a"((uint32_t)gs), "d"((uint32_t)(gs >> 32)));
     }
     return current->esp;
 }

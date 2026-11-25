@@ -34,10 +34,30 @@
 .endm
 
 /* fs is not reloaded: a 64-bit program's thread pointer is the FS base, which the scheduler keeps
- * per task, and loading a selector could clear it. gs is (32-bit programs' TLS lives there). */
+ * per task, and loading a selector could clear it. gs is reloaded only when it holds a selector (32-bit programs' TLS lives
+ * there): a 64-bit program's gs is 0 and its GS base (Wine keeps the TEB there) is kept per task by the scheduler like FS,
+ * and loading even a null selector would clear it. */
 .macro RESTORE_REGS
     popq %rax
+    movl %gs, %ecx
+    cmpl %eax, %ecx
+    je 1f                       /* that selector is in place already: GS and its base are left alone */
+    testl %eax, %eax
+    jnz 2f                      /* a selector to load */
+    movl $0xC0000101, %ecx      /* selector 0 wanted, another one is loaded: load 0, but keep the GS base (loading clears it) */
+    rdmsr
+    pushq %rax
+    pushq %rdx
+    xorl %eax, %eax
     movl %eax, %gs
+    popq %rdx
+    popq %rax
+    movl $0xC0000101, %ecx
+    wrmsr
+    jmp 1f
+2:
+    movl %eax, %gs
+1:
     addq $8, %rsp
     popq %rax
     movl %eax, %es

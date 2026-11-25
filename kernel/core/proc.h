@@ -13,8 +13,8 @@
  * same permission checks as the shell's. A fault in ring 3 ends that process, not the system.
  */
 
-#define PROC_MAX     32
-#define PROC_MAX_FDS 64
+#define PROC_MAX     40
+#define PROC_MAX_FDS 512
 #define PROC_EXEC_MAX_ARGS 1024
 #define PROC_EXEC_MAX_ENV  1024
 #define PROC_EXEC_ARG_MAX  65536             /* one string */

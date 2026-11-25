@@ -227,6 +227,7 @@ KERNEL_OBJS = \
     kernel/display/bootlogo.o \
     kernel/display/gfx.o \
     kernel/display/ui_assets.o \
+    kernel/display/ui_classic.o \
     kernel/display/uiapp.o \
     kernel/display/uifiles.o \
     kernel/display/uihost_tos.o \

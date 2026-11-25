@@ -28,6 +28,14 @@ ui_theme_t ui_theme = {
     0x2C2E37, 0x24252C, 0xF2F3F5, 0x26272E, 0x101015, 120, 0xF2F3F5,
 };
 
+const ui_preset_t ui_presets[] = {
+    { "tOS",      1, 0, 0, 0 },     /* dark, blue, Dusk, WhiteSur icons */
+    { "Classic",  0, 0, 2, 1 },     /* light, Graphite, the old icons */
+    { "Midnight", 1, 1, 2, 0 },     /* dark, purple, Graphite */
+    { "Ocean",    0, 6, 1, 0 },     /* light, green, Ocean */
+};
+const int ui_preset_count = (int)(sizeof(ui_presets) / sizeof(ui_presets[0]));
+
 void ui_set_dark(int dark) { ui_theme = dark ? dark_theme : light_theme; }
 
 uint32_t ui_accent = 0x3B82F6;

@@ -515,6 +515,14 @@ int lsock_unix_bind(int s, const char *abs_path)
     return 0;
 }
 
+/* is abs_path the file of a bound AF_UNIX socket: stat on it says "socket", as it does on Linux (Wine checks) */
+int lsock_unix_path_bound(const char *abs_path)
+{
+    for (int i = 0; i < LSOCK_MAX; i++)
+        if (socks[i].used && socks[i].un && socks[i].un_path[0] && socks[i].un_path[0] != '@' && !strcmp(socks[i].un_path, abs_path)) return 1;
+    return 0;
+}
+
 int lsock_unix_connect(int s, const char *abs_path)
 {
     lsock_t *k = get(s);

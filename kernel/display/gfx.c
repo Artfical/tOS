@@ -176,9 +176,35 @@ void gfx_copy_rect(gfx_surface_t *dst, const gfx_surface_t *src, int x, int y, i
 static gfx_image_t images[256];
 static int images_ready;
 
+static uint8_t *classic_assets;
+static gfx_image_t classic_images[64];
+static int icon_pack;
+
+void gfx_set_icon_pack(int pack)
+{
+    if (pack == 1 && !classic_assets) {
+        uint8_t *buf = malloc(ui_classic_raw_len + 16);
+        uint32_t got = 0;
+        if (!buf) return;
+        if (inflate_raw_buffer(ui_classic_blob, ui_classic_len, buf, ui_classic_raw_len, &got) != 0 || got != ui_classic_raw_len) { free(buf); return; }
+        classic_assets = buf;
+        for (int i = 0; i < ui_classic_count && i < 64; i++) {
+            classic_images[i].w = ui_classic_images[i].w;
+            classic_images[i].h = ui_classic_images[i].h;
+            classic_images[i].rgba = buf + ui_classic_images[i].off;
+        }
+    }
+    icon_pack = pack == 1 ? 1 : 0;
+}
+
+int gfx_icon_pack(void) { return icon_pack; }
+
 const gfx_image_t *gfx_image(const char *name)
 {
     if (!assets) return 0;
+    if (icon_pack == 1)
+        for (int i = 0; i < ui_classic_count && i < 64; i++)
+            if (!strcmp(ui_classic_images[i].name, name)) return &classic_images[i];
     if (!images_ready) {
         for (int i = 0; i < ui_image_count && i < 256; i++) {
             images[i].w = ui_images[i].w;

@@ -140,6 +140,10 @@
           "label": "DRM and KMS"
         },
         {
+          "slug": "dev-wine",
+          "label": "Wine (Windows programs)"
+        },
+        {
           "slug": "dev-shell",
           "label": "Shell scripting"
         },

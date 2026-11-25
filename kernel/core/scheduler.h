@@ -25,6 +25,8 @@ typedef struct task {
     uint32_t thread_group;
     uint64_t clear_tid;
     uint64_t fs_base;       /* a 64-bit program's thread pointer (arch_prctl, clone) */
+    uint64_t sig_tpending;  /* signals sent to this thread alone (tgkill) */
+    uint64_t gs_base;       /* its GS base (arch_prctl ARCH_SET_GS: Wine keeps the thread's TEB there) */
     uint64_t sig_blocked;   /* signals this thread does not take now (bit n-1 = signal n) */
     uint64_t alt_sp, alt_size;   /* sigaltstack: where this thread's SA_ONSTACK handlers run (alt_size 0: none) */
     uint32_t alt_flags;

@@ -27,6 +27,7 @@ int      lsock_pending(int s);                /* bytes that can be read now (FIO
 int      lsock_is_stream(int s);
 int      lsock_is_unix(int s);                /* AF_UNIX (a stream, inside this machine) */
 int      lsock_unix_bind(int s, const char *abs_path);       /* abs_path: the file (or "@name" for an abstract one) */
+int      lsock_unix_path_bound(const char *abs_path);         /* a bound socket's file */
 int      lsock_unix_connect(int s, const char *abs_path);    /* 0, or -ECONNREFUSED */
 int      lsock_unix_pair(int *a, int *b);     /* two connected AF_UNIX sockets (socketpair): 0, or an error */
 int      lsock_unix_peer(int s);              /* the socket on the other end, or -1 */

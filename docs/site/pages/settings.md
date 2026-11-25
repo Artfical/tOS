@@ -1,5 +1,5 @@
 title: Settings
-lede: System Settings changes how tOS looks and behaves: appearance, wallpaper, dock, display size, and updates.
+lede: System Settings changes how tOS looks and behaves: themes, icons, appearance, wallpaper, dock, display size, and updates.
 icon: settings
 ---
 Open **System Settings** from the Launcher or the dock. The sidebar on the left lists the panes, and the **Search** box at the top finds one by name.
@@ -11,7 +11,7 @@ Open **System Settings** from the Launcher or the dock. The sidebar on the left 
 | Pane | What it holds |
 |---|---|
 | **Network** | The network settings |
-| **Appearance** | Light or dark, the accent colour, window shadows |
+| **Appearance** | Themes, light or dark, the accent colour, the icon pack, window shadows |
 | **Desktop & Dock** | The wallpaper, dock magnification and the open-app dots |
 | **Displays** | The screen size |
 | **Mouse** | The mouse settings |
@@ -23,7 +23,18 @@ The account at the top of the sidebar shows your name and picture.
 
 ## Appearance
 
-Choose **Light** or **Dark**. The whole desktop follows it: windows, the dock, the menus and the apps. Pick an **accent colour** (blue, purple, pink, red, orange, yellow or green) for selections and buttons. **Window shadows** turns the shadows under windows on or off.
+At the top, four ready-made **themes**. One click sets light or dark, the accent colour, the wallpaper and the icons together:
+
+| Theme | Look |
+|---|---|
+| **tOS** | Dark, blue accent, the Dusk wallpaper, WhiteSur icons |
+| **Classic** | Light, Graphite wallpaper, the old tOS icons |
+| **Midnight** | Dark, purple accent, Graphite wallpaper |
+| **Ocean** | Light, green accent, Ocean wallpaper |
+
+The theme in force has an outline. Change any single setting below and no theme is outlined any more; your choices stay as you made them.
+
+Under the themes, choose **Light** or **Dark**. The whole desktop follows it: windows, the dock, the menus and the apps. Pick an **accent colour** (blue, purple, pink, red, orange, yellow or green) for selections and buttons. **Icons** switches between **WhiteSur** (the macOS-like icons) and **Classic** (tOS's own icons from before build 577); it changes the Dock, the launcher, Files, notifications and the file, folder and disk icons at once. **Window shadows** turns the shadows under windows on or off. Everything is kept in `.desktop` in your home folder.
 
 ![Appearance, in the dark](shot:settings_accent.png)
 
@@ -47,6 +58,8 @@ The screen sizes the display supports: 1024x768, 1280x720 (the default), 1366x76
 |---|---|
 | Use the dark appearance | Settings, Appearance, choose **Dark** |
 | Change the accent colour | Settings, Appearance, click a colour |
+| Switch the whole look | Settings, Appearance, click a theme (tOS, Classic, Midnight, Ocean) |
+| Use the old icons | Settings, Appearance, Icons, **Classic** |
 | Change the wallpaper | Settings, Desktop & Dock, choose *Dusk*, *Ocean*, *Graphite* or *Picture* |
 | Use one of your own pictures | In Files, open the picture in the Image Viewer and choose **Set as Wallpaper**, or pick *Picture* here |
 | Hide the dots under running apps | Settings, Desktop & Dock, turn off **Show indicators for open apps** |

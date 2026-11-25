@@ -32,6 +32,7 @@ static int has_ext(const char *name, const char *exts)
 #define TEXT_EXT "txt md c h py sh cfg conf log json ini csv ts rc"
 #define AUD_EXT  "mp3 wav aac m4a"
 #define WEB_EXT  "html htm svg"
+#define WIN_EXT  "exe msi msp bat"      /* Windows programs and installers: Wine (the wine package) opens them */
 
 const char *ui_file_kind(const char *name, int is_dir)
 {
@@ -40,6 +41,7 @@ const char *ui_file_kind(const char *name, int is_dir)
     if (has_ext(name, "pdf")) return "pdf";
     if (has_ext(name, AUD_EXT)) return "audio";
     if (has_ext(name, "t")) return "app";
+    if (has_ext(name, WIN_EXT)) return "windows";
     if (has_ext(name, WEB_EXT)) return "web";
     if (has_ext(name, TEXT_EXT) || !strchr(name, '.')) return "text";
     return "generic";
@@ -50,7 +52,7 @@ const gfx_image_t *ui_file_icon(const char *name, int is_dir, int big)
     char n[32];
     const char *k = ui_file_kind(name, is_dir);
     strcpy(n, big ? "doc64_" : "doc20_");
-    strcat(n, !strcmp(k, "web") ? "text" : k);
+    strcat(n, !strcmp(k, "web") ? "text" : !strcmp(k, "windows") ? "app" : k);
     return gfx_image(n);
 }
 
@@ -63,6 +65,7 @@ void ui_file_open(const char *path, int is_dir)
     else if (!strcmp(k, "audio")) uihost_open("music", path);
     else if (!strcmp(k, "app")) uihost_open("run", path);
     else if (!strcmp(k, "web")) uihost_open("tfire", path);
+    else if (!strcmp(k, "windows")) uihost_open("wine", path);
     else uihost_open("notepad", path);
 }
 

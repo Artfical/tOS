@@ -95,6 +95,10 @@ void ui_set_dark(int dark);
 #define UI_STATUS   (ui_theme.status)
 #define UI_FIELD    (ui_theme.field)
 #define UI_SELECT   (ui_theme.select)
+/* whole-desktop presets: light or dark, accent, wallpaper and icon pack in one choice */
+typedef struct { const char *name; int dark, accent, wallpaper, icons; } ui_preset_t;
+extern const ui_preset_t ui_presets[];
+extern const int ui_preset_count;
 extern uint32_t ui_accent;          /* chosen in Settings > Appearance */
 #define UI_ACCENT   (ui_accent)
 #define UI_GREEN    0x22C55E

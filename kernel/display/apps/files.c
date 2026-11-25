@@ -50,6 +50,7 @@ static const char *kind_name(const uihost_entry_t *e)
     if (!strcmp(k, "pdf")) return "PDF document";
     if (!strcmp(k, "audio")) return "Audio";
     if (!strcmp(k, "app")) return "tOS program";
+    if (!strcmp(k, "windows")) return "Windows program";
     if (!strcmp(k, "web")) return "Web page";
     if (!strcmp(k, "text")) return "Plain text";
     return "Document";

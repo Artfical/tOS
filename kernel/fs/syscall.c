@@ -462,12 +462,25 @@ int scm_send_fds(int sock_fd, const int *fds, int n)
     if (!scm_ready) { for (int i = 0; i < PROC_MAX_FDS; i++) scm_holder.fd[i] = -1; scm_ready = 1; }
     for (int k = 0; k < n; k++) {
         int fd = fds[k];
-        if (fd < 3 || fd - 3 >= PROC_MAX_FDS || p->fd[fd - 3] == -1) return -EBADF;
         int q = -1, hs = -1;
         for (int i = 0; i < 16; i++) if (!scm_q[i].used) { q = i; break; }
         for (int i = 0; i < PROC_MAX_FDS; i++) if (scm_holder.fd[i] == -1) { hs = i; break; }
         if (q < 0 || hs < 0) return -ENFILE;
-        int r = syscall_fd_inherit(p, fd - 3, &scm_holder, hs);
+        int ss = fd - 3;                                    /* the slot that holds it */
+        if (fd >= 0 && fd <= 2) {                           /* 0, 1, 2: what dup2 put there, or else the console (Wine sends its standard handles) */
+            if (p->std_fd[fd] > 2) ss = p->std_fd[fd] - 3;
+            else {
+                scm_holder.fd[hs] = PROC_FD_CONSOLE(fd);
+                scm_holder.fd_flags[hs] = 0;
+                scm_holder.fd_open_flags[hs] = 2u;
+                scm_holder.fdpath[hs][0] = 0;
+                scm_holder.fd_dir_offset[hs] = 0;
+                scm_q[q].used = 1; scm_q[q].key = key; scm_q[q].hslot = hs; scm_q[q].grp = grp;
+                continue;
+            }
+        }
+        if (ss < 0 || ss >= PROC_MAX_FDS || p->fd[ss] == -1) return -EBADF;
+        int r = syscall_fd_inherit(p, ss, &scm_holder, hs);
         if (r < 0) return r;
         scm_q[q].used = 1; scm_q[q].key = key; scm_q[q].hslot = hs; scm_q[q].grp = grp;
     }
@@ -515,7 +528,7 @@ static int linux_signal_waiting(void)
     task_t *t = task_current();
     proc_timers_poll(p);
     proc_stop_wait(p);                                   /* ^Z: held here until SIGCONT */
-    return p && t && (p->sig_pending & ~t->sig_blocked);
+    return p && t && ((p->sig_pending | t->sig_tpending) & ~t->sig_blocked);
 }
 
 static int is_std_target(proc_t *p, int fd)
@@ -2414,8 +2427,10 @@ static uint32_t linux_clone(registers_t *regs, uint32_t flags, uint64_t child_st
     }
     {
         task_t *child = task_by_pid((uint32_t)tid);
-        if (child && p->linux_abi == 2)
+        if (child && p->linux_abi == 2) {
             child->fs_base = (flags & LINUX_CLONE_SETTLS) ? tls_ptr : parent->fs_base;
+            child->gs_base = parent->gs_base;
+        }
     }
     if ((flags & LINUX_CLONE_CHILD_SETTID) && child_tid)
         *(uint32_t *)(uintptr_t)child_tid = (uint32_t)tid;
@@ -4124,6 +4139,18 @@ int lx_stat_at(int dirfd, uint64_t path_ptr, uint32_t flags, linux_stat64_t *st)
     if (moved) vfs_chdir(saved);
     if (sr != 0) return denied ? -EACCES : -ENOENT;
     linux_stat64_fill(st, &entry);
+    {                                                       /* the file of a bound socket is a socket (Wine's client checks this) */
+        char full[VFS_NAME_LEN];
+        if (path[0] == '/') { strncpy(full, path, sizeof(full) - 1); full[sizeof(full) - 1] = 0; }
+        else {
+            vfs_getcwd(full, sizeof(full));
+            size_t l = strlen(full);
+            if (l && full[l - 1] != '/' && l + 1 < sizeof(full)) full[l++] = '/';
+            strncpy(full + l, path, sizeof(full) - l - 1);
+            full[sizeof(full) - 1] = 0;
+        }
+        if (lsock_unix_path_bound(full)) st->st_mode = 0140000u | (st->st_mode & 07777u);
+    }
     return 0;
 }
 

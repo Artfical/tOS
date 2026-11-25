@@ -154,7 +154,7 @@ static int signal_waiting(void)
 {
     proc_t *p = proc_current();
     task_t *t = task_current();
-    return p && t && (p->sig_pending & ~t->sig_blocked);
+    return p && t && ((p->sig_pending | t->sig_tpending) & ~t->sig_blocked);
 }
 
 int pty_new(void)

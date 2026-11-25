@@ -41,6 +41,8 @@ void gfx_shadow(gfx_surface_t *s, int x, int y, int w, int h, int strength);   /
 void gfx_copy_rect(gfx_surface_t *dst, const gfx_surface_t *src, int x, int y, int w, int h);
 
 const gfx_image_t *gfx_image(const char *name);
+void gfx_set_icon_pack(int pack);       /* 0 WhiteSur, 1 Classic: the pictures gfx_image() finds first */
+int gfx_icon_pack(void);
 void gfx_blit(gfx_surface_t *s, const gfx_image_t *im, int x, int y, int alpha);
 void gfx_blit_scaled(gfx_surface_t *s, const gfx_image_t *im, int x, int y, int w, int h, int alpha);
 void gfx_blit_tinted(gfx_surface_t *s, const gfx_image_t *im, int x, int y, uint32_t c, int alpha);  /* uses only alpha */

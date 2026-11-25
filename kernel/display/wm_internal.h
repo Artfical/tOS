@@ -39,7 +39,7 @@ typedef struct {
     int z;
     int kind;
     char title[40];
-    char initial_cmd[64];
+    char initial_cmd[256];                 /* (a long command: tos-x wine msiexec /i "a long path") */
     int x0, y0, w0, h0;
     int rest_x0, rest_y0, rest_w0, rest_h0;
     int tb_x0, tb_x1;

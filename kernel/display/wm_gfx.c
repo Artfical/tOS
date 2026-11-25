@@ -2172,9 +2172,20 @@ static void set_wallpaper(int choice);
 static void prefs_save(void);
 static void set_accent(int v);
 
+/* the preset whose settings are all in force, or -1 */
+static int theme_match(void)
+{
+    for (int i = 0; i < ui_preset_count; i++)
+        if (ui_presets[i].dark == ui_theme.dark && ui_presets[i].accent == accent_choice &&
+            ui_presets[i].wallpaper == wallpaper_choice && ui_presets[i].icons == gfx_icon_pack()) return i;
+    return -1;
+}
+
 int uihost_get(const char *key)
 {
     if (!strcmp(key, "dark")) return ui_theme.dark;
+    if (!strcmp(key, "icons")) return gfx_icon_pack();
+    if (!strcmp(key, "theme")) return theme_match();
     if (!strcmp(key, "dock_magnify")) return dock_magnify;
     if (!strcmp(key, "mouse_speed")) return mouse_speed;
     if (!strcmp(key, "wallpaper")) return wallpaper_choice;
@@ -2190,6 +2201,13 @@ int uihost_get(const char *key)
 void uihost_set(const char *key, int v)
 {
     if (!strcmp(key, "dark")) ui_set_dark(v);
+    else if (!strcmp(key, "icons")) gfx_set_icon_pack(v);
+    else if (!strcmp(key, "theme")) {
+        if (v >= 0 && v < ui_preset_count) {
+            ui_set_dark(ui_presets[v].dark); set_accent(ui_presets[v].accent);
+            set_wallpaper(ui_presets[v].wallpaper); gfx_set_icon_pack(ui_presets[v].icons);
+        }
+    }
     else if (!strcmp(key, "dock_magnify")) dock_magnify = v;
     else if (!strcmp(key, "mouse_speed")) mouse_speed = v;
     else if (!strcmp(key, "wallpaper")) set_wallpaper(v);
@@ -2234,6 +2252,7 @@ static void prefs_save(void)
     strcat(b, "\naccent="); n[0] = 0; fmt_num(n, (uint32_t)accent_choice); strcat(b, n);
     strcat(b, "\nshadows="); n[0] = 0; fmt_num(n, (uint32_t)window_shadows); strcat(b, n);
     strcat(b, "\nindicators="); n[0] = 0; fmt_num(n, (uint32_t)dock_indicators); strcat(b, n);
+    strcat(b, "\nicons="); n[0] = 0; fmt_num(n, (uint32_t)gfx_icon_pack()); strcat(b, n);
     strcat(b, "\n");
     char p[96];
     prefs_path(p);
@@ -2267,6 +2286,7 @@ static void prefs_load(void)
     set_accent(pref_int(t, "accent", 0));
     window_shadows = pref_int(t, "shadows", 1) ? 1 : 0;
     dock_indicators = pref_int(t, "indicators", 1) ? 1 : 0;
+    gfx_set_icon_pack(pref_int(t, "icons", 0));
     int w = pref_int(t, "width", 1280), h = pref_int(t, "height", 720);
     free(d);
     if (w != SW || h != SH) set_resolution(w, h);

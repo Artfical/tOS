@@ -408,12 +408,13 @@ static const char *fd_path(proc_t *p, int fd)
 /* ---- MAP_SHARED: pages that stay shared between a program and its children, and between programs that map the same file.
  * A file's shared pages are kept in a segment (by the file's name) that outlives the mappings until the file is removed;
  * they start as the file's bytes, and what is written into them is not written back to the file. ---- */
-typedef struct { int used; char path[VFS_NAME_LEN]; uint32_t npages; uint32_t *pg; } shseg_t;
-static shseg_t shsegs[24];
+#define SHSEGS 96
+typedef struct { int used, orphan; char path[VFS_NAME_LEN]; uint32_t npages; uint32_t *pg; } shseg_t;   /* orphan: the file was unlinked, the mappings (and a descriptor) still name it */
+static shseg_t shsegs[SHSEGS];
 
 static shseg_t *shseg_find(const char *path)
 {
-    for (int i = 0; i < 24; i++) if (shsegs[i].used && !strcmp(shsegs[i].path, path)) return &shsegs[i];
+    for (int i = 0; i < SHSEGS; i++) if (shsegs[i].used && !strcmp(shsegs[i].path, path)) return &shsegs[i];
     return 0;
 }
 
@@ -443,19 +444,26 @@ static uint32_t shseg_page(shseg_t *s, uint32_t idx)
     return s->pg[idx];
 }
 
-void lx_shseg_drop(const char *path)                      /* the file is gone: so is what was shared through it (the mappings keep their pages) */
+static void shseg_free(shseg_t *s)
 {
-    shseg_t *s = shseg_find(path);
-    if (!s) return;
     for (uint32_t i = 0; i < s->npages; i++) if (s->pg[i]) free_physical_page(s->pg[i]);
     free(s->pg);
     memset(s, 0, sizeof(*s));
 }
 
+/* the file is unlinked: its name is gone but what is mapped through it stays, and so does the segment, because a program that has the
+ * file open (Wine's server passes such descriptors to its clients, and they map the same pages) is mapped to the same pages by its
+ * path. It ends when a new file is made under the name (map_shared). */
+void lx_shseg_drop(const char *path)
+{
+    shseg_t *s = shseg_find(path);
+    if (s) s->orphan = 1;
+}
+
 void lx_shseg_rename(const char *from, const char *to)
 {
     shseg_t *s = shseg_find(from);
-    if (s) { lx_shseg_drop(to); strncpy(s->path, to, VFS_NAME_LEN - 1); s->path[VFS_NAME_LEN - 1] = 0; }
+    if (s) { shseg_t *old = shseg_find(to); if (old) shseg_free(old); s->orphan = 0; strncpy(s->path, to, VFS_NAME_LEN - 1); s->path[VFS_NAME_LEN - 1] = 0; }
 }
 
 /* the pages of a MAP_SHARED mapping: made now (the file's segment's, or fresh zero ones), each one more owner */
@@ -464,7 +472,8 @@ static int map_shared(proc_t *p, const char *path, uint64_t off, uint64_t start,
     shseg_t *seg = 0;
     if (path) {
         seg = shseg_find(path);
-        if (!seg) for (int i = 0; i < 24; i++) if (!shsegs[i].used) { seg = &shsegs[i]; seg->used = 1; strncpy(seg->path, path, VFS_NAME_LEN - 1); seg->path[VFS_NAME_LEN - 1] = 0; break; }
+        if (seg && seg->orphan && fsbridge_exists(path)) { shseg_free(seg); seg = 0; }          /* a new file has the name now */
+        if (!seg) for (int i = 0; i < SHSEGS; i++) if (!shsegs[i].used) { seg = &shsegs[i]; seg->used = 1; strncpy(seg->path, path, VFS_NAME_LEN - 1); seg->path[VFS_NAME_LEN - 1] = 0; break; }
         if (!seg) return -1;
     }
     for (uint64_t va = start; va < start + size; va += PAGE_SIZE) {
@@ -532,7 +541,7 @@ static uint64_t sys_mmap(uint64_t addr, uint64_t len, uint32_t prot, uint32_t fl
     /* a file mapped shared but only for reading (Go's compiler maps each package file it imports) is the file's bytes,
      * like a private mapping: it needs none of the shared segments, of which there are only a few */
     if ((flags & MAP_SHARED) && (prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) && size <= (64ull << 20) &&
-        !(path && !(prot & PROT_WRITE))) {
+        !(path && !(prot & PROT_WRITE) && !shseg_find(path))) {       /* (read-only, but someone maps it for writing: it is that segment, to see what they write) */
         if (map_shared(p, path, off, start, size, prot) != 0) { vma_remove(p, start, start + size); return (uint64_t)-ENOMEM; }
         if (path && (prot & PROT_WRITE) && mm->nfm < FMAP_MAX) {
             fmap_t *f = &mm->fm[mm->nfm++];
@@ -1138,8 +1147,15 @@ static uint64_t sys_arch_prctl(uint32_t code, uint64_t addr)
             if (!lx_user_wr_ok(addr, 8)) return (uint64_t)-EFAULT;
             *(uint64_t *)(uintptr_t)addr = t->fs_base;
             return 0;
-        case 0x1001:                                                       /* ARCH_SET_GS */
-            return (uint64_t)-EINVAL;
+        case 0x1001:                                                       /* ARCH_SET_GS (Wine's TEB) */
+            if (addr >= PAGING_USER_END) return (uint64_t)-EPERM;
+            t->gs_base = addr;
+            wrmsr(MSR_GS, addr);
+            return 0;
+        case 0x1004:                                                       /* ARCH_GET_GS */
+            if (!lx_user_wr_ok(addr, 8)) return (uint64_t)-EFAULT;
+            *(uint64_t *)(uintptr_t)addr = t->gs_base;
+            return 0;
         default:
             return (uint64_t)-EINVAL;
     }
@@ -1226,7 +1242,7 @@ static void deliver_signal(registers_t *r)
     proc_t *p = proc_current();
     task_t *t = task_current();
     if (!p || !t || p->linux_abi != 2) return;
-    uint64_t ready = p->sig_pending & ~t->sig_blocked;
+    uint64_t ready = (p->sig_pending | t->sig_tpending) & ~t->sig_blocked;
     if (!ready) {
         if (t->has_saved_sigmask) { t->sig_blocked = t->saved_sigmask; t->has_saved_sigmask = 0; }
         return;
@@ -1234,6 +1250,7 @@ static void deliver_signal(registers_t *r)
     int sig = 1;
     while (!(ready & SIGBIT(sig))) sig++;
     p->sig_pending &= ~SIGBIT(sig);
+    t->sig_tpending &= ~SIGBIT(sig);
     uint64_t handler = p->sig_handler[sig];
     if (handler <= 1) {                                         /* changed meanwhile */
         if (t->has_saved_sigmask) { t->sig_blocked = t->saved_sigmask; t->has_saved_sigmask = 0; }
@@ -1293,6 +1310,76 @@ static void deliver_signal(registers_t *r)
     r->rdx = uc_va;
     r->rax = 0;
     r->rflags &= ~(0x400ull | 0x100ull | 0x40000ull);           /* DF, TF, AC */
+}
+
+/* A fault of a 64-bit program (a page that is not there, a divide by zero, an illegal instruction, int3, a general protection
+ * fault) is a signal for its handler if it has one: SIGSEGV, SIGFPE, SIGILL, SIGTRAP or SIGBUS, with the address in siginfo and the
+ * registers (and the fault's number and error code) in the ucontext, as Linux does. The handler may change the context it is given
+ * (Wine turns the fault into a Windows exception that way); rt_sigreturn then continues from it. 0 = no handler: the program ends. */
+int linux64_fault_signal(registers_t *r, int vector, uint64_t cr2, uint64_t err)
+{
+    proc_t *p = proc_current();
+    task_t *t = task_current();
+    if (!p || !t || p->linux_abi != 2) return 0;
+    int sig, code = 0x80;                                       /* SI_KERNEL */
+    uint64_t addr = 0;
+    switch (vector) {
+    case 0:  sig = 8; code = 1; addr = r->rip; break;           /* divide error: SIGFPE, FPE_INTDIV */
+    case 1:  sig = 5; code = 2; break;                          /* debug: SIGTRAP, TRAP_TRACE */
+    case 3:  sig = 5; break;                                    /* int3: SIGTRAP */
+    case 6:  sig = 4; code = 1; addr = r->rip; break;           /* undefined instruction: SIGILL, ILL_ILLOPC */
+    case 13: sig = 11; break;                                   /* general protection: SIGSEGV */
+    case 14: sig = 11; code = (err & 1) ? 2 : 1; addr = cr2; break;       /* page fault: SEGV_ACCERR / SEGV_MAPERR */
+    case 17: sig = 7; code = 1; addr = cr2; break;              /* alignment check: SIGBUS, BUS_ADRALN */
+    default: return 0;
+    }
+    uint64_t handler = p->sig_handler[sig];
+    if (handler <= 1 || (t->sig_blocked & SIGBIT(sig))) return 0;        /* as Linux: no handler, or blocked: the default (it ends) */
+    uint64_t base = r->rsp;
+    if ((p->sig_flags[sig] & SA_ONSTACK) && t->alt_size && !(t->alt_flags & 2u) &&
+        !(r->rsp > t->alt_sp && r->rsp <= t->alt_sp + t->alt_size))
+        base = t->alt_sp + t->alt_size;
+    uint64_t sp = (base - 128) & ~63ull;
+    sp -= 512;
+    uint64_t fp = sp;
+    uint64_t frame = ((fp - (8 + sizeof(ucontext64_t) + 128)) & ~15ull) - 8;
+    uint64_t uc_va = frame + 8, si_va = uc_va + sizeof(ucontext64_t);
+    static uint8_t fpu[512] __attribute__((aligned(16)));       /* the program's FPU/SSE state, as the fault found it */
+    asm volatile("fxsave %0" : "=m"(*(uint8_t (*)[512])fpu));
+    ucontext64_t uc;
+    memset(&uc, 0, sizeof(uc));
+    sigcontext64_t *m = &uc.mc;
+    m->r8 = r->r8; m->r9 = r->r9; m->r10 = r->r10; m->r11 = r->r11;
+    m->r12 = r->r12; m->r13 = r->r13; m->r14 = r->r14; m->r15 = r->r15;
+    m->rdi = r->rdi; m->rsi = r->rsi; m->rbp = r->rbp; m->rbx = r->rbx;
+    m->rdx = r->rdx; m->rax = r->rax; m->rcx = r->rcx; m->rsp = r->rsp;
+    m->rip = r->rip; m->eflags = r->rflags;
+    m->cs = 0x2B; m->ss = 0x23;
+    m->err = err; m->trapno = (uint64_t)vector; m->cr2 = cr2;
+    m->fpstate = fp;
+    uc.sigmask = t->sig_blocked;
+    uint8_t info[128];
+    memset(info, 0, sizeof(info));
+    int32_t c32 = code;
+    memcpy(info, &sig, 4);
+    memcpy(info + 8, &c32, 4);
+    memcpy(info + 16, &addr, 8);                                /* si_addr */
+    uint64_t ret = p->sig_restorer[sig];
+    if (put_user(p, fp, fpu, 512) || put_user(p, si_va, info, sizeof(info)) ||
+        put_user(p, uc_va, &uc, sizeof(uc)) || put_user(p, frame, &ret, 8))
+        return 0;                                               /* no stack for it: the program ends */
+    t->sig_blocked |= p->sig_mask[sig];
+    if (!(p->sig_flags[sig] & SA_NODEFER)) t->sig_blocked |= SIGBIT(sig);
+    if (p->sig_flags[sig] & SA_RESETHAND) { p->sig_handler[sig] = 0; p->sig_flags[sig] = 0; }
+    t->sig_blocked &= ~(SIGBIT(9) | SIGBIT(19));
+    r->rsp = frame;
+    r->rip = handler;
+    r->rdi = (uint64_t)sig;
+    r->rsi = si_va;
+    r->rdx = uc_va;
+    r->rax = 0;
+    r->rflags &= ~(0x400ull | 0x100ull | 0x40000ull);
+    return 1;
 }
 
 /* back from a handler: the registers, FPU state and mask the frame holds */
@@ -1356,6 +1443,20 @@ static uint64_t sys_sigaltstack(uint64_t ss, uint64_t old, registers_t *r)
 static uint64_t sys_tgkill(int sig, uint32_t nr, uint64_t a, uint64_t b, uint64_t c, registers_t *r)
 {
     proc_t *p = proc_current();
+    /* a signal for another thread (Wine's server interrupts its clients' threads this way): that thread's own pending signal; a
+     * thread of another process is signalled through the process (no handler: what the signal does by default) */
+    {
+        int tid = nr == 270 ? (int)b : (int)a;
+        task_t *tt = tid > 0 ? task_by_pid((uint32_t)tid) : 0;
+        if (tid > 0 && !tt) return (uint64_t)-ESRCH;                         /* no such thread */
+        if (tt && tt != task_current() && tt->proc) {
+            if (sig < 0 || sig > 64) return (uint64_t)-EINVAL;
+            if (sig == 0) return 0;
+            proc_t *tp = (proc_t *)tt->proc;
+            if (tp->linux_abi == 2 && sig != 9 && sig != 19 && tp->sig_handler[sig] > 1) { tt->sig_tpending |= SIGBIT(sig); return 0; }
+            return (uint64_t)(int64_t)proc_signal(tp, sig);
+        }
+    }
     if (p && sig > 0 && sig <= 64 && p->sig_handler[sig] > 1) {
         p->sig_pending |= SIGBIT(sig);
         return 0;
@@ -1452,7 +1553,7 @@ void linux64_syscall(registers_t *r)
             ret = sys_timers((int)nr, a, b, c); break;                         /* getitimer, alarm, setitimer, timer_create/settime/gettime/getoverrun/delete */
         case 34: {                                                             /* pause */
             proc_t *pp = proc_current();
-            while (proc_timers_poll(pp), !(pp->sig_pending & ~task_current()->sig_blocked)) task_sleep(20);
+            while (proc_timers_poll(pp), !((pp->sig_pending | task_current()->sig_tpending) & ~task_current()->sig_blocked)) task_sleep(20);
             ret = (uint64_t)-EINTR;
             break;
         }
@@ -1494,7 +1595,7 @@ void linux64_syscall(registers_t *r)
         case 127: {                                                            /* rt_sigpending(set, size) */
             proc_t *pp = proc_current(); task_t *t = task_current();
             if (b != 8 || !lx_user_wr_ok(a, 8)) { ret = (uint64_t)-EINVAL; break; }
-            uint64_t pend = pp ? (pp->sig_pending & t->sig_blocked) : 0;
+            uint64_t pend = pp ? ((pp->sig_pending | t->sig_tpending) & t->sig_blocked) : 0;
             memcpy((void *)(uintptr_t)a, &pend, 8); ret = 0; break;
         }
         case 221: ret = 0; break;                                              /* fadvise64: only a hint */
@@ -1507,7 +1608,7 @@ void linux64_syscall(registers_t *r)
             memcpy(&m, (const void *)(uintptr_t)a, 8);
             t->saved_sigmask = t->sig_blocked; t->has_saved_sigmask = 1;      /* put back after the handler (see deliver_signal) */
             t->sig_blocked = m & ~(SIGBIT(9) | SIGBIT(19));
-            while (proc_timers_poll(pp), !(pp->sig_pending & ~t->sig_blocked)) task_sleep(20);
+            while (proc_timers_poll(pp), !((pp->sig_pending | t->sig_tpending) & ~t->sig_blocked)) task_sleep(20);
             ret = (uint64_t)-EINTR;
             break;
         }
@@ -1665,6 +1766,8 @@ void linux64_syscall(registers_t *r)
         case 281: ret = call32(319, a, b, c, d, e, f, r); break;               /* epoll_pwait */
         case 290: ret = call32(328, a, b, 0, 0, 0, 0, r); break;               /* eventfd2 */
         case 291: ret = call32(329, a, 0, 0, 0, 0, 0, r); break;               /* epoll_create1 */
+        case 213: ret = call32(329, 0, 0, 0, 0, 0, 0, r); break;               /* epoll_create (the size is ignored) */
+        case 191: case 192: case 193: ret = (uint64_t)-95; break;              /* getxattr, lgetxattr, fgetxattr: no extended attributes (EOPNOTSUPP; Wine asks for DOS attributes) */
         case 292: ret = call32(330, a, b, c, 0, 0, 0, r); break;               /* dup3 */
         case 293: ret = call32(331, a, b, 0, 0, 0, 0, r); break;               /* pipe2 */
         case 295: case 296: {                                                  /* preadv, pwritev */

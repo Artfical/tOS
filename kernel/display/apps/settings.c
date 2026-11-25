@@ -134,9 +134,30 @@ static void draw_section(uiapp_t *a, set_t *st, gfx_surface_t *s, int x, int y, 
         break;
     }
     case S_APPEARANCE: {
-        group(s, px, gy, pw, 3);
+        /* the themes: each one sets light or dark, accent, wallpaper and icons together */
+        int cur = uihost_get("theme");
+        gfx_text(s, &ui_font_small, px, gy - 4, "THEME", UI_DIM, 255);
+        for (int k = 0; k < ui_preset_count; k++) {
+            const ui_preset_t *t = &ui_presets[k];
+            int bx = px + k * 128, by = gy + 16;
+            uint32_t wa[3][2] = { { 0x302468, 0xE07A6E }, { 0x0B3A66, 0x2BB3C9 }, { 0x2A2C33, 0x5A5F6B } };
+            gfx_rrect(s, bx - 3, by - 3, 118, 72, 11, cur == k ? UI_ACCENT : UI_BG, 255);
+            gfx_surface_t cl = *s;
+            gfx_clip(&cl, bx, by, 112, 66);
+            gfx_gradient_v(&cl, bx, by, 112, 66, wa[t->wallpaper % 3][0], wa[t->wallpaper % 3][1]);
+            gfx_rrect(s, bx + 14, by + 12, 84, 40, 6, t->dark ? 0x2C2E37 : 0xFFFFFF, 255);
+            gfx_rrect(s, bx + 14, by + 12, 84, 10, 6, t->dark ? 0x3A3C46 : 0xE3E3E8, 255);
+            gfx_circle(s, bx + 22, by + 17, 2, accents[t->accent], 255);
+            gfx_rrect(s, bx + 22, by + 30, 40, 5, 2, accents[t->accent], 255);
+            int keep = gfx_icon_pack();
+            gfx_set_icon_pack(t->icons);
+            gfx_blit_scaled(s, gfx_image("icon48_files"), bx + 70, by + 28, 22, 22, 255);
+            gfx_set_icon_pack(keep);
+            gfx_text_center(s, &ui_font_small, bx, by + 74, 112, t->name, UI_TEXT, 255);
+        }
+        gy += 120;
+        group(s, px, gy, pw, 4);
         row_label(s, px, gy, 0, "Appearance", 0);
-        /* the two previews */
         int dark = uihost_get("dark");
         static const char *const ap[2] = { "Light", "Dark" };
         segmented(s, px + pw - 214, gy + 8, 200, ap, 2, dark);
@@ -144,19 +165,11 @@ static void draw_section(uiapp_t *a, set_t *st, gfx_surface_t *s, int x, int y, 
         int ac = uihost_get("accent");
         for (int k = 0; k < 7; k++) gfx_circle(s, px + pw - 190 + k * 26, gy + 44 + 22, 8, accents[k], 255);
         if (ac >= 0 && ac < 7) gfx_rrect_outline(s, px + pw - 190 + ac * 26 - 11, gy + 44 + 11, 22, 22, 11, UI_TEXT, 200);
-        row_label(s, px, gy, 2, "Window shadows", 0);
-        sw(s, px + pw - 54, gy + 88 + 10, uihost_get("shadows"));
-        /* the previews */
-        int ty = gy + 150;
-        for (int k = 0; k < 2; k++) {
-            int bx = px + k * 170;
-            gfx_rrect(s, bx - 3, ty - 3, 156, 102, 12, dark == k ? UI_ACCENT : UI_BG, 255);
-            gfx_rrect(s, bx, ty, 150, 96, 10, k ? 0x1E1F25 : 0xECECEF, 255);
-            gfx_rrect(s, bx + 14, ty + 14, 122, 68, 7, k ? 0x2C2E37 : 0xFFFFFF, 255);
-            gfx_rrect(s, bx + 14, ty + 14, 122, 14, 7, k ? 0x3A3C46 : 0xE3E3E8, 255);
-            for (int c = 0; c < 3; c++) gfx_circle(s, bx + 24 + c * 10, ty + 21, 3, c == 0 ? 0xFF5F57 : c == 1 ? 0xFEBC2E : 0x28C840, 255);
-            gfx_text_center(s, &ui_font_regular, bx, ty + 104, 150, ap[k], UI_TEXT, 255);
-        }
+        row_label(s, px, gy, 2, "Icons", 0);
+        static const char *const ic[2] = { "WhiteSur", "Classic" };
+        segmented(s, px + pw - 214, gy + 88 + 8, 200, ic, 2, uihost_get("icons"));
+        row_label(s, px, gy, 3, "Window shadows", 0);
+        sw(s, px + pw - 54, gy + 132 + 10, uihost_get("shadows"));
         break;
     }
     case S_DESKTOP: {
@@ -459,10 +472,12 @@ static void s_press(uiapp_t *a, int lx, int ly, int b)
         if (ui_hit(lx, ly, px + pw - 110, gy + 8, 96, 28)) uihost_open("netmon", 0);
         break;
     case S_APPEARANCE:
+        for (int k = 0; k < ui_preset_count; k++) if (ui_hit(lx, ly, px + k * 128, gy + 16, 112, 66)) uihost_set("theme", k);
+        gy += 120;
         if (ui_hit(lx, ly, px + pw - 214, gy + 8, 200, 28)) uihost_set("dark", lx >= px + pw - 114);
-        for (int k = 0; k < 2; k++) if (ui_hit(lx, ly, px + k * 170, gy + 150, 150, 96)) uihost_set("dark", k);
         for (int k = 0; k < 7; k++) if (ui_hit(lx, ly, px + pw - 190 + k * 26 - 11, gy + 44 + 11, 22, 22)) uihost_set("accent", k);
-        if (ui_hit(lx, ly, px + pw - 54, gy + 88 + 10, 40, 24)) uihost_set("shadows", !uihost_get("shadows"));
+        if (ui_hit(lx, ly, px + pw - 214, gy + 88 + 8, 200, 28)) uihost_set("icons", lx >= px + pw - 114);
+        if (ui_hit(lx, ly, px + pw - 54, gy + 132 + 10, 40, 24)) uihost_set("shadows", !uihost_get("shadows"));
         break;
     case S_DESKTOP:
         for (int i = 0; i < 4; i++)

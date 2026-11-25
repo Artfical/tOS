@@ -659,11 +659,13 @@ void kernel_main(uint32_t magic, uint32_t mb_info_addr)
             { "/system/pkg/git/bin/git", "-C", "/tmp/t", "log", "--oneline", "-3", 0 },
             { "/node24/bin/node", "/programs/js/cp.js", 0 },
             { "/programs/ptrtest", 0 },                                                   /* ptrace: breakpoints, steps, system calls, signals */
+            { "/programs/wintest", 0 },                                                   /* what Wine asks: fault signals, GS base, tgkill, socket stat, shared mappings, 300 files */
             { "/system/pkg/strace/bin/strace", "-f", "-o", "/tmp/st.txt", "/system/pkg/busybox/bin/busybox", "sh", "-c", "/system/pkg/busybox/bin/busybox echo traced", 0 },
             { "/system/pkg/busybox/bin/busybox", "grep", "-c", "write(1, \"traced", "/tmp/st.txt", 0 },
             { "/system/pkg/busybox/bin/busybox", "sh", "/programs/gt/t12.sh", 0 },       /* gdb and strace (the gdb, strace and gcc packages) */
             { "/system/pkg/busybox/bin/busybox", "sh", "/programs/gt/t10.sh", 0 },       /* Go (only when the go package is in the initrd) */
             { "/system/pkg/busybox/bin/busybox", "sh", "/programs/gt/t11.sh", 0 },       /* Rust (the rust package) */
+            { "/system/pkg/busybox/bin/busybox", "sh", "/programs/gt/t13.sh", 0 },       /* Wine (the wine package) */
             { 0 } };
         for (int i = 0; runs[i][0]; i++) {
             const char *const *av = runs[i];

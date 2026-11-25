@@ -27,6 +27,12 @@ typedef struct {
     uint32_t off;                 /* RGBA, except "wallpaper" which is RGB */
 } ui_image_t;
 
+/* the icons from before the WhiteSur theme, the "Classic" icon pack (tools/gen_classic_icons.py) */
+extern const uint8_t  ui_classic_blob[];
+extern const uint32_t ui_classic_len, ui_classic_raw_len;
+extern const ui_image_t ui_classic_images[];
+extern const int ui_classic_count;
+
 extern const uint8_t  ui_blob[];
 extern const uint32_t ui_blob_len, ui_blob_raw_len;
 
