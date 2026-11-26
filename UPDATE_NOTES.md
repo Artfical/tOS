@@ -1,7 +1,7 @@
 # Spaces, Mission Control, your own themes
 
 ## desktop | New
-- Mission Control: Ctrl+Up or F3. The windows of a Space fly out to a grid (smoothly scaled, titles under them) and the Spaces show along the top. Click a window to bring it forward, click a Space to go there, drag a window onto a Space to move it (onto + for a new one), click + to add a Space (four at most), the minus in a Space's corner closes it. Esc, Ctrl+Down or F3 leave.
+- Mission Control: Ctrl+Up or F3. The windows of a Space fly out to a grid (smoothly scaled, titles under them) and the Spaces show along the top. Click a window to bring it forward, click a Space to go there, drag a window onto a Space to move it (onto + for a new one), click + to add a Space (four at most), the minus in a Space's corner closes it. The Spaces along the top show the real windows, not placeholders. Esc, Ctrl+Down or F3 leave.
 - Spaces: Ctrl+Left and Ctrl+Right slide the desktop sideways like the Mac's while the Dock and the top bar stay. A new window opens in the current Space, and a click on a Dock icon whose app is in another Space goes there. (In a Terminal running a Linux program, use Ctrl+Alt+arrows.)
 
 ## settings | New

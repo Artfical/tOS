@@ -2234,7 +2234,9 @@ static struct {
     int phase;                        /* 0 off, 1 open (flying out, or shown), 2 flying back */
     uint32_t last_ms, t0;
     uint32_t *base;                   /* the wallpaper alone */
-    mc_item_t it[MAX_WINDOWS];
+    mc_item_t it[MAX_WINDOWS];        /* the windows of this Space, sharing their pictures with tp */
+    mc_item_t tp[MAX_WINDOWS];        /* a picture of every window, of every Space: what the Spaces along the top show */
+    int ntp;
     int n;
     int mcp;                          /* 0..1024: how far the Spaces and the dimming have come */
     int hot, hot_chip, hot_close;
@@ -2330,14 +2332,15 @@ static void mc_layout(void)
 
 static void mc_rebuild(void)
 {
-    for (int k = 0; k < mc.n; k++) mc_free_item(&mc.it[k]);
-    mc.n = 0;
-    window_t *ws[MAX_WINDOWS];
-    int n = 0;
+    for (int k = 0; k < mc.ntp; k++) mc_free_item(&mc.tp[k]);
+    mc.ntp = 0; mc.n = 0;
     for (int i = 0; i < MAX_WINDOWS; i++)
-        if (windows[i].open && !windows[i].minimized && windows[i].space == cur_space) ws[n++] = &windows[i];
-    for (int i = 1; i < n; i++) { window_t *k = ws[i]; int j = i - 1; while (j >= 0 && ws[j]->gx > k->gx) { ws[j + 1] = ws[j]; j--; } ws[j + 1] = k; }
-    for (int i = 0; i < n; i++) if (mc_capture(&mc.it[mc.n], ws[i]) == 0) mc.n++;
+        if (windows[i].open && !windows[i].minimized && mc_capture(&mc.tp[mc.ntp], &windows[i]) == 0) mc.ntp++;
+    mc_item_t *ws[MAX_WINDOWS];
+    int n = 0;
+    for (int i = 0; i < mc.ntp; i++) if (mc.tp[i].win->space == cur_space) ws[n++] = &mc.tp[i];
+    for (int i = 1; i < n; i++) { mc_item_t *k = ws[i]; int j = i - 1; while (j >= 0 && ws[j]->win->gx > k->win->gx) { ws[j + 1] = ws[j]; j--; } ws[j + 1] = k; }
+    for (int i = 0; i < n; i++) mc.it[mc.n++] = *ws[i];
     draw_wallpaper();
     memcpy(mc.base, back, (size_t)SW * SH * 4);
     mc_layout();
@@ -2419,12 +2422,17 @@ static void mc_frame(void)
                     int dy = y + j, dx = x + q;
                     if (dy >= 0 && dy < SH) back[dy * SW + dx] = wall[(j * SH / h) * SW + q * SW / w];
                 }
-            for (int z = 0; z < MAX_WINDOWS; z++) {
-                const window_t *w2 = &windows[z];
-                if (!w2->open || w2->minimized || w2->space != i) continue;
+            /* the real windows, lowest first */
+            const mc_item_t *ord[MAX_WINDOWS];
+            int no = 0;
+            for (int z = 0; z < mc.ntp; z++) if (mc.tp[z].win->space == i) ord[no++] = &mc.tp[z];
+            for (int a = 1; a < no; a++) { const mc_item_t *k = ord[a]; int b = a - 1; while (b >= 0 && ord[b]->win->z > k->win->z) { ord[b + 1] = ord[b]; b--; } ord[b + 1] = k; }
+            for (int z = 0; z < no; z++) {
+                const window_t *w2 = ord[z]->win;
                 int wx = x + w2->gx * w / SW, wy = y + w2->gy * h / SH, ww = w2->gw * w / SW, wh = w2->gh * h / SH;
-                gfx_rrect(&bs, wx, wy, ww, wh, 2, 0xF2F2F5, 240);
-                gfx_fill_alpha(&bs, wx, wy, ww, wh / 6 + 1, 0x8E8E93, 90);
+                if (ww < 2 || wh < 2) continue;
+                gfx_rrect(&bs, wx, wy + 1, ww, wh, 2, 0x000000, 60);
+                mc_blit(ord[z], wx, wy, ww, wh);
             }
             gfx_rrect_outline(&bs, x - 2, y - 2, w + 4, h + 4, 5, i == cur_space ? UI_ACCENT : 0xFFFFFF, i == cur_space ? 255 : mc.hot_chip == i ? 230 : 70);
             char lab[12] = "Desktop 0";
@@ -2498,7 +2506,6 @@ static void mc_move_window(int q, int space)
     if (space == cur_space || q < 0 || q >= mc.n) return;
     if (space >= nspaces) { if (nspaces >= MAX_SPACES) return; nspaces++; space = nspaces - 1; }
     mc.it[q].win->space = space;
-    mc_free_item(&mc.it[q]);
     for (int i = q; i < mc.n - 1; i++) mc.it[i] = mc.it[i + 1];
     mc.n--;
     fix_focus();
@@ -2574,7 +2581,7 @@ static void mc_step(int pressed, int released, int moved, int btn)
     if (moving) mc.redraw = 1;
 
     if (mc.phase == 2 && (!moving || now - mc.t0 > 1500u * ANIM_SLOW)) {
-        for (int q = 0; q < mc.n; q++) mc_free_item(&mc.it[q]);
+        for (int q = 0; q < mc.ntp; q++) mc_free_item(&mc.tp[q]);
         free(mc.base);
         int then = mc.then_space;
         memset(&mc, 0, sizeof(mc));
