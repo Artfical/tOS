@@ -6,7 +6,7 @@
 
 #include "terminal.h"
 
-#define MAX_WINDOWS 6
+#define MAX_WINDOWS 12
 #define NORMAL_W 60
 #define NORMAL_H 16
 

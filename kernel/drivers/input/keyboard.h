@@ -19,7 +19,8 @@ int keyboard_get_layout(void);
 int keyboard_get_special(void);
 
 /* Desktop shortcuts taken before any app sees them (kernel/display/wm_gfx.c reads and clears this):
- * 1 Ctrl+Left, 2 Ctrl+Right, 3 Ctrl+Up, 4 Ctrl+Down, 5 F3, 6 Escape (only while keyboard_hotkey_esc is set).
+ * 1 Ctrl+Left, 2 Ctrl+Right, 3 Ctrl+Up, 4 Ctrl+Down, 5 F3, 6 Escape (only while keyboard_hotkey_esc is set),
+ * 7 Ctrl+Space (search), 8 Alt+Tab (the window switcher).
  * Inside a Linux program's terminal (xterm keys) they need Alt as well, so vim and friends keep Ctrl+arrows. */
 extern volatile int keyboard_hotkey, keyboard_hotkey_esc;
 int keyboard_shift_held(void);

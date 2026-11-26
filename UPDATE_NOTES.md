@@ -1,3 +1,16 @@
+# Search, Alt+Tab, window snapping, more Spaces
+
+## desktop | New
+- Search: Ctrl+Space (or the top right corner of the screen). Type, and apps, settings pages and files from your home, Desktop, Documents and Downloads folders are listed; Up and Down choose, Enter opens, Esc closes.
+- Window switcher: Alt+Tab shows a picture of every window; each Tab goes to the next, and letting go of Alt brings that window forward (on its own Space too).
+- Snapping: drag a window to the left or right edge of the screen for a half, to the top for the whole screen; a preview shows where it will land and the window glides there.
+- Hot corners: rest the pointer in the top left corner for Mission Control, in the top right corner for Search.
+- Up to 12 windows (6 before).
+- Each Space can have a wallpaper of its own: pick one in Settings, Desktop & Dock while you are in that Space.
+
+## settings | New
+- "Dark from 19:00 to 07:00" in Appearance switches between light and dark by itself.
+
 # Spaces, Mission Control, your own themes
 
 ## desktop | New

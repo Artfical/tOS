@@ -91,6 +91,9 @@ static window_t *last_title_click_win;
 static int launcher_open;
 #define MAX_SPACES 4
 static int cur_space, nspaces = 1;    /* the Space being shown, and how many there are (Mission Control adds them) */
+static int auto_dark;                 /* dark from 19:00 to 07:00 */
+static int space_wall[MAX_SPACES] = { -1, -1, -1, -1 };   /* a wallpaper (0 to 2) of a Space of its own, or -1: the common one */
+static void draw_overlays(void);
 static void space_switch(int to);
 static void fix_focus(void);
 static int hover_dock = -1, hover_launch = -1, hover_menu = -1, hover_lights;
@@ -2004,6 +2007,7 @@ static void compose(void)
     if (session == 0) notify_draw(&bs, SW, SH, TOPBAR_H);
     draw_sheet();
     draw_fdrag();
+    draw_overlays();
 }
 
 static void cursor_erase(void)
@@ -2177,6 +2181,13 @@ static void fix_focus(void)
 
 /* Another Space: the desktop slides sideways, the way the Mac's does, while the Dock and the top
  * bar stay. Both Spaces are drawn once; every frame only moves rows of them. */
+/* a Space with a wallpaper of its own */
+static void space_apply_wall(int sp)
+{
+    int w = space_wall[sp];
+    if (w >= 0 && w < 3 && wallpaper_choice != 3 && w != wallpaper_choice) set_wallpaper(w);
+}
+
 static void space_switch(int to)
 {
     if (to < 0 || to >= nspaces || to == cur_space) return;
@@ -2184,10 +2195,11 @@ static void space_switch(int to)
     size_t n = (size_t)SW * SH * 4;
     uint32_t *a = 0, *b = 0;
     if (session == 0 && !launcher_open) { a = malloc(n); b = malloc(n); }
-    if (!a || !b) { free(a); free(b); cur_space = to; fix_focus(); dirty = 1; return; }
+    if (!a || !b) { free(a); free(b); cur_space = to; space_apply_wall(to); fix_focus(); dirty = 1; return; }
     compose_desk(from);
     memcpy(a, back, n);
     cur_space = to;
+    space_apply_wall(to);
     fix_focus();
     compose_desk(to);
     memcpy(b, back, n);
@@ -2601,6 +2613,272 @@ static void mc_step(int pressed, int released, int moved, int btn)
     }
 }
 
+/* ------------------------------------------------------------------ search, the window switcher, snapping, hot corners */
+
+static int ci_find(const char *h, const char *n)
+{
+    if (!*n) return 1;
+    for (; *h; h++) {
+        const char *a = h, *b = n;
+        while (*a && *b && ((*a | 32) == (*b | 32))) { a++; b++; }
+        if (!*b) return 1;
+    }
+    return 0;
+}
+
+static struct {
+    int active, len, sel, n;
+    uint32_t t0;
+    char q[48];
+    window_t *prev;
+    struct { int kind; char title[48]; char sub[24]; const app_t *app; char path[160]; } r[8];
+} spot;
+static struct { char name[40]; char path[160]; int is_dir; } sfiles[160];
+static int nsfiles;
+
+static void spot_scan(void)
+{
+    static uihost_entry_t e[64];
+    static const char *const sub[4] = { "", "/Desktop", "/Documents", "/Downloads" };
+    nsfiles = 0;
+    for (int k = 0; k < 4; k++) {
+        char dir[120];
+        strcpy(dir, uihost_home());
+        if (strcmp(dir, "/") || sub[k][0]) strcat(dir, sub[k]);
+        int n = uihost_list(dir, e, 64);
+        for (int i = 0; i < n && nsfiles < 160; i++) {
+            if (e[i].name[0] == '.' || strlen(e[i].name) > 39) continue;
+            if (!strcmp(e[i].name, "Desktop") || !strcmp(e[i].name, "Documents") || !strcmp(e[i].name, "Downloads")) { if (k == 0 && !e[i].is_dir) continue; }
+            strcpy(sfiles[nsfiles].name, e[i].name);
+            strcpy(sfiles[nsfiles].path, dir);
+            if (strcmp(dir, "/")) strcat(sfiles[nsfiles].path, "/");
+            strcat(sfiles[nsfiles].path, e[i].name);
+            sfiles[nsfiles].is_dir = e[i].is_dir;
+            nsfiles++;
+        }
+    }
+}
+
+static void spot_search(void)
+{
+    static const char *const sets[] = { "Network", "Appearance", "Desktop & Dock", "Displays", "Mouse", "Users & Groups", "General", "Software Update" };
+    spot.n = 0;
+    for (int i = 0; i < NAPPS && spot.n < 8; i++) {
+        if (spot.len ? !ci_find(apps[i].title, spot.q) : !apps[i].dock) continue;
+        spot.r[spot.n].kind = 0; spot.r[spot.n].app = &apps[i];
+        strcpy(spot.r[spot.n].title, apps[i].title); strcpy(spot.r[spot.n].sub, "Application");
+        spot.n++;
+    }
+    if (!spot.len) { spot.sel = 0; return; }
+    for (int i = 0; i < 8 && spot.n < 8; i++) {
+        if (!ci_find(sets[i], spot.q)) continue;
+        spot.r[spot.n].kind = 2; spot.r[spot.n].app = 0;
+        strcpy(spot.r[spot.n].title, sets[i]); strcpy(spot.r[spot.n].sub, "Settings");
+        strcpy(spot.r[spot.n].path, i == 0 ? "network" : i == 7 ? "update" : "");
+        spot.n++;
+    }
+    for (int i = 0; i < nsfiles && spot.n < 8; i++) {
+        if (!ci_find(sfiles[i].name, spot.q)) continue;
+        spot.r[spot.n].kind = 1; spot.r[spot.n].app = 0;
+        strcpy(spot.r[spot.n].title, sfiles[i].name); strcpy(spot.r[spot.n].sub, sfiles[i].is_dir ? "Folder" : "File");
+        strcpy(spot.r[spot.n].path, sfiles[i].path);
+        spot.n++;
+    }
+    if (spot.sel >= spot.n) spot.sel = spot.n ? spot.n - 1 : 0;
+}
+
+static void spot_open(void)
+{
+    if (spot.active || session != 0 || launcher_open || mc.phase) return;
+    memset(&spot, 0, sizeof(spot));
+    spot.active = 1;
+    spot.t0 = debugmon_uptime_ms();
+    spot.prev = wm_focused;
+    wm_focused = 0;                      /* no window gets the typing */
+    spot_scan();
+    spot_search();
+    dirty = 1;
+}
+
+static void spot_close(int refocus)
+{
+    spot.active = 0;
+    if (refocus && spot.prev && spot.prev->open) wm_focused = spot.prev;
+    dirty = 1;
+}
+
+static void spot_choose(int i)
+{
+    if (i < 0 || i >= spot.n) return;
+    int kind = spot.r[i].kind;
+    const app_t *a = spot.r[i].app;
+    char path[160];
+    strcpy(path, spot.r[i].path);
+    spot_close(0);
+    if (kind == 0) dock_activate(a);
+    else if (kind == 2) wm_gfx_open_native("settings", path[0] ? path : 0);
+    else uihost_open("files", path);
+    dirty = 1;
+}
+
+static void spot_keys(void)
+{
+    char c;
+    while (keyboard_try_getchar(&c)) {
+        unsigned char u = (unsigned char)c;
+        if (u == 8 || u == 127) { if (spot.len) { spot.q[--spot.len] = 0; spot.sel = 0; spot_search(); } }
+        else if (u == '\n' || u == '\r') { spot_choose(spot.sel); return; }
+        else if (u >= 32 && u < 127 && spot.len < 44) { spot.q[spot.len++] = c; spot.q[spot.len] = 0; spot.sel = 0; spot_search(); }
+        dirty = 1;
+    }
+    int sp;
+    while ((sp = keyboard_get_special()) != 0) {
+        if (sp == 3 && spot.sel > 0) spot.sel--;
+        else if (sp == 4 && spot.sel < spot.n - 1) spot.sel++;
+        dirty = 1;
+    }
+}
+
+#define SPOT_W 640
+static int spot_height(void) { return 64 + (spot.n ? spot.n * 46 + 8 : 0); }
+
+static void spot_click(void)
+{
+    int x = (SW - SPOT_W) / 2, y = 130;
+    if (!ui_hit(mx, my, x, y, SPOT_W, spot_height())) { spot_close(1); return; }
+    for (int i = 0; i < spot.n; i++) if (ui_hit(mx, my, x + 8, y + 64 + i * 46, SPOT_W - 16, 42)) { spot_choose(i); return; }
+}
+
+static void draw_spot(void)
+{
+    int p = clamp1024((int)((debugmon_uptime_ms() - spot.t0) * 1024 / (180 * ANIM_SLOW)));
+    p = ease(p);
+    if (p < 1024) dirty = 1;
+    gfx_fill_alpha(&bs, 0, 0, SW, SH, 0x000000, 80 * p >> 10);
+    int w = SPOT_W, h = spot_height(), x = (SW - w) / 2, y = 130 - ((1024 - p) * 14 >> 10);
+    gfx_shadow(&bs, x, y, w, h, 170 * p >> 10);
+    gfx_rrect(&bs, x, y, w, h, 16, C_MENU_BG, 245 * p >> 10);
+    gfx_blit_tinted(&bs, gfx_image("glyph_search"), x + 22, y + 20, C_TEXT_DIM, 230);
+    if (spot.len) gfx_text(&bs, &ui_font_title, x + 58, y + 14, spot.q, C_TEXT, 255);
+    else gfx_text(&bs, &ui_font_title, x + 58, y + 14, "Search apps, files and settings", C_TEXT_DIM, 200);
+    if ((debugmon_uptime_ms() / 500) % 2 == 0) gfx_fill_alpha(&bs, x + 58 + gfx_text_width(&ui_font_title, spot.q) + 2, y + 18, 2, 24, C_ACCENT, 255);
+    if (!spot.n) return;
+    gfx_fill_alpha(&bs, x + 14, y + 61, w - 28, 1, 0x808080, 70);
+    for (int i = 0; i < spot.n; i++) {
+        int ry = y + 64 + i * 46;
+        int sel = i == spot.sel;
+        if (sel) gfx_rrect(&bs, x + 8, ry, w - 16, 42, 10, C_ACCENT, 255);
+        const gfx_image_t *ic = spot.r[i].kind == 0 ? icon(spot.r[i].app->icon, 1) : gfx_image(spot.r[i].kind == 2 ? "icon48_settings" : spot.r[i].sub[0] == 'F' && spot.r[i].sub[1] == 'o' ? "doc64_folder" : "doc64_generic");
+        gfx_blit_scaled(&bs, ic, x + 20, ry + 7, 28, 28, 255);
+        gfx_text(&bs, &ui_font_regular, x + 62, ry + 10, spot.r[i].title, sel ? 0xFFFFFF : C_TEXT, 255);
+        int sw_ = gfx_text_width(&ui_font_small, spot.r[i].sub);
+        gfx_text(&bs, &ui_font_small, x + w - 28 - sw_, ry + 14, spot.r[i].sub, sel ? 0xFFFFFF : C_TEXT_DIM, 220);
+    }
+}
+
+/* ---- the window switcher (Alt+Tab) ---- */
+
+static struct { int active, n, idx; uint32_t t0; mc_item_t it[MAX_WINDOWS]; } at;
+
+static void at_close(int commit)
+{
+    window_t *t = commit && at.n ? at.it[at.idx].win : 0;
+    for (int i = 0; i < at.n; i++) mc_free_item(&at.it[i]);
+    at.active = 0; at.n = 0;
+    if (t && t->open) wm_focus_window(t);
+    dirty = 1;
+}
+
+static void at_open(void)
+{
+    if (at.active || session != 0 || launcher_open || mc.phase || spot.active) return;
+    memset(&at, 0, sizeof(at));
+    for (int i = 0; i < MAX_WINDOWS; i++)
+        if (windows[i].open && !windows[i].minimized && mc_capture(&at.it[at.n], &windows[i]) == 0) at.n++;
+    for (int i = 1; i < at.n; i++) { mc_item_t k = at.it[i]; int j = i - 1; while (j >= 0 && at.it[j].win->z < k.win->z) { at.it[j + 1] = at.it[j]; j--; } at.it[j + 1] = k; }
+    if (at.n < 2) { at.active = 1; at_close(0); return; }
+    at.active = 1; at.idx = 1; at.t0 = debugmon_uptime_ms();
+    dirty = 1;
+}
+
+static void draw_at(void)
+{
+    int p = ease(clamp1024((int)((debugmon_uptime_ms() - at.t0) * 1024 / (140 * ANIM_SLOW))));
+    if (p < 1024) dirty = 1;
+    gfx_fill_alpha(&bs, 0, 0, SW, SH, 0x000000, 50 * p >> 10);
+    int n = at.n, cw = (SW - 120) / n - 14;
+    if (cw > 190) cw = 190;
+    int ch = cw * 62 / 100 + 54, pw = n * (cw + 14) + 14, x0 = (SW - pw) / 2, y0 = (SH - ch) / 2 - 20 + ((1024 - p) * 10 >> 10);
+    gfx_shadow(&bs, x0, y0, pw, ch + 28, 170 * p >> 10);
+    gfx_rrect(&bs, x0, y0, pw, ch + 28, 20, C_MENU_BG, 240 * p >> 10);
+    for (int i = 0; i < n; i++) {
+        mc_item_t *it = &at.it[i];
+        int x = x0 + 14 + i * (cw + 14), y = y0 + 14;
+        if (i == at.idx) { gfx_rrect(&bs, x - 6, y - 6, cw + 12, ch + 12, 14, C_ACCENT, 70); gfx_rrect_outline(&bs, x - 6, y - 6, cw + 12, ch + 12, 14, C_ACCENT, 255); }
+        int aw = cw - 16, ah = ch - 54;
+        int s = aw * 1000 / it->rw < ah * 1000 / it->rh ? aw * 1000 / it->rw : ah * 1000 / it->rh;
+        if (s > 1000) s = 1000;
+        int tw = it->rw * s / 1000, th = it->rh * s / 1000;
+        gfx_rrect(&bs, x + (cw - tw) / 2, y + 8 + (ah - th) / 2 + 3, tw, th, 6, 0x000000, 60);
+        mc_blit(it, x + (cw - tw) / 2, y + 8 + (ah - th) / 2, tw, th);
+        const app_t *a = app_for_window(it->win);
+        if (a) gfx_blit_scaled(&bs, icon(a->icon, 1), x + 6, y + ch - 36, 24, 24, 255);
+        ui_text_fit(&bs, &ui_font_small, x + 36, y + ch - 33, cw - 42, it->win->title, C_TEXT);
+    }
+}
+
+/* ---- snapping a window to a half of the screen or all of it, by dragging it to an edge ---- */
+
+static int snap_zone;
+
+static void snap_rect(int z, int *x, int *y, int *w, int *h)
+{
+    *y = TOPBAR_H; *h = dock_limit() - TOPBAR_H;
+    *x = z == 2 ? SW / 2 : 0;
+    *w = z == 3 ? SW : z == 1 ? SW / 2 : SW - SW / 2;
+}
+
+static void snap_apply(window_t *w, int z)
+{
+    if (!w || !z || !w->open || w->kind == WIN_KIND_PANEL) return;
+    int x, y, ww, hh;
+    snap_rect(z, &x, &y, &ww, &hh);
+    int fx = w->gx, fy = w->gy, fw = w->gw, fh = w->gh;
+    int resizes = w->kind == WIN_KIND_NATIVE;
+    uint32_t start = debugmon_uptime_ms(), dur = 220 * ANIM_SLOW;
+    for (;;) {
+        uint32_t el = debugmon_uptime_ms() - start;
+        int t = el >= dur ? 1024 : (int)(el * 1024 / dur), k = ease(t);
+        w->gx = fx + (int)((long long)(x - fx) * k >> 10);
+        w->gy = fy + (int)((long long)(y - fy) * k >> 10);
+        if (resizes) { w->gw = fw + (int)((long long)(ww - fw) * k >> 10); w->gh = fh + (int)((long long)(hh - fh) * k >> 10); }
+        compose();
+        anim_pace();
+        present();
+        if (t >= 1024) break;
+    }
+    if (!resizes) {
+        int cols = (ww - 2 * CPAD_X + CW / 2) / CW, rows = (hh - TITLE_H - 2 * CPAD_Y + CH / 2) / CH;
+        set_cells(w, cols, rows);
+    }
+    w->gx = x; w->gy = y;
+    if (resizes) { w->gw = ww; w->gh = hh; }
+    wm_focus_window(w);
+    dirty = 1;
+}
+
+static void draw_overlays(void)
+{
+    if (snap_zone && drag_win) {
+        int x, y, w, h;
+        snap_rect(snap_zone, &x, &y, &w, &h);
+        gfx_rrect(&bs, x + 8, y + 8, w - 16, h - 16, 14, 0xFFFFFF, 60);
+        gfx_rrect_outline(&bs, x + 8, y + 8, w - 16, h - 16, 14, C_ACCENT, 230);
+    }
+    if (at.active) draw_at();
+    if (spot.active) draw_spot();
+}
+
 /* Logging in: the blurred lock screen clears into the desktop, the way the Mac's does. */
 static void login_transition(const uint32_t *from)
 {
@@ -2767,6 +3045,7 @@ int uihost_get(const char *key)
     if (!strcmp(key, "dark")) return ui_theme.dark;
     if (!strcmp(key, "icons")) return gfx_icon_pack();
     if (!strcmp(key, "usertheme")) return utheme_cur;
+    if (!strcmp(key, "auto_dark")) return auto_dark;
     if (!strcmp(key, "theme")) return theme_match();
     if (!strcmp(key, "dock_magnify")) return dock_magnify;
     if (!strcmp(key, "mouse_speed")) return mouse_speed;
@@ -2787,12 +3066,18 @@ void uihost_set(const char *key, int v)
         if (strcmp(key, "dark") && strcmp(key, "accent") && strcmp(key, "wallpaper")) gfx_overlay_clear();
     }
     if (!strcmp(key, "usertheme")) { uihost_user_themes(); user_theme_apply(v); }
-    else if (!strcmp(key, "dark")) ui_set_dark(v);
+    else if (!strcmp(key, "auto_dark")) {
+        auto_dark = v ? 1 : 0;
+        if (auto_dark) { cmos_time_t ct; cmos_get_time(&ct); ui_set_dark(ct.hour >= 19 || ct.hour < 7); }
+    }
+    else if (!strcmp(key, "dark")) { auto_dark = 0; ui_set_dark(v); }
     else if (!strcmp(key, "icons")) gfx_set_icon_pack(v);
     else if (!strcmp(key, "theme")) {
         if (v >= 0 && v < ui_preset_count) {
             ui_set_dark(ui_presets[v].dark); set_accent(ui_presets[v].accent);
             set_wallpaper(ui_presets[v].wallpaper); gfx_set_icon_pack(ui_presets[v].icons);
+            for (int q = 0; q < MAX_SPACES; q++) space_wall[q] = -1;
+            space_wall[cur_space] = ui_presets[v].wallpaper;
         }
     }
     else if (!strcmp(key, "dock_magnify")) dock_magnify = v;
@@ -2828,7 +3113,7 @@ static void set_accent(int v)
 
 static void prefs_save(void)
 {
-    char b[320] = "dark=";
+    char b[400] = "dark=";
     char n[12];
     n[0] = 0; fmt_num(n, (uint32_t)ui_theme.dark); strcat(b, n);
     strcat(b, "\nmagnify="); n[0] = 0; fmt_num(n, (uint32_t)dock_magnify); strcat(b, n);
@@ -2840,6 +3125,9 @@ static void prefs_save(void)
     strcat(b, "\nshadows="); n[0] = 0; fmt_num(n, (uint32_t)window_shadows); strcat(b, n);
     strcat(b, "\nindicators="); n[0] = 0; fmt_num(n, (uint32_t)dock_indicators); strcat(b, n);
     strcat(b, "\nicons="); n[0] = 0; fmt_num(n, (uint32_t)gfx_icon_pack()); strcat(b, n);
+    strcat(b, "\nautodark="); strcat(b, auto_dark ? "1" : "0");
+    strcat(b, "\nspacewalls=");
+    for (int q = 0; q < MAX_SPACES; q++) { char c[2] = { (char)(space_wall[q] < 0 ? '9' : '0' + space_wall[q]), 0 }; strcat(b, c); }
     if (utheme_cur >= 0) { strcat(b, "\nusertheme="); strcat(b, utheme_name[utheme_cur]); }
     strcat(b, "\n");
     char p[96];
@@ -2875,6 +3163,10 @@ static void prefs_load(void)
     window_shadows = pref_int(t, "shadows", 1) ? 1 : 0;
     dock_indicators = pref_int(t, "indicators", 1) ? 1 : 0;
     gfx_set_icon_pack(pref_int(t, "icons", 0));
+    auto_dark = pref_int(t, "autodark", 0);
+    char sw_[16];
+    if (conf_str(t, "spacewalls", sw_, sizeof sw_))
+        for (int q = 0; q < MAX_SPACES && sw_[q]; q++) space_wall[q] = sw_[q] >= '0' && sw_[q] <= '2' ? sw_[q] - '0' : -1;
     char ut[40];
     if (conf_str(t, "usertheme", ut, sizeof ut)) {
         uihost_user_themes();
@@ -2921,6 +3213,7 @@ int uihost_set_wallpaper(const char *path)
 
 static void set_wallpaper(int choice)
 {
+    if (choice >= 0 && choice < 3) space_wall[cur_space] = choice;
     wallpaper_choice = choice;
     if (choice == 3 && custom_wallpaper[0] && load_custom_wallpaper(custom_wallpaper) == 0) { dirty = 1; return; }
     if (choice == 3) wallpaper_choice = choice = 0;
@@ -3244,9 +3537,14 @@ void wm_gfx_tick(void)
     {
         int hk = keyboard_hotkey;
         keyboard_hotkey = 0;
-        keyboard_hotkey_esc = mc.phase == 1;
+        keyboard_hotkey_esc = mc.phase == 1 || spot.active || at.active;
         if (hk && session == 0 && !launcher_open && !(sheet.active && !sheet.done) && !menu_which && !drag_win && !resize_win) {
-            if (mc.phase == 0) {
+            if (hk == 7) { if (spot.active) spot_close(1); else spot_open(); }
+            else if (hk == 8) { if (at.active) { at.idx = (at.idx + 1) % at.n; dirty = 1; } else at_open(); }
+            else if (hk == 6 && spot.active) spot_close(1);
+            else if (hk == 6 && at.active) at_close(0);
+            else if (spot.active || at.active) { }
+            else if (mc.phase == 0) {
                 if (hk == 5 || hk == 3) mc_open();
                 else if (hk == 1) space_switch(cur_space - 1);
                 else if (hk == 2) space_switch(cur_space + 1);
@@ -3255,6 +3553,18 @@ void wm_gfx_tick(void)
                 else if (hk == 1 && cur_space > 0) mc_leave(-1, cur_space - 1);
                 else if (hk == 2 && cur_space < nspaces - 1) mc_leave(-1, cur_space + 1);
             }
+        }
+        if (at.active && !keyboard_alt_held()) at_close(1);               /* Alt let go: the chosen window */
+        if (spot.active) spot_keys();
+        /* hot corners: the top left one shows Mission Control, the top right one the search */
+        if (session == 0 && !mc.phase && !spot.active && !at.active && !launcher_open && !drag_win && !resize_win && !(btn & 1)) {
+            static uint32_t corner_ms;
+            static int corner_done;
+            int c = (mx <= 2 && my <= 2) ? 1 : (mx >= SW - 3 && my <= 2) ? 2 : 0;
+            uint32_t cnow = debugmon_uptime_ms();
+            if (!c) { corner_ms = 0; corner_done = 0; }
+            else if (!corner_ms) corner_ms = cnow ? cnow : 1;
+            else if (!corner_done && cnow - corner_ms > 450) { corner_done = 1; if (c == 1) mc_open(); else spot_open(); }
         }
         if (mc.phase) {
             mc_step(pressed, released, moved, btn);
@@ -3267,8 +3577,10 @@ void wm_gfx_tick(void)
             drag_win->gx = mx - drag_dx;
             drag_win->gy = my - drag_dy;
             clamp_window(drag_win);
+            int z = session != 0 ? 0 : mx <= 3 ? 1 : mx >= SW - 4 ? 2 : my <= TOPBAR_H + 2 ? 3 : 0;
+            if (z != snap_zone) { snap_zone = z; dirty = 1; }
             if (moved) dirty = 1;
-        } else drag_win = 0;
+        } else { int z = snap_zone; window_t *dw = drag_win; snap_zone = 0; drag_win = 0; if (z) snap_apply(dw, z); }
     } else if (resize_win) {
         if ((btn & 1) && resize_win->kind == WIN_KIND_NATIVE) {
             uiapp_t *ap = resize_win->native;
@@ -3285,7 +3597,8 @@ void wm_gfx_tick(void)
             if (oc != resize_win->w0 || orow != resize_win->h0) dirty = 1;
         } else resize_win = 0;
     } else if (pressed) {
-        press(mx, my);
+        if (spot.active) spot_click();
+        else if (!at.active) press(mx, my);
     }
     if (term_mouse_win) {                                    /* a button pressed in a terminal that wants the mouse */
         window_t *tw = term_mouse_win;
@@ -3413,7 +3726,11 @@ void wm_gfx_tick(void)
 
     cmos_time_t t;
     cmos_get_time(&t);
-    if (t.minute != last_minute) { last_minute = t.minute; dirty = 1; }
+    if (t.minute != last_minute) {
+        last_minute = t.minute;
+        dirty = 1;
+        if (auto_dark && session == 0) { int nd = t.hour >= 19 || t.hour < 7; if (nd != ui_theme.dark) ui_set_dark(nd); }
+    }
 
     uint32_t now = debugmon_uptime_ms();
     if (dirty && now - last_frame_ms >= 16) {

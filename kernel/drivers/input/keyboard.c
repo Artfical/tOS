@@ -233,6 +233,8 @@ static void process_scancode(uint8_t scancode)
     if (scancode & 0x80) return;
 
     if (scancode == 0x3D && (alt_pressed || !xterm_keys)) { keyboard_hotkey = 5; return; }              /* F3 */
+    if (scancode == 0x39 && ctrl_pressed && (alt_pressed || !xterm_keys)) { keyboard_hotkey = 7; return; }   /* Ctrl+Space */
+    if (scancode == 0x0F && alt_pressed) { keyboard_hotkey = 8; return; }                                /* Alt+Tab */
     if (scancode == 0x01 && keyboard_hotkey_esc) { keyboard_hotkey = 6; return; }
 
     if (xterm_keys) {

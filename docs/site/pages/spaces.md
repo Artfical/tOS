@@ -26,6 +26,21 @@ In a Terminal that runs a Linux program (vim, htop), Ctrl+arrows belong to the p
 | Leave it | Esc, Ctrl+Down or F3 |
 | The Space on the left or right | Ctrl+Left, Ctrl+Right |
 
+## Search, Alt+Tab and snapping
+
+- **Search**: press **Ctrl+Space**, or rest the pointer in the top right corner. Type to find apps, settings pages and files (your home folder, Desktop, Documents and Downloads). **Up** and **Down** choose, **Enter** opens, **Esc** closes.
+- **Alt+Tab**: shows a picture of every window. Keep Alt down and press **Tab** for the next one; letting go brings that window forward, on its own Space too.
+- **Snapping**: drag a window to the left or right edge of the screen for half of it, or to the top for all of it. A preview shows where it will land.
+- **Hot corners**: the pointer at rest in the top left corner shows Mission Control, in the top right corner the search.
+- **Windows**: up to 12 at once.
+- **Wallpaper per Space**: choose a wallpaper in Settings, Desktop & Dock while you are in a Space; each Space remembers its own.
+
+| To | Press |
+|---|---|
+| Search | Ctrl+Space |
+| Switch windows | Alt+Tab |
+| Half of the screen | drag to the left or right edge |
+
 ## The animations on video
 
 Every change of the desktop is recorded by GitHub Actions (the genie, Mission Control, Spaces, the themes and more) in [tOS-animations.mp4](https://github.com/Artfical/tOS/releases/download/animations/tOS-animations.mp4). The recording runs the desktop twelve times slower and plays it back at its real speed: `tools/record-animations.py`, built with `make ANIM_SLOW=12`.

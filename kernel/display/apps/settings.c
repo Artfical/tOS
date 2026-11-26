@@ -161,7 +161,7 @@ static void draw_section(uiapp_t *a, set_t *st, gfx_surface_t *s, int x, int y, 
             for (int k = 0; k < un; k++) ui_button(s, px + k * 118, gy + 112, 110, 26, uihost_user_theme_name(k), k == ucur ? UI_ACCENT : UI_CARD2, k == ucur ? 0xFFFFFF : UI_TEXT, 0);
         } else gfx_text(s, &ui_font_small, px, gy + 118, "Your own themes: a folder with a theme.conf in .themes in your home folder", UI_DIM, 255);
         gy += 150;
-        group(s, px, gy, pw, 4);
+        group(s, px, gy, pw, 5);
         row_label(s, px, gy, 0, "Appearance", 0);
         int dark = uihost_get("dark");
         static const char *const ap[2] = { "Light", "Dark" };
@@ -173,15 +173,17 @@ static void draw_section(uiapp_t *a, set_t *st, gfx_surface_t *s, int x, int y, 
         row_label(s, px, gy, 2, "Icons", 0);
         static const char *const ic[2] = { "WhiteSur", "Classic" };
         segmented(s, px + pw - 214, gy + 88 + 8, 200, ic, 2, uihost_get("icons"));
-        row_label(s, px, gy, 3, "Window shadows", 0);
-        sw(s, px + pw - 54, gy + 132 + 10, uihost_get("shadows"));
+        row_label(s, px, gy, 3, "Dark from 19:00 to 07:00", 0);
+        sw(s, px + pw - 54, gy + 132 + 10, uihost_get("auto_dark"));
+        row_label(s, px, gy, 4, "Window shadows", 0);
+        sw(s, px + pw - 54, gy + 176 + 10, uihost_get("shadows"));
         break;
     }
     case S_DESKTOP: {
         int wp = uihost_get("wallpaper");
         static const char *wn[4] = { "Dusk", "Ocean", "Graphite", "Picture..." };
         static const uint32_t wa[3][2] = { { 0x302468, 0xE07A6E }, { 0x0B3A66, 0x2BB3C9 }, { 0x2A2C33, 0x5A5F6B } };
-        gfx_text(s, &ui_font_small, px, gy - 4, "WALLPAPER", UI_DIM, 255);
+        gfx_text(s, &ui_font_small, px, gy - 4, "WALLPAPER OF THIS SPACE", UI_DIM, 255);
         for (int i = 0; i < 4; i++) {
             int bx = px + i * 128, by = gy + 16;
             gfx_rrect(s, bx - 3, by - 3, 118, 72, 11, wp == i ? UI_ACCENT : UI_BG, 255);
@@ -483,7 +485,8 @@ static void s_press(uiapp_t *a, int lx, int ly, int b)
         if (ui_hit(lx, ly, px + pw - 214, gy + 8, 200, 28)) uihost_set("dark", lx >= px + pw - 114);
         for (int k = 0; k < 7; k++) if (ui_hit(lx, ly, px + pw - 190 + k * 26 - 11, gy + 44 + 11, 22, 22)) uihost_set("accent", k);
         if (ui_hit(lx, ly, px + pw - 214, gy + 88 + 8, 200, 28)) uihost_set("icons", lx >= px + pw - 114);
-        if (ui_hit(lx, ly, px + pw - 54, gy + 132 + 10, 40, 24)) uihost_set("shadows", !uihost_get("shadows"));
+        if (ui_hit(lx, ly, px + pw - 54, gy + 132 + 10, 40, 24)) uihost_set("auto_dark", !uihost_get("auto_dark"));
+        if (ui_hit(lx, ly, px + pw - 54, gy + 176 + 10, 40, 24)) uihost_set("shadows", !uihost_get("shadows"));
         break;
     case S_DESKTOP:
         for (int i = 0; i < 4; i++)
