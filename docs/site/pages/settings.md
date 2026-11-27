@@ -32,6 +32,8 @@ At the top, four ready-made **themes**. One click sets light or dark, the accent
 | **Midnight** | Dark, purple accent, Graphite wallpaper |
 | **Ocean** | Light, green accent, Ocean wallpaper |
 
+![Appearance: themes, accent, icons](shot:settings_appearance.png)
+
 The theme in force has an outline. Change any single setting below and no theme is outlined any more; your choices stay as you made them.
 
 Under the themes, choose **Light** or **Dark**. The whole desktop follows it: windows, the dock, the menus and the apps. Pick an **accent colour** (blue, purple, pink, red, orange, yellow or green) for selections and buttons. **Icons** switches between **WhiteSur** (the macOS-like icons) and **Classic** (tOS's own icons from before build 577); it changes the Dock, the launcher, Files, notifications and the file, folder and disk icons at once. **Dark from 19:00 to 07:00** switches between light and dark by itself. **Window shadows** turns the shadows under windows on or off. Everything is kept in `.desktop` in your home folder.

@@ -16,6 +16,8 @@ The windows are drawn small with a smooth filter and keep their titles under the
 
 ## Spaces
 
+![Mission Control: the windows and the Spaces](shot:mission_control.png)
+
 A new window opens in the Space you are in. Switch with **Ctrl+Left** and **Ctrl+Right**: the desktop slides sideways while the Dock and the top bar stay. A click on a Dock icon whose app is open in another Space takes you there.
 
 In a Terminal that runs a Linux program (vim, htop), Ctrl+arrows belong to the program; add Alt (**Ctrl+Alt+arrows**) to switch Spaces from there.
@@ -27,6 +29,10 @@ In a Terminal that runs a Linux program (vim, htop), Ctrl+arrows belong to the p
 | The Space on the left or right | Ctrl+Left, Ctrl+Right |
 
 ## Search, Alt+Tab and snapping
+
+![Search: apps, settings and files](shot:search.png)
+
+![Alt+Tab: a picture of every window](shot:alt_tab.png)
 
 - **Search**: press **Ctrl+Space**, or rest the pointer in the top right corner. Type to find apps, settings pages and files (your home folder, Desktop, Documents and Downloads). **Up** and **Down** choose, **Enter** opens, **Esc** closes.
 - **Alt+Tab**: shows a picture of every window. Keep Alt down and press **Tab** for the next one; letting go brings that window forward, on its own Space too.
