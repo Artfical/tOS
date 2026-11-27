@@ -761,8 +761,19 @@ static void write_account_files(void)
 }
 
 /* the files tOS makes up when a program looks for them */
+/* the CPU lists programs read to count the cores (Firefox, GTK, glibc): one core */
+static void write_cpu_files(void)
+{
+    static const char *const dirs[] = { "/sys", "/sys/devices", "/sys/devices/system", "/sys/devices/system/cpu", 0 };
+    static const char *const files[] = { "/sys/devices/system/cpu/online", "/sys/devices/system/cpu/possible", "/sys/devices/system/cpu/present", 0 };
+    for (int i = 0; dirs[i]; i++) if (!fsbridge_exists(dirs[i])) fsbridge_mkdir(dirs[i]);
+    for (int i = 0; files[i]; i++)
+        if (!fsbridge_exists(files[i]) && fsbridge_create(files[i]) == 0) fsbridge_write(files[i], "0\n", 2, 0);
+}
+
 static int etc_special(const char *path)
 {
+    if (!strncmp(path, "/sys/devices/system/cpu", 23)) return write_cpu_files(), 1;
     if (!strcmp(path, "/etc/resolv.conf") || !strcmp(path, "/etc/hosts")) return write_net_files(), 1;
     if (!strcmp(path, "/etc/passwd") || !strcmp(path, "/etc/group")) return write_account_files(), 1;
     return 0;
@@ -1018,12 +1029,29 @@ static uint32_t linux_sockcall(int call, const uint64_t *v)
 }
 
 /* ---- eventfd: a 64-bit counter libuv uses to wake its event loop ---- */
+/* a timerfd counts its expirations when it is looked at (read, poll, epoll all come through eventfd_of) */
+static void timerfd_refresh(proc_eventfd_t *e)
+{
+    if (e->kind != 1 || !e->armed) return;
+    uint64_t now = debugmon_uptime_ms64();
+    if (now < e->next_ms) return;
+    if (e->interval_ms) {
+        uint64_t n = 1 + (now - e->next_ms) / e->interval_ms;
+        e->count += n;
+        e->next_ms += n * e->interval_ms;
+    } else {
+        e->count += 1;
+        e->armed = 0;
+    }
+}
+
 static proc_eventfd_t *eventfd_of(proc_t *p, int fd)
 {
     if (!p || fd < 3 || fd - 3 >= PROC_MAX_FDS) return 0;
     int v = p->fd[fd - 3];
     if (v > PROC_FD_EVENTFD_BASE || v <= PROC_FD_EVENTFD_BASE - PROC_MAX_EVENTFDS) return 0;
     proc_eventfd_t *e = &p->eventfds[PROC_FD_EVENTFD_BASE - v];
+    if (e->used) timerfd_refresh(e);
     return e->used ? e : 0;
 }
 
@@ -1037,6 +1065,7 @@ static uint32_t linux_eventfd(uint32_t initval, uint32_t flags)
     for (int i = 0; i < PROC_MAX_EVENTFDS; i++) if (!p->eventfds[i].used) { ei = i; break; }
     if (slot < 0) return (uint32_t)-EMFILE;
     if (ei < 0) return (uint32_t)-ENFILE;
+    memset(&p->eventfds[ei], 0, sizeof(p->eventfds[ei]));
     p->eventfds[ei].used = 1;
     p->eventfds[ei].semaphore = flags & 1u;
     p->eventfds[ei].count = initval;
@@ -1054,7 +1083,8 @@ static uint32_t eventfd_read(proc_t *p, int fd, proc_eventfd_t *e, uint64_t buf,
     if (!user_wr_ok(buf, 8)) return (uint32_t)-EFAULT;
     while (!e->count) {
         if (p->fd_open_flags[fd - 3] & 0x800u) return (uint32_t)-EAGAIN;
-        task_yield();                            /* another thread will write it */
+        task_yield();                            /* another thread will write it, or the timer runs out */
+        timerfd_refresh(e);
     }
     uint64_t v = e->semaphore ? 1 : e->count;
     e->count -= v;
@@ -1911,13 +1941,15 @@ static uint32_t linux_open_path(uint64_t path_ptr, uint32_t flags, uint32_t mode
     return r;
 }
 
+static const char *open_kpath;          /* memfd_create opens a file of its own naming: the path is the kernel's, not the program's */
+
 static uint32_t linux_open_path_inner(uint64_t path_ptr, uint32_t flags, uint32_t mode,
                                 int32_t dirfd)
 {
     proc_t *p = proc_current();
-    if (!p || !user_cstr_ok(path_ptr)) return (uint32_t)-EFAULT;
+    if (!p || (!open_kpath && !user_cstr_ok(path_ptr))) return (uint32_t)-EFAULT;
     char path[FS_NAME_LEN];
-    strncpy(path, (const char *)(uintptr_t)path_ptr, sizeof(path) - 1);
+    strncpy(path, open_kpath ? open_kpath : (const char *)(uintptr_t)path_ptr, sizeof(path) - 1);
     path[sizeof(path) - 1] = 0;
     if (!path[0]) return (uint32_t)-ENOENT;
 
@@ -3337,6 +3369,7 @@ static uint64_t linux_syscall_handler_inner(uint32_t number, uint64_t a, uint64_
         case 172: { /* prctl: the thread's name (PR_SET_NAME, PR_GET_NAME), nothing else */
             proc_t *pp = proc_current();
             if (!pp) return (uint32_t)-ESRCH;
+            if (a == 1) return 0;                    /* PR_SET_PDEATHSIG: noted, not acted on */
             if (a == 15) {
                 if (!user_range_ok(b, 1)) return (uint32_t)-EFAULT;
                 int k = 0;
@@ -4134,6 +4167,15 @@ int lx_stat_at(int dirfd, uint64_t path_ptr, uint32_t flags, linux_stat64_t *st)
         moved = 1;
     }
     etc_special(path);
+    if (!strncmp(path, "/dev/", 5) && (!strcmp(path + 5, "urandom") || !strcmp(path + 5, "random") || !strcmp(path + 5, "null") || !strcmp(path + 5, "zero"))) {
+        memset(&entry, 0, sizeof(entry));                   /* the devices open() makes up are there for stat() too */
+        strncpy(entry.name, path + 5, sizeof(entry.name) - 1);
+        entry.inode = 9;
+        linux_stat64_fill(st, &entry);
+        st->st_mode = 020666u;
+        if (moved) vfs_chdir(saved);
+        return 0;
+    }
     int sr = (flags & 0x100u) ? vfs_lstat(path, &entry) : vfs_stat(path, &entry);     /* AT_SYMLINK_NOFOLLOW */
     int denied = vfs_denied();
     if (moved) vfs_chdir(saved);
@@ -4235,4 +4277,86 @@ uint32_t lx_waitid(int idtype, int id, uint64_t info, uint32_t options)
         memcpy((void *)(uintptr_t)info, si, sizeof(si));
     }
     return 0;
+}
+
+/* ---- what Firefox and GTK ask for: memfd_create, timerfd, inotify ---- */
+
+/* an anonymous file: made in /tmp/.memfd and unlinked at once, so it goes when the last descriptor does */
+uint32_t lx_memfd_create(uint64_t name_ptr, uint32_t flags)
+{
+    static uint32_t serial;
+    (void)name_ptr;
+    if (flags & ~3u) return (uint32_t)-EINVAL;                         /* MFD_CLOEXEC 1, MFD_ALLOW_SEALING 2 */
+    if (!fsbridge_exists("/tmp")) fsbridge_mkdir("/tmp");
+    if (!fsbridge_exists("/tmp/.memfd")) fsbridge_mkdir("/tmp/.memfd");
+    static char path[48];
+    char n[12];
+    sprintf_u32(n, ++serial);
+    strcpy(path, "/tmp/.memfd/m"); strcat(path, n);
+    open_kpath = path;
+    uint32_t fd = linux_open_path_inner(0, 2u | 0x40u | 0x80u | ((flags & 1u) ? LINUX_O_CLOEXEC : 0), 0600, -100);
+    open_kpath = 0;
+    if ((int32_t)fd < 0) return fd;
+    fsbridge_delete(path);
+    return fd;
+}
+
+uint32_t lx_timerfd_create(uint32_t clock, uint32_t flags)
+{
+    (void)clock;
+    if (flags & ~(0x800u | LINUX_O_CLOEXEC)) return (uint32_t)-EINVAL;
+    uint32_t fd = linux_eventfd(0, flags);
+    if ((int32_t)fd < 0) return fd;
+    proc_eventfd_t *e = eventfd_of(proc_current(), (int)fd);
+    if (e) e->kind = 1;
+    return fd;
+}
+
+static uint64_t ts_ms(int64_t sec, int64_t nsec) { return (uint64_t)sec * 1000u + (uint64_t)(nsec + 999999) / 1000000u; }
+
+uint64_t lx_timerfd_settime(int fd, uint32_t flags, uint64_t newp, uint64_t oldp)
+{
+    proc_eventfd_t *e = eventfd_of(proc_current(), fd);
+    if (!e || e->kind != 1) return (uint64_t)-EINVAL;
+    if (!user_range_ok(newp, 32)) return (uint64_t)-EFAULT;
+    int64_t v[4];
+    memcpy(v, (const void *)(uintptr_t)newp, 32);
+    if (v[0] < 0 || v[1] < 0 || v[2] < 0 || v[3] < 0 || v[1] > 999999999 || v[3] > 999999999) return (uint64_t)-EINVAL;
+    uint64_t now = debugmon_uptime_ms64();
+    if (oldp) {
+        if (!user_wr_ok(oldp, 32)) return (uint64_t)-EFAULT;
+        int64_t o[4] = { (int64_t)(e->interval_ms / 1000), (int64_t)(e->interval_ms % 1000) * 1000000, 0, 0 };
+        if (e->armed && e->next_ms > now) { uint64_t left = e->next_ms - now; o[2] = (int64_t)(left / 1000); o[3] = (int64_t)(left % 1000) * 1000000; }
+        memcpy((void *)(uintptr_t)oldp, o, 32);
+    }
+    e->count = 0;
+    if (!v[2] && !v[3]) { e->armed = 0; e->interval_ms = 0; return 0; }
+    uint64_t first = ts_ms(v[2], v[3]);
+    e->interval_ms = ts_ms(v[0], v[1]);
+    e->next_ms = (flags & 1u) ? first : now + (first ? first : 1);      /* TFD_TIMER_ABSTIME is taken against the uptime clock */
+    e->armed = 1;
+    return 0;
+}
+
+uint64_t lx_timerfd_gettime(int fd, uint64_t curp)
+{
+    proc_eventfd_t *e = eventfd_of(proc_current(), fd);
+    if (!e || e->kind != 1) return (uint64_t)-EINVAL;
+    if (!user_wr_ok(curp, 32)) return (uint64_t)-EFAULT;
+    uint64_t now = debugmon_uptime_ms64();
+    int64_t o[4] = { (int64_t)(e->interval_ms / 1000), (int64_t)(e->interval_ms % 1000) * 1000000, 0, 0 };
+    if (e->armed && e->next_ms > now) { uint64_t left = e->next_ms - now; o[2] = (int64_t)(left / 1000); o[3] = (int64_t)(left % 1000) * 1000000; }
+    memcpy((void *)(uintptr_t)curp, o, 32);
+    return 0;
+}
+
+/* inotify: the descriptor works and never reports a change (GLib then watches files without it) */
+uint32_t lx_inotify_init(uint32_t flags)
+{
+    if (flags & ~(0x800u | LINUX_O_CLOEXEC)) return (uint32_t)-EINVAL;
+    uint32_t fd = linux_eventfd(0, flags);
+    if ((int32_t)fd < 0) return fd;
+    proc_eventfd_t *e = eventfd_of(proc_current(), (int)fd);
+    if (e) e->kind = 2;
+    return fd;
 }

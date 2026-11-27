@@ -1765,6 +1765,14 @@ void linux64_syscall(registers_t *r)
         case 280: ret = at_call((int)a, b, 412, a, b, c, d, r); break;         /* utimensat */
         case 281: ret = call32(319, a, b, c, d, e, f, r); break;               /* epoll_pwait */
         case 290: ret = call32(328, a, b, 0, 0, 0, 0, r); break;               /* eventfd2 */
+        case 319: ret = sx(lx_memfd_create(a, (uint32_t)b)); break;            /* memfd_create */
+        case 283: ret = sx(lx_timerfd_create((uint32_t)a, (uint32_t)b)); break; /* timerfd_create */
+        case 286: ret = lx_timerfd_settime((int)a, (uint32_t)b, c, d); break;  /* timerfd_settime */
+        case 287: ret = lx_timerfd_gettime((int)a, b); break;                  /* timerfd_gettime */
+        case 253: ret = sx(lx_inotify_init(0)); break;                         /* inotify_init */
+        case 294: ret = sx(lx_inotify_init((uint32_t)a)); break;               /* inotify_init1 */
+        case 254: { static int wd; ret = (uint64_t)(++wd); break; }            /* inotify_add_watch: a watch that never fires */
+        case 255: ret = 0; break;                                              /* inotify_rm_watch */
         case 291: ret = call32(329, a, 0, 0, 0, 0, 0, r); break;               /* epoll_create1 */
         case 213: ret = call32(329, 0, 0, 0, 0, 0, 0, r); break;               /* epoll_create (the size is ignored) */
         case 191: case 192: case 193: ret = (uint64_t)-95; break;              /* getxattr, lgetxattr, fgetxattr: no extended attributes (EOPNOTSUPP; Wine asks for DOS attributes) */

@@ -51,7 +51,10 @@
 typedef struct {
     uint8_t used;
     uint8_t semaphore;                  /* EFD_SEMAPHORE: each read takes one */
+    uint8_t kind;                       /* 0 eventfd, 1 timerfd (count = expirations), 2 inotify (never has an event) */
+    uint8_t armed;                      /* a timerfd that is counting down */
     uint64_t count;
+    uint64_t next_ms, interval_ms;      /* a timerfd: when it next expires, and how often after that (0: once) */
 } proc_eventfd_t;
 
 typedef struct {

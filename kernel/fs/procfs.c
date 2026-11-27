@@ -173,6 +173,20 @@ int procfs_gen(const char *path, char *b, int cap)
     if (!strcmp(s, "sys/kernel/hostname")) { int n = app(b, cap, 0, auth_hostname() ? auth_hostname() : "tOS"); return app(b, cap, n, "\n"); }
     if (!strcmp(s, "sys/kernel/pid_max")) return app(b, cap, 0, "32768\n");
     if (!strcmp(s, "sys/kernel/random/boot_id")) return app(b, cap, 0, "00000000-0000-4000-8000-000000000001\n");
+    if (!strcmp(s, "sys/kernel/random/uuid")) {                           /* a new one at every read: not random enough for secrets */
+        static uint32_t serial;
+        uint32_t h = (uint32_t)debugmon_uptime_ms64() * 2654435761u ^ ++serial * 40503u;
+        char u[40];
+        static const char hx[] = "0123456789abcdef";
+        int o = 0;
+        for (int i = 0; i < 36; i++) {
+            if (i == 8 || i == 13 || i == 18 || i == 23) { u[o++] = '-'; continue; }
+            h = h * 1664525u + 1013904223u;
+            u[o++] = i == 14 ? '4' : i == 19 ? '8' : hx[(h >> 24) & 15];
+        }
+        u[o++] = '\n'; u[o] = 0;
+        return app(b, cap, 0, u);
+    }
     if (!strcmp(s, "sys/vm/overcommit_memory")) return app(b, cap, 0, "1\n");
     if (!strcmp(s, "sys/vm/max_map_count")) return app(b, cap, 0, "65530\n");
     if (!strcmp(s, "sys/net/core/somaxconn")) return app(b, cap, 0, "128\n");

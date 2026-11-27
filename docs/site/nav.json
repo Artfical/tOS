@@ -108,6 +108,10 @@
           "label": "Developing on tOS"
         },
         {
+          "slug": "dev-linux",
+          "label": "Linux programs: what tOS provides"
+        },
+        {
           "slug": "dev-c",
           "label": "C and C++"
         },

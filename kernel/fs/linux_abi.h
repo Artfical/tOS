@@ -32,6 +32,11 @@ uint64_t lx_dispatch32(uint32_t number, uint64_t a, uint64_t b, uint64_t c, uint
                        uint64_t e, uint64_t f, registers_t *regs);
 int lx_stat_at(int dirfd, uint64_t path_ptr, uint32_t flags, linux_stat64_t *st);
 int lx_fd_stat(int fd, linux_stat64_t *st);
+uint32_t lx_memfd_create(uint64_t name_ptr, uint32_t flags);
+uint32_t lx_timerfd_create(uint32_t clock, uint32_t flags);
+uint64_t lx_timerfd_settime(int fd, uint32_t flags, uint64_t newp, uint64_t oldp);
+uint64_t lx_timerfd_gettime(int fd, uint64_t curp);
+uint32_t lx_inotify_init(uint32_t flags);
 uint32_t lx_clone(registers_t *regs, uint32_t flags, uint64_t child_stack,
                   uint64_t parent_tid, uint64_t tls, uint64_t child_tid);
 int lx_user_range_ok(uint64_t p, uint64_t len);
