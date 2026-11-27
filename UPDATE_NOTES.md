@@ -1,4 +1,4 @@
-# Undo a delete
+# tFire: a Downloads page
 
-## files
-- Press **Ctrl+Z** in Files to undo a delete: the file comes straight back from the Trash to where it was. The message after deleting reminds you ("Ctrl+Z to undo").
+## tfire
+- **Downloads** in tFire (also linked from every page's menu) lists what is in your `~/Downloads` folder with each file's size. Click a file to open it, **Remove** to delete one, or **Clear all** to empty the folder.

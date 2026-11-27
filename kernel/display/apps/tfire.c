@@ -480,7 +480,7 @@ static void page_head(sb_t *b, const char *title)
               ".row a.x,a.x{color:#b91c1c;font-size:13px}.m{color:#6b7280}.nav a{color:#fff}"
               "</style></head><body><div class=top><h1>");
     sb_esc(b, title);
-    sb_add(b, "</h1><p class=nav><a href=\"tfire:home\">Home</a> &middot; <a href=\"tfire:bookmarks\">Bookmarks</a> &middot; <a href=\"tfire:history\">History</a></p></div><div class=wrap>");
+    sb_add(b, "</h1><p class=nav><a href=\"tfire:home\">Home</a> &middot; <a href=\"tfire:bookmarks\">Bookmarks</a> &middot; <a href=\"tfire:history\">History</a> &middot; <a href=\"tfire:downloads\">Downloads</a></p></div><div class=wrap>");
 }
 
 static void site_rows(sb_t *b, site_t *arr, int n, const char *del)
@@ -515,6 +515,50 @@ static void history_html(sb_t *b)
     if (!nhs) sb_add(b, "<p class=m>Nothing here yet: the pages you visit are listed here, the newest first.</p>");
     else sb_add(b, "<p><a class=x href=\"tfire:hs-clear\">Clear all history</a></p>");
     site_rows(b, hs, nhs, "tfire:hs-del:");
+    sb_add(b, "</div></body></html>");
+}
+
+/* the Downloads page: what is in ~/Downloads, with its size, to open or remove */
+static char dl_dir[200];
+
+static void dl_path(char *out)
+{
+    strcpy(out, uihost_home());
+    if (strcmp(out, "/")) strcat(out, "/");
+    strcat(out, "Downloads");
+}
+
+static const char *size_str(uint32_t n, char *buf)
+{
+    if (n >= 1024u * 1024u) { int o = 0, x = n / (1024 * 1024), f = (n % (1024 * 1024)) * 10 / (1024 * 1024); if (x >= 10) { int t[8],c=0; while(x){t[c++]='0'+x%10;x/=10;} while(c) buf[o++]=t[--c]; } else { buf[o++]='0'+x; buf[o++]='.'; buf[o++]='0'+f; } buf[o]=0; strcat(buf, " MB"); }
+    else if (n >= 1024u) { int t[8],c=0,x=n/1024; while(x){t[c++]='0'+x%10;x/=10;} int o=0; while(c) buf[o++]=t[--c]; buf[o]=0; strcat(buf, " KB"); }
+    else { int t[8],c=0,x=n,o=0; if(!x) buf[o++]='0'; while(x){t[c++]='0'+x%10;x/=10;} while(c) buf[o++]=t[--c]; buf[o]=0; strcat(buf, " B"); }
+    return buf;
+}
+
+static void downloads_html(sb_t *b)
+{
+    dl_path(dl_dir);
+    page_head(b, "Downloads");
+    static uihost_entry_t e[128];
+    int n = uihost_list(dl_dir, e, 128);
+    if (n <= 0) sb_add(b, "<p class=m>No downloads yet. Files you download land in your Downloads folder.</p>");
+    else {
+        sb_add(b, "<p><a class=x href=\"tfire:dl-clear\">Clear all</a></p>");
+        for (int i = 0; i < n; i++) {
+            if (e[i].name[0] == '.') continue;
+            char sz[24]; size_str(e[i].size, sz);
+            sb_add(b, "<div class=row><a href=\"tfire:dl-open:");
+            sb_int(b, i);
+            sb_add(b, "\">");
+            sb_esc(b, e[i].name);
+            sb_add(b, "</a><span class=u>");
+            sb_esc(b, sz);
+            sb_add(b, "</span><a class=x href=\"tfire:dl-del:");
+            sb_int(b, i);
+            sb_add(b, "\">Remove</a></div>");
+        }
+    }
     sb_add(b, "</div></body></html>");
 }
 
@@ -553,6 +597,14 @@ static tf_page *open_url(const tf_request *req)
 {
     const char *u = req->url;
     if (!strcmp(u, "tfire:licenses")) return page_open_html(u, tfire_notices, (int)strlen(tfire_notices), &host);
+    if (!strcmp(u, "tfire:downloads")) {
+        sb_t b = { 0 };
+        downloads_html(&b);
+        tf_page *p = 0;
+        if (b.p && !b.bad) p = page_open_html(u, b.p, b.len, &host);
+        free(b.p);
+        return p;
+    }
     if (!strcmp(u, HOME) || !strcmp(u, "tfire:bookmarks") || !strcmp(u, "tfire:history")) {
         sb_t b = { 0 };
         if (!strcmp(u, HOME)) home_html(&b);
@@ -636,6 +688,29 @@ static void go_req(uiapp_t *a, tf_t *t, const tf_request *req, int record)
             memset(&r, 0, sizeof(r));
             strcpy(r.url, t->hist[t->hpos]);
             go_req(a, t, &r, 0);
+        }
+        return;
+    }
+    /* the Downloads page: open a file, remove one, or clear them all (only from tFire's own Downloads page) */
+    if (starts(req->url, "tfire:dl-open:") || starts(req->url, "tfire:dl-del:") || !strcmp(req->url, "tfire:dl-clear")) {
+        if (!strcmp(t->url, "tfire:downloads")) {
+            dl_path(dl_dir);
+            static uihost_entry_t e[128];
+            int n = uihost_list(dl_dir, e, 128);
+            const char *num = req->url;
+            for (const char *q = req->url; *q; q++) if (*q == ':') num = q + 1;   /* the number after the last : */
+            int act = req->url[9];                                               /* o open, d delete, c clear */
+            if (n > 0 && act == 'o') {
+                int i = parse_int(num);
+                if (i >= 0 && i < n) { char p[260]; strcpy(p, dl_dir); strcat(p, "/"); strcat(p, e[i].name); uihost_open("files", p); }
+            } else if (n > 0 && act == 'd') {
+                int i = parse_int(num);
+                if (i >= 0 && i < n) { char p[260]; strcpy(p, dl_dir); strcat(p, "/"); strcat(p, e[i].name); uihost_delete(p); }
+                go(a, t, "tfire:downloads", 0);
+            } else if (act == 'c') {
+                for (int i = 0; i < n; i++) { if (e[i].name[0] == '.') continue; char p[260]; strcpy(p, dl_dir); strcat(p, "/"); strcat(p, e[i].name); uihost_delete(p); }
+                go(a, t, "tfire:downloads", 0);
+            }
         }
         return;
     }
