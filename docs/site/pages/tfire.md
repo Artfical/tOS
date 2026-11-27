@@ -74,6 +74,8 @@ A link to a file that is not a page (a zip archive, a PDF, a text file) is **dow
 
 ![The Downloads folder, opened from the bar](shot:tfire/u4-files.png)
 
+**Downloads** in the menu (and on every page) opens a page listing everything in your Downloads folder with its size: click a file to open it, **Remove** to delete one, or **Clear all**.
+
 ## Tabs
 
 Press **Ctrl+T** for a new tab. Once there are two or more, a strip of tabs appears above the address bar: click a tab to switch to it, its **x** to close it, the **+** to open another. Up to eight tabs fit.
