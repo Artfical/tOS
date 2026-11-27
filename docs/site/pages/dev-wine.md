@@ -22,7 +22,7 @@ sudo tpkg install wine
 
 `tos-x` starts the X server in a tOS window and runs the command there; the window closes when the program ends.
 
-The first time, `wine` makes the Wine folder, `~/.wine` (or the folder in `$WINEPREFIX`): the registry and folders are copied from a ready-made one, and the Windows libraries are linked in. This takes seconds. Programs see `C:` as `~/.wine/drive_c` and `Z:` as the whole tOS file system. A program that was installed is found under `C:\Program Files` (or `Program Files (x86)` for a 32-bit installer), that is `~/.wine/drive_c/Program Files`.
+The first time, `wine` makes the Wine folder, `~/.wine` (or the folder in `$WINEPREFIX`): the registry and folders are copied from a ready-made one, and the Windows libraries are linked in. This takes seconds. You do not need to be root: run `wine` as your normal user. The first run (and every run after) makes sure every folder of `drive_c` can be entered, so a `.wine` folder made before this fix is repaired too. Programs see `C:` as `~/.wine/drive_c` and `Z:` as the whole tOS file system. A program that was installed is found under `C:\Program Files` (or `Program Files (x86)` for a 32-bit installer), that is `~/.wine/drive_c/Program Files`.
 
 Every time Wine starts, it first runs its own start-up (`wineboot`: services and the registry). That takes seconds on a real computer, and minutes on a slow virtual machine.
 

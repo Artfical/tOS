@@ -16,6 +16,9 @@
 - Your own themes: a folder `~/.themes/NAME` with a `theme.conf` (`dark=`, `accent=RRGGBB`, `wallpaper=`, `icons=`) and, if you like, an icons folder of PNGs named like the pictures they replace (`icon48_files.png`). They show as buttons in Settings > Appearance under the four ready-made themes, and the choice is kept. Examples: `docs/themes` (Nord, Sunset).
 - "Dark from 19:00 to 07:00" in Appearance switches between light and dark by itself.
 
+## terminal | Fixed
+- Wine: running a Windows program as a normal user (not root) works. The first run, and every run after, fixes the permissions of the folders in `drive_c`, so the old "Permission denied ... windows/system32" error is gone, and a `.wine` folder made before the fix is repaired. `wine` 10.0 package updated on update.artfical.com.
+
 ## files | New
 - Put Back: in the Trash, select one or more items and click Put Back to return them to the folders they came from. tOS keeps the original place of each trashed item in `.Trash/.restore`, so it works after a restart too.
 
