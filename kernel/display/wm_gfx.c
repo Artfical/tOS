@@ -410,7 +410,7 @@ int wm_gfx_content_mouse(window_t *w, int *x, int *y)
 enum {
     A_NONE, A_ABOUT, A_SETTINGS, A_TERMINAL, A_ACTIVITY, A_LAUNCHER, A_SHUTDOWN,
     A_NEW_TERM, A_NEW, A_OPEN, A_SAVE, A_CLOSE, A_MINIMIZE, A_ZOOM, A_FOCUS0,
-    A_NEW_FOLDER = 40, A_NEW_FILE, A_FILES, A_WALLPAPER,
+    A_NEW_FOLDER = 40, A_NEW_FILE, A_FILES, A_WALLPAPER, A_PIN,
 };
 
 typedef struct { const char *label; int action; int sep_after; int disabled; } menu_item_t;
@@ -496,7 +496,9 @@ static void open_menu(int which, int x, int y)
         }
     } else if (which == MENU_WINDOW) {
         menu_add("Minimize", A_MINIMIZE, 0);
-        menu_add("Zoom", A_ZOOM, 1);
+        menu_add("Zoom", A_ZOOM, 0);
+        if (wm_focused) { menu_add(wm_focused->pinned ? "Unpin (not always on top)" : "Pin (always on top)", A_PIN, 0); }
+        menu_add("Close Window", A_CLOSE, 1);
         for (int i = 0; i < MAX_WINDOWS; i++)
             if (windows[i].open) menu_add(windows[i].title, A_FOCUS0 + i, 0);
     } else {
@@ -575,6 +577,7 @@ static void do_action(int a)
     case A_CLOSE:     if (f) wm_close_window(f); break;
     case A_MINIMIZE:  if (f) genie(f, 0); break;
     case A_ZOOM:      if (f) zoom_window(f); break;
+    case A_PIN:       if (f) { f->pinned = !f->pinned; dirty = 1; } break;
     case A_NEW_FOLDER: wm_desktop_new_folder(); break;
     case A_NEW_FILE:  wm_desktop_new_file(); break;
     case A_FILES:     wm_open_app("files"); break;
@@ -1993,7 +1996,8 @@ static void compose_desk(int sp)
         while (j >= 0 && windows[order[j]].z > windows[k].z) { order[j + 1] = order[j]; j--; }
         order[j + 1] = k;
     }
-    for (int i = 0; i < n; i++) draw_window_g(&windows[order[i]]);
+    for (int i = 0; i < n; i++) if (!windows[order[i]].pinned) draw_window_g(&windows[order[i]]);
+    for (int i = 0; i < n; i++) if (windows[order[i]].pinned) draw_window_g(&windows[order[i]]);
 }
 
 static void compose(void)
@@ -3617,8 +3621,24 @@ void wm_gfx_tick(void)
         while (keyboard_get_special()) { }
     }
 
-    if (session == 0 && rpressed && !menu_which && !launcher_open && my >= TOPBAR_H && dock_hit(mx, my) < 0 && !window_at(mx, my))
-        open_menu(MENU_CTX, mx, my);
+    if (rpressed && !menu_which && !launcher_open && my >= TOPBAR_H && my < dock_limit()) {
+        window_t *rw = window_at(mx, my);
+        if (rw && my < rw->gy + TITLE_H && mx - rw->gx > 72) {
+            wm_focus_window(rw);
+            menu_count = 0;
+            menu_add(rw->pinned ? "Unpin" : "Pin (always on top)", A_PIN, 0);
+            menu_add("Minimize", A_MINIMIZE, 0);
+            menu_add("Close", A_CLOSE, 0);
+            menu_w = 180;
+            for (int i = 0; i < menu_count; i++) { int tw = gfx_text_width(&ui_font_regular, menu_items[i].label) + 40; if (tw > menu_w) menu_w = tw; }
+            menu_which = MENU_CTX; menu_open_ms = debugmon_uptime_ms();
+            menu_x = mx; menu_y = my + 4;
+            if (menu_x + menu_w > SW - 6) menu_x = SW - 6 - menu_w;
+            if (menu_y + menu_height() > SH - 6) menu_y = SH - 6 - menu_height();
+            hover_menu = -1; dirty = 1;
+        } else if (session == 0 && !rw && dock_hit(mx, my) < 0)
+            open_menu(MENU_CTX, mx, my);
+    }
 
     int wheel = mouse_get_wheel_delta();
     if (wheel) {

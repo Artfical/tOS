@@ -42,6 +42,10 @@ Every window has a title bar with three round buttons at the top left (close, mi
 
 ![Minimising a window into the dock](video:genie.mp4)
 
+## Keeping a window on top
+
+Right-click a window's title bar and choose **Pin (always on top)** to keep it above the other windows; choose **Pin** again (it reads *Unpin*) to let it go back to normal. The same menu has **Minimize** and **Close**, and the **Window** menu in the top bar has **Pin** too. A pinned window still belongs to its Space.
+
 ## The desktop itself
 
 The desktop shows the wallpaper and the files you drop there. **Right-click** an empty part of the desktop for a menu:

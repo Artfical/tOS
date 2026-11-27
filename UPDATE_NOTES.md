@@ -1,3 +1,8 @@
+# Pin windows, Trash restore, quick settings
+
+## desktop | New
+- Pin a window to keep it above the others: right-click its title bar and choose **Pin (always on top)**, or use the **Window** menu. A pinned window stays on top until you unpin it. The title-bar right-click menu also has Minimize and Close.
+
 # Search, Alt+Tab, window snapping, more Spaces
 
 ## desktop | New

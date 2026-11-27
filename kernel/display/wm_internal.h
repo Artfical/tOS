@@ -50,6 +50,7 @@ typedef struct {
     int panel;                       /* WIN_KIND_PANEL: which built-in pixel panel */
     int anim;                        /* frames left of the opening animation */
     int space;                       /* graphical desktop: the Space (virtual desktop) the window is on */
+    int pinned;                      /* graphical desktop: kept above the other windows (Window menu, title bar right-click) */
     void *native;                    /* WIN_KIND_NATIVE: its uiapp_t */
 } window_t;
 
