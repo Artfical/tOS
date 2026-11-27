@@ -1,5 +1,8 @@
 # Pin windows, Trash restore, quick settings
 
+## desktop | New
+- The speaker in the top bar is a button: click it to mute or unmute the interface sounds (the icon dims when muted). Same as `beep off` / `beep on` in the Terminal.
+
 ## files | New
 - Put Back: in the Trash, select one or more items and click **Put Back** to return them to the folders they came from. tOS keeps the original place of each trashed item in `.Trash/.restore`, so it works after a restart too.
 

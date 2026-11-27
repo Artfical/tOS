@@ -90,7 +90,7 @@ Ctrl+Up (or F3) shows Mission Control, Ctrl+Left and Ctrl+Right change the Space
 
 ## Sound
 
-tOS plays short sounds when you open or close a window and when you click a menu or a dock icon. Turn them off with `beep off`. See [Audio](/tos/audio).
+tOS plays short sounds when you open or close a window and when you click a menu or a dock icon. Click the **speaker** in the top bar to mute or unmute them (it dims when muted), or use `beep off` and `beep on` in the Terminal. See [Audio](/tos/audio).
 
 ## Changing the screen size
 

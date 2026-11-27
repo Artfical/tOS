@@ -421,7 +421,7 @@ static int menu_count, menu_x, menu_y, menu_w, menu_which;   /* 0 = closed */
 enum { MENU_SYS = 1, MENU_FILE_, MENU_WINDOW, MENU_CTX, MENU_EJECT, MENU_APP0 = 10 };
 #define BAR_MENUS 10
 static int menu_label_x[BAR_MENUS], menu_label_w[BAR_MENUS], bar_kind[BAR_MENUS], bar_n;
-static int search_x = -1000, eject_x = -1000;
+static int search_x = -1000, eject_x = -1000, vol_icon_x = -1000;
 #define A_EJECT0 80
 #define A_APP0   100      /* + menu * 16 + item: an app's own menus */
 static char eject_labels[VOLUMES_MAX][48];
@@ -829,7 +829,7 @@ static void draw_topbar(void)
         int cw2 = gfx_text_width(&ui_font_medium, clk);
         gfx_text(&bs, &ui_font_medium, SW - 14 - cw2, 6, clk, ui_theme.bar_text, 255);
         gfx_blit_tinted(&bs, gfx_image("glyph_ethernet-port"), SW - 14 - cw2 - 30, 6, ui_theme.bar_text, net_ip ? 230 : 90);
-        clock_x = -1000; search_x = -1000; eject_x = -1000;
+        clock_x = -1000; search_x = -1000; eject_x = -1000; vol_icon_x = -1000;
         eth_icon_x = SW - 14 - cw2 - 30;
         return;
     }
@@ -898,7 +898,8 @@ static void draw_topbar(void)
         eject_x = rx;
         rx -= 28;
     }
-    gfx_blit_tinted(&bs, gfx_image("glyph_volume-2"), rx, 6, ui_theme.bar_text, 230);
+    gfx_blit_tinted(&bs, gfx_image("glyph_volume-2"), rx, 6, ui_theme.bar_text, sound_get_enabled() ? 230 : 110);
+    vol_icon_x = rx;
     rx -= 28;
     gfx_blit_tinted(&bs, gfx_image("glyph_ethernet-port"), rx, 6, ui_theme.bar_text, net_ip ? 230 : 90);
     eth_icon_x = rx;   /* wired: tOS has no Wi-Fi */
@@ -3427,6 +3428,7 @@ static void press(int x, int y)
         if (x >= eject_x - 6 && x < eject_x + 22) { open_menu(MENU_EJECT, eject_x - 6, TOPBAR_H + 2); return; }
         if (x >= search_x - 6 && x < search_x + 22) { launcher_open = 1; dirty = 1; }
         else if (x >= eth_icon_x - 6 && x < eth_icon_x + 22) wm_gfx_open_native("netmon", 0);
+        else if (x >= vol_icon_x - 6 && x < vol_icon_x + 22) { sound_set_enabled(!sound_get_enabled()); dirty = 1; }
         return;
     }
     int d = dock_hit(x, y);
