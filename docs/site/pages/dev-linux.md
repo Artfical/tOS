@@ -10,6 +10,7 @@ icon: terminal
 | Memory | `mmap` (anonymous, file, `MAP_SHARED`, reservations with `PROT_NONE`), `mprotect`, `mremap`, `madvise`, `munmap` |
 | Shared memory | **`memfd_create`**: an anonymous file you can `ftruncate` and map in several processes, and pass to another process with `SCM_RIGHTS` |
 | Events | `epoll`, `poll`, `eventfd`, **`timerfd`** (one-shot and periodic), **`inotify`** (the descriptor works; it never reports a change), `pipe2`, `socketpair` |
+| Shared memory (System V) | **`shmget`, `shmat`, `shmdt`, `shmctl`**: segments shared between processes (what MIT-SHM, used by cairo and the X server, needs) |
 | Not provided | `signalfd` (answers "function not implemented") |
 | Files | `/proc` (`self/maps`, `status`, `cpuinfo`, `meminfo`, `sys/kernel/random/uuid` ...), `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/random` (also for `stat`), `flock`, `fcntl` locks, `fallocate` |
 | Processes | `fork`, `execve`, `wait`, signals with handlers and alternate stacks, `prctl(PR_SET_PDEATHSIG)` (accepted, not acted on) |
@@ -23,7 +24,9 @@ icon: terminal
 gcc -O2 -static -o ffprobe tools/linux-tests/ffprobe.c -lpthread
 ```
 
-Put it in the initrd as `/programs/ffprobe` and run it in a Terminal. It ends with `RESULT: N passed, M failed`.
+Put it in the initrd as `/programs/ffprobe` and run it in a Terminal. It ends with `RESULT: N passed, M failed`. tOS passes 84 of 92; the rest are `signalfd` and files that come with packages.
+
+`tools/linux-tests/xrt.c` times a round trip to the X server (about 1 ms), `xtree.c` lists the X server's windows, and `gtkdemo.c` is a GTK 3 program with menus, a combo box, a tooltip and a file chooser.
 
 ## Next
 

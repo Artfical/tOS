@@ -20,6 +20,7 @@
 #include <sys/resource.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
+#include <sys/shm.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
@@ -102,6 +103,34 @@ int main(void)
         void *m1 = mmap(0, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, mf, 0), *m2 = mmap(0, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, mf, 0);
         if (m1 != MAP_FAILED && m2 != MAP_FAILED) { strcpy(m1, "shared"); CHECK("a memfd mapped twice is shared", !strcmp(m2, "shared")); }
         else bad("mmap a memfd MAP_SHARED", strerror(errno));
+    }
+
+    /* System V shared memory (MIT-SHM, which cairo uses to hand pictures to the X server) */
+    {
+        int id = shmget(IPC_PRIVATE, 65536, IPC_CREAT | 0600);
+        CHECK("shmget", id >= 0);
+        if (id >= 0) {
+            char *m1 = shmat(id, 0, 0);
+            CHECK("shmat", m1 != (void *)-1);
+            if (m1 != (void *)-1) {
+                strcpy(m1, "from the parent");
+                pid_t c = fork();
+                if (c == 0) {
+                    char *m2 = shmat(id, 0, 0);
+                    if (m2 == (void *)-1) _exit(2);
+                    int same = !strcmp(m2, "from the parent");
+                    strcpy(m2, "from the child");
+                    _exit(same ? 0 : 3);
+                }
+                int stt = 0;
+                waitpid(c, &stt, 0);
+                CHECK("shm is shared with a forked process", WIFEXITED(stt) && WEXITSTATUS(stt) == 0 && !strcmp(m1, "from the child"));
+                struct shmid_ds sd;
+                CHECK("shmctl IPC_STAT (the size, nattch: the X server checks)", shmctl(id, IPC_STAT, &sd) == 0 && sd.shm_segsz == 65536);
+                CHECK("shmdt", shmdt(m1) == 0);
+            }
+            CHECK("shmctl IPC_RMID", shmctl(id, IPC_RMID, 0) == 0);
+        }
     }
 
     /* descriptors and events */

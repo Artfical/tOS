@@ -1,4 +1,5 @@
 #include "lsock.h"
+#include "debugmon.h"
 #include "ip.h"
 #include "tcp.h"
 #include "udp.h"
@@ -485,7 +486,15 @@ int lsock_is_stream(int s)
 
 void lsock_pump(void)
 {
-    if (open_count > 0) tcp_pump();
+    /* Every task that waits (poll, select, read on a socket) comes through here in a loop. The network card is read and the TCP timers
+     * run at most once a millisecond: with an X server, its clients and a few threads all waiting, more than that is the machine's time
+     * spent on nothing (each read of the card is a trip out of the virtual machine). */
+    static uint64_t last_ms = (uint64_t)-1;
+    if (open_count <= 0) return;
+    uint64_t now = debugmon_uptime_ms64();
+    if (now == last_ms) return;
+    last_ms = now;
+    tcp_pump();
 }
 
 int lsock_is_unix(int s) { lsock_t *k = get(s); return k && k->un; }

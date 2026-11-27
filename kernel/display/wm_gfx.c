@@ -3755,11 +3755,16 @@ void wm_gfx_tick(void)
     }
 
     uint32_t now = debugmon_uptime_ms();
-    if (dirty && now - last_frame_ms >= 16) {
+    static uint32_t frame_gap = 16;
+    if (dirty && now - last_frame_ms >= frame_gap) {
         last_frame_ms = now;
         dirty = 0;
         compose();
         present();
+        /* a slow machine (a virtual one without acceleration): a frame that took long is followed by a pause three times as long,
+         * so the desktop uses a quarter of the time at most and the programs in it (an X server and its clients) get the rest */
+        uint32_t took = debugmon_uptime_ms() - now;
+        frame_gap = took * 3 > 16 ? took * 3 : 16;
     } else if (moved) {
         int ox = cur_x, oy = cur_y;
         cursor_erase();

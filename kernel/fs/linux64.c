@@ -575,6 +575,127 @@ static uint64_t sys_munmap(uint64_t addr, uint64_t len)
     return vma_remove(p, addr, end) == 0 ? 0 : (uint64_t)-ENOMEM;
 }
 
+/* ---- System V shared memory (shmget, shmat, shmdt, shmctl): MIT-SHM, which cairo uses to give the X server a picture without sending it ---- */
+#define SYSV_SEGS 64
+typedef struct { int used, removed, key; uint32_t size, npages, nattch, mode; uint32_t *pg; uint32_t cpid; uint64_t ctime; } sysv_seg_t;
+static sysv_seg_t sysv[SYSV_SEGS];
+typedef struct { uint32_t pid; uint64_t addr; int seg; } sysv_att_t;
+static sysv_att_t sysv_att[256];
+
+static void sysv_release(sysv_seg_t *g)
+{
+    for (uint32_t i = 0; i < g->npages; i++) if (g->pg[i]) free_physical_page(g->pg[i]);     /* what is still mapped keeps its own owners */
+    free(g->pg);
+    memset(g, 0, sizeof(*g));
+}
+
+static uint64_t sys_shmget(int key, uint64_t size, uint32_t flg)
+{
+    proc_t *p = proc_current();
+    if (key != 0)
+        for (int i = 0; i < SYSV_SEGS; i++)
+            if (sysv[i].used && !sysv[i].removed && sysv[i].key == key) {
+                if ((flg & 0x200u) && (flg & 0x400u)) return (uint64_t)-EEXIST;                  /* IPC_CREAT | IPC_EXCL */
+                if (size > sysv[i].size) return (uint64_t)-EINVAL;
+                return (uint64_t)(i + 1);
+            }
+    if (key != 0 && !(flg & 0x200u)) return (uint64_t)-ENOENT;
+    if (!size || size > (256ull << 20)) return (uint64_t)-EINVAL;
+    int slot = -1;
+    for (int i = 0; i < SYSV_SEGS && slot < 0; i++) if (!sysv[i].used) slot = i;
+    if (slot < 0)                                                                                 /* full: a removed one nobody has attached any more goes */
+        for (int i = 0; i < SYSV_SEGS && slot < 0; i++) if (sysv[i].used && sysv[i].removed && !sysv[i].nattch) { sysv_release(&sysv[i]); slot = i; }
+    if (slot < 0) return (uint64_t)-ENOSPC;
+    sysv_seg_t *g = &sysv[slot];
+    memset(g, 0, sizeof(*g));
+    g->npages = (uint32_t)((size + 0xFFF) / PAGE_SIZE);
+    g->pg = (uint32_t *)malloc(g->npages * sizeof(uint32_t));
+    if (!g->pg) { memset(g, 0, sizeof(*g)); return (uint64_t)-ENOMEM; }
+    for (uint32_t i = 0; i < g->npages; i++) {
+        uint32_t ph = alloc_physical_page();
+        if (!ph) { g->npages = i; sysv_release(g); return (uint64_t)-ENOMEM; }
+        memset(P2V(ph), 0, PAGE_SIZE);
+        g->pg[i] = ph;
+    }
+    g->used = 1; g->key = key; g->size = (uint32_t)size; g->mode = flg & 0777u; g->cpid = p ? p->pid : 0;
+    return (uint64_t)(slot + 1);
+}
+
+static uint64_t sys_shmat(int id, uint64_t addr, uint32_t flg)
+{
+    proc_t *p = proc_current();
+    mm64_t *mm = mm_of(p);
+    if (!mm || id < 1 || id > SYSV_SEGS || !sysv[id - 1].used) return (uint64_t)-EINVAL;
+    sysv_seg_t *g = &sysv[id - 1];
+    uint64_t size = (uint64_t)g->npages * PAGE_SIZE, start;
+    uint32_t prot = (flg & 0x1000u) ? PROT_READ : (PROT_READ | PROT_WRITE);                        /* SHM_RDONLY */
+    if (addr) {
+        start = (flg & 0x2000u) ? (addr & ~0xFFFull) : addr;                                      /* SHM_RND */
+        if (start & 0xFFF) return (uint64_t)-EINVAL;
+    } else {
+        start = vma_find_free(mm, 0, size);
+        if (!start) return (uint64_t)-ENOMEM;
+    }
+    int ai = -1;
+    for (int i = 0; i < 256 && ai < 0; i++) if (!sysv_att[i].pid) ai = i;
+    if (ai < 0) return (uint64_t)-ENOMEM;
+    if (vma_insert(p, start, start + size, prot) != 0) return (uint64_t)-ENOMEM;
+    for (uint32_t i = 0; i < g->npages; i++) {
+        if (page_ref_inc(g->pg[i]) != 0) { vma_remove(p, start, start + size); return (uint64_t)-ENOMEM; }
+        if (paging_map_in(p->pgdir, start + (uint64_t)i * PAGE_SIZE, g->pg[i], pte_flags(prot) | PTE_SHARED) != 0) {
+            free_physical_page(g->pg[i]);
+            vma_remove(p, start, start + size);
+            return (uint64_t)-ENOMEM;
+        }
+    }
+    g->nattch++;
+    sysv_att[ai].pid = p->pid; sysv_att[ai].addr = start; sysv_att[ai].seg = id - 1;
+    return start;
+}
+
+static uint64_t sys_shmdt(uint64_t addr)
+{
+    proc_t *p = proc_current();
+    for (int i = 0; i < 256; i++) {
+        if (sysv_att[i].pid != p->pid || sysv_att[i].addr != addr) continue;
+        sysv_seg_t *g = &sysv[sysv_att[i].seg];
+        uint64_t size = (uint64_t)g->npages * PAGE_SIZE;
+        sysv_att[i].pid = 0;
+        if (g->nattch) g->nattch--;
+        vma_remove(p, addr, addr + size);
+        if (g->used && g->removed && !g->nattch) sysv_release(g);
+        return 0;
+    }
+    return (uint64_t)-EINVAL;
+}
+
+static uint64_t sys_shmctl(int id, int cmd, uint64_t buf)
+{
+    if (id < 1 || id > SYSV_SEGS || !sysv[id - 1].used) return (uint64_t)-EINVAL;
+    sysv_seg_t *g = &sysv[id - 1];
+    cmd &= 0xFF;                                                                                   /* (IPC_64 is the high bit) */
+    if (cmd == 0) {                                                                                /* IPC_RMID */
+        g->removed = 1;
+        g->key = 0;
+        if (!g->nattch) sysv_release(g);
+        return 0;
+    }
+    if (cmd == 2 || cmd == 13) {                                                                   /* IPC_STAT, SHM_STAT */
+        if (!lx_user_wr_ok(buf, 112)) return (uint64_t)-EFAULT;
+        uint8_t b[112];
+        memset(b, 0, sizeof b);
+        uint32_t mode = g->mode, uid = 0;
+        memcpy(b + 0, &g->key, 4); memcpy(b + 4, &uid, 4); memcpy(b + 8, &uid, 4); memcpy(b + 12, &uid, 4); memcpy(b + 16, &uid, 4);
+        memcpy(b + 20, &mode, 4);
+        uint64_t sz = g->size, nat = g->nattch;
+        memcpy(b + 48, &sz, 8); memcpy(b + 80, &g->cpid, 4); memcpy(b + 84, &g->cpid, 4); memcpy(b + 88, &nat, 8);
+        memcpy((void *)(uintptr_t)buf, b, sizeof b);
+        return cmd == 13 ? (uint64_t)id : 0;
+    }
+    if (cmd == 1 || cmd == 11 || cmd == 12) return 0;                                              /* IPC_SET, SHM_LOCK, SHM_UNLOCK: accepted */
+    return (uint64_t)-EINVAL;
+}
+
 static uint64_t sys_mprotect(uint64_t addr, uint64_t len, uint32_t prot)
 {
     proc_t *p = proc_current();
@@ -1507,6 +1628,10 @@ void linux64_syscall(registers_t *r)
         case 9:   ret = sys_mmap(a, b, (uint32_t)c, (uint32_t)d, (int)e, f); break;
         case 10:  ret = sys_mprotect(a, b, (uint32_t)c); break;
         case 11:  ret = sys_munmap(a, b); break;
+        case 29:  ret = sys_shmget((int)a, b, (uint32_t)c); break;                 /* shmget */
+        case 30:  ret = sys_shmat((int)a, b, (uint32_t)c); break;                  /* shmat */
+        case 31:  ret = sys_shmctl((int)a, (int)b, c); break;                      /* shmctl */
+        case 67:  ret = sys_shmdt(a); break;                                       /* shmdt */
         case 12:  ret = sys_brk(a); break;
         case 13:  ret = sys_rt_sigaction((int)a, b, c, d); break;
         case 14:  ret = sys_rt_sigprocmask((int)a, b, c, d); break;

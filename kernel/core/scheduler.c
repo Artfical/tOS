@@ -450,9 +450,12 @@ uint64_t timer_handler(uint64_t esp)
     if (current->state == TASK_STATE_RUNNING)
         current->state = TASK_STATE_READY;
 
+    /* The idle task halts until the next timer interrupt (10 ms). It is in the ring like the others, but only runs when nothing else
+     * can: a task that waits for another (an X client for its server) by yielding would otherwise stop for 10 ms every time the ring
+     * came round to the idle task. */
     task_t *next = current->next;
     int n = 0;
-    while (next->state != TASK_STATE_READY) {
+    while (next->state != TASK_STATE_READY || next == idle_task) {
         next = next->next;
         if (++n > MAX_TASKS) { next = idle_task; break; }
     }
