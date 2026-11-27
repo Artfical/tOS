@@ -1,0 +1,61 @@
+# Boots tOS in QEMU, drives the desktop and takes screenshots of the new features, for the docs.
+# The PNGs are kept as the workflow's artifact and as the "screenshots" release (docs/screenshots use
+# the same names). It does not commit back to the repository, so it cannot start a loop.
+
+name: screenshots
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'kernel/display/**'
+      - 'tools/qemu_drive.py'
+      - 'tools/take-screenshots.py'
+      - '.github/workflows/screenshots.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  shots:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install the toolchain, QEMU and the image tools
+        timeout-minutes: 25
+        run: |
+          echo 'Acquire::Retries "5"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99retry
+          sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.source 2>/dev/null || true
+          for i in 1 2 3; do
+            timeout 420 sh -c 'sudo apt-get update -q && sudo apt-get install -y -q gcc-multilib g++-multilib qemu-system-x86 imagemagick fonts-dejavu-core' && break
+            echo "try $i stalled; again"
+          done
+
+      - name: Build
+        run: |
+          make clean
+          make -j"$(nproc)" kernel/tOS.elf initrd.tar
+
+      - name: Take the screenshots
+        timeout-minutes: 40
+        run: python3 -I tools/take-screenshots.py kernel/tOS.elf initrd.tar shots
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tOS-screenshots
+          path: shots/*.png
+
+      - name: Publish as the screenshots release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p rel
+          cp shots/*.png rel/
+          gh release view screenshots >/dev/null 2>&1 || gh release create screenshots --prerelease --title "Screenshots" \
+            --notes "Screenshots of tOS, taken by tools/take-screenshots.py in a GitHub Actions run. Replaced on every change of the desktop."
+          gh release upload screenshots rel/*.png --clobber
