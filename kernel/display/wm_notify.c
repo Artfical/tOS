@@ -3,6 +3,7 @@
 #include "string.h"
 #include "cmos.h"
 #include "sound.h"
+#include "uihost.h"
 #include "debugmon.h"
 
 /*
@@ -37,6 +38,7 @@ static int center_open;
 static uint32_t center_at;
 static int c_x, c_y, c_w, c_h;          /* the Centre's panel, when open */
 static int dnd_x, dnd_y, clear_x, clear_y;
+static int qs_x[2], qs_y, qs_w, qs_h;   /* the quick settings: dark appearance, mute */
 static uint32_t last_anim;
 
 static void copy(char *d, const char *s, int n)
@@ -264,8 +266,21 @@ static void draw_center(gfx_surface_t *s, int sw, int sh, int topbar_h)
     dnd_x = c_x + c_w - 24 - 46; dnd_y = y + 18;
     switch_draw(s, dnd_x, dnd_y, dnd);
 
+    /* quick settings: two tiles */
+    y += 74;
+    qs_y = y; qs_h = 64; qs_w = (c_w - 24 - 10) / 2;
+    for (int k = 0; k < 2; k++) {
+        int on = k == 0 ? ui_theme.dark : sound_get_enabled();
+        int bx = c_x + 12 + k * (qs_w + 10);
+        qs_x[k] = bx;
+        gfx_rrect(s, bx, y, qs_w, qs_h, 14, on ? ui_theme.select : (ui_theme.dark ? 0x2C2D33 : 0xFFFFFF), 255);
+        const gfx_image_t *ic = gfx_image(k == 0 ? "icon20_settings" : "glyph_volume-2");
+        if (ic) gfx_blit_tinted(s, ic, bx + 14, y + 14, on ? ui_theme.text : ui_theme.dim, 255);
+        gfx_text(s, &ui_font_small, bx + 14, y + 38, k == 0 ? (on ? "Dark" : "Light") : (on ? "Sound on" : "Muted"), ui_theme.text, 255);
+    }
+    y += qs_h + 22;
+
     /* the notifications, newest first */
-    y += 76;
     int count = 0;
     for (int i = 0; i < NMAX; i++) if (ns[i].used && !ns[i].gone) count++;
     gfx_text(s, &ui_font_medium, c_x + 20, y, "Notifications", ui_theme.text, 255);
@@ -352,6 +367,13 @@ int notify_press(int x, int y, char *open_app, int open_app_len)
     }
     if (center_open) {
         if (in(x, y, dnd_x - 4, dnd_y - 4, 46, 30)) { notify_set_dnd(!dnd); sound_click(); return 1; }
+        for (int k = 0; k < 2; k++)
+            if (in(x, y, qs_x[k], qs_y, qs_w, qs_h)) {
+                if (k == 0) uihost_set("dark", !ui_theme.dark);
+                else sound_set_enabled(!sound_get_enabled());
+                sound_click();
+                return 1;
+            }
         if (in(x, y, clear_x, clear_y, 120, 22)) {
             for (int i = 0; i < NMAX; i++) if (ns[i].used && !ns[i].gone) close_notif(&ns[i], -1);
             sound_click();

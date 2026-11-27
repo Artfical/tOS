@@ -88,6 +88,10 @@ Most things can be done from the keyboard too. In Files, the arrow keys move bet
 
 Ctrl+Up (or F3) shows Mission Control, Ctrl+Left and Ctrl+Right change the Space, Ctrl+Space searches and Alt+Tab switches windows: see [Spaces and Mission Control](/tos/spaces).
 
+## Notification Centre
+
+Click the clock in the top bar to open the **Notification Centre**: the date, **Do Not Disturb**, quick settings (**Dark/Light** and **Sound on/Muted**) and your notifications, with **Clear all**.
+
 ## Sound
 
 tOS plays short sounds when you open or close a window and when you click a menu or a dock icon. Click the **speaker** in the top bar to mute or unmute them (it dims when muted), or use `beep off` and `beep on` in the Terminal. See [Audio](/tos/audio).

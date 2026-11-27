@@ -1,6 +1,9 @@
 # Pin windows, Trash restore, quick settings
 
 ## desktop | New
+- Quick settings in Notification Centre: open it (click the clock) and there are tiles for **Dark/Light** and **Sound on/Muted**, beside Do Not Disturb.
+
+## desktop | New
 - The speaker in the top bar is a button: click it to mute or unmute the interface sounds (the icon dims when muted). Same as `beep off` / `beep on` in the Terminal.
 
 ## files | New
