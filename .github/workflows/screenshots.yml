@@ -50,12 +50,21 @@ jobs:
           name: tOS-screenshots
           path: shots/*.png
 
-      - name: Publish as the screenshots release
+      - name: Put them into docs/screenshots and publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p rel
           cp shots/*.png rel/
           gh release view screenshots >/dev/null 2>&1 || gh release create screenshots --prerelease --title "Screenshots" \
-            --notes "Screenshots of tOS, taken by tools/take-screenshots.py in a GitHub Actions run. Replaced on every change of the desktop."
+            --notes "Screenshots of tOS, taken by tools/take-screenshots.py in a GitHub Actions run."
           gh release upload screenshots rel/*.png --clobber
+          # commit them where the docs use them (docs/screenshots); [skip ci] so this cannot start a loop
+          git config user.name "Codertalha5524"
+          git config user.email "talha.teknolar@gmail.com"
+          cp shots/*.png docs/screenshots/
+          git add docs/screenshots
+          if ! git diff --cached --quiet; then
+            git commit -m "Docs: fresh screenshots of the desktop, Spaces, search and Alt+Tab [skip ci]"
+            git push origin HEAD:main
+          fi
