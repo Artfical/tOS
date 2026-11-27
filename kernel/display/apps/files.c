@@ -33,6 +33,7 @@ typedef struct {
     uint32_t last_ms;
     char msg[80];
     int confirm_delete;
+    char undo[8][40]; int nundo;   /* the last items moved to the Trash: Ctrl+Z puts them back */
     uint8_t picked[MAXE];       /* selected (by shown index): Ctrl-click adds, Shift-click a range; f->sel is the last */
     int anchor;
     int press_item, press_x, press_y, press_mods, dragged;
@@ -400,17 +401,23 @@ static void do_delete(files_t *f)
     int forever = in_trash(f);
     if (forever && !f->confirm_delete) { f->confirm_delete = 1; strcpy(f->msg, "Click again to delete for good"); return; }
     int bad = 0;
+    f->nundo = 0;
     for (int i = 0; i < f->n; i++) {
         if (!f->picked[i]) continue;
         char p[224];
         ui_path_join(p, f->dir, f->all[f->shown[i]].name);
         if ((forever ? ui_file_delete(p) : ui_file_trash(p)) != 0) bad++;
+        else if (!forever && f->nundo < 8) {
+            strncpy(f->undo[f->nundo], f->all[f->shown[i]].name, 39);
+            f->undo[f->nundo][39] = 0;
+            f->nundo++;
+        }
     }
     load(f);
     uihost_files_touch();
     f->gen = uihost_files_gen();
     if (bad) strcpy(f->msg, forever ? "Some could not be deleted" : "Some could not be moved to the Trash");
-    else strcpy(f->msg, forever ? "Deleted" : n == 1 ? "Moved to the Trash" : "Moved to the Trash");
+    else strcpy(f->msg, forever ? "Deleted" : f->nundo ? "Moved to the Trash  â Ctrl+Z to undo" : "Moved to the Trash");
 }
 
 static void empty_trash(files_t *f)
@@ -437,6 +444,19 @@ static void put_back(files_t *f)
     uihost_files_touch();
     f->gen = uihost_files_gen();
     strcpy(f->msg, bad ? "Some could not be put back" : n == 1 ? "Put back" : "Put back");
+}
+
+/* Ctrl+Z: put the last trashed items back where they came from */
+static void undo_delete(files_t *f)
+{
+    if (!f->nundo) { strcpy(f->msg, "Nothing to undo"); return; }
+    int bad = 0;
+    for (int i = 0; i < f->nundo; i++) if (ui_trash_restore(f->undo[i]) != 0) bad++;
+    f->nundo = 0;
+    load(f);
+    uihost_files_touch();
+    f->gen = uihost_files_gen();
+    strcpy(f->msg, bad ? "Some could not be restored" : "Restored");
 }
 
 static void finish_rename(files_t *f)
@@ -682,6 +702,7 @@ static void f_key(uiapp_t *a, int k)
     else if (k == 'o' && sel_entry(f)) open_entry(f, sel_entry(f));
     else if (k == '\b') { char p[160]; parent(f->dir, p); go(f, p); }
     else if (k == UI_KEY_DEL) do_delete(f);
+    else if (k == 26) undo_delete(f);               /* Ctrl+Z */
 }
 
 static void f_wheel(uiapp_t *a, int d)
