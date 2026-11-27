@@ -25,3 +25,4 @@
 
 ## terminal | Documentation
 - New page: Spaces and Mission Control (search, Alt+Tab, snapping, hot corners). Settings explains your own themes and the theme.conf format; Files explains Put Back.
+- Fresh screenshots of the desktop, Spaces, search and Alt+Tab are taken by GitHub Actions (the "screenshots" release) and kept in `docs/screenshots`.

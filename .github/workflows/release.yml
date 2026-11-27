@@ -103,10 +103,19 @@ jobs:
         run: |
           SHORT=$(git rev-parse --short HEAD)
           SUBJECT=$(git log -1 --pretty=%s)
+          # the title and the notes come from UPDATE_NOTES.md when the commit changed it: its "# " line is the
+          # title, the rest is the body. Otherwise the commit subject is used, as before.
+          TITLE="build @$SHORT"
+          BODY="$SUBJECT"
+          if git diff --name-only HEAD~1 HEAD | grep -q '^UPDATE_NOTES.md$'; then
+            TITLE=$(grep -m1 '^# ' UPDATE_NOTES.md | sed 's/^# //')
+            [ -n "$TITLE" ] || TITLE="build @$SHORT"
+            BODY=$(sed '1{/^# /d}' UPDATE_NOTES.md)
+          fi
           cp tOS.iso "tOS-$SHORT.iso"
           gh release create "build-$SHORT" \
-             --title "build @$SHORT" \
-             --notes "$SUBJECT
+             --title "$TITLE" \
+             --notes "$BODY
 
           Boot it in QEMU with:
           \`\`\`
