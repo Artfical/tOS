@@ -148,5 +148,6 @@ int  ui_file_trash(const char *path);
 void ui_trash_dir(char *out);
 int  ui_trash_items(void);
 int  ui_trash_empty(void);
+int  ui_trash_restore(const char *name);   /* Put Back: to the folder it came from */
 
 #endif

@@ -272,12 +272,15 @@ static void f_draw(uiapp_t *a, gfx_surface_t *s, int x, int y, int w, int h)
     gfx_text(s, &ui_font_regular, rx + 30, y + 17, f->search[0] ? f->search : "Search", f->search[0] ? UI_TEXT : UI_DIM, 255);
     ui_button(s, rx - 40, y + 12, 32, 28, "", f->confirm_delete ? 0x7F1D1D : UI_CARD2, UI_TEXT, 0);
     gfx_blit_tinted(s, gfx_image("glyph_x"), rx - 32, y + 18, f->confirm_delete ? 0xFCA5A5 : (sel_entry(f) ? UI_TEXT : UI_DIM), 255);
-    if (in_trash(f)) ui_button(s, rx - 150, y + 12, 102, 28, "Empty Trash", UI_CARD2, f->n ? UI_TEXT : UI_DIM, 0);
+    if (in_trash(f)) {
+        ui_button(s, rx - 150, y + 12, 102, 28, "Empty Trash", UI_CARD2, f->n ? UI_TEXT : UI_DIM, 0);
+        ui_button(s, rx - 262, y + 12, 104, 28, "Put Back", UI_CARD2, f->n ? UI_TEXT : UI_DIM, 0);
+    }
     else {
         ui_button(s, rx - 80, y + 12, 32, 28, "", UI_CARD2, UI_TEXT, 0);
         gfx_blit_tinted(s, gfx_image("glyph_folder"), rx - 72, y + 18, UI_TEXT, 255);
     }
-    int vx = rx - (in_trash(f) ? 226 : 156);
+    int vx = rx - (in_trash(f) ? 342 : 156);
     gfx_rrect(s, vx, y + 12, 68, 28, 7, UI_CARD2, 255);
     gfx_rrect(s, vx + 2 + f->list_view * 32, y + 14, 32, 24, 6, ui_theme.dark ? 0x5A5C66 : 0xFFFFFF, 255);
     gfx_blit_tinted(s, gfx_image("glyph_layout-grid"), vx + 10, y + 18, UI_TEXT, 255);
@@ -421,6 +424,21 @@ static void empty_trash(files_t *f)
     strcpy(f->msg, r == 0 ? "The Trash is empty" : "Some could not be deleted");
 }
 
+/* Put Back: the selected items go back to the folders they came from */
+static void put_back(files_t *f)
+{
+    int n = 0, bad = 0;
+    for (int i = 0; i < f->n; i++) {
+        if (!f->picked[i]) continue;
+        n++;
+        if (ui_trash_restore(f->all[f->shown[i]].name) != 0) bad++;
+    }
+    load(f);
+    uihost_files_touch();
+    f->gen = uihost_files_gen();
+    strcpy(f->msg, bad ? "Some could not be put back" : n == 1 ? "Put back" : "Put back");
+}
+
 static void finish_rename(files_t *f)
 {
     uihost_entry_t *e = sel_entry(f);
@@ -480,6 +498,7 @@ static void f_press(uiapp_t *a, int px, int py, int b)
         else if (ui_hit(px, py, bx + 36, 10, 28, 32)) step_history(f, 1);
         else if (ui_hit(px, py, rx - 40, 12, 32, 28)) do_delete(f);
         else if (in_trash(f) && ui_hit(px, py, rx - 150, 12, 102, 28)) empty_trash(f);
+        else if (in_trash(f) && ui_hit(px, py, rx - 262, 12, 104, 28)) put_back(f);
         else if (!in_trash(f) && ui_hit(px, py, rx - 80, 12, 32, 28)) do_new_folder(f);
         else { int vx = rx - (in_trash(f) ? 226 : 156); if (ui_hit(px, py, vx, 12, 68, 28)) { f->list_view = px >= vx + 34; f->scroll = 0; } }
         return;

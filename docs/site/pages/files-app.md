@@ -36,7 +36,7 @@ Click a file to select it. **Ctrl+click** adds a file to the selection or remove
 - **Copy**, **cut** and **paste** work on whole selections.
 - **Rename** changes a file's name.
 - **New Folder** makes a folder in the current one.
-- **Delete** moves files to the **Trash**. Open the Trash from the sidebar or the dock, and use **Empty Trash** to delete them for good.
+- **Delete** moves files to the **Trash**. Open the Trash from the sidebar or the dock. Select an item and click **Put Back** to return it to the folder it came from, or **Empty Trash** to delete everything for good. tOS remembers where each item came from.
 - **Drag and drop** moves a file to another folder in the window, or out of the window to the desktop, to an app, or to the Trash. See [The desktop](/tos/desktop).
 
 ![The Trash, opened in Files](shot:drag_trash_contents.png)

@@ -178,13 +178,53 @@ void ui_trash_dir(char *out)
     if (uihost_exists(out) != 2) uihost_mkdir(out);
 }
 
+/* the original place of a trashed item is kept in .Trash/.restore/NAME, so "Put Back" can return it */
+static void restore_record(const char *name, const char *dir)
+{
+    char rd[224], rp[260];
+    ui_trash_dir(rd);
+    ui_path_join(rp, rd, ".restore");
+    if (uihost_exists(rp) != 2) uihost_mkdir(rp);
+    ui_path_join(rp, rd, ".restore/");
+    strcat(rp, name);
+    uihost_write(rp, dir, (uint32_t)strlen(dir));
+}
+
 int ui_file_trash(const char *path)
 {
     char t[224];
     ui_trash_dir(t);
     int tl = (int)strlen(t);
     if (!strncmp(path, t, (size_t)tl) && (path[tl] == 0 || path[tl] == '/')) return 0;  /* don't silently erase from the Trash */
+    const char *name = ui_basename(path);
+    char dir[224];
+    strcpy(dir, path);
+    int n = (int)strlen(dir) - (int)strlen(name);
+    while (n > 0 && dir[n - 1] != '/') n--;
+    if (n > 1) dir[n - 1] = 0; else strcpy(dir, "/");
+    restore_record(name, dir);
     return ui_file_move(path, t, 0, 0, 0);
+}
+
+/* Put Back: move a trashed item to where it came from (its home folder if that is not known) */
+int ui_trash_restore(const char *name)
+{
+    char t[224], rd[224], rp[260], src[260];
+    ui_trash_dir(t);
+    ui_path_join(rd, t, ".restore");
+    ui_path_join(rp, rd, "/");
+    strcat(rp, name);
+    char dir[224];
+    strcpy(dir, uihost_home());
+    uint8_t *d; uint32_t len;
+    if (uihost_read(rp, &d, &len) == 0) {
+        if (len < sizeof(dir) - 1) { memcpy(dir, d, len); dir[len] = 0; while (len && (dir[len-1] == '\n' || dir[len-1] == '\r')) dir[--len] = 0; }
+        free(d);
+        uihost_delete(rp);
+    }
+    ui_path_join(src, t, "/");
+    strcat(src, name);
+    return ui_file_move(src, dir, 0, 0, 0);
 }
 
 int ui_trash_items(void)
@@ -194,9 +234,10 @@ int ui_trash_items(void)
     if (uihost_exists(t) != 2) return 0;
     uihost_entry_t *ents = malloc(sizeof(uihost_entry_t) * 64);
     if (!ents) return 0;
-    int n = uihost_list(t, ents, 64);
+    int n = uihost_list(t, ents, 64), c = 0;
+    if (n >= 0) for (int i = 0; i < n; i++) if (ents[i].name[0] != '.') c++;
     free(ents);
-    return n < 0 ? 0 : n;
+    return c;
 }
 
 int ui_trash_empty(void)
