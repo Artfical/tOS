@@ -1,4 +1,4 @@
-# Spaces, Mission Control, your own themes
+# Search, Spaces, themes and Windows programs with Wine
 
 ## desktop | New
 - Mission Control: Ctrl+Up or F3. The windows of a Space fly out to a grid (smoothly scaled, titles under them) and the Spaces show along the top, with pictures of the real windows. Click a window to bring it forward, click a Space to go there, drag a window onto a Space to move it (onto + for a new one), click + to add a Space (four at most), the minus in a Space's corner closes it. Esc, Ctrl+Down or F3 leave.
